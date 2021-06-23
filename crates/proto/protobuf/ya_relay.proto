@@ -35,7 +35,7 @@ package ya_relay_proto;
 
 message Packet {
     oneof kind {
-        Forward forward = 1;
+        /* Forward forward = 1; */
         Request request = 2;
         Response response = 3;
         Control control = 4;
@@ -44,17 +44,17 @@ message Packet {
 
 /*
     Forward request to client B sent by client A to the server
-    or a forwarded message sent by the server to client B
+    or a forwarded message sent by the server to client B.
+
+    `Forward` serves only as a message type marker (i.e. equal to 1).
+    The message is of custom binary format, similar to:
+
+    message Forward {
+        bytes session_id = 1;
+        uint32 slot = 2; // either sender or receiver slot id
+        bytes payload = 3;
+    }
 */
-message Forward {
-    /*
-        `Forward` serves only as a message type marker (i.e. equal to 1).
-        The message is of custom binary format similar to:
-            bytes session_id = 1;
-            uint32 slot = 2; // either sender or receiver slot id
-            bytes payload = 3;
-     */
-}
 
 /* Requests sent to the server by the client */
 message Request {
