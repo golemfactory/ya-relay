@@ -55,6 +55,7 @@ pub(self) fn read_bytes_inner(
         }
         Some(kind) if kind > 1 => {
             if total > max {
+                let _ = buf.split_to(off + available);
                 Err(ParseError::PayloadTooLong { total, left })
             } else if buf.len() >= off + total {
                 let _ = buf.split_to(off);
