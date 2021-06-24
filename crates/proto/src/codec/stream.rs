@@ -12,18 +12,6 @@ use crate::codec::datagram::Codec;
 use crate::codec::*;
 use crate::proto::Packet;
 
-#[inline]
-pub fn encoder_sink(input: impl AsyncWrite) -> impl Sink<PacketKind, Error = Error> {
-    Codec::sink(input)
-}
-
-#[inline]
-pub fn decoder_stream(
-    input: impl AsyncRead + Unpin,
-) -> impl Stream<Item = Result<PacketKind, Error>> {
-    DecoderStream::from(input)
-}
-
 pub struct EncoderSink<S, E>
 where
     S: Sink<Bytes, Error = E> + Unpin,
@@ -346,18 +334,13 @@ mod tests {
         });
         tokio::task::spawn(async move {
             let _ = rx_full
-                .flat_map(|b| {
-                    let chunks = b.chunks(chunk_size).map(|c| c.to_vec()).collect::<Vec<_>>();
-                    futures::stream::iter(chunks)
-                })
+                .flat_map(|b| futures::stream::iter(b.into_iter()).chunks(chunk_size))
                 .map(|v| Ok(Ok::<_, Error>(BytesMut::from_iter(v))))
                 .forward(tx_parts.sink_map_err(Error::from))
                 .await;
         });
 
-        // reassemble chunks
         let mut collected = Vec::with_capacity(count);
-
         while let Some(Ok(pkt)) = stream.next().await {
             match pkt {
                 PacketKind::Packet(pkt) => {
@@ -366,6 +349,7 @@ mod tests {
                 PacketKind::Forward(fwd) => {
                     collected.push(PacketKind::Forward(fwd));
                 }
+                // reassemble chunks
                 PacketKind::ForwardCtd(bytes) => match collected.last_mut().unwrap() {
                     PacketKind::Forward(f) => f.payload.extend(bytes),
                     _ => panic!("Misplaced `Forward` continuation"),

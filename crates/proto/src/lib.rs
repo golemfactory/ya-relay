@@ -7,8 +7,8 @@ pub mod proto {
 
     include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 
-    pub const KEY_SIZE: usize = 1;
     pub const SESSION_ID_SIZE: usize = 16;
+    pub const KEY_SIZE: usize = 1;
     pub const FORWARD_TAG: u32 = 1;
 
     #[derive(Clone, Default, PartialEq)]
@@ -48,7 +48,7 @@ pub mod proto {
 
         pub fn decode(mut buf: bytes::BytesMut) -> Result<Self, ParseError> {
             if buf.len() < Self::header_size() {
-                return Err(ParseError::InvalidSize(buf.len()));
+                return Err(ParseError::InvalidSize { size: buf.len() });
             }
 
             let (tag, _) = decode_key(&mut buf).map_err(|_| ParseError::InvalidFormat)?;
@@ -71,8 +71,8 @@ pub mod proto {
     }
 
     fn write_payload_fmt(f: &mut std::fmt::Formatter<'_>, buf: &[u8]) -> std::fmt::Result {
-        if buf.len() > 32 {
-            let idx = 16.min(buf.len() / 2);
+        if buf.len() > 16 {
+            let idx = 8.min(buf.len() / 2);
             write!(f, "{:02x?}..{:02x?}", &buf[..idx], &buf[buf.len() - idx..])
         } else {
             write!(f, "{:02x?}", &buf)

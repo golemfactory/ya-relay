@@ -6,18 +6,18 @@ pub enum ParseError {
     PrefixTooLong,
     #[error("Invalid length prefix")]
     PrefixInvalid,
-    #[error("Payload too short ({left}b remaining)")]
-    PayloadTooShort { total: usize, left: usize },
-    #[error("Payload too long ({left}b over limit)")]
-    PayloadTooLong { total: usize, left: usize },
+    #[error("Payload too short ({left} b remaining)")]
+    PayloadTooShort { left: usize },
+    #[error("Payload too long ({left} b over limit)")]
+    PayloadTooLong { left: usize },
     #[error("Invalid payload")]
-    PayloadInvalid { total: usize, left: usize },
+    PayloadInvalid { left: usize },
     #[error("Forward message")]
-    Forward { bytes: bytes::BytesMut, left: usize },
+    Forward { left: usize, bytes: bytes::BytesMut },
+    #[error("Invalid size: {size} b")]
+    InvalidSize { size: usize },
     #[error("Invalid format")]
     InvalidFormat,
-    #[error("Invalid size: {0}")]
-    InvalidSize(usize),
 }
 
 #[derive(thiserror::Error, Debug)]

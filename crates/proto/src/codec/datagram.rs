@@ -57,7 +57,7 @@ impl Decoder for Codec {
             Ok(None) => Err(ParseError::InvalidFormat.into()),
             Err(ParseError::Forward { bytes, left, .. }) => match left {
                 0 => Ok(Some(PacketKind::Forward(Forward::decode(bytes)?))),
-                _ => Err(ParseError::PayloadTooShort { total: 0, left }.into()),
+                _ => Err(ParseError::PayloadTooShort { left }.into()),
             },
             Err(err) => Err(err.into()),
         }

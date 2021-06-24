@@ -42,7 +42,7 @@ pub(self) fn read_bytes_inner(
     match tag {
         Some(0) => {
             let _ = buf.split_to(off + available);
-            Err(ParseError::PayloadInvalid { total, left })
+            Err(ParseError::PayloadInvalid { left })
         }
         Some(1) => {
             if buf.len() >= off + Forward::header_size() {
@@ -56,13 +56,13 @@ pub(self) fn read_bytes_inner(
         Some(kind) if kind > 1 => {
             if total > max {
                 let _ = buf.split_to(off + available);
-                Err(ParseError::PayloadTooLong { total, left })
+                Err(ParseError::PayloadTooLong { left })
             } else if buf.len() >= off + total {
                 let _ = buf.split_to(off);
                 let bytes = buf.split_to(available);
                 Ok(Some(bytes))
             } else {
-                Err(ParseError::PayloadTooShort { total, left })
+                Err(ParseError::PayloadTooShort { left })
             }
         }
         _ => Ok(None),
@@ -109,9 +109,11 @@ pub(crate) fn peek_size(buf: &[u8]) -> Result<(usize, usize), ParseError> {
 }
 
 #[inline]
-pub(crate) fn write_size<B: BufMut>(value: u32, buf: &mut B) -> Result<(), ParseError> {
-    if value > MAX_SIZE_VALUE {
-        return Err(ParseError::InvalidSize(value as usize));
+pub(crate) fn write_size<B: BufMut>(size: u32, buf: &mut B) -> Result<(), ParseError> {
+    if size > MAX_SIZE_VALUE {
+        return Err(ParseError::InvalidSize {
+            size: size as usize,
+        });
     }
-    Ok(prost::encoding::encode_varint(value as u64, buf))
+    Ok(prost::encoding::encode_varint(size as u64, buf))
 }
