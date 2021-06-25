@@ -1,33 +1,43 @@
 #[derive(thiserror::Error, Clone, Debug)]
-pub enum ParseError {
-    #[error("Length prefix too short")]
+pub enum EncodeError {
+    #[error("Packet too long: {size} b")]
+    PacketTooLong { size: usize },
+    #[error("Empty packet")]
+    NoData,
+}
+
+#[derive(thiserror::Error, Clone, Debug)]
+pub enum DecodeError {
+    #[error("Invalid packet format")]
+    PacketFormatInvalid,
+    #[error("Packet too short")]
+    PacketTooShort,
+    #[error("Packet length prefix is too short")]
     PrefixTooShort,
-    #[error("Length prefix too long")]
+    #[error("Packet length prefix is too long")]
     PrefixTooLong,
-    #[error("Invalid length prefix")]
-    PrefixInvalid,
+    #[error("Packet length prefix is invalid")]
+    PrefixFormatInvalid,
     #[error("Payload too short ({left} b remaining)")]
     PayloadTooShort { left: usize },
     #[error("Payload too long ({left} b over limit)")]
     PayloadTooLong { left: usize },
     #[error("Invalid payload")]
     PayloadInvalid { left: usize },
-    #[error("Forward message")]
+    #[error("Forward packet")]
     Forward { left: usize, bytes: bytes::BytesMut },
-    #[error("Invalid size: {size} b")]
-    InvalidSize { size: usize },
-    #[error("Invalid format")]
-    InvalidFormat,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error(transparent)]
-    Encode(#[from] prost::EncodeError),
+    Encode(#[from] EncodeError),
     #[error(transparent)]
-    Decode(#[from] prost::DecodeError),
+    Decode(#[from] DecodeError),
     #[error(transparent)]
-    Parse(#[from] ParseError),
+    ProtobufEncode(#[from] prost::EncodeError),
+    #[error(transparent)]
+    ProtobufDecode(#[from] prost::DecodeError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error("Channel closed")]

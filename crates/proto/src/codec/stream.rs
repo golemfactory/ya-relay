@@ -88,7 +88,7 @@ where
     Error: From<E>,
 {
     pub fn new(stream: S) -> Self {
-        Self::with(stream, MAX_PARSED_MESSAGE_BYTES)
+        Self::with(stream, MAX_PARSE_MESSAGE_SIZE)
     }
 
     pub fn with(stream: S, limit: usize) -> Self {
@@ -136,7 +136,7 @@ where
     type Item = Result<PacketKind, Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        use ParseError::*;
+        use DecodeError::*;
 
         if !self.buf.is_empty() {
             let max = self.limit;
@@ -177,7 +177,7 @@ where
                     }
                 },
                 State::Buffering { mut left, read } => {
-                    left = left - read;
+                    left -= read;
                     if left == 0 {
                         self.transition(State::AwaitingPrefix);
                         return self.poll_next(cx);
@@ -185,7 +185,7 @@ where
                     self.transition(State::Buffering { left, read: 0 });
                 }
                 State::Forwarding { mut left, read } => {
-                    left = left - read;
+                    left -= read;
                     if read > 0 {
                         let bytes = self.buf.split_to(read);
 
@@ -200,7 +200,7 @@ where
                     self.transition(State::Forwarding { left, read: 0 });
                 }
                 State::Discarding { mut left, read } => {
-                    left = left - read;
+                    left -= read;
                     if read > 0 {
                         let _ = self.buf.split_to(read);
 
@@ -217,7 +217,7 @@ where
 
         match Pin::new(&mut self.stream).poll_next(cx) {
             Poll::Ready(Some(Ok(bytes))) => {
-                if bytes.len() == 0 {
+                if bytes.is_empty() {
                     return Poll::Ready(None);
                 }
                 self.state.read(bytes.len());
@@ -272,50 +272,10 @@ mod tests {
     use futures::{SinkExt, StreamExt};
 
     use crate::codec::stream::{DecoderStream, EncoderSink};
-    use crate::codec::{Error, PacketKind};
+    use crate::codec::*;
     use crate::proto::*;
 
-    fn generate_messages() -> Vec<PacketKind> {
-        let session_id: [u8; SESSION_ID_SIZE] = [0x0f; SESSION_ID_SIZE];
-
-        vec![
-            PacketKind::Packet(Packet {
-                kind: Some(packet::Kind::Request(Request {
-                    session_id: Vec::new(),
-                    kind: Some(request::Kind::Session(request::Session {
-                        challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
-                        node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
-                        public_key: vec![0x05, 0x0e, 0x0c],
-                    })),
-                })),
-            }),
-            PacketKind::Packet(Packet {
-                kind: Some(packet::Kind::Request(Request {
-                    session_id: session_id.to_vec(),
-                    kind: Some(request::Kind::Register(request::Register {
-                        endpoints: vec![Endpoint {
-                            protocol: Protocol::Tcp as i32,
-                            address: "1.2.3.4".to_string(),
-                            port: 12345,
-                        }],
-                    })),
-                })),
-            }),
-            PacketKind::Forward(Forward {
-                session_id,
-                slot: 42,
-                payload: (0..8192).map(|_| rand::random::<u8>()).collect(),
-            }),
-            PacketKind::Packet(Packet {
-                kind: Some(packet::Kind::Request(Request {
-                    session_id: session_id.to_vec(),
-                    kind: Some(request::Kind::RandomNode(request::RandomNode {
-                        public_key: true,
-                    })),
-                })),
-            }),
-        ]
-    }
+    const SESSION_ID: [u8; SESSION_ID_SIZE] = [0x0f; SESSION_ID_SIZE];
 
     async fn forward(messages: Vec<PacketKind>, chunk_size: usize) -> Vec<PacketKind> {
         let count = messages.len();
@@ -360,16 +320,83 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_chunks() {
-        let expected = generate_messages();
-        assert_eq!(expected, forward(expected.clone(), 1).await);
-        assert_eq!(expected, forward(expected.clone(), 2).await);
-        assert_eq!(expected, forward(expected.clone(), 3).await);
-        assert_eq!(expected, forward(expected.clone(), 4).await);
-        assert_eq!(expected, forward(expected.clone(), 7).await);
-        assert_eq!(expected, forward(expected.clone(), 8).await);
-        assert_eq!(expected, forward(expected.clone(), 16).await);
-        assert_eq!(expected, forward(expected.clone(), 32).await);
-        assert_eq!(expected, forward(expected.clone(), 64).await);
+    async fn receive_chunked() {
+        let packets = vec![
+            PacketKind::Packet(Packet {
+                kind: Some(packet::Kind::Request(Request {
+                    session_id: Vec::new(),
+                    kind: Some(request::Kind::Session(request::Session {
+                        challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                        node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
+                        public_key: vec![0x05, 0x0e, 0x0c],
+                    })),
+                })),
+            }),
+            PacketKind::Packet(Packet {
+                kind: Some(packet::Kind::Request(Request {
+                    session_id: SESSION_ID.to_vec(),
+                    kind: Some(request::Kind::Register(request::Register {
+                        endpoints: vec![Endpoint {
+                            protocol: Protocol::Tcp as i32,
+                            address: "1.2.3.4".to_string(),
+                            port: 12345,
+                        }],
+                    })),
+                })),
+            }),
+            PacketKind::Forward(Forward {
+                session_id: SESSION_ID,
+                slot: 42,
+                payload: (0..8192).map(|_| rand::random::<u8>()).collect(),
+            }),
+            PacketKind::Packet(Packet {
+                kind: Some(packet::Kind::Request(Request {
+                    session_id: SESSION_ID.to_vec(),
+                    kind: Some(request::Kind::RandomNode(request::RandomNode {
+                        public_key: true,
+                    })),
+                })),
+            }),
+        ];
+
+        assert_eq!(packets, forward(packets.clone(), 1).await);
+        assert_eq!(packets, forward(packets.clone(), 2).await);
+        assert_eq!(packets, forward(packets.clone(), 3).await);
+        assert_eq!(packets, forward(packets.clone(), 4).await);
+        assert_eq!(packets, forward(packets.clone(), 7).await);
+        assert_eq!(packets, forward(packets.clone(), 8).await);
+        assert_eq!(packets, forward(packets.clone(), 16).await);
+        assert_eq!(packets, forward(packets.clone(), 32).await);
+        assert_eq!(packets, forward(packets.clone(), 64).await);
+    }
+
+    #[tokio::test]
+    async fn receive_chunked_and_skip() {
+        let random_node = PacketKind::Packet(Packet {
+            kind: Some(packet::Kind::Request(Request {
+                session_id: SESSION_ID.to_vec(),
+                kind: Some(request::Kind::RandomNode(request::RandomNode {
+                    public_key: true,
+                })),
+            })),
+        });
+
+        let packets = vec![
+            random_node.clone(),
+            PacketKind::Packet(Packet {
+                kind: Some(packet::Kind::Request(Request {
+                    session_id: Vec::new(),
+                    kind: Some(request::Kind::Session(request::Session {
+                        challenge_resp: vec![0u8; MAX_PARSE_MESSAGE_SIZE],
+                        node_id: vec![],
+                        public_key: vec![],
+                    })),
+                })),
+            }),
+            random_node.clone(),
+        ];
+        let expected = vec![random_node.clone(), random_node.clone()];
+
+        assert_eq!(expected, forward(packets.clone(), 5).await);
     }
 }

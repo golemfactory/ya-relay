@@ -54,10 +54,10 @@ impl Decoder for Codec {
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         match read_datagram(src) {
             Ok(Some(bytes)) => Ok(Some(PacketKind::Packet(Packet::decode(bytes)?))),
-            Ok(None) => Err(ParseError::InvalidFormat.into()),
-            Err(ParseError::Forward { bytes, left, .. }) => match left {
+            Ok(None) => Err(DecodeError::PacketFormatInvalid.into()),
+            Err(DecodeError::Forward { bytes, left, .. }) => match left {
                 0 => Ok(Some(PacketKind::Forward(Forward::decode(bytes)?))),
-                _ => Err(ParseError::PayloadTooShort { left }.into()),
+                _ => Err(DecodeError::PayloadTooShort { left }.into()),
             },
             Err(err) => Err(err.into()),
         }

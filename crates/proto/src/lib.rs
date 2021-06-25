@@ -2,7 +2,7 @@
 pub mod codec;
 
 pub mod proto {
-    use crate::codec::ParseError;
+    use crate::codec::DecodeError;
     use prost::encoding::{decode_key, encode_key, WireType};
 
     include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
@@ -16,16 +16,6 @@ pub mod proto {
         pub session_id: [u8; SESSION_ID_SIZE],
         pub slot: u32,
         pub payload: bytes::BytesMut,
-    }
-
-    impl std::fmt::Debug for Forward {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "Forward( ")?;
-            write!(f, "session_id: {:2x?}, ", self.session_id)?;
-            write!(f, "slot: {}, payload: ({}) ", self.slot, self.payload.len())?;
-            write_payload_fmt(f, &self.payload)?;
-            write!(f, " )")
-        }
     }
 
     impl Forward {
@@ -46,14 +36,14 @@ pub mod proto {
             buf.extend(self.payload.into_iter());
         }
 
-        pub fn decode(mut buf: bytes::BytesMut) -> Result<Self, ParseError> {
+        pub fn decode(mut buf: bytes::BytesMut) -> Result<Self, DecodeError> {
             if buf.len() < Self::header_size() {
-                return Err(ParseError::InvalidSize { size: buf.len() });
+                return Err(DecodeError::PacketTooShort);
             }
 
-            let (tag, _) = decode_key(&mut buf).map_err(|_| ParseError::InvalidFormat)?;
+            let (tag, _) = decode_key(&mut buf).map_err(|_| DecodeError::PacketFormatInvalid)?;
             if tag != FORWARD_TAG {
-                return Err(ParseError::InvalidFormat);
+                return Err(DecodeError::PacketFormatInvalid);
             }
 
             let mut session_id = [0u8; SESSION_ID_SIZE];
@@ -67,6 +57,16 @@ pub mod proto {
                 slot,
                 payload: buf,
             })
+        }
+    }
+
+    impl std::fmt::Debug for Forward {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Forward( ")?;
+            write!(f, "session_id: {:2x?}, ", self.session_id)?;
+            write!(f, "slot: {}, payload: ({}) ", self.slot, self.payload.len())?;
+            write_payload_fmt(f, &self.payload)?;
+            write!(f, " )")
         }
     }
 

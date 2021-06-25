@@ -93,8 +93,9 @@ message Request {
     }
 
     message Neighbours {
+        uint32 count = 1;
         /* Whether to include public keys */
-        bool public_key = 1;
+        bool public_key = 2;
     }
 
     message ReverseConnection {
