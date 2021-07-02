@@ -1,4 +1,3 @@
-use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, RwLock};
 use url::Url;
 
