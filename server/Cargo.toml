@@ -1,0 +1,24 @@
+[package]
+name = "server"
+version = "0.1.0"
+authors = ["nieznany.sprawiciel <nieznany.sprawiciel@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+actix-rt = "1.1"
+actix = { version = "0.10", default-features = false }
+actix-server = "1.0"
+actix-service = "1.0"
+
+anyhow = "1.0"
+bytes = "1.0.1"
+env_logger = { version = "0.8", optional = true, default-features = false }
+futures = "0.3"
+log = "0.4.8"
+structopt = "0.3"
+tokio = { version = "0.2", features = ["tcp", "udp", "net", "sync", "macros", "rt-core", "stream", "time"] }
+tokio-util = { version = "0.3.0", features = ["codec"] }
+url = "2.1.1"
+
