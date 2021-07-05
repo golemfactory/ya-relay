@@ -2,10 +2,15 @@ mod server;
 
 use server::Server;
 
+use ya_relay_proto::codec::datagram::Codec;
+use ya_relay_proto::codec::*;
+use ya_relay_proto::proto::*;
+
 use crate::server::parse_udp_url;
 use bytes::BytesMut;
 use structopt::{clap, StructOpt};
 use tokio::net::UdpSocket;
+use tokio_util::codec::Decoder;
 
 #[derive(StructOpt)]
 #[structopt(about = "NET Server")]
@@ -25,9 +30,11 @@ async fn main() -> anyhow::Result<()> {
     log::info!("Server listening on: {}", addr);
 
     let sock = UdpSocket::bind(&addr).await?;
-    let _server = Server::new()?;
+    let server = Server::new()?;
 
     let (mut input, _output) = sock.split();
+
+    let mut codec = Codec::default();
     let mut buf = BytesMut::with_capacity(2048);
     buf.resize(2048, 0);
 
@@ -35,7 +42,13 @@ async fn main() -> anyhow::Result<()> {
         match input.recv_from(&mut buf).await {
             Ok((size, addr)) => {
                 log::info!("Received {} bytes from {}", size, addr);
-                log::info!("Message:\n{:?}", buf);
+                match codec.decode(&mut buf) {
+                    Ok(Some(packet)) => {
+                        server.read().await.dispatch(packet).await?;
+                    }
+                    Ok(None) => log::warn!("Empty packet."),
+                    Err(e) => log::error!("Error: {}", e),
+                }
             }
             Err(e) => {
                 log::error!("Error receiving data from socket. {}", e);
