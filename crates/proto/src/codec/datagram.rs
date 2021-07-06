@@ -25,26 +25,17 @@ impl Encoder<PacketKind> for Codec {
     fn encode(&mut self, item: PacketKind, dst: &mut BytesMut) -> Result<(), Self::Error> {
         match item {
             PacketKind::Packet(pkt) => {
-                reserve_and_encode(dst, pkt.encoded_len())?;
+                dst.reserve(pkt.encoded_len());
                 pkt.encode(dst)?;
             }
             PacketKind::Forward(fwd) => {
-                reserve_and_encode(dst, fwd.encoded_len())?;
+                dst.reserve(fwd.encoded_len());
                 fwd.encode(dst);
             }
-            PacketKind::ForwardCtd(buf) => {
-                dst.reserve(buf.len());
-                dst.extend(buf.into_iter())
-            }
+            PacketKind::ForwardCtd(_) => return Err(EncodeError::PacketNotSupported.into()),
         }
         Ok(())
     }
-}
-
-#[inline]
-fn reserve_and_encode(dst: &mut BytesMut, len: usize) -> Result<(), Error> {
-    dst.reserve(prost::length_delimiter_len(len) + len);
-    Ok(write_size(len as u32, dst)?)
 }
 
 impl Decoder for Codec {
@@ -61,5 +52,106 @@ impl Decoder for Codec {
             },
             Err(err) => Err(err.into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+    use prost::Message;
+    use tokio_util::codec::{Decoder, Encoder};
+
+    use crate::codec::datagram::Codec;
+    use crate::codec::*;
+    use crate::proto::*;
+
+    const SESSION_ID: [u8; SESSION_ID_SIZE] = [0x0f; SESSION_ID_SIZE];
+
+    fn large_packet() -> packet::Kind {
+        packet::Kind::Request(Request {
+            session_id: Vec::new(),
+            kind: Some(request::Kind::Session(request::Session {
+                challenge_resp: vec![0u8; MAX_PACKET_SIZE as usize],
+                node_id: vec![],
+                public_key: vec![],
+            })),
+        })
+    }
+
+    #[tokio::test]
+    async fn decode_datagrams() {
+        let packets = vec![
+            PacketKind::Packet(Packet {
+                kind: Some(packet::Kind::Request(Request {
+                    session_id: Vec::new(),
+                    kind: Some(request::Kind::Session(request::Session {
+                        challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                        node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
+                        public_key: vec![0x05, 0x0e, 0x0c],
+                    })),
+                })),
+            }),
+            PacketKind::Packet(Packet {
+                kind: Some(packet::Kind::Request(Request {
+                    session_id: SESSION_ID.to_vec(),
+                    kind: Some(request::Kind::Register(request::Register {
+                        endpoints: vec![Endpoint {
+                            protocol: Protocol::Tcp as i32,
+                            address: "1.2.3.4".to_string(),
+                            port: 12345,
+                        }],
+                    })),
+                })),
+            }),
+            PacketKind::Forward(Forward {
+                session_id: SESSION_ID,
+                slot: 42,
+                payload: (0..8192).map(|_| rand::random::<u8>()).collect(),
+            }),
+            PacketKind::Packet(Packet {
+                kind: Some(packet::Kind::Request(Request {
+                    session_id: SESSION_ID.to_vec(),
+                    kind: Some(request::Kind::RandomNode(request::RandomNode {
+                        public_key: true,
+                    })),
+                })),
+            }),
+        ];
+
+        let mut codec_enc = Codec::default();
+        let mut codec_dec = Codec::default();
+
+        let decoded = packets
+            .iter()
+            .cloned()
+            .map(|p| {
+                let mut bytes = BytesMut::new();
+                codec_enc.encode(p, &mut bytes).unwrap();
+                bytes
+            })
+            .map(|mut b| codec_dec.decode(&mut b).unwrap().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(packets, decoded);
+    }
+
+    #[test]
+    fn decode_size_err() {
+        let packet = Packet {
+            kind: Some(large_packet()),
+        };
+        let len = packet.encoded_len();
+
+        let mut codec = Codec::default();
+        let mut buf = BytesMut::with_capacity(len + prost::length_delimiter_len(len));
+
+        packet
+            .encode_length_delimited(&mut buf)
+            .expect("serialization failed");
+
+        assert!(match codec.decode(&mut buf) {
+            Err(Error::Decode(DecodeError::PrefixTooLong)) => true,
+            _ => false,
+        })
     }
 }

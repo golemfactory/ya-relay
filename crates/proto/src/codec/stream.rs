@@ -6,9 +6,8 @@ use bytes::{Bytes, BytesMut};
 use futures::{Sink, Stream};
 use prost::Message;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_util::codec::{BytesCodec, Encoder, FramedRead, FramedWrite};
+use tokio_util::codec::{BytesCodec, FramedRead, FramedWrite};
 
-use crate::codec::datagram::Codec;
 use crate::codec::*;
 use crate::proto::Packet;
 
@@ -18,7 +17,6 @@ where
     Error: From<E>,
 {
     sink: S,
-    codec: Codec,
 }
 
 impl<S, E> EncoderSink<S, E>
@@ -27,10 +25,7 @@ where
     Error: From<E>,
 {
     pub fn new(sink: S) -> Self {
-        Self {
-            sink,
-            codec: Default::default(),
-        }
+        Self { sink }
     }
 }
 
@@ -56,7 +51,20 @@ where
 
     fn start_send(mut self: Pin<&mut Self>, item: PacketKind) -> Result<(), Self::Error> {
         let mut dst = BytesMut::new();
-        self.codec.encode(item, &mut dst)?;
+        match item {
+            PacketKind::Packet(pkt) => {
+                reserve_and_encode(&mut dst, pkt.encoded_len())?;
+                pkt.encode(&mut dst)?;
+            }
+            PacketKind::Forward(fwd) => {
+                reserve_and_encode(&mut dst, fwd.encoded_len())?;
+                fwd.encode(&mut dst);
+            }
+            PacketKind::ForwardCtd(buf) => {
+                dst.reserve(buf.len());
+                dst.extend(buf.into_iter())
+            }
+        }
         Pin::new(&mut self.sink)
             .start_send(dst.freeze())
             .map_err(Error::from)
@@ -69,6 +77,12 @@ where
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Pin::new(&mut self.sink).poll_close(cx).map_err(Error::from)
     }
+}
+
+#[inline]
+fn reserve_and_encode(dst: &mut BytesMut, len: usize) -> Result<(), Error> {
+    dst.reserve(prost::length_delimiter_len(len) + len);
+    Ok(write_size(len as u32, dst)?)
 }
 
 pub struct DecoderStream<S, E>
