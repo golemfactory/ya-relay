@@ -2,6 +2,8 @@
 pub enum EncodeError {
     #[error("Packet too long: {size} b")]
     PacketTooLong { size: usize },
+    #[error("Unsupported packet kind")]
+    PacketNotSupported,
     #[error("Empty packet")]
     NoData,
 }

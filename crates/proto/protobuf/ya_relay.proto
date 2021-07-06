@@ -20,10 +20,13 @@ package ya_relay_proto;
 
 
 /*
-    Connection initialization:
+    a. TCP session initialization
+        Server ᐊ─          connect           ── Client
+        Server ── [  Control::Challenge    ] ─ᐅ Client
 
-    Server ᐊ─          connect           ── Client
-    Server ── [  Control::Challenge    ] ─ᐅ Client
+    b. UDP session initialization
+        Server ᐊ─ [  Request::Session (E)  ] ── Client
+        Server ── [  Control::Challenge    ] ─ᐅ Client
 
     Server ᐊ─ [  Request::Session      ] ── Client
     Server ── [  Response::Session     ] ─ᐅ Client
@@ -31,6 +34,7 @@ package ya_relay_proto;
     Server ᐊ─ [  Request::Register     ] ── Client
     Server ── [  Response::Register    ] ─ᐅ Client
 
+    (E): empty message
  */
 
 message Packet {
