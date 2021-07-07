@@ -5,6 +5,8 @@ use tokio::net::UdpSocket;
 
 use bytes::BytesMut;
 use tokio_util::codec::Encoder;
+
+use ya_net_server::parse_udp_url;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::*;
 use ya_relay_proto::proto::*;
@@ -14,7 +16,7 @@ use ya_relay_proto::proto::*;
 #[structopt(global_setting = clap::AppSettings::ColoredHelp)]
 struct Options {
     #[structopt(short = "a", env = "NET_ADDRESS")]
-    address: String,
+    address: url::Url,
 }
 
 #[actix_rt::main]
@@ -22,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     env_logger::init();
 
     let args = Options::from_args();
-    let addr = args.address;
+    let addr = parse_udp_url(args.address);
 
     log::info!("Sending to server listening on: {}", addr);
 

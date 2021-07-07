@@ -1,12 +1,11 @@
 mod server;
 
+use crate::server::parse_udp_url;
 use server::Server;
 
 use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::*;
-use ya_relay_proto::proto::*;
+use ya_relay_proto::codec::MAX_PACKET_SIZE;
 
-use crate::server::parse_udp_url;
 use bytes::BytesMut;
 use structopt::{clap, StructOpt};
 use tokio::net::UdpSocket;
@@ -35,13 +34,15 @@ async fn main() -> anyhow::Result<()> {
     let (mut input, _output) = sock.split();
 
     let mut codec = Codec::default();
-    let mut buf = BytesMut::with_capacity(2048);
-    buf.resize(2048, 0);
+    let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
+    buf.resize(MAX_PACKET_SIZE as usize, 0);
 
     loop {
         match input.recv_from(&mut buf).await {
             Ok((size, addr)) => {
                 log::info!("Received {} bytes from {}", size, addr);
+
+                buf.truncate(size);
                 match codec.decode(&mut buf) {
                     Ok(Some(packet)) => {
                         server.read().await.dispatch(packet).await?;

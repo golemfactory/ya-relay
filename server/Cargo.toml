@@ -1,5 +1,5 @@
 [package]
-name = "server"
+name = "ya-net-server"
 version = "0.1.0"
 authors = ["nieznany.sprawiciel <nieznany.sprawiciel@gmail.com>"]
 edition = "2018"
