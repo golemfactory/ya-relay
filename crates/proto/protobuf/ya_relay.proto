@@ -37,12 +37,15 @@ package ya_relay_proto;
     (E): empty message
  */
 
+
+/* message Forward {} // (tag = 1) */
+
 message Packet {
+    bytes session_id = 2; // empty for `Request::Session`
     oneof kind {
-        /* Forward forward = 1; */
-        Request request = 2;
-        Response response = 3;
-        Control control = 4;
+        Request request = 3;
+        Response response = 4;
+        Control control = 5;
     }
 }
 
@@ -62,7 +65,6 @@ message Packet {
 
 /* Requests sent to the server by the client */
 message Request {
-    bytes session_id = 1; // empty for `Request::Session`
     oneof kind {
         Session session = 10;
         Register register = 20;
@@ -112,8 +114,7 @@ message Request {
 
 /* Responses sent by the server to the client */
 message Response {
-    bytes session_id = 1;
-    StatusCode code = 2;
+    StatusCode code = 1;
     oneof kind {
         Session session = 10;
         Register register = 20;
@@ -152,7 +153,6 @@ message Response {
 
 /* Control messages (w/o response) sent by server to the client */
 message Control {
-    bytes session_id = 1;
     oneof kind {
         Challenge challenge = 10;
         ReverseConnection reverse_conn = 20;
