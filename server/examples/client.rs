@@ -43,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
 fn packet() -> PacketKind {
     PacketKind::Packet(Packet {
         kind: Some(packet::Kind::Request(Request {
-            session_id: Vec::new(),
+            session_id: [0u8; SESSION_ID_SIZE].iter().cloned().collect(),
             kind: Some(request::Kind::Session(request::Session {
                 challenge_resp: vec![0u8; 2048 as usize],
                 node_id: vec![],

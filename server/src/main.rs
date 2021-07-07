@@ -1,4 +1,5 @@
 mod server;
+pub(crate) mod session;
 
 use crate::server::parse_udp_url;
 use server::Server;
@@ -45,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
                 buf.truncate(size);
                 match codec.decode(&mut buf) {
                     Ok(Some(packet)) => {
-                        server.read().await.dispatch(packet).await?;
+                        server.dispatch(packet).await?;
                     }
                     Ok(None) => log::warn!("Empty packet."),
                     Err(e) => log::error!("Error: {}", e),
