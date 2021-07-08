@@ -33,24 +33,27 @@ impl Server {
 
     pub async fn dispatch(&self, packet: PacketKind) -> anyhow::Result<()> {
         match packet {
-            PacketKind::Packet(Packet { kind }) => match kind {
-                Some(packet::Kind::Request(request)) => {
-                    log::info!("Request packet");
+            PacketKind::Packet(Packet { kind, session_id }) => {
+                let id = SessionId::try_from(session_id)?;
+                let node = match self.inner.read().await.sessions.get(&id).cloned() {
+                    None => return Ok(self.clone().init_session().await?),
+                    Some(node) => node,
+                };
 
-                    let id = SessionId::try_from(request.session_id.clone())?;
-                    match self.inner.read().await.sessions.get(&id).cloned() {
-                        None => self.clone().init_session().await?,
-                        Some(node) => node.send(RequestPacket(request)).await??,
+                match kind {
+                    Some(packet::Kind::Request(request)) => {
+                        log::info!("Request packet");
+                        node.send(RequestPacket(request)).await??
                     }
+                    Some(packet::Kind::Response(_)) => {
+                        log::info!("Response packet");
+                    }
+                    Some(packet::Kind::Control(_)) => {
+                        log::info!("Control packet");
+                    }
+                    _ => log::info!("Packet kind: None"),
                 }
-                Some(packet::Kind::Response(_)) => {
-                    log::info!("Response packet");
-                }
-                Some(packet::Kind::Control(_)) => {
-                    log::info!("Control packet");
-                }
-                _ => log::info!("Packet kind: None"),
-            },
+            }
             PacketKind::Forward(_) => {
                 log::info!("Forward packet")
             }
