@@ -1,7 +1,9 @@
 use actix::prelude::*;
 use anyhow::{bail, Result};
+use rand::Rng;
 use std::convert::TryFrom;
 
+use std::fmt;
 use ya_relay_proto::proto::{Control, Endpoint, Request, Response, SESSION_ID_SIZE};
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq)]
@@ -47,6 +49,23 @@ impl TryFrom<Vec<u8>> for SessionId {
             .for_each(|(i, s)| id[i] = *s);
 
         Ok(SessionId { id })
+    }
+}
+
+impl SessionId {
+    pub fn generate() -> SessionId {
+        SessionId {
+            id: rand::thread_rng().gen::<[u8; SESSION_ID_SIZE]>(),
+        }
+    }
+}
+
+impl fmt::Display for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for &byte in self.id.iter() {
+            write!(f, "{:X}", byte).expect("Unable to write");
+        }
+        Ok(())
     }
 }
 
