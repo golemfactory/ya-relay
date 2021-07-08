@@ -337,8 +337,8 @@ mod tests {
     async fn receive_chunked() {
         let packets = vec![
             PacketKind::Packet(Packet {
+                session_id: Vec::new(),
                 kind: Some(packet::Kind::Request(Request {
-                    session_id: Vec::new(),
                     kind: Some(request::Kind::Session(request::Session {
                         challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
                         node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
@@ -347,8 +347,8 @@ mod tests {
                 })),
             }),
             PacketKind::Packet(Packet {
+                session_id: SESSION_ID.to_vec(),
                 kind: Some(packet::Kind::Request(Request {
-                    session_id: SESSION_ID.to_vec(),
                     kind: Some(request::Kind::Register(request::Register {
                         endpoints: vec![Endpoint {
                             protocol: Protocol::Tcp as i32,
@@ -364,8 +364,8 @@ mod tests {
                 payload: (0..8192).map(|_| rand::random::<u8>()).collect(),
             }),
             PacketKind::Packet(Packet {
+                session_id: SESSION_ID.to_vec(),
                 kind: Some(packet::Kind::Request(Request {
-                    session_id: SESSION_ID.to_vec(),
                     kind: Some(request::Kind::RandomNode(request::RandomNode {
                         public_key: true,
                     })),
@@ -387,8 +387,8 @@ mod tests {
     #[tokio::test]
     async fn receive_chunked_and_skip() {
         let random_node = PacketKind::Packet(Packet {
+            session_id: SESSION_ID.to_vec(),
             kind: Some(packet::Kind::Request(Request {
-                session_id: SESSION_ID.to_vec(),
                 kind: Some(request::Kind::RandomNode(request::RandomNode {
                     public_key: true,
                 })),
@@ -398,8 +398,8 @@ mod tests {
         let packets = vec![
             random_node.clone(),
             PacketKind::Packet(Packet {
+                session_id: Vec::new(),
                 kind: Some(packet::Kind::Request(Request {
-                    session_id: Vec::new(),
                     kind: Some(request::Kind::Session(request::Session {
                         challenge_resp: vec![0u8; MAX_PARSE_MESSAGE_SIZE],
                         node_id: vec![],
