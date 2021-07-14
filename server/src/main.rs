@@ -30,15 +30,16 @@ async fn main() -> anyhow::Result<()> {
     log::info!("Server listening on: {}", addr);
 
     let sock = UdpSocket::bind(&addr).await?;
-    let server = Server::new()?;
 
-    let (mut input, _output) = sock.split();
+    let (mut input, output) = sock.split();
+    let server = Server::new(output)?;
 
     let mut codec = Codec::default();
     let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
-    buf.resize(MAX_PACKET_SIZE as usize, 0);
 
     loop {
+        buf.resize(MAX_PACKET_SIZE as usize, 0);
+
         match input.recv_from(&mut buf).await {
             Ok((size, addr)) => {
                 log::info!("Received {} bytes from {}", size, addr);
@@ -46,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
                 buf.truncate(size);
                 match codec.decode(&mut buf) {
                     Ok(Some(packet)) => {
-                        server.dispatch(packet).await?;
+                        server.dispatch(addr, packet).await?;
                     }
                     Ok(None) => log::warn!("Empty packet."),
                     Err(e) => log::error!("Error: {}", e),

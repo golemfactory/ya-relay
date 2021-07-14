@@ -58,6 +58,10 @@ impl SessionId {
             id: rand::thread_rng().gen::<[u8; SESSION_ID_SIZE]>(),
         }
     }
+
+    pub fn vec(&self) -> Vec<u8> {
+        self.id.iter().cloned().collect()
+    }
 }
 
 impl fmt::Display for SessionId {
