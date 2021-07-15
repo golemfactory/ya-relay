@@ -2,8 +2,9 @@ use actix::prelude::*;
 use anyhow::{bail, Result};
 use rand::Rng;
 use std::convert::TryFrom;
-
 use std::fmt;
+use std::net::SocketAddr;
+
 use ya_relay_proto::proto::{Control, Endpoint, Request, Response, SESSION_ID_SIZE};
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq)]
@@ -23,15 +24,70 @@ pub struct ControlPacket(pub Control);
 #[rtype(result = "Result<()>")]
 pub struct ResponsePacket(pub Response);
 
-pub struct NodeSession {
-    session: SessionId,
+pub struct NodeInfo {
+    pub session: SessionId,
     /// Change to typed NodeId
-    node_id: Vec<u8>,
+    pub node_id: Vec<u8>,
+    pub public_key: Vec<u8>,
+
+    pub address: SocketAddr,
+}
+
+pub struct NodeSession {
+    info: NodeInfo,
     endpoints: Vec<Endpoint>,
 }
 
 impl Actor for NodeSession {
     type Context = Context<Self>;
+}
+
+impl NodeSession {
+    pub fn new(info: NodeInfo) -> NodeSession {
+        NodeSession {
+            info,
+            endpoints: vec![],
+        }
+    }
+}
+
+impl Handler<RequestPacket> for NodeSession {
+    type Result = ActorResponse<Self, (), anyhow::Error>;
+
+    fn handle(&mut self, msg: RequestPacket, ctx: &mut Context<Self>) -> Self::Result {
+        log::info!(
+            "Processing RequestPacket for session: {}, Node: {:?}",
+            self.info.address,
+            self.info.node_id
+        );
+        ActorResponse::reply(Ok(()))
+    }
+}
+
+impl Handler<ControlPacket> for NodeSession {
+    type Result = ActorResponse<Self, (), anyhow::Error>;
+
+    fn handle(&mut self, msg: ControlPacket, ctx: &mut Context<Self>) -> Self::Result {
+        log::info!(
+            "Processing ControlPacket for session: {}, Node: {:?}",
+            self.info.address,
+            self.info.node_id
+        );
+        ActorResponse::reply(Ok(()))
+    }
+}
+
+impl Handler<ResponsePacket> for NodeSession {
+    type Result = ActorResponse<Self, (), anyhow::Error>;
+
+    fn handle(&mut self, msg: ResponsePacket, ctx: &mut Context<Self>) -> Self::Result {
+        log::info!(
+            "Processing ResponsePacket for session: {}, Node: {:?}",
+            self.info.address,
+            self.info.node_id
+        );
+        ActorResponse::reply(Ok(()))
+    }
 }
 
 impl TryFrom<Vec<u8>> for SessionId {
@@ -70,29 +126,5 @@ impl fmt::Display for SessionId {
             write!(f, "{:X}", byte).expect("Unable to write");
         }
         Ok(())
-    }
-}
-
-impl Handler<RequestPacket> for NodeSession {
-    type Result = ActorResponse<Self, (), anyhow::Error>;
-
-    fn handle(&mut self, msg: RequestPacket, ctx: &mut Context<Self>) -> Self::Result {
-        ActorResponse::reply(Ok(()))
-    }
-}
-
-impl Handler<ControlPacket> for NodeSession {
-    type Result = ActorResponse<Self, (), anyhow::Error>;
-
-    fn handle(&mut self, msg: ControlPacket, ctx: &mut Context<Self>) -> Self::Result {
-        ActorResponse::reply(Ok(()))
-    }
-}
-
-impl Handler<ResponsePacket> for NodeSession {
-    type Result = ActorResponse<Self, (), anyhow::Error>;
-
-    fn handle(&mut self, msg: ResponsePacket, ctx: &mut Context<Self>) -> Self::Result {
-        ActorResponse::reply(Ok(()))
     }
 }

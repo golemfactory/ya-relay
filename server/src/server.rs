@@ -8,7 +8,9 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, RwLock};
 use url::Url;
 
-use crate::session::{ControlPacket, NodeSession, RequestPacket, ResponsePacket, SessionId};
+use crate::session::{
+    ControlPacket, NodeInfo, NodeSession, RequestPacket, ResponsePacket, SessionId,
+};
 
 use bytes::BytesMut;
 use futures::FutureExt;
@@ -107,14 +109,20 @@ impl Server {
         }
 
         // TODO: Add timeout for session initialization.
-        tokio::spawn(
-            self.clone()
+        // TODO: We should spawn in different thread, but it's impossible since
+        //       `init_session` starts actor and tokio panics.
+        tokio::task::spawn_local(async move {
+            if let Err(e) = self
+                .clone()
                 .init_session(receiver, with, new_id.clone())
-                .map(move |result| match result {
-                    Ok(_) => (),
-                    Err(e) => log::warn!("Error initializing session [{}], {}", new_id, e),
-                }),
-        );
+                .await
+            {
+                log::warn!("Error initializing session [{}], {}", new_id, e);
+
+                // Establishing session failed.
+                self.cleanup_initialization(&new_id).await;
+            }
+        });
         Ok(())
     }
 
@@ -123,16 +131,16 @@ impl Server {
         id: SessionId,
         packet: Option<proto::packet::Kind>,
     ) -> anyhow::Result<()> {
-        let request = match packet {
-            Some(proto::packet::Kind::Request(request)) => request,
-            _ => bail!("Invalid packet type for session [{}].", id),
-        };
-
         let mut sender = {
             match self.inner.read().await.init_session.get(&id) {
                 Some(sender) => sender.clone(),
                 None => bail!("Session [{}] not initialized.", id),
             }
+        };
+
+        let request = match packet {
+            Some(proto::packet::Kind::Request(request)) => request,
+            _ => bail!("Invalid packet type for session [{}].", id),
         };
 
         Ok(sender.send(request).await?)
@@ -169,12 +177,42 @@ impl Server {
             Some(proto::Request { kind }) => match kind {
                 Some(proto::request::Kind::Session(session)) => {
                     log::info!("Got challenge from node: {}", with);
+
+                    // TODO: Validate challenge.
+
+                    let info = NodeInfo {
+                        session: session_id.clone(),
+                        node_id: session.node_id.clone(),
+                        public_key: session.public_key,
+                        address: with.clone(),
+                    };
+
+                    let actor = NodeSession::new(info).start();
+                    self.cleanup_initialization(&session_id).await;
+
+                    {
+                        self.inner
+                            .write()
+                            .await
+                            .sessions
+                            .insert(session_id.clone(), actor);
+                    }
+
+                    log::info!(
+                        "Session: {} established for node: {:?}",
+                        session_id,
+                        session.node_id
+                    );
                 }
-                _ => {}
+                _ => bail!("Invalid Request"),
             },
             _ => bail!("Invalid Request"),
         };
         Ok(())
+    }
+
+    async fn cleanup_initialization(&self, session_id: &SessionId) {
+        self.inner.write().await.init_session.remove(session_id);
     }
 
     async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<usize> {
