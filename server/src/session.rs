@@ -54,7 +54,7 @@ impl NodeSession {
 impl Handler<RequestPacket> for NodeSession {
     type Result = ActorResponse<Self, (), anyhow::Error>;
 
-    fn handle(&mut self, msg: RequestPacket, ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, _msg: RequestPacket, _ctx: &mut Context<Self>) -> Self::Result {
         log::info!(
             "Processing RequestPacket for session: {}, Node: {:?}",
             self.info.address,
@@ -67,7 +67,7 @@ impl Handler<RequestPacket> for NodeSession {
 impl Handler<ControlPacket> for NodeSession {
     type Result = ActorResponse<Self, (), anyhow::Error>;
 
-    fn handle(&mut self, msg: ControlPacket, ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, _msg: ControlPacket, _ctx: &mut Context<Self>) -> Self::Result {
         log::info!(
             "Processing ControlPacket for session: {}, Node: {:?}",
             self.info.address,
@@ -80,7 +80,7 @@ impl Handler<ControlPacket> for NodeSession {
 impl Handler<ResponsePacket> for NodeSession {
     type Result = ActorResponse<Self, (), anyhow::Error>;
 
-    fn handle(&mut self, msg: ResponsePacket, ctx: &mut Context<Self>) -> Self::Result {
+    fn handle(&mut self, _msg: ResponsePacket, _ctx: &mut Context<Self>) -> Self::Result {
         log::info!(
             "Processing ResponsePacket for session: {}, Node: {:?}",
             self.info.address,
@@ -95,7 +95,7 @@ impl TryFrom<Vec<u8>> for SessionId {
 
     fn try_from(session: Vec<u8>) -> Result<Self> {
         if session.len() != SESSION_ID_SIZE {
-            bail!("Invalid SessionID")
+            bail!("Invalid SessionID: {}", String::from_utf8(session)?)
         }
 
         let mut id: [u8; SESSION_ID_SIZE] = [0; SESSION_ID_SIZE];
@@ -122,9 +122,6 @@ impl SessionId {
 
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for &byte in self.id.iter() {
-            write!(f, "{:X}", byte).expect("Unable to write");
-        }
-        Ok(())
+        write!(f, "{}", hex::encode(self.id))
     }
 }

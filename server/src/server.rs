@@ -13,7 +13,6 @@ use crate::session::{
 };
 
 use bytes::BytesMut;
-use futures::FutureExt;
 use std::net::SocketAddr;
 use tokio::net::udp::SendHalf;
 use tokio_util::codec::Encoder;
@@ -21,8 +20,6 @@ use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::Challenge;
-use ya_relay_proto::proto::packet::Kind;
-use ya_relay_proto::proto::response::Session;
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
@@ -68,25 +65,25 @@ impl Server {
 
                 match kind {
                     Some(proto::packet::Kind::Request(request)) => {
-                        log::info!("Request packet");
+                        log::info!("Request packet from: {}", from);
                         node.send(RequestPacket(request)).await??
                     }
                     Some(proto::packet::Kind::Response(response)) => {
-                        log::info!("Response packet");
+                        log::info!("Response packet from: {}", from);
                         node.send(ResponsePacket(response)).await??
                     }
                     Some(proto::packet::Kind::Control(control)) => {
-                        log::info!("Control packet");
+                        log::info!("Control packet from: {}", from);
                         node.send(ControlPacket(control)).await??
                     }
-                    _ => log::info!("Packet kind: None"),
+                    _ => log::info!("Packet kind: None from: {}", from),
                 }
             }
             PacketKind::Forward(_) => {
-                log::info!("Forward packet")
+                log::info!("Forward packet from: {}", from)
             }
             PacketKind::ForwardCtd(_) => {
-                log::info!("ForwardCtd packet")
+                log::info!("ForwardCtd packet from: {}", from)
             }
         };
 

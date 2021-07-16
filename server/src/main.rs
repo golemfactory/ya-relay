@@ -47,7 +47,11 @@ async fn main() -> anyhow::Result<()> {
                 buf.truncate(size);
                 match codec.decode(&mut buf) {
                     Ok(Some(packet)) => {
-                        server.dispatch(addr, packet).await?;
+                        server
+                            .dispatch(addr, packet)
+                            .await
+                            .map_err(|e| log::error!("Packet dispatch failed. {}", e))
+                            .ok();
                     }
                     Ok(None) => log::warn!("Empty packet."),
                     Err(e) => log::error!("Error: {}", e),
