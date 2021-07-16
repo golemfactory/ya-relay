@@ -1,25 +1,24 @@
-use actix::prelude::*;
 use anyhow::bail;
-
+use bytes::BytesMut;
 use rand::Rng;
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::net::SocketAddr;
 use std::sync::Arc;
+use tokio::net::udp::SendHalf;
 use tokio::sync::{mpsc, RwLock};
+use tokio_util::codec::Encoder;
 use url::Url;
 
-use crate::session::{
-    ControlPacket, NodeInfo, NodeSession, RequestPacket, ResponsePacket, SessionId,
-};
+use crate::session::{NodeInfo, NodeSession, SessionId};
 
-use bytes::BytesMut;
-use std::net::SocketAddr;
-use tokio::net::udp::SendHalf;
-use tokio_util::codec::Encoder;
+use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::Challenge;
+use ya_relay_proto::proto::request::Kind;
+use ya_relay_proto::proto::response::Node;
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
@@ -30,7 +29,8 @@ pub struct Server {
 }
 
 pub struct ServerImpl {
-    sessions: HashMap<SessionId, Addr<NodeSession>>,
+    sessions: HashMap<SessionId, NodeId>,
+    nodes: HashMap<NodeId, NodeSession>,
     init_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
 
     /// TODO: Inefficient. We need to acquire lock to send data. But in this version
@@ -44,6 +44,7 @@ impl Server {
         Ok(Server {
             inner: Arc::new(RwLock::new(ServerImpl {
                 sessions: Default::default(),
+                nodes: Default::default(),
                 init_session: Default::default(),
                 socket,
             })),
@@ -64,17 +65,22 @@ impl Server {
                 };
 
                 match kind {
-                    Some(proto::packet::Kind::Request(request)) => {
-                        log::info!("Request packet from: {}", from);
-                        node.send(RequestPacket(request)).await??
+                    Some(proto::packet::Kind::Request(proto::Request { kind: Some(kind) })) => {
+                        match kind {
+                            Kind::Session(_) => {}
+                            Kind::Register(_) => {}
+                            Kind::Node(params) => self.node_request(id, from, params).await?,
+                            Kind::RandomNode(_) => {}
+                            Kind::Neighbours(_) => {}
+                            Kind::ReverseConn(_) => {}
+                            Kind::Ping(_) => {}
+                        }
                     }
-                    Some(proto::packet::Kind::Response(response)) => {
-                        log::info!("Response packet from: {}", from);
-                        node.send(ResponsePacket(response)).await??
+                    Some(proto::packet::Kind::Response(_)) => {
+                        log::warn!("Server shouldn't get Response packet. Sender: {}", from);
                     }
-                    Some(proto::packet::Kind::Control(control)) => {
+                    Some(proto::packet::Kind::Control(_control)) => {
                         log::info!("Control packet from: {}", from);
-                        node.send(ControlPacket(control)).await??
                     }
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
@@ -87,6 +93,44 @@ impl Server {
             }
         };
 
+        Ok(())
+    }
+
+    async fn node_request(
+        &self,
+        id: SessionId,
+        from: SocketAddr,
+        params: proto::request::Node,
+    ) -> anyhow::Result<()> {
+        let node_id = NodeId::from(&params.node_id[..]);
+        let (node_info, endpoints) = {
+            match self.inner.read().await.nodes.get(&node_id) {
+                None => bail!("Node [{}] not registered.", node_id),
+                Some(session) => (session.info.clone(), session.endpoints.clone()),
+            }
+        };
+
+        let public_key = match params.public_key {
+            true => node_info.public_key,
+            false => vec![],
+        };
+
+        let response = PacketKind::Packet(proto::Packet {
+            session_id: id.vec(),
+            kind: Some(proto::packet::Kind::Response(proto::Response {
+                code: 0,
+                kind: Some(proto::response::Kind::Node(Node {
+                    node_id: node_id.into_array().to_vec(),
+                    public_key,
+                    endpoints,
+                    seen_ts: 0,
+                    slot: 0,
+                    random: false,
+                })),
+            })),
+        });
+
+        self.send_to(response, &from).await?;
         Ok(())
     }
 
@@ -177,29 +221,25 @@ impl Server {
 
                     // TODO: Validate challenge.
 
+                    let node_id = NodeId::from(&session.node_id[..]);
                     let info = NodeInfo {
                         session: session_id.clone(),
-                        node_id: session.node_id.clone(),
+                        node_id: node_id.clone(),
                         public_key: session.public_key,
                         address: with.clone(),
                     };
 
-                    let actor = NodeSession::new(info).start();
+                    let node = NodeSession::new(info);
                     self.cleanup_initialization(&session_id).await;
 
                     {
-                        self.inner
-                            .write()
-                            .await
-                            .sessions
-                            .insert(session_id.clone(), actor);
+                        let mut server = self.inner.write().await;
+
+                        server.sessions.insert(session_id.clone(), node_id.clone());
+                        server.nodes.insert(node_id.clone(), node);
                     }
 
-                    log::info!(
-                        "Session: {} established for node: {:?}",
-                        session_id,
-                        session.node_id
-                    );
+                    log::info!("Session: {} established for node: {}", session_id, node_id);
                 }
                 _ => bail!("Invalid Request"),
             },

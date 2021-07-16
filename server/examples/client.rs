@@ -1,16 +1,17 @@
 use anyhow::{anyhow, bail};
+use bytes::BytesMut;
 use env_logger;
+use std::convert::TryFrom;
 use std::net::SocketAddr;
 use structopt::{clap, StructOpt};
 use tokio::net::UdpSocket;
-
-use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
-use std::convert::TryFrom;
+use ya_client_model::NodeId;
 use ya_net_server::{parse_udp_url, SessionId};
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::*;
+use ya_relay_proto::proto::packet::Kind;
 use ya_relay_proto::proto::*;
 
 #[derive(StructOpt)]
@@ -34,14 +35,14 @@ pub enum Commands {
 #[structopt(rename_all = "kebab-case")]
 pub struct Init {
     #[structopt(short = "n", long, env)]
-    pub node_id: String,
+    pub node_id: NodeId,
 }
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt(rename_all = "kebab-case")]
 pub struct FindNode {
     #[structopt(short = "n", long, env)]
-    node_id: String,
+    node_id: NodeId,
     #[structopt(short = "s", long, env)]
     session_id: String,
 }
@@ -59,7 +60,7 @@ async fn main() -> anyhow::Result<()> {
     let mut socket = UdpSocket::bind(local_addr).await?;
 
     match args.commands {
-        Commands::Init(Init { node_id }) => init_session(&mut socket, &addr, &node_id).await?,
+        Commands::Init(Init { node_id }) => init_session(&mut socket, &addr, node_id).await?,
         Commands::FindNode(opts) => find_node(&mut socket, &addr, opts).await?,
     };
 
@@ -78,10 +79,28 @@ async fn find_node(socket: &mut UdpSocket, addr: &str, opts: FindNode) -> anyhow
         .await
         .map_err(|e| anyhow!("Didn't receive FindNode response. Error: {}", e))?;
 
+    match packet {
+        PacketKind::Packet(Packet {
+            kind: Some(kind), ..
+        }) => match kind {
+            Kind::Response(Response {
+                kind: Some(kind),
+                code,
+            }) => match kind {
+                response::Kind::Node(node_info) => {
+                    log::info!("Got info for node: [{}]", opts.node_id)
+                }
+                _ => bail!("Invalid Response."),
+            },
+            _ => bail!("Invalid Response."),
+        },
+        _ => bail!("Invalid Response."),
+    }
+
     Ok(())
 }
 
-async fn init_session(socket: &mut UdpSocket, addr: &str, node_id: &str) -> anyhow::Result<()> {
+async fn init_session(socket: &mut UdpSocket, addr: &str, node_id: NodeId) -> anyhow::Result<()> {
     let sent = send_packet(socket, addr, init_packet()).await?;
 
     log::info!("Init session packet sent ({} bytes).", sent);
@@ -108,12 +127,7 @@ async fn init_session(socket: &mut UdpSocket, addr: &str, node_id: &str) -> anyh
         session
     );
 
-    let sent = send_packet(
-        socket,
-        addr,
-        session_packet(session.vec(), node_id.to_string()),
-    )
-    .await?;
+    let sent = send_packet(socket, addr, session_packet(session.vec(), node_id)).await?;
 
     log::info!("Challenge response sent ({} bytes).", sent);
 
@@ -159,25 +173,25 @@ fn init_packet() -> PacketKind {
     })
 }
 
-fn session_packet(session_id: Vec<u8>, node_id: String) -> PacketKind {
+fn session_packet(session_id: Vec<u8>, node_id: NodeId) -> PacketKind {
     PacketKind::Packet(Packet {
         session_id,
         kind: Some(packet::Kind::Request(Request {
             kind: Some(request::Kind::Session(request::Session {
                 challenge_resp: vec![0u8; 2048 as usize],
-                node_id: node_id.into_bytes(),
+                node_id: node_id.into_array().to_vec(),
                 public_key: vec![],
             })),
         })),
     })
 }
 
-fn node_packet(session_id: Vec<u8>, node_id: String) -> PacketKind {
+fn node_packet(session_id: Vec<u8>, node_id: NodeId) -> PacketKind {
     PacketKind::Packet(Packet {
         session_id,
         kind: Some(packet::Kind::Request(Request {
             kind: Some(request::Kind::Node(request::Node {
-                node_id: node_id.into_bytes(),
+                node_id: node_id.into_array().to_vec(),
                 public_key: true,
             })),
         })),

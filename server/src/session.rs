@@ -5,41 +5,26 @@ use std::convert::TryFrom;
 use std::fmt;
 use std::net::SocketAddr;
 
-use ya_relay_proto::proto::{Control, Endpoint, Request, Response, SESSION_ID_SIZE};
+use ya_client_model::NodeId;
+use ya_relay_proto::proto::{request, Control, Endpoint, Request, Response, SESSION_ID_SIZE};
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq)]
 pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],
 }
 
-#[derive(Message, Clone)]
-#[rtype(result = "Result<()>")]
-pub struct RequestPacket(pub Request);
-
-#[derive(Message, Clone)]
-#[rtype(result = "Result<()>")]
-pub struct ControlPacket(pub Control);
-
-#[derive(Message, Clone)]
-#[rtype(result = "Result<()>")]
-pub struct ResponsePacket(pub Response);
-
+#[derive(Clone)]
 pub struct NodeInfo {
     pub session: SessionId,
-    /// Change to typed NodeId
-    pub node_id: Vec<u8>,
+    pub node_id: NodeId,
     pub public_key: Vec<u8>,
 
     pub address: SocketAddr,
 }
 
 pub struct NodeSession {
-    info: NodeInfo,
-    endpoints: Vec<Endpoint>,
-}
-
-impl Actor for NodeSession {
-    type Context = Context<Self>;
+    pub info: NodeInfo,
+    pub endpoints: Vec<Endpoint>,
 }
 
 impl NodeSession {
@@ -48,45 +33,6 @@ impl NodeSession {
             info,
             endpoints: vec![],
         }
-    }
-}
-
-impl Handler<RequestPacket> for NodeSession {
-    type Result = ActorResponse<Self, (), anyhow::Error>;
-
-    fn handle(&mut self, _msg: RequestPacket, _ctx: &mut Context<Self>) -> Self::Result {
-        log::info!(
-            "Processing RequestPacket for session: {}, Node: {:?}",
-            self.info.address,
-            self.info.node_id
-        );
-        ActorResponse::reply(Ok(()))
-    }
-}
-
-impl Handler<ControlPacket> for NodeSession {
-    type Result = ActorResponse<Self, (), anyhow::Error>;
-
-    fn handle(&mut self, _msg: ControlPacket, _ctx: &mut Context<Self>) -> Self::Result {
-        log::info!(
-            "Processing ControlPacket for session: {}, Node: {:?}",
-            self.info.address,
-            self.info.node_id
-        );
-        ActorResponse::reply(Ok(()))
-    }
-}
-
-impl Handler<ResponsePacket> for NodeSession {
-    type Result = ActorResponse<Self, (), anyhow::Error>;
-
-    fn handle(&mut self, _msg: ResponsePacket, _ctx: &mut Context<Self>) -> Self::Result {
-        log::info!(
-            "Processing ResponsePacket for session: {}, Node: {:?}",
-            self.info.address,
-            self.info.node_id
-        );
-        ActorResponse::reply(Ok(()))
     }
 }
 
