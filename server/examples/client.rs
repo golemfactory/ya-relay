@@ -29,6 +29,14 @@ struct Options {
 pub enum Commands {
     Init(Init),
     FindNode(FindNode),
+    Ping(Ping),
+}
+
+#[derive(StructOpt, Clone, Debug)]
+#[structopt(rename_all = "kebab-case")]
+pub struct Ping {
+    #[structopt(short = "s", long, env)]
+    session_id: String,
 }
 
 #[derive(StructOpt, Clone, Debug)]
@@ -62,6 +70,40 @@ async fn main() -> anyhow::Result<()> {
     match args.commands {
         Commands::Init(Init { node_id }) => init_session(&mut socket, &addr, node_id).await?,
         Commands::FindNode(opts) => find_node(&mut socket, &addr, opts).await?,
+        Commands::Ping(opts) => ping(&mut socket, &addr, opts).await?,
+    };
+
+    Ok(())
+}
+
+async fn ping(socket: &mut UdpSocket, addr: &str, opts: Ping) -> anyhow::Result<()> {
+    let session_id = hex::decode(opts.session_id)
+        .map_err(|e| anyhow!("Failed to convert SessionId to hex. {}", e))?;
+
+    send_packet(socket, addr, ping_packet(session_id)).await?;
+
+    log::info!("Ping sent to server");
+
+    let packet = receive_packet(socket)
+        .await
+        .map_err(|e| anyhow!("Didn't receive Pong response. Error: {}", e))?;
+
+    match packet {
+        PacketKind::Packet(Packet {
+            kind: Some(kind), ..
+        }) => match kind {
+            Kind::Response(Response {
+                kind: Some(kind),
+                code,
+            }) => match kind {
+                response::Kind::Pong(_) => {
+                    log::info!("Got ping from server.")
+                }
+                _ => bail!("Invalid Response."),
+            },
+            _ => bail!("Invalid Response."),
+        },
+        _ => bail!("Invalid Response."),
     };
 
     Ok(())
@@ -169,6 +211,15 @@ fn init_packet() -> PacketKind {
                 node_id: vec![],
                 public_key: vec![],
             })),
+        })),
+    })
+}
+
+fn ping_packet(session_id: Vec<u8>) -> PacketKind {
+    PacketKind::Packet(Packet {
+        session_id,
+        kind: Some(packet::Kind::Request(Request {
+            kind: Some(request::Kind::Ping(request::Ping {})),
         })),
     })
 }

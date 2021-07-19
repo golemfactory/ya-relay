@@ -1,3 +1,5 @@
+pub(crate) mod error;
+pub(crate) mod packets;
 mod server;
 pub(crate) mod session;
 
@@ -27,9 +29,13 @@ async fn main() -> anyhow::Result<()> {
     let args = Options::from_args();
     let addr = parse_udp_url(args.address);
 
-    log::info!("Server listening on: {}", addr);
+    Ok(main_loop(addr).await?)
+}
 
+pub async fn main_loop(addr: String) -> anyhow::Result<()> {
     let sock = UdpSocket::bind(&addr).await?;
+
+    log::info!("Server listening on: {}", addr);
 
     let (mut input, output) = sock.split();
     let server = Server::new(output)?;

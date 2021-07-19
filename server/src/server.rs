@@ -1,5 +1,6 @@
 use anyhow::bail;
 use bytes::BytesMut;
+use chrono::{Duration, Utc};
 use rand::Rng;
 use std::collections::HashMap;
 use std::convert::TryFrom;
@@ -10,6 +11,8 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::codec::Encoder;
 use url::Url;
 
+use crate::error::ServerError;
+use crate::packets::PacketsCreator;
 use crate::session::{NodeInfo, NodeSession, SessionId};
 
 use ya_client_model::NodeId;
@@ -19,6 +22,7 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::Challenge;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::response::Node;
+use ya_relay_proto::proto::Packet;
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
@@ -73,7 +77,7 @@ impl Server {
                             Kind::RandomNode(_) => {}
                             Kind::Neighbours(_) => {}
                             Kind::ReverseConn(_) => {}
-                            Kind::Ping(_) => {}
+                            Kind::Ping(_) => self.ping_request(id, from).await?,
                         }
                     }
                     Some(proto::packet::Kind::Response(_)) => {
@@ -96,6 +100,34 @@ impl Server {
         Ok(())
     }
 
+    async fn ping_request(&self, id: SessionId, from: SocketAddr) -> anyhow::Result<()> {
+        {
+            let mut server = self.inner.write().await;
+            let node_id = match server.sessions.get(&id) {
+                None => Err(ServerError::SessionNotFound(id))?,
+                Some(node_id) => node_id.clone(),
+            };
+
+            let mut node_info =
+                server
+                    .nodes
+                    .get_mut(&node_id)
+                    .ok_or(ServerError::Internal(format!(
+                        "NodeId for session [{}] not found.",
+                        id
+                    )))?;
+
+            node_info.last_seen = Utc::now();
+        }
+
+        let response = PacketKind::pong_response(id);
+        self.send_to(response, &from).await?;
+
+        log::info!("Responding to ping from: {}", from);
+
+        Ok(())
+    }
+
     async fn node_request(
         &self,
         id: SessionId,
@@ -103,34 +135,16 @@ impl Server {
         params: proto::request::Node,
     ) -> anyhow::Result<()> {
         let node_id = NodeId::from(&params.node_id[..]);
-        let (node_info, endpoints) = {
+        let node_info = {
             match self.inner.read().await.nodes.get(&node_id) {
                 None => bail!("Node [{}] not registered.", node_id),
-                Some(session) => (session.info.clone(), session.endpoints.clone()),
+                Some(session) => session.clone(),
             }
         };
 
-        let public_key = match params.public_key {
-            true => node_info.public_key,
-            false => vec![],
-        };
-
-        let response = PacketKind::Packet(proto::Packet {
-            session_id: id.vec(),
-            kind: Some(proto::packet::Kind::Response(proto::Response {
-                code: 0,
-                kind: Some(proto::response::Kind::Node(Node {
-                    node_id: node_id.into_array().to_vec(),
-                    public_key,
-                    endpoints,
-                    seen_ts: 0,
-                    slot: 0,
-                    random: false,
-                })),
-            })),
-        });
-
+        let response = PacketKind::node_response(id, node_info, params.public_key);
         self.send_to(response, &from).await?;
+
         Ok(())
     }
 
@@ -223,13 +237,17 @@ impl Server {
 
                     let node_id = NodeId::from(&session.node_id[..]);
                     let info = NodeInfo {
-                        session: session_id.clone(),
                         node_id: node_id.clone(),
                         public_key: session.public_key,
-                        address: with.clone(),
+                        endpoints: vec![],
                     };
 
-                    let node = NodeSession::new(info);
+                    let node = NodeSession {
+                        info,
+                        session: session_id.clone(),
+                        address: with.clone(),
+                        last_seen: Utc::now(),
+                    };
                     self.cleanup_initialization(&session_id).await;
 
                     {

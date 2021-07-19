@@ -1,5 +1,6 @@
 use actix::prelude::*;
 use anyhow::{bail, Result};
+use chrono::{DateTime, Utc};
 use rand::Rng;
 use std::convert::TryFrom;
 use std::fmt;
@@ -15,25 +16,19 @@ pub struct SessionId {
 
 #[derive(Clone)]
 pub struct NodeInfo {
-    pub session: SessionId,
     pub node_id: NodeId,
     pub public_key: Vec<u8>,
 
-    pub address: SocketAddr,
-}
-
-pub struct NodeSession {
-    pub info: NodeInfo,
     pub endpoints: Vec<Endpoint>,
 }
 
-impl NodeSession {
-    pub fn new(info: NodeInfo) -> NodeSession {
-        NodeSession {
-            info,
-            endpoints: vec![],
-        }
-    }
+#[derive(Clone)]
+pub struct NodeSession {
+    pub info: NodeInfo,
+
+    pub session: SessionId,
+    pub address: SocketAddr,
+    pub last_seen: DateTime<Utc>,
 }
 
 impl TryFrom<Vec<u8>> for SessionId {
@@ -68,6 +63,12 @@ impl SessionId {
 
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", hex::encode(self.id))
+    }
+}
+
+impl fmt::Debug for SessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", hex::encode(self.id))
     }
 }
