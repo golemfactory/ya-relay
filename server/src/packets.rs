@@ -40,6 +40,16 @@ pub trait PacketsCreator {
             })),
         })
     }
+
+    fn session_response(session_id: SessionId) -> PacketKind {
+        PacketKind::Packet(proto::Packet {
+            session_id: session_id.vec(),
+            kind: Some(proto::packet::Kind::Response(proto::Response {
+                code: proto::StatusCode::Ok as i32,
+                kind: Some(proto::response::Kind::Session(proto::response::Session {})),
+            })),
+        })
+    }
 }
 
 impl PacketsCreator for PacketKind {}

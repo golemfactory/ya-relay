@@ -254,6 +254,9 @@ impl Server {
                         server.nodes.insert(node_id.clone(), node);
                     }
 
+                    self.send_to(PacketKind::session_response(session_id.clone()), &with)
+                        .await?;
+
                     log::info!("Session: {} established for node: {}", session_id, node_id);
                 }
                 _ => bail!("Invalid Request"),
@@ -320,7 +323,7 @@ impl Server {
 
             match input.recv_from(&mut buf).await {
                 Ok((size, addr)) => {
-                    log::info!("Received {} bytes from {}", size, addr);
+                    log::debug!("Received {} bytes from {}", size, addr);
 
                     buf.truncate(size);
                     match codec.decode(&mut buf) {

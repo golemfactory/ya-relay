@@ -90,7 +90,30 @@ impl Client {
 
         log::info!("Challenge response sent ({} bytes).", sent);
 
-        Ok(session)
+        let packet = self
+            .receive_packet()
+            .await
+            .map_err(|e| anyhow!("Didn't receive session response. Error: {}", e))?;
+
+        match packet {
+            PacketKind::Packet(proto::Packet { session_id, kind }) => match kind {
+                Some(proto::packet::Kind::Response(proto::Response { kind, code })) => match kind {
+                    Some(proto::response::Kind::Session(proto::response::Session {})) => {
+                        match proto::StatusCode::from_i32(code) {
+                            Some(proto::StatusCode::Ok) => Ok(session),
+                            _ => Err(anyhow!(
+                                "Session [{}] response code: {}",
+                                SessionId::try_from(session_id)?,
+                                code as i32
+                            )),
+                        }
+                    }
+                    _ => bail!("Expected Session response packet."),
+                },
+                _ => bail!("Invalid packet kind."),
+            },
+            _ => bail!("Expected Session response."),
+        }
     }
 
     pub async fn ping(&self, session_id: SessionId) -> anyhow::Result<()> {
