@@ -1,4 +1,3 @@
-use actix::prelude::*;
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use rand::Rng;
@@ -7,7 +6,7 @@ use std::fmt;
 use std::net::SocketAddr;
 
 use ya_client_model::NodeId;
-use ya_relay_proto::proto::{request, Control, Endpoint, Request, Response, SESSION_ID_SIZE};
+use ya_relay_proto::proto::{Endpoint, SESSION_ID_SIZE};
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq)]
 pub struct SessionId {
@@ -46,6 +45,14 @@ impl TryFrom<Vec<u8>> for SessionId {
             .for_each(|(i, s)| id[i] = *s);
 
         Ok(SessionId { id })
+    }
+}
+
+impl TryFrom<&str> for SessionId {
+    type Error = anyhow::Error;
+
+    fn try_from(session: &str) -> Result<Self> {
+        Ok(SessionId::try_from(hex::decode(session)?)?)
     }
 }
 

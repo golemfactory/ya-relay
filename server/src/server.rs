@@ -1,60 +1,51 @@
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bytes::BytesMut;
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use rand::Rng;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::udp::SendHalf;
+use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::sync::{mpsc, RwLock};
-use tokio_util::codec::Encoder;
+use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
 use crate::error::ServerError;
 use crate::packets::PacketsCreator;
 use crate::session::{NodeInfo, NodeSession, SessionId};
 
+use tokio::net::UdpSocket;
 use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::PacketKind;
+use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::Challenge;
 use ya_relay_proto::proto::request::Kind;
-use ya_relay_proto::proto::response::Node;
-use ya_relay_proto::proto::Packet;
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 
 #[derive(Clone)]
 pub struct Server {
-    inner: Arc<RwLock<ServerImpl>>,
+    pub inner: Arc<RwLock<ServerImpl>>,
 }
 
 pub struct ServerImpl {
-    sessions: HashMap<SessionId, NodeId>,
-    nodes: HashMap<NodeId, NodeSession>,
-    init_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
+    pub sessions: HashMap<SessionId, NodeId>,
+    pub nodes: HashMap<NodeId, NodeSession>,
+    pub init_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
 
     /// TODO: Inefficient. We need to acquire lock to send data. But in this version
     ///       of tokio, sockets need `mut self` and it is not possible to upgrade,
     ///       without doing this in whole yagna.
     socket: SendHalf,
+    recv_socket: Option<RecvHalf>,
+
+    pub url: Url,
 }
 
 impl Server {
-    pub fn new(socket: SendHalf) -> anyhow::Result<Server> {
-        Ok(Server {
-            inner: Arc::new(RwLock::new(ServerImpl {
-                sessions: Default::default(),
-                nodes: Default::default(),
-                init_session: Default::default(),
-                socket,
-            })),
-        })
-    }
-
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> anyhow::Result<()> {
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
@@ -81,7 +72,11 @@ impl Server {
                         }
                     }
                     Some(proto::packet::Kind::Response(_)) => {
-                        log::warn!("Server shouldn't get Response packet. Sender: {}", from);
+                        log::warn!(
+                            "Server shouldn't get Response packet. Sender: {}, node {}",
+                            from,
+                            node,
+                        );
                     }
                     Some(proto::packet::Kind::Control(_control)) => {
                         log::info!("Control packet from: {}", from);
@@ -144,6 +139,8 @@ impl Server {
 
         let response = PacketKind::node_response(id, node_info, params.public_key);
         self.send_to(response, &from).await?;
+
+        log::info!("Node [{}] info sent to: {}", node_id, from);
 
         Ok(())
     }
@@ -283,6 +280,67 @@ impl Server {
             .socket
             .send_to(&buf, &target)
             .await?)
+    }
+
+    pub async fn bind(addr: url::Url) -> anyhow::Result<Server> {
+        let sock = UdpSocket::bind(&parse_udp_url(addr.clone())).await?;
+
+        log::info!("Server listening on: {}", addr);
+
+        let (input, output) = sock.split();
+
+        Ok(Server {
+            inner: Arc::new(RwLock::new(ServerImpl {
+                sessions: Default::default(),
+                nodes: Default::default(),
+                init_session: Default::default(),
+                socket: output,
+                recv_socket: Some(input),
+                url: addr,
+            })),
+        })
+    }
+
+    pub async fn run(self) -> anyhow::Result<()> {
+        let mut input = {
+            self.inner
+                .write()
+                .await
+                .recv_socket
+                .take()
+                .ok_or(anyhow!("Server already running."))?
+        };
+
+        let server = self.clone();
+        let mut codec = Codec::default();
+        let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
+
+        loop {
+            buf.resize(MAX_PACKET_SIZE as usize, 0);
+
+            match input.recv_from(&mut buf).await {
+                Ok((size, addr)) => {
+                    log::info!("Received {} bytes from {}", size, addr);
+
+                    buf.truncate(size);
+                    match codec.decode(&mut buf) {
+                        Ok(Some(packet)) => {
+                            server
+                                .dispatch(addr, packet)
+                                .await
+                                .map_err(|e| log::error!("Packet dispatch failed. {}", e))
+                                .ok();
+                        }
+                        Ok(None) => log::warn!("Empty packet."),
+                        Err(e) => log::error!("Error: {}", e),
+                    }
+                }
+                Err(e) => {
+                    log::error!("Error receiving data from socket. {}", e);
+                    return Ok(());
+                }
+            }
+        }
     }
 }
 
