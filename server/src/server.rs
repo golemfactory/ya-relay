@@ -50,12 +50,12 @@ impl Server {
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 if session_id.is_empty() {
-                    return Ok(self.clone().new_session(from).await?);
+                    return self.clone().new_session(from).await;
                 }
 
                 let id = SessionId::try_from(session_id)?;
                 let node = match self.inner.read().await.sessions.get(&id).cloned() {
-                    None => return Ok(self.clone().establish_session(id, kind).await?),
+                    None => return self.clone().establish_session(id, kind).await,
                     Some(node) => node,
                 };
 
@@ -99,18 +99,13 @@ impl Server {
         {
             let mut server = self.inner.write().await;
             let node_id = match server.sessions.get(&id) {
-                None => Err(ServerError::SessionNotFound(id))?,
-                Some(node_id) => node_id.clone(),
+                None => return Err(ServerError::SessionNotFound(id).into()),
+                Some(node_id) => *node_id,
             };
 
-            let mut node_info =
-                server
-                    .nodes
-                    .get_mut(&node_id)
-                    .ok_or(ServerError::Internal(format!(
-                        "NodeId for session [{}] not found.",
-                        id
-                    )))?;
+            let mut node_info = server.nodes.get_mut(&node_id).ok_or_else(|| {
+                ServerError::Internal(format!("NodeId for session [{}] not found.", id))
+            })?;
 
             node_info.last_seen = Utc::now();
         }
@@ -164,11 +159,7 @@ impl Server {
         // TODO: We should spawn in different thread, but it's impossible since
         //       `init_session` starts actor and tokio panics.
         tokio::task::spawn_local(async move {
-            if let Err(e) = self
-                .clone()
-                .init_session(receiver, with, new_id.clone())
-                .await
-            {
+            if let Err(e) = self.clone().init_session(receiver, with, new_id).await {
                 log::warn!("Error initializing session [{}], {}", new_id, e);
 
                 // Establishing session failed.
@@ -212,11 +203,7 @@ impl Server {
                     caps: 0,
                     kind: 0,
                     difficulty: 0,
-                    challenge: rand::thread_rng()
-                        .gen::<[u8; CHALLENGE_SIZE]>()
-                        .iter()
-                        .cloned()
-                        .collect(),
+                    challenge: rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>().to_vec(),
                 })),
             })),
         });
@@ -226,41 +213,40 @@ impl Server {
         log::info!("Challenge sent to: {}", with);
 
         match rc.recv().await {
-            Some(proto::Request { kind }) => match kind {
-                Some(proto::request::Kind::Session(session)) => {
-                    log::info!("Got challenge from node: {}", with);
+            Some(proto::Request {
+                kind: Some(proto::request::Kind::Session(session)),
+            }) => {
+                log::info!("Got challenge from node: {}", with);
 
-                    // TODO: Validate challenge.
+                // TODO: Validate challenge.
 
-                    let node_id = NodeId::from(&session.node_id[..]);
-                    let info = NodeInfo {
-                        node_id: node_id.clone(),
-                        public_key: session.public_key,
-                        endpoints: vec![],
-                    };
+                let node_id = NodeId::from(&session.node_id[..]);
+                let info = NodeInfo {
+                    node_id,
+                    public_key: session.public_key,
+                    endpoints: vec![],
+                };
 
-                    let node = NodeSession {
-                        info,
-                        session: session_id.clone(),
-                        address: with.clone(),
-                        last_seen: Utc::now(),
-                    };
-                    self.cleanup_initialization(&session_id).await;
+                let node = NodeSession {
+                    info,
+                    session: session_id,
+                    address: with,
+                    last_seen: Utc::now(),
+                };
+                self.cleanup_initialization(&session_id).await;
 
-                    {
-                        let mut server = self.inner.write().await;
+                {
+                    let mut server = self.inner.write().await;
 
-                        server.sessions.insert(session_id.clone(), node_id.clone());
-                        server.nodes.insert(node_id.clone(), node);
-                    }
-
-                    self.send_to(PacketKind::session_response(session_id.clone()), &with)
-                        .await?;
-
-                    log::info!("Session: {} established for node: {}", session_id, node_id);
+                    server.sessions.insert(session_id, node_id);
+                    server.nodes.insert(node_id, node);
                 }
-                _ => bail!("Invalid Request"),
-            },
+
+                self.send_to(PacketKind::session_response(session_id), &with)
+                    .await?;
+
+                log::info!("Session: {} established for node: {}", session_id, node_id);
+            }
             _ => bail!("Invalid Request"),
         };
         Ok(())
@@ -311,7 +297,7 @@ impl Server {
                 .await
                 .recv_socket
                 .take()
-                .ok_or(anyhow!("Server already running."))?
+                .ok_or_else(|| anyhow!("Server already running."))?
         };
 
         let server = self.clone();

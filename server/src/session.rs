@@ -52,7 +52,7 @@ impl TryFrom<&str> for SessionId {
     type Error = anyhow::Error;
 
     fn try_from(session: &str) -> Result<Self> {
-        Ok(SessionId::try_from(hex::decode(session)?)?)
+        SessionId::try_from(hex::decode(session)?)
     }
 }
 
@@ -64,7 +64,7 @@ impl SessionId {
     }
 
     pub fn vec(&self) -> Vec<u8> {
-        self.id.iter().cloned().collect()
+        self.id.to_vec()
     }
 }
 

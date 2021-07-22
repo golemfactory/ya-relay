@@ -84,9 +84,7 @@ impl Client {
             session
         );
 
-        let sent = self
-            .send_packet(session_packet(session.clone(), node_id))
-            .await?;
+        let sent = self.send_packet(session_packet(session, node_id)).await?;
 
         log::info!("Challenge response sent ({} bytes).", sent);
 
@@ -96,23 +94,22 @@ impl Client {
             .map_err(|e| anyhow!("Didn't receive session response. Error: {}", e))?;
 
         match packet {
-            PacketKind::Packet(proto::Packet { session_id, kind }) => match kind {
-                Some(proto::packet::Kind::Response(proto::Response { kind, code })) => match kind {
-                    Some(proto::response::Kind::Session(proto::response::Session {})) => {
-                        match proto::StatusCode::from_i32(code) {
-                            Some(proto::StatusCode::Ok) => Ok(session),
-                            _ => Err(anyhow!(
-                                "Session [{}] response code: {}",
-                                SessionId::try_from(session_id)?,
-                                code as i32
-                            )),
-                        }
-                    }
-                    _ => bail!("Expected Session response packet."),
-                },
-                _ => bail!("Invalid packet kind."),
+            PacketKind::Packet(proto::Packet {
+                session_id,
+                kind:
+                    Some(proto::packet::Kind::Response(proto::Response {
+                        code,
+                        kind: Some(proto::response::Kind::Session(proto::response::Session {})),
+                    })),
+            }) => match proto::StatusCode::from_i32(code) {
+                Some(proto::StatusCode::Ok) => Ok(session),
+                _ => Err(anyhow!(
+                    "Session [{}] response code: {}",
+                    SessionId::try_from(session_id)?,
+                    code as i32
+                )),
             },
-            _ => bail!("Expected Session response."),
+            _ => bail!("Invalid packet kind."),
         }
     }
 
@@ -128,18 +125,15 @@ impl Client {
 
         match packet {
             PacketKind::Packet(proto::Packet {
-                kind: Some(kind), ..
-            }) => match kind {
-                Kind::Response(proto::Response {
-                    kind: Some(kind), ..
-                }) => match kind {
-                    proto::response::Kind::Pong(_) => {
-                        log::info!("Got ping from server.")
-                    }
-                    _ => bail!("Invalid Response."),
-                },
-                _ => bail!("Invalid Response."),
-            },
+                kind:
+                    Some(Kind::Response(proto::Response {
+                        kind: Some(proto::response::Kind::Pong(_)),
+                        ..
+                    })),
+                ..
+            }) => {
+                log::info!("Got ping from server.")
+            }
             _ => bail!("Invalid Response."),
         };
 
@@ -151,8 +145,7 @@ impl Client {
         session_id: SessionId,
         node_id: NodeId,
     ) -> anyhow::Result<proto::response::Node> {
-        self.send_packet(node_packet(session_id, node_id.clone()))
-            .await?;
+        self.send_packet(node_packet(session_id, node_id)).await?;
 
         log::info!("Querying node: [{}] info from server.", node_id);
 
@@ -163,19 +156,16 @@ impl Client {
 
         match packet {
             PacketKind::Packet(proto::Packet {
-                kind: Some(kind), ..
-            }) => match kind {
-                Kind::Response(proto::Response {
-                    kind: Some(kind), ..
-                }) => match kind {
-                    proto::response::Kind::Node(node_info) => {
-                        log::info!("Got info for node: [{}]", node_id);
-                        return Ok(node_info);
-                    }
-                    _ => bail!("Invalid Response."),
-                },
-                _ => bail!("Invalid Response."),
-            },
+                kind:
+                    Some(Kind::Response(proto::Response {
+                        kind: Some(proto::response::Kind::Node(node_info)),
+                        ..
+                    })),
+                ..
+            }) => {
+                log::info!("Got info for node: [{}]", node_id);
+                Ok(node_info)
+            }
             _ => bail!("Invalid Response."),
         }
     }
@@ -188,7 +178,7 @@ impl Client {
 
         {
             let mut client = self.inner.write().await;
-            let addr = client.net_address.clone();
+            let addr = client.net_address;
 
             Ok(client.socket.send_to(&out_buf, addr).await?)
         }
@@ -209,7 +199,7 @@ impl Client {
 
         Ok(codec
             .decode(&mut in_buf)?
-            .ok_or(anyhow!("Failed to decode packet."))?)
+            .ok_or_else(|| anyhow!("Failed to decode packet."))?)
     }
 }
 
@@ -240,7 +230,7 @@ fn session_packet(session_id: SessionId, node_id: NodeId) -> PacketKind {
         session_id: session_id.vec(),
         kind: Some(proto::packet::Kind::Request(proto::Request {
             kind: Some(proto::request::Kind::Session(proto::request::Session {
-                challenge_resp: vec![0u8; 2048 as usize],
+                challenge_resp: vec![0u8; 2048_usize],
                 node_id: node_id.into_array().to_vec(),
                 public_key: vec![],
             })),
