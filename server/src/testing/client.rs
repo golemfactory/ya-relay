@@ -19,12 +19,12 @@ use ya_relay_proto::proto::packet::Kind;
 
 #[derive(Clone)]
 pub struct Client {
-    inner: Arc<RwLock<ClientImpl>>,
+    pub inner: Arc<RwLock<ClientImpl>>,
 }
 
 pub struct ClientImpl {
-    net_address: SocketAddr,
-    socket: UdpSocket,
+    pub net_address: SocketAddr,
+    pub socket: UdpSocket,
 }
 
 impl Client {
@@ -52,6 +52,43 @@ impl Client {
                 socket,
             })),
         })
+    }
+
+    pub async fn register_endpoints(
+        &self,
+        session_id: SessionId,
+        endpoints: Vec<proto::Endpoint>,
+    ) -> anyhow::Result<Vec<proto::Endpoint>> {
+        let sent = self
+            .send_packet(register_endpoints_packet(session_id, endpoints))
+            .await?;
+
+        log::info!("Register endpoints packet sent ({} bytes).", sent);
+
+        let packet = self
+            .receive_packet()
+            .await
+            .map_err(|e| anyhow!("Didn't receive register response. Error: {}", e))?;
+
+        log::info!("Decoded packet received from server.");
+
+        let endpoints = match packet {
+            PacketKind::Packet(proto::Packet {
+                session_id: _,
+                kind:
+                    Some(proto::packet::Kind::Response(proto::Response {
+                        code: _,
+                        kind:
+                            Some(proto::response::Kind::Register(proto::response::Register {
+                                endpoints,
+                            })),
+                    })),
+            }) => endpoints,
+            _ => bail!("Invalid packet kind."),
+        };
+
+        log::info!("Registration finished.");
+        Ok(endpoints)
     }
 
     pub async fn init_session(&self, node_id: NodeId) -> anyhow::Result<SessionId> {
@@ -245,6 +282,17 @@ fn node_packet(session_id: SessionId, node_id: NodeId) -> PacketKind {
             kind: Some(proto::request::Kind::Node(proto::request::Node {
                 node_id: node_id.into_array().to_vec(),
                 public_key: true,
+            })),
+        })),
+    })
+}
+
+fn register_endpoints_packet(session_id: SessionId, endpoints: Vec<proto::Endpoint>) -> PacketKind {
+    PacketKind::Packet(proto::Packet {
+        session_id: session_id.vec(),
+        kind: Some(proto::packet::Kind::Request(proto::Request {
+            kind: Some(proto::request::Kind::Register(proto::request::Register {
+                endpoints,
             })),
         })),
     })

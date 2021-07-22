@@ -63,7 +63,9 @@ impl Server {
                     Some(proto::packet::Kind::Request(proto::Request { kind: Some(kind) })) => {
                         match kind {
                             Kind::Session(_) => {}
-                            Kind::Register(_) => {}
+                            Kind::Register(params) => {
+                                self.register_endpoints(id, from, params).await?
+                            }
                             Kind::Node(params) => self.node_request(id, from, params).await?,
                             Kind::RandomNode(_) => {}
                             Kind::Neighbours(_) => {}
@@ -92,6 +94,36 @@ impl Server {
             }
         };
 
+        Ok(())
+    }
+
+    async fn register_endpoints(
+        &self,
+        id: SessionId,
+        from: SocketAddr,
+        params: proto::request::Register,
+    ) -> anyhow::Result<()> {
+        {
+            let mut server = self.inner.write().await;
+            let node_id = match server.sessions.get(&id) {
+                None => return Err(ServerError::SessionNotFound(id).into()),
+                Some(node_id) => *node_id,
+            };
+
+            let node_info = server.nodes.get_mut(&node_id).ok_or_else(|| {
+                ServerError::Internal(format!("NodeId for session [{}] not found.", id))
+            })?;
+
+            node_info
+                .info
+                .endpoints
+                .extend(params.endpoints.into_iter());
+        }
+
+        let response = PacketKind::register_response(id);
+        self.send_to(response, &from).await?;
+
+        log::info!("Responding to Register from: {}", from);
         Ok(())
     }
 
