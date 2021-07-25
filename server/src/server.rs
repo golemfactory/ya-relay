@@ -100,13 +100,11 @@ impl Server {
         &self,
         id: SessionId,
         from: SocketAddr,
-        params: proto::request::Register,
+        _params: proto::request::Register,
         mut node_info: NodeSession,
     ) -> anyhow::Result<NodeSession> {
-        node_info
-            .info
-            .endpoints
-            .extend(params.endpoints.into_iter());
+        // TODO: Note that we ignore endpoints sent by Node and only try
+        //       to verify address, from which we received messages.
 
         // We need new socket to check, if Node's address is public.
         let mut sock = UdpSocket::bind("0.0.0.0:0").await?;
@@ -141,8 +139,13 @@ impl Server {
             _ => bail!("Expected pong packet."),
         }
 
-        let response = PacketKind::register_response(id);
+        node_info.info.endpoints.push(proto::Endpoint {
+            protocol: proto::Protocol::Udp as i32,
+            address: from.ip().to_string(),
+            port: from.port() as u32,
+        });
 
+        let response = PacketKind::register_response(id);
         self.send_to(response, &from).await?;
 
         log::info!("Responding to Register from: {}", from);

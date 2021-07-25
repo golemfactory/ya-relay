@@ -15,8 +15,8 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     let node_id = NodeId::from_str("0x00069fc6fd02afeca110b9c32a21fb8ad899ee0a")?;
     let endpoints = vec![proto::Endpoint {
         protocol: proto::Protocol::Udp as i32,
-        address: client.inner.read().await.net_address.ip().to_string(),
-        port: client.inner.read().await.net_address.port() as u32,
+        address: "127.0.0.1".to_string(),
+        port: client.inner.read().await.socket.local_addr()?.port() as u32,
     }];
 
     let session = client.init_session(node_id).await.unwrap();
