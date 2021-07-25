@@ -63,9 +63,7 @@ impl Server {
                     Some(proto::packet::Kind::Request(proto::Request { kind: Some(kind) })) => {
                         match kind {
                             Kind::Session(_) => {}
-                            Kind::Register(params) => {
-                                self.register_endpoints(id, from, params).await?
-                            }
+                            Kind::Register(_) => {}
                             Kind::Node(params) => self.node_request(id, from, params).await?,
                             Kind::RandomNode(_) => {}
                             Kind::Neighbours(_) => {}
@@ -102,29 +100,48 @@ impl Server {
         id: SessionId,
         from: SocketAddr,
         params: proto::request::Register,
-    ) -> anyhow::Result<()> {
-        {
-            let mut server = self.inner.write().await;
-            let node_id = match server.sessions.get(&id) {
-                None => return Err(ServerError::SessionNotFound(id).into()),
-                Some(node_id) => *node_id,
-            };
+        mut node_info: NodeSession,
+    ) -> anyhow::Result<NodeSession> {
+        node_info
+            .info
+            .endpoints
+            .extend(params.endpoints.into_iter());
 
-            let node_info = server.nodes.get_mut(&node_id).ok_or_else(|| {
-                ServerError::Internal(format!("NodeId for session [{}] not found.", id))
-            })?;
+        // We need new socket to check, if Node's address is public.
+        let mut sock = UdpSocket::bind("0.0.0.0:0").await?;
 
-            node_info
-                .info
-                .endpoints
-                .extend(params.endpoints.into_iter());
+        let mut codec = Codec::default();
+        let mut buf = BytesMut::new();
+
+        // If we can ping `from` address it was public, if we don't get response
+        // it could be private.
+        let ping = PacketKind::ping_packet(id);
+
+        codec.encode(ping, &mut buf)?;
+        sock.send_to(&buf, &from).await?;
+
+        buf.resize(MAX_PACKET_SIZE as usize, 0);
+
+        let size = sock.recv(&mut buf).await?;
+        buf.truncate(size);
+
+        match codec.decode(&mut buf)? {
+            Some(PacketKind::Packet(proto::Packet {
+                kind:
+                    Some(proto::packet::Kind::Response(proto::Response {
+                        kind: Some(proto::response::Kind::Pong(_)),
+                        ..
+                    })),
+                ..
+            })) => {}
+            _ => bail!("Expected pong packet."),
         }
 
         let response = PacketKind::register_response(id);
         self.send_to(response, &from).await?;
 
         log::info!("Responding to Register from: {}", from);
-        Ok(())
+        Ok(node_info)
     }
 
     async fn ping_request(&self, id: SessionId, from: SocketAddr) -> anyhow::Result<()> {
@@ -244,7 +261,7 @@ impl Server {
 
         log::info!("Challenge sent to: {}", with);
 
-        match rc.recv().await {
+        let node = match rc.recv().await {
             Some(proto::Request {
                 kind: Some(proto::request::Kind::Session(session)),
             }) => {
@@ -265,6 +282,32 @@ impl Server {
                     address: with,
                     last_seen: Utc::now(),
                 };
+
+                self.send_to(PacketKind::session_response(session_id), &with)
+                    .await?;
+
+                log::info!(
+                    "Session: {}. Got valid challenge from node: {}",
+                    session_id,
+                    node_id
+                );
+
+                node
+            }
+            _ => bail!("Invalid Request"),
+        };
+
+        match rc.recv().await {
+            Some(proto::Request {
+                kind: Some(proto::request::Kind::Register(registration)),
+            }) => {
+                log::info!("Got register from node: {}", with);
+
+                let node_id = node.info.node_id;
+                let node = self
+                    .register_endpoints(session_id, with, registration, node)
+                    .await?;
+
                 self.cleanup_initialization(&session_id).await;
 
                 {
@@ -273,9 +316,6 @@ impl Server {
                     server.sessions.insert(session_id, node_id);
                     server.nodes.insert(node_id, node);
                 }
-
-                self.send_to(PacketKind::session_response(session_id), &with)
-                    .await?;
 
                 log::info!("Session: {} established for node: {}", session_id, node_id);
             }

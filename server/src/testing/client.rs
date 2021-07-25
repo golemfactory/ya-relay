@@ -6,6 +6,7 @@ use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio_util::codec::{Decoder, Encoder};
 
+use crate::packets::PacketsCreator;
 use crate::server::Server;
 use crate::{parse_udp_url, SessionId};
 
@@ -65,6 +66,31 @@ impl Client {
 
         log::info!("Register endpoints packet sent ({} bytes).", sent);
 
+        // We expect to get ping from Server, which has to check if we have public IP.
+        // Note, that server used different port, than we used before.
+        let (packet, from) = self
+            .receive_packet_from()
+            .await
+            .map_err(|e| anyhow!("Didn't receive ping. Error: {}", e))?;
+
+        match packet {
+            PacketKind::Packet(proto::Packet {
+                session_id: _,
+                kind:
+                    Some(proto::packet::Kind::Request(proto::Request {
+                        kind: Some(proto::request::Kind::Ping(proto::request::Ping {})),
+                    })),
+            }) => (),
+            _ => bail!("Invalid packet kind. `Ping` expected."),
+        };
+
+        log::info!("Ping received. Sending `Pong`.");
+
+        self.send_packet_to(PacketKind::pong_response(session_id), from)
+            .await?;
+
+        log::info!("Waiting for Register response.");
+
         let packet = self
             .receive_packet()
             .await
@@ -84,7 +110,7 @@ impl Client {
                             })),
                     })),
             }) => endpoints,
-            _ => bail!("Invalid packet kind."),
+            _ => bail!("Invalid packet kind. `Register` response expected."),
         };
 
         log::info!("Registration finished.");
@@ -207,7 +233,7 @@ impl Client {
         }
     }
 
-    async fn send_packet(&self, packet: PacketKind) -> anyhow::Result<usize> {
+    async fn send_packet_to(&self, packet: PacketKind, addr: SocketAddr) -> anyhow::Result<usize> {
         let mut codec = Codec::default();
         let mut out_buf = BytesMut::new();
 
@@ -215,28 +241,37 @@ impl Client {
 
         {
             let mut client = self.inner.write().await;
-            let addr = client.net_address;
-
             Ok(client.socket.send_to(&out_buf, addr).await?)
         }
     }
 
-    async fn receive_packet(&self) -> anyhow::Result<PacketKind> {
+    async fn send_packet(&self, packet: PacketKind) -> anyhow::Result<usize> {
+        let addr = { self.inner.write().await.net_address.clone() };
+        self.send_packet_to(packet, addr).await
+    }
+
+    async fn receive_packet_from(&self) -> anyhow::Result<(PacketKind, SocketAddr)> {
         let mut codec = Codec::default();
         let mut in_buf = BytesMut::new();
 
         in_buf.resize(MAX_PACKET_SIZE as usize, 0);
 
-        let size = {
+        let (size, addr) = {
             let client = &mut self.inner.write().await;
-            client.socket.recv(&mut in_buf).await?
+            client.socket.recv_from(&mut in_buf).await?
         };
 
         in_buf.truncate(size);
 
-        Ok(codec
+        let packet = codec
             .decode(&mut in_buf)?
-            .ok_or_else(|| anyhow!("Failed to decode packet."))?)
+            .ok_or_else(|| anyhow!("Failed to decode packet."))?;
+
+        Ok((packet, addr))
+    }
+
+    async fn receive_packet(&self) -> anyhow::Result<PacketKind> {
+        Ok(self.receive_packet_from().await?.0)
     }
 }
 

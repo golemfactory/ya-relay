@@ -62,6 +62,15 @@ pub trait PacketsCreator {
             })),
         })
     }
+
+    fn ping_packet(session_id: SessionId) -> PacketKind {
+        PacketKind::Packet(proto::Packet {
+            session_id: session_id.vec(),
+            kind: Some(proto::packet::Kind::Request(proto::Request {
+                kind: Some(proto::request::Kind::Ping(proto::request::Ping {})),
+            })),
+        })
+    }
 }
 
 impl PacketsCreator for PacketKind {}
