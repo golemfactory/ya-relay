@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::udp::{RecvHalf, SendHalf};
 use tokio::sync::{mpsc, RwLock};
+use tokio::time::{timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
@@ -122,7 +123,10 @@ impl Server {
 
         buf.resize(MAX_PACKET_SIZE as usize, 0);
 
-        let size = sock.recv(&mut buf).await?;
+        let size = timeout(Duration::from_millis(300), sock.recv(&mut buf))
+            .await
+            .map_err(|_| anyhow!("Timeout while waiting for `Ping` response."))??;
+
         buf.truncate(size);
 
         match codec.decode(&mut buf)? {
@@ -138,6 +142,7 @@ impl Server {
         }
 
         let response = PacketKind::register_response(id);
+
         self.send_to(response, &from).await?;
 
         log::info!("Responding to Register from: {}", from);
