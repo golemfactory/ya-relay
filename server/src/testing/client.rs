@@ -29,17 +29,8 @@ pub struct ClientImpl {
 
 impl Client {
     pub async fn connect(server: &Server) -> anyhow::Result<Client> {
-        let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
-        let socket = UdpSocket::bind(local_addr).await?;
-
         let addr = { server.inner.read().await.url.clone() };
-
-        Ok(Client {
-            inner: Arc::new(RwLock::new(ClientImpl {
-                net_address: parse_udp_url(addr).parse()?,
-                socket,
-            })),
-        })
+        Ok(Client::bind(addr).await?)
     }
 
     pub async fn bind(addr: Url) -> anyhow::Result<Client> {
@@ -48,7 +39,7 @@ impl Client {
 
         Ok(Client {
             inner: Arc::new(RwLock::new(ClientImpl {
-                net_address: parse_udp_url(addr).parse()?,
+                net_address: parse_udp_url(addr)?.parse()?,
                 socket,
             })),
         })

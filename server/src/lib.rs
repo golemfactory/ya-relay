@@ -1,6 +1,5 @@
 pub(crate) mod error;
 pub(crate) mod packets;
-#[allow(dead_code)]
 mod server;
 pub(crate) mod session;
 pub mod testing;
