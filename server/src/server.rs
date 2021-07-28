@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Context};
 use bytes::BytesMut;
 use chrono::Utc;
 use futures::{SinkExt, StreamExt};
@@ -36,7 +36,7 @@ pub struct Server {
 pub struct ServerImpl {
     pub sessions: HashMap<SessionId, NodeId>,
     pub nodes: HashMap<NodeId, NodeSession>,
-    pub init_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
+    pub starting_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
 
     /// TODO: Inefficient. We need to acquire lock to send data. But in this version
     ///       of tokio, sockets need `mut self` and it is not possible to upgrade,
@@ -51,8 +51,16 @@ impl Server {
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> anyhow::Result<()> {
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
+                // Empty `session_id` is sent to initialize Session, but only with Session request.
                 if session_id.is_empty() {
-                    return self.clone().new_session(from).await;
+                    match kind {
+                        Some(proto::packet::Kind::Request(proto::Request {
+                            kind: Some(proto::request::Kind::Session(_)),
+                        })) => {
+                            return self.clone().new_session(from).await;
+                        }
+                        _ => bail!("Empty session id."),
+                    }
                 }
 
                 let id = SessionId::try_from(session_id)?;
@@ -182,6 +190,10 @@ impl Server {
         from: SocketAddr,
         params: proto::request::Node,
     ) -> anyhow::Result<()> {
+        if params.node_id.len() != 20 {
+            bail!("Invalid node id.")
+        }
+
         let node_id = NodeId::from(&params.node_id[..]);
         let node_info = {
             match self.inner.read().await.nodes.get(&node_id) {
@@ -208,7 +220,7 @@ impl Server {
             self.inner
                 .write()
                 .await
-                .init_session
+                .starting_session
                 .entry(new_id)
                 .or_insert(sender);
         }
@@ -233,7 +245,7 @@ impl Server {
         packet: Option<proto::packet::Kind>,
     ) -> anyhow::Result<()> {
         let mut sender = {
-            match self.inner.read().await.init_session.get(&id) {
+            match self.inner.read().await.starting_session.get(&id) {
                 Some(sender) => sender.clone(),
                 None => bail!("Session [{}] not initialized.", id),
             }
@@ -277,6 +289,10 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // TODO: Validate challenge.
+
+                if session.node_id.len() != 20 {
+                    bail!("Invalid node id.")
+                }
 
                 let node_id = NodeId::from(&session.node_id[..]);
                 let info = NodeInfo {
@@ -334,7 +350,7 @@ impl Server {
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
-        self.inner.write().await.init_session.remove(session_id);
+        self.inner.write().await.starting_session.remove(session_id);
     }
 
     async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<()> {
@@ -357,7 +373,7 @@ impl Server {
             inner: Arc::new(RwLock::new(ServerImpl {
                 sessions: Default::default(),
                 nodes: Default::default(),
-                init_session: Default::default(),
+                starting_session: Default::default(),
                 socket: output,
                 recv_socket: Some(input),
                 url: addr,
@@ -387,9 +403,9 @@ impl Server {
     }
 }
 
-pub fn parse_udp_url(url: Url) -> String {
-    let host = url.host_str().expect("Needs host for NET URL");
+pub fn parse_udp_url(url: Url) -> anyhow::Result<String> {
+    let host = url.host_str().context("Needs host for NET URL")?;
     let port = url.port().unwrap_or(DEFAULT_NET_PORT);
 
-    format!("{}:{}", host, port)
+    Ok(format!("{}:{}", host, port))
 }

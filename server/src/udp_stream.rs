@@ -18,7 +18,7 @@ pub type InStream = Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr)>>>;
 pub type OutStream = Pin<Box<dyn Sink<(PacketKind, SocketAddr), Error = anyhow::Error>>>;
 
 pub async fn udp_bind(addr: url::Url) -> anyhow::Result<(InStream, OutStream)> {
-    let sock = UdpSocket::bind(&parse_udp_url(addr.clone())).await?;
+    let sock = UdpSocket::bind(&parse_udp_url(addr.clone())?).await?;
 
     log::info!("Server listening on: {}", addr);
 
