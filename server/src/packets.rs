@@ -51,13 +51,13 @@ pub trait PacketsCreator {
         })
     }
 
-    fn register_response(session_id: SessionId) -> PacketKind {
+    fn register_response(session_id: SessionId, endpoints: Vec<proto::Endpoint>) -> PacketKind {
         PacketKind::Packet(proto::Packet {
             session_id: session_id.vec(),
             kind: Some(proto::packet::Kind::Response(proto::Response {
                 code: proto::StatusCode::Ok as i32,
                 kind: Some(proto::response::Kind::Register(proto::response::Register {
-                    endpoints: vec![],
+                    endpoints,
                 })),
             })),
         })
