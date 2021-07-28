@@ -96,7 +96,7 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Didn't receive register response. Error: {}", e))?;
 
-        log::info!("Decoded packet received from server.");
+        log::info!("Decoded packet received from server. {:?}", packet);
 
         let endpoints = match packet {
             PacketKind::Packet(proto::Packet {
@@ -127,7 +127,7 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Didn't receive challenge. Error: {}", e))?;
 
-        log::info!("Decoded packet received from server.");
+        log::info!("Decoded packet received from server. {:?}", packet);
 
         let session = SessionId::try_from(match packet {
             PacketKind::Packet(proto::Packet { session_id, kind }) => match kind {

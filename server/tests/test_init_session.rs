@@ -20,15 +20,18 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     }];
 
     let session = client.init_session(node_id).await.unwrap();
-    let _endpoints = client
-        .register_endpoints(session, endpoints.clone())
-        .await
-        .unwrap();
+    let result_endpoints = client.register_endpoints(session, vec![]).await.unwrap();
     let node_info = client.find_node(session, node_id).await.unwrap();
 
     // TODO: More checks, after everything will be implemented.
     assert_eq!(node_id, NodeId::from(&node_info.node_id[..]));
+
+    // Check state on server.
     assert_eq!(node_info.endpoints.len(), 1);
     assert_eq!(node_info.endpoints[0], endpoints[0]);
+
+    // Check server response.
+    assert_eq!(result_endpoints.len(), 1);
+    assert_eq!(result_endpoints[0], endpoints[0]);
     Ok(())
 }

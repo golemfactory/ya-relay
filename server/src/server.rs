@@ -146,7 +146,7 @@ impl Server {
             port: from.port() as u32,
         });
 
-        let response = PacketKind::register_response(id);
+        let response = PacketKind::register_response(id, node_info.info.endpoints.clone());
         self.send_to(response, &from).await?;
 
         log::info!("Responding to Register from: {}", from);
