@@ -1,12 +1,13 @@
 use anyhow::{anyhow, bail};
 use bytes::BytesMut;
 use chrono::Utc;
+use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::net::udp::{RecvHalf, SendHalf};
+use tokio::net::UdpSocket;
 use tokio::sync::{mpsc, RwLock};
 use tokio::time::{timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
@@ -15,8 +16,8 @@ use url::Url;
 use crate::error::ServerError;
 use crate::packets::PacketsCreator;
 use crate::session::{NodeInfo, NodeSession, SessionId};
+use crate::udp_stream::{udp_bind, InStream, OutStream};
 
-use tokio::net::UdpSocket;
 use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
@@ -40,8 +41,8 @@ pub struct ServerImpl {
     /// TODO: Inefficient. We need to acquire lock to send data. But in this version
     ///       of tokio, sockets need `mut self` and it is not possible to upgrade,
     ///       without doing this in whole yagna.
-    socket: SendHalf,
-    recv_socket: Option<RecvHalf>,
+    socket: OutStream,
+    recv_socket: Option<InStream>,
 
     pub url: Url,
 }
@@ -336,28 +337,22 @@ impl Server {
         self.inner.write().await.init_session.remove(session_id);
     }
 
-    async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<usize> {
-        let mut codec = Codec::default();
-        let mut buf = BytesMut::new();
-
-        codec.encode(packet, &mut buf)?;
-
+    async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<()> {
         Ok(self
             .inner
             .write()
             .await
             .socket
-            .send_to(&buf, &target)
+            .send((packet, target.clone()))
             .await?)
     }
 
-    pub async fn bind(addr: url::Url) -> anyhow::Result<Server> {
-        let sock = UdpSocket::bind(&parse_udp_url(addr.clone())).await?;
+    pub async fn bind_udp(addr: url::Url) -> anyhow::Result<Server> {
+        let (input, output) = udp_bind(addr.clone()).await?;
+        Server::bind(addr, input, output)
+    }
 
-        log::info!("Server listening on: {}", addr);
-
-        let (input, output) = sock.split();
-
+    pub fn bind(addr: url::Url, input: InStream, output: OutStream) -> anyhow::Result<Server> {
         Ok(Server {
             inner: Arc::new(RwLock::new(ServerImpl {
                 sessions: Default::default(),
@@ -371,6 +366,7 @@ impl Server {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        let server = self.clone();
         let mut input = {
             self.inner
                 .write()
@@ -380,36 +376,14 @@ impl Server {
                 .ok_or_else(|| anyhow!("Server already running."))?
         };
 
-        let server = self.clone();
-        let mut codec = Codec::default();
-        let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
-
-        loop {
-            buf.resize(MAX_PACKET_SIZE as usize, 0);
-
-            match input.recv_from(&mut buf).await {
-                Ok((size, addr)) => {
-                    log::debug!("Received {} bytes from {}", size, addr);
-
-                    buf.truncate(size);
-                    match codec.decode(&mut buf) {
-                        Ok(Some(packet)) => {
-                            server
-                                .dispatch(addr, packet)
-                                .await
-                                .map_err(|e| log::error!("Packet dispatch failed. {}", e))
-                                .ok();
-                        }
-                        Ok(None) => log::warn!("Empty packet."),
-                        Err(e) => log::error!("Error: {}", e),
-                    }
-                }
-                Err(e) => {
-                    log::error!("Error receiving data from socket. {}", e);
-                    return Ok(());
-                }
-            }
+        while let Some((packet, addr)) = input.next().await {
+            server
+                .dispatch(addr, packet)
+                .await
+                .map_err(|e| log::error!("Packet dispatch failed. {}", e))
+                .ok();
         }
+        Ok(())
     }
 }
 

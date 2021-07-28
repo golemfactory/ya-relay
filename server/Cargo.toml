@@ -4,7 +4,15 @@ version = "0.1.0"
 authors = ["nieznany.sprawiciel <nieznany.sprawiciel@gmail.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "ya_net_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ya-net-server"
+path = "src/main.rs"
+
 
 [dependencies]
 ya-relay-proto = { path = "../crates/proto" }

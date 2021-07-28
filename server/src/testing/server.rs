@@ -8,7 +8,7 @@ pub async fn init_test_server() -> anyhow::Result<Server> {
     // so we `try_init`.
     let _ = env_logger::builder().try_init();
 
-    let server = Server::bind(Url::parse("udp://127.0.0.1:8888")?).await?;
+    let server = Server::bind_udp(Url::parse("udp://127.0.0.1:8888")?).await?;
 
     tokio::task::spawn_local(server.clone().run().map(|result| {
         if let Err(e) = result {
