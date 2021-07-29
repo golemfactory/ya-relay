@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail};
 use bytes::BytesMut;
+use ethsign::SecretKey;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -25,15 +26,16 @@ pub struct Client {
 pub struct ClientImpl {
     net_address: SocketAddr,
     socket: UdpSocket,
+    secret: SecretKey,
 }
 
 impl Client {
-    pub async fn connect(server: &Server) -> anyhow::Result<Client> {
+    pub async fn connect(server: &Server, secret: SecretKey) -> anyhow::Result<Client> {
         let addr = { server.inner.read().await.url.clone() };
-        Ok(Client::bind(addr).await?)
+        Ok(Client::bind(addr, secret).await?)
     }
 
-    pub async fn bind(addr: Url) -> anyhow::Result<Client> {
+    pub async fn bind(addr: Url, secret: SecretKey) -> anyhow::Result<Client> {
         let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
         let socket = UdpSocket::bind(local_addr).await?;
 
@@ -41,11 +43,12 @@ impl Client {
             inner: Arc::new(RwLock::new(ClientImpl {
                 net_address: parse_udp_url(addr)?.parse()?,
                 socket,
+                secret,
             })),
         })
     }
 
-    pub async fn init_session(&self, node_id: NodeId) -> anyhow::Result<SessionId> {
+    pub async fn init_session(&self) -> anyhow::Result<SessionId> {
         let sent = self.send_packet(init_packet()).await?;
 
         log::info!("Init session packet sent ({} bytes).", sent);
@@ -75,6 +78,7 @@ impl Client {
             session
         );
 
+        let node_id = NodeId::from(*self.inner.read().await.secret.public().address());
         let sent = self.send_packet(session_packet(session, node_id)).await?;
 
         log::info!("Challenge response sent ({} bytes).", sent);

@@ -4,6 +4,7 @@ use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
 use ya_net_server::testing::Client;
+use ya_net_server::testing::key::{load_or_generate, Protected};
 use ya_net_server::SessionId;
 
 #[derive(StructOpt)]
@@ -33,10 +34,7 @@ pub struct Ping {
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt(rename_all = "kebab-case")]
-pub struct Init {
-    #[structopt(short = "n", long, env)]
-    pub node_id: NodeId,
-}
+pub struct Init {}
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt(rename_all = "kebab-case")]
@@ -53,13 +51,16 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Options::from_args();
 
-    let client = Client::bind(args.address.clone()).await?;
+    let key_file_name = std::env::var("CLIENT_KEY_FILE").unwrap_or("./client.key.json".to_string());
+    let key_file_password = std::env::var("CLIENT_KEY_PASSWORD").ok().map(|x| Protected::from(x));
+    let secret = load_or_generate(&key_file_name, key_file_password);
+    let client = Client::bind(args.address.clone(), secret).await?;
 
     log::info!("Sending to server listening on: {}", args.address);
 
     match args.commands {
-        Commands::Init(Init { node_id }) => {
-            client.init_session(node_id).await?;
+        Commands::Init(Init {}) => {
+            client.init_session().await?;
         }
         Commands::FindNode(opts) => {
             client
