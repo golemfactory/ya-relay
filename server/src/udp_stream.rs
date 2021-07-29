@@ -13,8 +13,6 @@ use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
 
 use crate::parse_udp_url;
 
-trait SinkTrait: Sink<(PacketKind, SocketAddr), Error = anyhow::Error> {}
-
 pub type InStream = Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr)>>>;
 pub type OutStream = mpsc::Sender<(PacketKind, SocketAddr)>;
 

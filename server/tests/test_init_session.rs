@@ -52,7 +52,8 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
     session[0] = session[0] + 1;
     let session = SessionId::try_from(session)?;
 
-    let response = client.find_node(session, node_id).await.unwrap();
+    let result = client.find_node(session, node_id).await;
+    assert!(result.is_err());
 
     Ok(())
 }
