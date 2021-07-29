@@ -1,17 +1,17 @@
 use anyhow::{anyhow, bail};
 use bytes::BytesMut;
+use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio_util::codec::{Decoder, Encoder};
+use url::Url;
 
 use crate::packets::PacketsCreator;
 use crate::server::Server;
 use crate::{parse_udp_url, SessionId};
 
-use std::convert::TryFrom;
-use url::Url;
 use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::*;
@@ -30,8 +30,7 @@ pub struct ClientImpl {
 
 impl Client {
     pub async fn connect(server: &Server) -> anyhow::Result<Client> {
-        let addr = { server.inner.read().await.url.clone() };
-        Ok(Client::bind(addr).await?)
+        Ok(Client::bind(server.inner.url.clone()).await?)
     }
 
     pub async fn bind(addr: Url) -> anyhow::Result<Client> {
@@ -89,19 +88,12 @@ impl Client {
 
         log::info!("Decoded packet received from server. {:?}", packet);
 
-        let endpoints = match packet {
-            PacketKind::Packet(proto::Packet {
-                session_id: _,
-                kind:
-                    Some(proto::packet::Kind::Response(proto::Response {
-                        code: _,
-                        kind:
-                            Some(proto::response::Kind::Register(proto::response::Register {
-                                endpoints,
-                            })),
-                    })),
-            }) => endpoints,
-            _ => bail!("Invalid packet kind. `Register` response expected."),
+        let endpoints = match dispatch_response(packet) {
+            Ok(proto::response::Kind::Register(proto::response::Register { endpoints })) => {
+                endpoints
+            }
+            Ok(_) => bail!("Invalid packet kind. `Register` response expected."),
+            Err(code) => bail!("Error response from server. Code: {}", code as i32),
         };
 
         log::info!("Registration finished.");
@@ -208,19 +200,13 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Didn't receive FindNode response. Error: {}", e))?;
 
-        match packet {
-            PacketKind::Packet(proto::Packet {
-                kind:
-                    Some(Kind::Response(proto::Response {
-                        kind: Some(proto::response::Kind::Node(node_info)),
-                        ..
-                    })),
-                ..
-            }) => {
+        match dispatch_response(packet) {
+            Ok(proto::response::Kind::Node(node_info)) => {
                 log::info!("Got info for node: [{}]", node_id);
                 Ok(node_info)
             }
-            _ => bail!("Invalid Response."),
+            Ok(_) => bail!("Invalid packet kind. `Node` response expected."),
+            Err(code) => bail!("Error response from server. Code: {}", code as i32),
         }
     }
 
@@ -322,4 +308,25 @@ fn register_endpoints_packet(session_id: SessionId, endpoints: Vec<proto::Endpoi
             })),
         })),
     })
+}
+
+fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, proto::StatusCode> {
+    match packet {
+        PacketKind::Packet(proto::Packet {
+            kind: Some(Kind::Response(proto::Response { kind, code })),
+            ..
+        }) => match kind {
+            None => {
+                Err(proto::StatusCode::from_i32(code as i32).ok_or(proto::StatusCode::Undefined)?)
+            }
+            Some(response) => {
+                match proto::StatusCode::from_i32(code as i32) {
+                    Some(proto::StatusCode::Ok) => Ok(response),
+                    _ => Err(proto::StatusCode::from_i32(code as i32)
+                        .ok_or(proto::StatusCode::Undefined)?),
+                }
+            }
+        },
+        _ => Err(proto::StatusCode::Undefined),
+    }
 }

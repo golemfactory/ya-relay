@@ -30,19 +30,20 @@ pub const CHALLENGE_SIZE: usize = 16;
 
 #[derive(Clone)]
 pub struct Server {
-    pub inner: Arc<RwLock<ServerImpl>>,
+    pub state: Arc<RwLock<ServerState>>,
+    pub inner: Arc<ServerImpl>,
 }
 
-pub struct ServerImpl {
+pub struct ServerState {
     pub sessions: HashMap<SessionId, NodeId>,
     pub nodes: HashMap<NodeId, NodeSession>,
     pub starting_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
 
-    /// TODO: Inefficient. We need to acquire lock to send data. But in this version
-    ///       of tokio, sockets need `mut self` and it is not possible to upgrade,
-    ///       without doing this in whole yagna.
-    socket: OutStream,
     recv_socket: Option<InStream>,
+}
+
+pub struct ServerImpl {
+    socket: OutStream,
 
     pub url: Url,
 }
@@ -64,8 +65,8 @@ impl Server {
                 }
 
                 let id = SessionId::try_from(session_id)?;
-                let node = match self.inner.read().await.sessions.get(&id).cloned() {
-                    None => return self.clone().establish_session(id, kind).await,
+                let node = match self.state.read().await.sessions.get(&id).cloned() {
+                    None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
                 };
 
@@ -163,7 +164,7 @@ impl Server {
 
     async fn ping_request(&self, id: SessionId, from: SocketAddr) -> anyhow::Result<()> {
         {
-            let mut server = self.inner.write().await;
+            let mut server = self.state.write().await;
             let node_id = match server.sessions.get(&id) {
                 None => return Err(ServerError::SessionNotFound(id).into()),
                 Some(node_id) => *node_id,
@@ -191,12 +192,13 @@ impl Server {
         params: proto::request::Node,
     ) -> anyhow::Result<()> {
         if params.node_id.len() != 20 {
+            self.send_to(PacketKind::bad_request(id), &from).await.ok();
             bail!("Invalid node id.")
         }
 
         let node_id = NodeId::from(&params.node_id[..]);
         let node_info = {
-            match self.inner.read().await.nodes.get(&node_id) {
+            match self.state.read().await.nodes.get(&node_id) {
                 None => bail!("Node [{}] not registered.", node_id),
                 Some(session) => session.clone(),
             }
@@ -217,7 +219,7 @@ impl Server {
         log::info!("Initializing new session: {}", new_id);
 
         {
-            self.inner
+            self.state
                 .write()
                 .await
                 .starting_session
@@ -242,18 +244,29 @@ impl Server {
     async fn establish_session(
         self,
         id: SessionId,
+        from: SocketAddr,
         packet: Option<proto::packet::Kind>,
     ) -> anyhow::Result<()> {
         let mut sender = {
-            match self.inner.read().await.starting_session.get(&id) {
+            // Important: Release lock before `send_to`.
+            log::info!("Establish session");
+            match { self.state.read().await.starting_session.get(&id).cloned() } {
                 Some(sender) => sender.clone(),
-                None => bail!("Session [{}] not initialized.", id),
+                None => {
+                    let response = PacketKind::error(id, proto::StatusCode::Unauthorized);
+                    self.send_to(response, &from).await.ok();
+
+                    bail!("Session [{}] not initialized.", id)
+                }
             }
         };
 
         let request = match packet {
             Some(proto::packet::Kind::Request(request)) => request,
-            _ => bail!("Invalid packet type for session [{}].", id),
+            _ => {
+                self.send_to(PacketKind::bad_request(id), &from).await.ok();
+                bail!("Invalid packet type for session [{}].", id)
+            }
         };
 
         Ok(sender.send(request).await?)
@@ -336,7 +349,7 @@ impl Server {
                 self.cleanup_initialization(&session_id).await;
 
                 {
-                    let mut server = self.inner.write().await;
+                    let mut server = self.state.write().await;
 
                     server.sessions.insert(session_id, node_id);
                     server.nodes.insert(node_id, node);
@@ -350,15 +363,14 @@ impl Server {
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
-        self.inner.write().await.starting_session.remove(session_id);
+        self.state.write().await.starting_session.remove(session_id);
     }
 
     async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<()> {
         Ok(self
             .inner
-            .write()
-            .await
             .socket
+            .clone()
             .send((packet, target.clone()))
             .await?)
     }
@@ -369,22 +381,25 @@ impl Server {
     }
 
     pub fn bind(addr: url::Url, input: InStream, output: OutStream) -> anyhow::Result<Server> {
-        Ok(Server {
-            inner: Arc::new(RwLock::new(ServerImpl {
-                sessions: Default::default(),
-                nodes: Default::default(),
-                starting_session: Default::default(),
-                socket: output,
-                recv_socket: Some(input),
-                url: addr,
-            })),
-        })
+        let inner = Arc::new(ServerImpl {
+            socket: output,
+            url: addr,
+        });
+
+        let state = Arc::new(RwLock::new(ServerState {
+            sessions: Default::default(),
+            nodes: Default::default(),
+            starting_session: Default::default(),
+            recv_socket: Some(input),
+        }));
+
+        Ok(Server { state, inner })
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
         let server = self.clone();
         let mut input = {
-            self.inner
+            self.state
                 .write()
                 .await
                 .recv_socket

@@ -5,6 +5,20 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::response::Node;
 
 pub trait PacketsCreator {
+    fn bad_request(session_id: SessionId) -> PacketKind {
+        Self::error(session_id, proto::StatusCode::BadRequest)
+    }
+
+    fn error(session_id: SessionId, code: proto::StatusCode) -> PacketKind {
+        PacketKind::Packet(proto::Packet {
+            session_id: session_id.vec(),
+            kind: Some(proto::packet::Kind::Response(proto::Response {
+                code: code as i32,
+                kind: None,
+            })),
+        })
+    }
+
     fn node_response(
         session_id: SessionId,
         node_info: NodeSession,
