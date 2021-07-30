@@ -5,18 +5,26 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::response::Node;
 
 pub trait PacketsCreator {
-    fn bad_request(session_id: SessionId) -> PacketKind {
+    fn bad_request(session_id: Vec<u8>) -> PacketKind {
         Self::error(session_id, proto::StatusCode::BadRequest)
     }
 
-    fn error(session_id: SessionId, code: proto::StatusCode) -> PacketKind {
+    fn error(session_id: Vec<u8>, code: proto::StatusCode) -> PacketKind {
         PacketKind::Packet(proto::Packet {
-            session_id: session_id.vec(),
+            session_id,
             kind: Some(proto::packet::Kind::Response(proto::Response {
                 code: code as i32,
                 kind: None,
             })),
         })
+    }
+
+    fn session(packet: &PacketKind) -> Vec<u8> {
+        match packet {
+            PacketKind::Packet(proto::Packet { session_id, .. }) => session_id.clone(),
+            PacketKind::Forward(proto::Forward { session_id, .. }) => session_id.to_vec(),
+            PacketKind::ForwardCtd(_) => vec![],
+        }
     }
 
     fn node_response(
@@ -88,3 +96,24 @@ pub trait PacketsCreator {
 }
 
 impl PacketsCreator for PacketKind {}
+
+pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, proto::StatusCode> {
+    match packet {
+        PacketKind::Packet(proto::Packet {
+            kind: Some(proto::packet::Kind::Response(proto::Response { kind, code })),
+            ..
+        }) => match kind {
+            None => {
+                Err(proto::StatusCode::from_i32(code as i32).ok_or(proto::StatusCode::Undefined)?)
+            }
+            Some(response) => {
+                match proto::StatusCode::from_i32(code as i32) {
+                    Some(proto::StatusCode::Ok) => Ok(response),
+                    _ => Err(proto::StatusCode::from_i32(code as i32)
+                        .ok_or(proto::StatusCode::Undefined)?),
+                }
+            }
+        },
+        _ => Err(proto::StatusCode::Undefined),
+    }
+}

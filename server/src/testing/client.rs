@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::packets::PacketsCreator;
+use crate::packets::{dispatch_response, PacketsCreator};
 use crate::server::Server;
 use crate::{parse_udp_url, SessionId};
 
@@ -308,25 +308,4 @@ fn register_endpoints_packet(session_id: SessionId, endpoints: Vec<proto::Endpoi
             })),
         })),
     })
-}
-
-fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, proto::StatusCode> {
-    match packet {
-        PacketKind::Packet(proto::Packet {
-            kind: Some(Kind::Response(proto::Response { kind, code })),
-            ..
-        }) => match kind {
-            None => {
-                Err(proto::StatusCode::from_i32(code as i32).ok_or(proto::StatusCode::Undefined)?)
-            }
-            Some(response) => {
-                match proto::StatusCode::from_i32(code as i32) {
-                    Some(proto::StatusCode::Ok) => Ok(response),
-                    _ => Err(proto::StatusCode::from_i32(code as i32)
-                        .ok_or(proto::StatusCode::Undefined)?),
-                }
-            }
-        },
-        _ => Err(proto::StatusCode::Undefined),
-    }
 }
