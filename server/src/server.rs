@@ -283,7 +283,7 @@ impl Server {
             .write()
             .await
             .socket
-            .send_to(&buf, &target)
+            .send_to(&buf, target)
             .await?)
     }
 
