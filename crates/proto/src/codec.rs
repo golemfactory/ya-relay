@@ -78,6 +78,7 @@ fn peek_tag(buf: &[u8]) -> Result<Option<u32>, DecodeError> {
         Some(tag) => *tag,
         None => return Ok(None),
     };
+
     if tag < 0x80 {
         return Ok(Some(tag as u32 >> 3));
     }
