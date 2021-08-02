@@ -3,8 +3,8 @@ use std::convert::TryFrom;
 use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
-use ya_net_server::testing::Client;
 use ya_net_server::testing::key::{load_or_generate, Protected};
+use ya_net_server::testing::Client;
 use ya_net_server::SessionId;
 
 #[derive(StructOpt)]
@@ -52,7 +52,9 @@ async fn main() -> anyhow::Result<()> {
     let args = Options::from_args();
 
     let key_file_name = std::env::var("CLIENT_KEY_FILE").unwrap_or("./client.key.json".to_string());
-    let key_file_password = std::env::var("CLIENT_KEY_PASSWORD").ok().map(|x| Protected::from(x));
+    let key_file_password = std::env::var("CLIENT_KEY_PASSWORD")
+        .ok()
+        .map(|x| Protected::from(x));
     let secret = load_or_generate(&key_file_name, key_file_password);
     let client = Client::bind(args.address.clone(), secret).await?;
 
