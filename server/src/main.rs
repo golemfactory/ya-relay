@@ -17,5 +17,5 @@ async fn main() -> anyhow::Result<()> {
     let args = Options::from_args();
 
     let server = Server::bind_udp(args.address).await?;
-    Ok(server.run().await?)
+    server.run().await
 }

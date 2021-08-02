@@ -223,7 +223,7 @@ impl Client {
     }
 
     async fn send_packet(&self, packet: PacketKind) -> anyhow::Result<usize> {
-        let addr = { self.inner.write().await.net_address.clone() };
+        let addr = { self.inner.write().await.net_address };
         self.send_packet_to(packet, addr).await
     }
 

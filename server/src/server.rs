@@ -14,7 +14,9 @@ use tokio::time::{timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::error::{BadRequest, Error, NotFound, ServerError, ServerResult, Timeout, Unauthorized};
+use crate::error::{
+    BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
+};
 use crate::packets::{dispatch_response, PacketsCreator};
 use crate::session::{NodeInfo, NodeSession, SessionId};
 use crate::udp_stream::{udp_bind, InStream, OutStream};
@@ -118,7 +120,7 @@ impl Server {
         // send packets even to addresses behind NAT.
         let mut sock = UdpSocket::bind("0.0.0.0:0")
             .await
-            .map_err(|e| ServerError::BindingSocketFailed(e.to_string()))?;
+            .map_err(|e| InternalError::BindingSocket(e.to_string()))?;
 
         let mut codec = Codec::default();
         let mut buf = BytesMut::new();
@@ -129,26 +131,26 @@ impl Server {
 
         codec
             .encode(ping, &mut buf)
-            .map_err(|_| ServerError::EncodingFailed)?;
+            .map_err(|_| InternalError::Encoding)?;
 
         sock.send_to(&buf, &addr)
             .await
-            .map_err(|_| ServerError::SendFailed)?;
+            .map_err(|_| InternalError::Send)?;
 
         buf.resize(MAX_PACKET_SIZE as usize, 0);
 
         let size = timeout(Duration::from_millis(300), sock.recv(&mut buf))
             .await
             .map_err(|_| Timeout::Ping)?
-            .map_err(|_| ServerError::ReceivingFailed)?;
+            .map_err(|_| InternalError::Receiving)?;
 
         buf.truncate(size);
 
         match dispatch_response(
             codec
                 .decode(&mut buf)
-                .map_err(|_| ServerError::DecodingFailed)?
-                .ok_or(ServerError::DecodingFailed)?,
+                .map_err(|_| InternalError::Decoding)?
+                .ok_or(InternalError::Decoding)?,
         ) {
             Ok(proto::response::Kind::Pong(_)) => {}
             _ => return Err(BadRequest::InvalidPacket(id, "Pong".to_string()).into()),
@@ -178,7 +180,7 @@ impl Server {
         let response = PacketKind::register_response(id, node_info.info.endpoints.clone());
         self.send_to(response, &from)
             .await
-            .map_err(|_| ServerError::SendFailed)?;
+            .map_err(|_| InternalError::Send)?;
 
         log::info!("Responding to Register from: {}", from);
         Ok(node_info)
@@ -195,14 +197,14 @@ impl Server {
             let mut node_info = server
                 .nodes
                 .get_mut(&node_id)
-                .ok_or_else(|| ServerError::GetSessionInfoFailed(node_id, id))?;
+                .ok_or(InternalError::GettingSessionInfo(node_id, id))?;
 
             node_info.last_seen = Utc::now();
         }
 
         self.send_to(PacketKind::pong_response(id), &from)
             .await
-            .map_err(|_| ServerError::SendFailed)?;
+            .map_err(|_| InternalError::Send)?;
 
         log::info!("Responding to ping from: {}", from);
 
@@ -230,7 +232,7 @@ impl Server {
         let response = PacketKind::node_response(id, node_info, params.public_key);
         self.send_to(response, &from)
             .await
-            .map_err(|_| ServerError::SendFailed)?;
+            .map_err(|_| InternalError::Send)?;
 
         log::info!("Node [{}] info sent to: {}", node_id, from);
 
@@ -276,19 +278,19 @@ impl Server {
         let mut sender = {
             match { self.state.read().await.starting_session.get(&id).cloned() } {
                 Some(sender) => sender.clone(),
-                None => return Err(Unauthorized::SessionNotFound(id.clone()).into()),
+                None => return Err(Unauthorized::SessionNotFound(id).into()),
             }
         };
 
         let request = match packet {
             Some(proto::packet::Kind::Request(request)) => request,
-            _ => return Err(BadRequest::InvalidPacket(id.clone(), format!("Request")).into()),
+            _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
         };
 
         Ok(sender
             .send(request)
             .await
-            .map_err(|_| ServerError::SendFailed)?)
+            .map_err(|_| InternalError::Send)?)
     }
 
     async fn init_session(
@@ -312,7 +314,7 @@ impl Server {
 
         self.send_to(challenge, &with)
             .await
-            .map_err(|_| ServerError::SendFailed)?;
+            .map_err(|_| InternalError::Send)?;
 
         log::info!("Challenge sent to: {}", with);
 
@@ -344,7 +346,7 @@ impl Server {
 
                 self.send_to(PacketKind::session_response(session_id), &with)
                     .await
-                    .map_err(|_| ServerError::SendFailed)?;
+                    .map_err(|_| InternalError::Send)?;
 
                 log::info!(
                     "Session: {}. Got valid challenge from node: {}",
@@ -354,7 +356,7 @@ impl Server {
 
                 node
             }
-            _ => return Err(BadRequest::InvalidPacket(session_id, format!("Session")).into()),
+            _ => return Err(BadRequest::InvalidPacket(session_id, "Session".to_string()).into()),
         };
 
         match rc.next().await {
@@ -379,7 +381,7 @@ impl Server {
 
                 log::info!("Session: {} established for node: {}", session_id, node_id);
             }
-            _ => return Err(BadRequest::InvalidPacket(session_id, format!("Register")).into()),
+            _ => return Err(BadRequest::InvalidPacket(session_id, "Register".to_string()).into()),
         };
         Ok(())
     }
@@ -389,12 +391,7 @@ impl Server {
     }
 
     async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<()> {
-        Ok(self
-            .inner
-            .socket
-            .clone()
-            .send((packet, target.clone()))
-            .await?)
+        Ok(self.inner.socket.clone().send((packet, *target)).await?)
     }
 
     pub async fn bind_udp(addr: url::Url) -> anyhow::Result<Server> {
@@ -458,11 +455,11 @@ impl Server {
             Error::Conflict(_) => PacketKind::error(id, StatusCode::Conflict),
             Error::PayloadTooLarge(_) => PacketKind::error(id, StatusCode::PayloadTooLarge),
             Error::TooManyRequests(_) => PacketKind::error(id, StatusCode::TooManyRequests),
-            Error::ServerError(_) => PacketKind::error(id, StatusCode::ServerError),
+            Error::Internal(_) => PacketKind::error(id, StatusCode::ServerError),
             Error::GatewayTimeout(_) => PacketKind::error(id, StatusCode::GatewayTimeout),
         };
 
-        self.send_to(response, &addr)
+        self.send_to(response, addr)
             .await
             .map_err(|e| log::error!("Failed to send error response. {}.", e))
             .ok();

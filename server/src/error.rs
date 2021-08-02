@@ -23,7 +23,7 @@ pub enum Error {
     #[error("TooManyRequests: {0}")]
     TooManyRequests(#[from] TooManyRequests),
     #[error("Internal Server error: {0}")]
-    ServerError(#[from] ServerError),
+    Internal(#[from] InternalError),
     #[error("GatewayTimeout: {0}")]
     GatewayTimeout(#[from] GatewayTimeout),
 }
@@ -75,19 +75,19 @@ pub enum PayloadTooLarge {}
 pub enum TooManyRequests {}
 
 #[derive(thiserror::Error, Clone, Debug)]
-pub enum ServerError {
+pub enum InternalError {
     #[error("Failed to send response.")]
-    SendFailed,
+    Send,
     #[error("Failed to receive response.")]
-    ReceivingFailed,
+    Receiving,
     #[error("Failed to encode packet.")]
-    EncodingFailed,
+    Encoding,
     #[error("Failed to decode packet.")]
-    DecodingFailed,
+    Decoding,
     #[error("Binding socket failed. {0}")]
-    BindingSocketFailed(String),
+    BindingSocket(String),
     #[error("NodeId [{0}] for session [{1}] not found.")]
-    GetSessionInfoFailed(NodeId, SessionId),
+    GettingSessionInfo(NodeId, SessionId),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]
