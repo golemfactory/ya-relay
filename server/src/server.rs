@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context};
 use bytes::BytesMut;
 use chrono::Utc;
+use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use std::collections::HashMap;
@@ -8,7 +9,7 @@ use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
@@ -44,8 +45,7 @@ pub struct ServerState {
 }
 
 pub struct ServerImpl {
-    socket: OutStream,
-
+    pub socket: OutStream,
     pub url: Url,
 }
 
@@ -316,7 +316,7 @@ impl Server {
 
         log::info!("Challenge sent to: {}", with);
 
-        let node = match rc.recv().await {
+        let node = match rc.next().await {
             Some(proto::Request {
                 kind: Some(proto::request::Kind::Session(session)),
             }) => {
@@ -357,7 +357,7 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(session_id, format!("Session")).into()),
         };
 
-        match rc.recv().await {
+        match rc.next().await {
             Some(proto::Request {
                 kind: Some(proto::request::Kind::Register(registration)),
             }) => {
@@ -398,8 +398,10 @@ impl Server {
     }
 
     pub async fn bind_udp(addr: url::Url) -> anyhow::Result<Server> {
-        let (input, output) = udp_bind(addr.clone()).await?;
-        Server::bind(addr, input, output)
+        let (input, output, addr) = udp_bind(addr.clone()).await?;
+        let url = Url::parse(&format!("udp://{}:{}", addr.ip(), addr.port()))?;
+
+        Server::bind(url, input, output)
     }
 
     pub fn bind(addr: url::Url, input: InStream, output: OutStream) -> anyhow::Result<Server> {
@@ -441,6 +443,8 @@ impl Server {
 
             server.error_response(id, &addr, error).await;
         }
+
+        log::info!("Server stopped.");
         Ok(())
     }
 
