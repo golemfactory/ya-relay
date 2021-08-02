@@ -57,3 +57,26 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[serial_test::serial]
+async fn test_query_other_node_info() -> anyhow::Result<()> {
+    let wrapper = init_test_server().await.unwrap();
+    let client1 = Client::connect(&wrapper.server).await.unwrap();
+    let client2 = Client::connect(&wrapper.server).await.unwrap();
+
+    let node1_id = NodeId::from_str("0x10069fc6fd02afeca110b9c32a21fb8ad899ee0a")?;
+    let node2_id = NodeId::from_str("0x20069fc6fd02afeca110b9c32a21fb8ad899ee0a")?;
+
+    let session1 = client1.init_session(node1_id).await.unwrap();
+    let _endpoints = client1.register_endpoints(session1, vec![]).await.unwrap();
+
+    let session2 = client2.init_session(node2_id).await.unwrap();
+    let _endpoints = client2.register_endpoints(session2, vec![]).await.unwrap();
+
+    let node2_info = client1.find_node(session1, node2_id).await.unwrap();
+    let node1_info = client2.find_node(session2, node1_id).await.unwrap();
+
+    assert_eq!(node1_id, NodeId::from(&node1_info.node_id[..]));
+    assert_eq!(node2_id, NodeId::from(&node2_info.node_id[..]));
+    Ok(())
+}
