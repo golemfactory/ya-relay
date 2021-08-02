@@ -13,6 +13,10 @@ use ya_net_server::SessionId;
 struct Options {
     #[structopt(short = "a", env = "NET_ADDRESS")]
     pub address: url::Url,
+    #[structopt(short = "f", long, env = "CLIENT_KEY_FILE")]
+    key_file: Option<String>,
+    #[structopt(short = "p", long, env = "CLIENT_KEY_PASSWORD", parse(from_str = Protected::from))]
+    key_password: Option<Protected>,
     #[structopt(subcommand)]
     pub commands: Commands,
 }
@@ -51,11 +55,8 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Options::from_args();
 
-    let key_file_name = std::env::var("CLIENT_KEY_FILE").unwrap_or("./client.key.json".to_string());
-    let key_file_password = std::env::var("CLIENT_KEY_PASSWORD")
-        .ok()
-        .map(|x| Protected::from(x));
-    let secret = load_or_generate(&key_file_name, key_file_password);
+    let password = args.key_password.clone();
+    let secret = args.key_file.map(|kf| load_or_generate(&kf, password));
     let client = Client::bind(args.address.clone(), secret).await?;
 
     log::info!("Sending to server listening on: {}", args.address);

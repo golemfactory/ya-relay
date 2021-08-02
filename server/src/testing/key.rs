@@ -7,6 +7,11 @@ use std::io::Write;
 const KEY_ITERATIONS: u32 = 2;
 const KEYSTORE_VERSION: u64 = 3;
 
+pub fn generate() -> SecretKey {
+    let random_bytes: [u8; 32] = rand::thread_rng().gen();
+    SecretKey::from_raw(random_bytes.as_ref()).unwrap()
+}
+
 pub fn load_or_generate(path: &str, password: Option<Protected>) -> SecretKey {
     log::debug!("load_or_generate({}, {:?})", path, &password);
 
@@ -35,11 +40,6 @@ fn try_load_from_file(path: &str, password: &Protected) -> Option<SecretKey> {
         return Some(secret);
     }
     None
-}
-
-fn generate() -> SecretKey {
-    let random_bytes: [u8; 32] = rand::thread_rng().gen();
-    SecretKey::from_raw(random_bytes.as_ref()).unwrap()
 }
 
 fn save_to_file(path: &str, secret: &SecretKey, password: &Protected) {

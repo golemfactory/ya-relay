@@ -18,6 +18,8 @@ use ya_relay_proto::codec::*;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::packet::Kind;
 
+use crate::testing::key;
+
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<RwLock<ClientImpl>>,
@@ -30,14 +32,15 @@ pub struct ClientImpl {
 }
 
 impl Client {
-    pub async fn connect(server: &Server, secret: SecretKey) -> anyhow::Result<Client> {
+    pub async fn connect(server: &Server, secret: Option<SecretKey>) -> anyhow::Result<Client> {
         let addr = { server.inner.read().await.url.clone() };
         Ok(Client::bind(addr, secret).await?)
     }
 
-    pub async fn bind(addr: Url, secret: SecretKey) -> anyhow::Result<Client> {
+    pub async fn bind(addr: Url, secret: Option<SecretKey>) -> anyhow::Result<Client> {
         let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
         let socket = UdpSocket::bind(local_addr).await?;
+        let secret = secret.unwrap_or(key::generate());
 
         Ok(Client {
             inner: Arc::new(RwLock::new(ClientImpl {

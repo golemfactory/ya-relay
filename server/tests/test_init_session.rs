@@ -1,5 +1,5 @@
 use ya_client_model::node_id::NodeId;
-use ya_net_server::testing::key::load_or_generate;
+use ya_net_server::testing::key::generate;
 use ya_net_server::testing::server::init_test_server;
 use ya_net_server::testing::Client;
 
@@ -7,9 +7,9 @@ use ya_net_server::testing::Client;
 async fn test_query_self_node_info() -> anyhow::Result<()> {
     let server = init_test_server().await.unwrap();
 
-    let client_key = load_or_generate("client.key.json", None);
+    let client_key = generate();
     let node_id = NodeId::from(*client_key.public().address());
-    let client = Client::connect(&server, client_key).await.unwrap();
+    let client = Client::connect(&server, Some(client_key)).await.unwrap();
 
     let session = client.init_session().await.unwrap();
     let node_info = client.find_node(session.clone(), node_id).await.unwrap();
