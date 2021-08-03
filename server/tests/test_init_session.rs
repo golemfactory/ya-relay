@@ -9,7 +9,9 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
 
     let client_key = generate();
     let node_id = NodeId::from(*client_key.public().address());
-    let builder = ClientBuilder::from_server(&server, Some(client_key)).await;
+    let builder = ClientBuilder::from_server(&server)
+        .await
+        .with_secret(client_key);
     let client = builder.build().await.unwrap();
 
     let session = client.init_session().await.unwrap();

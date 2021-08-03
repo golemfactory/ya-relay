@@ -55,9 +55,15 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Options::from_args();
 
-    let password = args.key_password.clone();
-    let secret = args.key_file.map(|kf| load_or_generate(&kf, password));
-    let builder = ClientBuilder::from_url(args.address.clone(), secret);
+    let address = args.address.clone();
+    let builder = if let Some(key_file) = args.key_file {
+        let password = args.key_password.clone();
+        let secret = load_or_generate(&key_file, password);
+        ClientBuilder::from_url(address).with_secret(secret)
+    } else {
+        ClientBuilder::from_url(address)
+    };
+
     let client = builder.build().await?;
 
     log::info!("Sending to server listening on: {}", args.address);
