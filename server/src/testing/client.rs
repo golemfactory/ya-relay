@@ -25,26 +25,42 @@ pub struct Client {
     inner: Arc<RwLock<ClientImpl>>,
 }
 
+pub struct ClientBuilder {
+    secret: SecretKey,
+    url: Url,
+}
+
 pub struct ClientImpl {
     net_address: SocketAddr,
     socket: UdpSocket,
     secret: SecretKey,
 }
 
-impl Client {
-    pub async fn connect(server: &Server, secret: Option<SecretKey>) -> anyhow::Result<Client> {
-        let addr = { server.inner.read().await.url.clone() };
-        Ok(Client::bind(addr, secret).await?)
+impl ClientBuilder {
+    pub async fn from_server(server: &Server, secret: Option<SecretKey>) -> ClientBuilder {
+        let url = { server.inner.read().await.url.clone() };
+        ClientBuilder::from_url(url, secret)
     }
 
-    pub async fn bind(addr: Url, secret: Option<SecretKey>) -> anyhow::Result<Client> {
+    pub fn from_url(url: Url, secret: Option<SecretKey>) -> ClientBuilder {
+        let secret = secret.unwrap_or(key::generate());
+        ClientBuilder { secret, url }
+    }
+
+    pub async fn build(&self) -> anyhow::Result<Client> {
+        Client::new(self).await
+    }
+}
+
+impl Client {
+    pub async fn new(builder: &ClientBuilder) -> anyhow::Result<Client> {
         let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
         let socket = UdpSocket::bind(local_addr).await?;
-        let secret = secret.unwrap_or(key::generate());
-
+        let url = builder.url.clone();
+        let secret = builder.secret.clone();
         Ok(Client {
             inner: Arc::new(RwLock::new(ClientImpl {
-                net_address: parse_udp_url(addr)?.parse()?,
+                net_address: parse_udp_url(url)?.parse()?,
                 socket,
                 secret,
             })),

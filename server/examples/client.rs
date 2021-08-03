@@ -4,7 +4,7 @@ use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
 use ya_net_server::testing::key::{load_or_generate, Protected};
-use ya_net_server::testing::Client;
+use ya_net_server::testing::ClientBuilder;
 use ya_net_server::SessionId;
 
 #[derive(StructOpt)]
@@ -57,7 +57,8 @@ async fn main() -> anyhow::Result<()> {
 
     let password = args.key_password.clone();
     let secret = args.key_file.map(|kf| load_or_generate(&kf, password));
-    let client = Client::bind(args.address.clone(), secret).await?;
+    let builder = ClientBuilder::from_url(args.address.clone(), secret);
+    let client = builder.build().await?;
 
     log::info!("Sending to server listening on: {}", args.address);
 
