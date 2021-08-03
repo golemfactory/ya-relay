@@ -43,7 +43,7 @@ impl ClientBuilder {
     }
 
     pub fn from_url(url: Url, secret: Option<SecretKey>) -> ClientBuilder {
-        let secret = secret.unwrap_or(key::generate());
+        let secret = secret.unwrap_or_else(key::generate);
         ClientBuilder { secret, url }
     }
 

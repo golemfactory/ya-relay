@@ -16,7 +16,7 @@ pub fn load_or_generate(path: &str, password: Option<Protected>) -> SecretKey {
     log::debug!("load_or_generate({}, {:?})", path, &password);
 
     // Default password = "", only use for testing purposes!
-    let password = password.unwrap_or(Protected::from("".to_string()));
+    let password = password.unwrap_or_else(|| Protected::from("".to_string()));
 
     if let Some(secret) = try_load_from_file(path, &password) {
         log::info!("Loaded key. path={}", path);
@@ -35,7 +35,7 @@ fn try_load_from_file(path: &str, password: &Protected) -> Option<SecretKey> {
         // Broken keyfile should panic
         let key: KeyFile = serde_json::from_reader(file).unwrap();
         // Invalid password should panic
-        let secret = key.to_secret_key(&password).unwrap();
+        let secret = key.to_secret_key(password).unwrap();
 
         return Some(secret);
     }
