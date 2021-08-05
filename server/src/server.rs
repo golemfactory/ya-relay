@@ -21,6 +21,7 @@ use crate::packets::{dispatch_response, PacketsCreator};
 use crate::session::{NodeInfo, NodeSession, SessionId};
 use crate::udp_stream::{udp_bind, InStream, OutStream};
 
+use crate::state::NodesState;
 use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
@@ -39,8 +40,7 @@ pub struct Server {
 }
 
 pub struct ServerState {
-    pub sessions: HashMap<SessionId, NodeId>,
-    pub nodes: HashMap<NodeId, NodeSession>,
+    pub nodes: NodesState,
     pub starting_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
 
     recv_socket: Option<InStream>,
@@ -69,7 +69,7 @@ impl Server {
 
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
-                let node = match self.state.read().await.sessions.get(&id).cloned() {
+                let node = match self.state.read().await.nodes.get_by_session(id) {
                     None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
                 };
@@ -90,7 +90,7 @@ impl Server {
                         log::warn!(
                             "Server shouldn't get Response packet. Sender: {}, node {}",
                             from,
-                            node,
+                            node.info.node_id,
                         );
                     }
                     Some(proto::packet::Kind::Control(_control)) => {
@@ -99,13 +99,19 @@ impl Server {
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
             }
-            PacketKind::Forward(_) => {
-                log::info!("Forward packet from: {}", from)
+            PacketKind::Forward(forward) => {
+                log::info!("Forward packet from: {}", from);
             }
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
         };
+
+        Ok(())
+    }
+
+    async fn forward(&self, packet: proto::Forward, from: SocketAddr) -> ServerResult<()> {
+        let session_id = SessionId::from(packet.session_id);
 
         Ok(())
     }
@@ -189,17 +195,7 @@ impl Server {
     async fn ping_request(&self, id: SessionId, from: SocketAddr) -> ServerResult<()> {
         {
             let mut server = self.state.write().await;
-            let node_id = match server.sessions.get(&id) {
-                None => return Err(Unauthorized::SessionNotFound(id).into()),
-                Some(node_id) => *node_id,
-            };
-
-            let mut node_info = server
-                .nodes
-                .get_mut(&node_id)
-                .ok_or(InternalError::GettingSessionInfo(node_id, id))?;
-
-            node_info.last_seen = Utc::now();
+            server.nodes.update_seen(id)?;
         }
 
         self.send_to(PacketKind::pong_response(id), &from)
@@ -223,7 +219,7 @@ impl Server {
 
         let node_id = NodeId::from(&params.node_id[..]);
         let node_info = {
-            match self.state.read().await.nodes.get(&node_id) {
+            match self.state.read().await.nodes.get_by_node_id(node_id) {
                 None => return Err(NotFound::Node(node_id).into()),
                 Some(session) => session.clone(),
             }
@@ -334,13 +330,13 @@ impl Server {
                 let info = NodeInfo {
                     node_id,
                     public_key: session.public_key,
+                    slot: 0,
                     endpoints: vec![],
                 };
 
                 let node = NodeSession {
                     info,
                     session: session_id,
-                    address: with,
                     last_seen: Utc::now(),
                 };
 
@@ -374,9 +370,7 @@ impl Server {
 
                 {
                     let mut server = self.state.write().await;
-
-                    server.sessions.insert(session_id, node_id);
-                    server.nodes.insert(node_id, node);
+                    server.nodes.register(node);
                 }
 
                 log::info!("Session: {} established for node: {}", session_id, node_id);
@@ -408,8 +402,7 @@ impl Server {
         });
 
         let state = Arc::new(RwLock::new(ServerState {
-            sessions: Default::default(),
-            nodes: Default::default(),
+            nodes: NodesState::new(),
             starting_session: Default::default(),
             recv_socket: Some(input),
         }));

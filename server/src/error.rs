@@ -86,8 +86,8 @@ pub enum InternalError {
     Decoding,
     #[error("Binding socket failed. {0}")]
     BindingSocket(String),
-    #[error("NodeId [{0}] for session [{1}] not found.")]
-    GettingSessionInfo(NodeId, SessionId),
+    #[error("Node info for session [{0}] not found.")]
+    GettingSessionInfo(SessionId),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]

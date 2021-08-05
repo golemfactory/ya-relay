@@ -3,7 +3,6 @@ use chrono::{DateTime, Utc};
 use rand::Rng;
 use std::convert::TryFrom;
 use std::fmt;
-use std::net::SocketAddr;
 
 use ya_client_model::NodeId;
 use ya_relay_proto::proto::{Endpoint, SESSION_ID_SIZE};
@@ -17,6 +16,7 @@ pub struct SessionId {
 pub struct NodeInfo {
     pub node_id: NodeId,
     pub public_key: Vec<u8>,
+    pub slot: u32,
 
     pub endpoints: Vec<Endpoint>,
 }
@@ -26,7 +26,6 @@ pub struct NodeSession {
     pub info: NodeInfo,
 
     pub session: SessionId,
-    pub address: SocketAddr,
     pub last_seen: DateTime<Utc>,
 }
 
@@ -53,6 +52,12 @@ impl TryFrom<&str> for SessionId {
 
     fn try_from(session: &str) -> Result<Self> {
         SessionId::try_from(hex::decode(session)?)
+    }
+}
+
+impl From<[u8; SESSION_ID_SIZE]> for SessionId {
+    fn from(array: [u8; SESSION_ID_SIZE]) -> Self {
+        SessionId { id: array }
     }
 }
 
