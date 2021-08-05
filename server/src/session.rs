@@ -1,15 +1,23 @@
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
 use rand::Rng;
 use std::convert::TryFrom;
 use std::fmt;
+use std::net::SocketAddr;
 
 use ya_client_model::NodeId;
-use ya_relay_proto::proto::{Endpoint, SESSION_ID_SIZE};
+use ya_relay_proto::proto;
+use ya_relay_proto::proto::SESSION_ID_SIZE;
 
 #[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq)]
 pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],
+}
+
+#[derive(Clone, PartialEq)]
+pub struct Endpoint {
+    pub protocol: proto::Protocol,
+    pub address: SocketAddr,
 }
 
 #[derive(Clone)]
@@ -82,5 +90,30 @@ impl fmt::Display for SessionId {
 impl fmt::Debug for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", hex::encode(self.id))
+    }
+}
+
+impl TryFrom<proto::Endpoint> for Endpoint {
+    type Error = anyhow::Error;
+
+    fn try_from(endpoint: proto::Endpoint) -> Result<Self> {
+        let mut address: SocketAddr = endpoint.address.parse()?;
+        address.set_port(endpoint.port as u16);
+
+        Ok(Endpoint {
+            protocol: proto::Protocol::from_i32(endpoint.protocol)
+                .ok_or(anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
+            address,
+        })
+    }
+}
+
+impl From<Endpoint> for proto::Endpoint {
+    fn from(endpoint: Endpoint) -> Self {
+        proto::Endpoint {
+            protocol: endpoint.protocol as i32,
+            address: endpoint.address.ip().to_string(),
+            port: endpoint.address.port() as u32,
+        }
     }
 }

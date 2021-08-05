@@ -44,7 +44,12 @@ pub trait PacketsCreator {
                 kind: Some(proto::response::Kind::Node(Node {
                     node_id: node_info.info.node_id.into_array().to_vec(),
                     public_key,
-                    endpoints: node_info.info.endpoints.clone(),
+                    endpoints: node_info
+                        .info
+                        .endpoints
+                        .into_iter()
+                        .map(proto::Endpoint::from)
+                        .collect(),
                     seen_ts: node_info.last_seen.timestamp() as u32,
                     slot: 0,
                     random: false,

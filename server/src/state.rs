@@ -10,9 +10,9 @@ pub struct NodesState {
     /// Constant time access using slot id optimized for forwarding.
     /// The consequence is, that we must store Option<NodeSession>, because
     /// we can't move elements after removal.
-    pub slots: Vec<Option<NodeSession>>,
-    pub sessions: HashMap<SessionId, u32>,
-    pub nodes: HashMap<NodeId, u32>,
+    slots: Vec<Option<NodeSession>>,
+    sessions: HashMap<SessionId, u32>,
+    nodes: HashMap<NodeId, u32>,
 }
 
 impl NodesState {
@@ -50,6 +50,10 @@ impl NodesState {
         Ok(())
     }
 
+    pub fn get_by_slot(&self, slot: u32) -> Option<NodeSession> {
+        self.slots.get(slot as usize).cloned().flatten()
+    }
+
     pub fn get_by_session(&self, id: SessionId) -> Option<NodeSession> {
         match self.sessions.get(&id) {
             None => None,
@@ -65,12 +69,7 @@ impl NodesState {
     }
 
     fn empty_slot(&self) -> u32 {
-        match self
-            .slots
-            .iter()
-            .enumerate()
-            .position(|(i, slot)| slot.is_none())
-        {
+        match self.slots.iter().position(|slot| slot.is_none()) {
             None => self.slots.len() as u32,
             Some(idx) => idx as u32,
         }

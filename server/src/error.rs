@@ -57,6 +57,8 @@ pub enum Unauthorized {
 pub enum NotFound {
     #[error("Node [{0}] not registered.")]
     Node(NodeId),
+    #[error("Failed to find Node by slot {0}.")]
+    NodeBySlot(u32),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]

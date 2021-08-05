@@ -28,6 +28,7 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     // TODO: More checks, after everything will be implemented.
     assert_eq!(node_id, NodeId::from(&node_info.node_id[..]));
     assert_eq!(node_info.random, false);
+    assert_ne!(node_info.slot, u32::max_value());
     assert_eq!(node_info.endpoints.len(), 1);
     assert_eq!(node_info.endpoints[0], endpoints[0]);
 

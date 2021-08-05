@@ -18,7 +18,7 @@ use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
 use crate::packets::{dispatch_response, PacketsCreator};
-use crate::session::{NodeInfo, NodeSession, SessionId};
+use crate::session::{Endpoint, NodeInfo, NodeSession, SessionId};
 use crate::udp_stream::{udp_bind, InStream, OutStream};
 
 use crate::state::NodesState;
@@ -99,9 +99,8 @@ impl Server {
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
             }
-            PacketKind::Forward(forward) => {
-                log::info!("Forward packet from: {}", from);
-            }
+            // TODO: Should we send response for Forward packet??
+            PacketKind::Forward(forward) => self.forward(forward, from).await?,
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
@@ -110,8 +109,39 @@ impl Server {
         Ok(())
     }
 
-    async fn forward(&self, packet: proto::Forward, from: SocketAddr) -> ServerResult<()> {
+    async fn forward(&self, packet: proto::Forward, _from: SocketAddr) -> ServerResult<()> {
         let session_id = SessionId::from(packet.session_id);
+        let slot = packet.slot;
+
+        let node = {
+            let server = self.state.read().await;
+
+            // Authorization: Sending Node must have established session.
+            server
+                .nodes
+                .get_by_session(session_id)
+                .ok_or(Unauthorized::SessionNotFound(session_id.clone()))?;
+
+            server
+                .nodes
+                .get_by_slot(slot)
+                .ok_or(NotFound::NodeBySlot(slot))?
+        };
+
+        if node.info.endpoints.len() > 0 {
+            // TODO: How to chose best endpoint.
+            let endpoint = node.info.endpoints[0].clone();
+
+            self.send_to(PacketKind::ForwardCtd(packet.payload), &endpoint.address)
+                .await
+                .map_err(|_| InternalError::Send)?;
+        } else {
+            log::info!(
+                "Can't forward packet for session [{}]. Node [{}] has no public address.",
+                session_id,
+                node.info.node_id
+            );
+        }
 
         Ok(())
     }
@@ -120,7 +150,7 @@ impl Server {
         &self,
         id: SessionId,
         addr: &SocketAddr,
-    ) -> ServerResult<Vec<proto::Endpoint>> {
+    ) -> ServerResult<Vec<Endpoint>> {
         // We need new socket to check, if Node's address is public.
         // If we would use the same socket as always, we would be able to
         // send packets even to addresses behind NAT.
@@ -162,10 +192,9 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(id, "Pong".to_string()).into()),
         };
 
-        Ok(vec![proto::Endpoint {
-            protocol: proto::Protocol::Udp as i32,
-            address: addr.ip().to_string(),
-            port: addr.port() as u32,
+        Ok(vec![Endpoint {
+            protocol: proto::Protocol::Udp,
+            address: addr.clone(),
         }])
     }
 
@@ -183,7 +212,16 @@ impl Server {
 
         node_info.info.endpoints.extend(endpoints.into_iter());
 
-        let response = PacketKind::register_response(id, node_info.info.endpoints.clone());
+        let response = PacketKind::register_response(
+            id,
+            node_info
+                .info
+                .endpoints
+                .iter()
+                .cloned()
+                .map(proto::Endpoint::from)
+                .collect(),
+        );
         self.send_to(response, &from)
             .await
             .map_err(|_| InternalError::Send)?;
@@ -330,7 +368,7 @@ impl Server {
                 let info = NodeInfo {
                     node_id,
                     public_key: session.public_key,
-                    slot: 0,
+                    slot: u32::max_value(),
                     endpoints: vec![],
                 };
 
