@@ -11,7 +11,6 @@ use ya_relay_proto::proto;
 async fn test_query_self_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client = ClientBuilder::from_server(&wrapper.server)
-        .await
         .with_secret(generate())
         .build()
         .await
@@ -44,7 +43,6 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
 async fn test_request_with_invalid_session() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client = ClientBuilder::from_server(&wrapper.server)
-        .await
         .with_secret(generate())
         .build()
         .await
@@ -70,13 +68,11 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
 async fn test_query_other_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client1 = ClientBuilder::from_server(&wrapper.server)
-        .await
         .with_secret(generate())
         .build()
         .await
         .unwrap();
     let client2 = ClientBuilder::from_server(&wrapper.server)
-        .await
         .with_secret(generate())
         .build()
         .await
