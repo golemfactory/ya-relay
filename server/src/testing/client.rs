@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail};
 use bytes::BytesMut;
+use ethsign::SecretKey;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -18,31 +19,72 @@ use ya_relay_proto::codec::*;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::packet::Kind;
 
+use crate::testing::key;
+
 #[derive(Clone)]
 pub struct Client {
     pub inner: Arc<RwLock<ClientImpl>>,
 }
 
+pub struct ClientBuilder {
+    secret: Option<SecretKey>,
+    url: Url,
+}
+
 pub struct ClientImpl {
     pub net_address: SocketAddr,
     pub socket: UdpSocket,
+    secret: SecretKey,
+
+    pub session: Option<SessionId>,
+}
+
+impl ClientBuilder {
+    pub fn from_server(server: &Server) -> ClientBuilder {
+        let url = { server.inner.url.clone() };
+        ClientBuilder::from_url(url)
+    }
+
+    pub fn from_url(url: Url) -> ClientBuilder {
+        ClientBuilder { secret: None, url }
+    }
+
+    pub fn with_secret(mut self, secret: SecretKey) -> ClientBuilder {
+        self.secret = Some(secret);
+        self
+    }
+
+    pub async fn build(&self) -> anyhow::Result<Client> {
+        Client::new(self).await
+    }
 }
 
 impl Client {
-    pub async fn connect(server: &Server) -> anyhow::Result<Client> {
-        Ok(Client::bind(server.inner.url.clone()).await?)
-    }
-
-    pub async fn bind(addr: Url) -> anyhow::Result<Client> {
+    pub async fn new(builder: &ClientBuilder) -> anyhow::Result<Client> {
         let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
         let socket = UdpSocket::bind(local_addr).await?;
-
+        let url = builder.url.clone();
+        let secret = builder.secret.clone().unwrap_or_else(key::generate);
         Ok(Client {
             inner: Arc::new(RwLock::new(ClientImpl {
-                net_address: parse_udp_url(addr)?.parse()?,
+                net_address: parse_udp_url(url)?.parse()?,
                 socket,
+                secret,
+                session: None,
             })),
         })
+    }
+
+    pub async fn id(&self) -> NodeId {
+        NodeId::from(*self.inner.read().await.secret.public().address())
+    }
+
+    pub async fn session_id(&self) -> anyhow::Result<SessionId> {
+        self.inner
+            .read()
+            .await
+            .session
+            .ok_or(anyhow!("Session not initialized"))
     }
 
     pub async fn register_endpoints(
@@ -100,7 +142,7 @@ impl Client {
         Ok(endpoints)
     }
 
-    pub async fn init_session(&self, node_id: NodeId) -> anyhow::Result<SessionId> {
+    pub async fn init_session(&self) -> anyhow::Result<SessionId> {
         let sent = self.send_packet(init_packet()).await?;
 
         log::info!("Init session packet sent ({} bytes).", sent);
@@ -130,6 +172,7 @@ impl Client {
             session
         );
 
+        let node_id = NodeId::from(*self.inner.read().await.secret.public().address());
         let sent = self.send_packet(session_packet(session, node_id)).await?;
 
         log::info!("Challenge response sent ({} bytes).", sent);
@@ -139,7 +182,7 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Didn't receive session response. Error: {}", e))?;
 
-        match packet {
+        let session = match packet {
             PacketKind::Packet(proto::Packet {
                 session_id,
                 kind:
@@ -148,15 +191,23 @@ impl Client {
                         kind: Some(proto::response::Kind::Session(proto::response::Session {})),
                     })),
             }) => match proto::StatusCode::from_i32(code) {
-                Some(proto::StatusCode::Ok) => Ok(session),
-                _ => Err(anyhow!(
-                    "Session [{}] response code: {}",
-                    SessionId::try_from(session_id)?,
-                    code as i32
-                )),
+                Some(proto::StatusCode::Ok) => session,
+                _ => {
+                    return Err(anyhow!(
+                        "Session [{}] response code: {}",
+                        SessionId::try_from(session_id)?,
+                        code as i32
+                    ))
+                }
             },
             _ => bail!("Invalid packet kind."),
+        };
+
+        {
+            self.inner.write().await.session = Some(session);
         }
+
+        Ok(session)
     }
 
     pub async fn ping(&self, session_id: SessionId) -> anyhow::Result<()> {
