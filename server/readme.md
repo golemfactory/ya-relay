@@ -6,7 +6,7 @@
 
 Initialize session with server:
 
-`RUST_LOG=info cargo run --example client -- -a udp://127.0.0.1:8888 init -n 0x95369fc6fd02afeca110b9c32a21fb8ad899ee0a`
+`RUST_LOG=info cargo run --example client -- -a udp://127.0.0.1:8888 init`
 
 Query information about Node:
 
