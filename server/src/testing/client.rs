@@ -29,6 +29,8 @@ pub struct Client {
 pub struct ClientBuilder {
     secret: Option<SecretKey>,
     url: Url,
+
+    auto_connect: bool,
 }
 
 pub struct ClientImpl {
@@ -46,7 +48,11 @@ impl ClientBuilder {
     }
 
     pub fn from_url(url: Url) -> ClientBuilder {
-        ClientBuilder { secret: None, url }
+        ClientBuilder {
+            secret: None,
+            url,
+            auto_connect: false,
+        }
     }
 
     pub fn with_secret(mut self, secret: SecretKey) -> ClientBuilder {
@@ -54,8 +60,20 @@ impl ClientBuilder {
         self
     }
 
+    pub fn connect(mut self) -> ClientBuilder {
+        self.auto_connect = true;
+        self
+    }
+
     pub async fn build(&self) -> anyhow::Result<Client> {
-        Client::new(self).await
+        let client = Client::new(self).await?;
+
+        if self.auto_connect {
+            client.init_session().await?;
+            client.register_endpoints(vec![]).await?;
+        }
+
+        Ok(client)
     }
 }
 
@@ -88,6 +106,15 @@ impl Client {
     }
 
     pub async fn register_endpoints(
+        &self,
+        endpoints: Vec<proto::Endpoint>,
+    ) -> anyhow::Result<Vec<proto::Endpoint>> {
+        let session_id = self.session_id().await?;
+        self.register_endpoints_with_session(session_id, endpoints)
+            .await
+    }
+
+    pub async fn register_endpoints_with_session(
         &self,
         session_id: SessionId,
         endpoints: Vec<proto::Endpoint>,
@@ -210,7 +237,12 @@ impl Client {
         Ok(session)
     }
 
-    pub async fn ping(&self, session_id: SessionId) -> anyhow::Result<()> {
+    pub async fn ping(&self) -> anyhow::Result<()> {
+        let session_id = self.session_id().await?;
+        self.ping_with_session(session_id).await
+    }
+
+    pub async fn ping_with_session(&self, session_id: SessionId) -> anyhow::Result<()> {
         self.send_packet(ping_packet(session_id)).await?;
 
         log::info!("Ping sent to server");
@@ -237,7 +269,12 @@ impl Client {
         Ok(())
     }
 
-    pub async fn find_node(
+    pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<proto::response::Node> {
+        let session_id = self.session_id().await?;
+        self.find_node_with_session(session_id, node_id).await
+    }
+
+    pub async fn find_node_with_session(
         &self,
         session_id: SessionId,
         node_id: NodeId,

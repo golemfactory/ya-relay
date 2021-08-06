@@ -5,7 +5,7 @@ use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use rand::Rng;
 use std::collections::HashMap;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
@@ -19,9 +19,9 @@ use crate::error::{
 };
 use crate::packets::{dispatch_response, PacketsCreator};
 use crate::session::{Endpoint, NodeInfo, NodeSession, SessionId};
+use crate::state::NodesState;
 use crate::udp_stream::{udp_bind, InStream, OutStream};
 
-use crate::state::NodesState;
 use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
@@ -109,40 +109,49 @@ impl Server {
         Ok(())
     }
 
-    async fn forward(&self, packet: proto::Forward, _from: SocketAddr) -> ServerResult<()> {
+    async fn forward(&self, mut packet: proto::Forward, _from: SocketAddr) -> ServerResult<()> {
         let session_id = SessionId::from(packet.session_id);
         let slot = packet.slot;
 
-        let node = {
+        let (src_node, dest_node) = {
             let server = self.state.read().await;
 
             // Authorization: Sending Node must have established session.
-            server
+            // TODO: This operation has log(n) complexity. It wastes optimization in `get_by_slot`
+            //       which has O(1) complexity.
+            let src_node = server
                 .nodes
                 .get_by_session(session_id)
                 .ok_or(Unauthorized::SessionNotFound(session_id.clone()))?;
 
-            server
+            let dest_node = server
                 .nodes
                 .get_by_slot(slot)
-                .ok_or(NotFound::NodeBySlot(slot))?
+                .ok_or(NotFound::NodeBySlot(slot))?;
+            (src_node, dest_node)
         };
 
-        if node.info.endpoints.len() > 0 {
-            // TODO: How to chose best endpoint.
-            let endpoint = node.info.endpoints[0].clone();
+        if dest_node.info.endpoints.len() > 0 {
+            // TODO: How to chose best endpoint?
+            let endpoint = dest_node.info.endpoints[0].clone();
 
-            self.send_to(PacketKind::ForwardCtd(packet.payload), &endpoint.address)
+            // Replace destination slot and session id with sender slot and session_id.
+            // Note: We can unwrap since SessionId type has the same array length.
+            packet.slot = src_node.info.slot;
+            packet.session_id = src_node.session.vec().as_slice().try_into().unwrap();
+
+            self.send_to(PacketKind::Forward(packet), &endpoint.address)
                 .await
                 .map_err(|_| InternalError::Send)?;
         } else {
             log::info!(
                 "Can't forward packet for session [{}]. Node [{}] has no public address.",
                 session_id,
-                node.info.node_id
+                dest_node.info.node_id
             );
         }
 
+        // TODO: We should update `last_seen` timestamp of `src_node`.
         Ok(())
     }
 

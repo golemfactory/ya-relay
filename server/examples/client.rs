@@ -70,19 +70,22 @@ async fn main() -> anyhow::Result<()> {
 
     match args.commands {
         Commands::Init(Init {}) => {
-            let id = client.init_session().await?;
-            let endpoints = client.register_endpoints(id, vec![]).await?;
+            client.init_session().await?;
+            let endpoints = client.register_endpoints(vec![]).await?;
 
             log::info!("Discovered public endpoints: {:?}", endpoints);
         }
         Commands::FindNode(opts) => {
             client
-                .find_node(SessionId::try_from(opts.session_id.as_str())?, opts.node_id)
+                .find_node_with_session(
+                    SessionId::try_from(opts.session_id.as_str())?,
+                    opts.node_id,
+                )
                 .await?;
         }
         Commands::Ping(opts) => {
             client
-                .ping(SessionId::try_from(opts.session_id.as_str())?)
+                .ping_with_session(SessionId::try_from(opts.session_id.as_str())?)
                 .await?;
         }
     };
