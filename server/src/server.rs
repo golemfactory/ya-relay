@@ -207,16 +207,17 @@ impl Server {
         with: SocketAddr,
         session_id: SessionId,
     ) -> anyhow::Result<()> {
+        let raw_challenge = Challenge {
+            version: "0.0.1".to_string(),
+            caps: 0,
+            kind: 0,
+            difficulty: 0,
+            challenge: rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>().to_vec(),
+        };
         let challenge = PacketKind::Packet(proto::Packet {
             session_id: session_id.vec(),
             kind: Some(proto::packet::Kind::Control(proto::Control {
-                kind: Some(proto::control::Kind::Challenge(Challenge {
-                    version: "0.0.1".to_string(),
-                    caps: 0,
-                    kind: 0,
-                    difficulty: 0,
-                    challenge: rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>().to_vec(),
-                })),
+                kind: Some(proto::control::Kind::Challenge(raw_challenge.clone())),
             })),
         });
 
@@ -231,6 +232,9 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // TODO: Validate challenge.
+                if session.challenge_resp != raw_challenge.challenge {
+                    bail!("Invalid challenge response")
+                }
 
                 if session.node_id.len() != 20 {
                     bail!("Invalid node id.")
