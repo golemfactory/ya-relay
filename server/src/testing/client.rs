@@ -11,15 +11,13 @@ use url::Url;
 
 use crate::packets::{dispatch_response, PacketsCreator};
 use crate::server::Server;
+use crate::testing::key;
 use crate::{parse_udp_url, SessionId};
 
 use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::*;
 use ya_relay_proto::proto;
-use ya_relay_proto::proto::packet::Kind;
-
-use crate::testing::key;
 
 #[derive(Clone)]
 pub struct Client {
@@ -209,25 +207,10 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Didn't receive session response. Error: {}", e))?;
 
-        let session = match packet {
-            PacketKind::Packet(proto::Packet {
-                session_id,
-                kind:
-                    Some(proto::packet::Kind::Response(proto::Response {
-                        code,
-                        kind: Some(proto::response::Kind::Session(proto::response::Session {})),
-                    })),
-            }) => match proto::StatusCode::from_i32(code) {
-                Some(proto::StatusCode::Ok) => session,
-                _ => {
-                    return Err(anyhow!(
-                        "Session [{}] response code: {}",
-                        SessionId::try_from(session_id)?,
-                        code as i32
-                    ))
-                }
-            },
-            _ => bail!("Invalid packet kind."),
+        let session = match dispatch_response(packet) {
+            Ok(proto::response::Kind::Session(_)) => session,
+            Err(code) => bail!("Session [{}] response code: {}", session, code as i32),
+            _ => bail!("Invalid packet kind. Expected Session response."),
         };
 
         {
@@ -252,19 +235,11 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Didn't receive Pong response. Error: {}", e))?;
 
-        match packet {
-            PacketKind::Packet(proto::Packet {
-                kind:
-                    Some(Kind::Response(proto::Response {
-                        kind: Some(proto::response::Kind::Pong(_)),
-                        ..
-                    })),
-                ..
-            }) => {
-                log::info!("Got ping from server.")
-            }
-            _ => bail!("Invalid Response."),
-        };
+        match dispatch_response(packet) {
+            Ok(proto::response::Kind::Pong(_)) => log::info!("Got ping from server."),
+            Err(e) => bail!("Error response for Ping. Code {:?}", e),
+            _ => bail!("Invalid Response packet. Expected Pong"),
+        }
 
         Ok(())
     }
