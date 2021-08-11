@@ -11,7 +11,9 @@ use url::Url;
 
 use crate::packets::{dispatch_response, PacketsCreator};
 use crate::server::Server;
+use crate::testing::dispatcher::Dispatcher;
 use crate::testing::key;
+use crate::udp_stream::udp_bind;
 use crate::{parse_udp_url, SessionId};
 
 use ya_client_model::NodeId;
@@ -33,7 +35,7 @@ pub struct ClientBuilder {
 
 pub struct ClientImpl {
     pub net_address: SocketAddr,
-    pub socket: UdpSocket,
+    pub dispatcher: Dispatcher,
     secret: SecretKey,
 
     pub session: Option<SessionId>,
@@ -77,14 +79,15 @@ impl ClientBuilder {
 
 impl Client {
     pub async fn new(builder: &ClientBuilder) -> anyhow::Result<Client> {
-        let local_addr: SocketAddr = "0.0.0.0:0".parse()?;
-        let socket = UdpSocket::bind(local_addr).await?;
+        let (input, output, url) = udp_bind(Url::parse("udp://0.0.0.0:0")?)?;
+
         let url = builder.url.clone();
         let secret = builder.secret.clone().unwrap_or_else(key::generate);
+
         Ok(Client {
             inner: Arc::new(RwLock::new(ClientImpl {
                 net_address: parse_udp_url(url)?.parse()?,
-                socket,
+                dispatcher: Dispatcher::,
                 secret,
                 session: None,
             })),

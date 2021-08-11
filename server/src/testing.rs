@@ -1,4 +1,5 @@
 pub mod client;
+mod dispatcher;
 pub mod key;
 pub mod server;
 
