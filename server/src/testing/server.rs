@@ -14,7 +14,7 @@ pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
     // so we `try_init`.
     let _ = env_logger::builder().try_init();
 
-    let server = Server::bind_udp(Url::parse("udp://0.0.0.0:0")?).await?;
+    let server = Server::bind_udp(Url::parse("udp://127.0.0.1:0")?).await?;
 
     let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
