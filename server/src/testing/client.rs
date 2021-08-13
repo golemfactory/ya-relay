@@ -1,12 +1,14 @@
 use anyhow::{anyhow, bail};
 use bytes::BytesMut;
 use ethsign::SecretKey;
+use std::convert::TryInto;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
 use tokio_util::codec::{Decoder, Encoder};
 
+use crate::challenge::solve_challenge;
 use crate::server::Server;
 use crate::{parse_udp_url, SessionId};
 
@@ -83,12 +85,19 @@ impl Client {
 
         log::info!("Decoded packet received from server.");
 
-        let session_challenge;
+        let challenge_resp;
         let session = SessionId::try_from(match packet {
             PacketKind::Packet(proto::Packet { session_id, kind }) => match kind {
                 Some(proto::packet::Kind::Control(proto::Control { kind })) => match kind {
-                    Some(proto::control::Kind::Challenge(proto::control::Challenge { challenge, .. })) => {
-                        session_challenge = challenge;
+                    Some(proto::control::Kind::Challenge(proto::control::Challenge {
+                        challenge,
+                        difficulty,
+                        ..
+                    })) => {
+                        challenge_resp = solve_challenge(
+                            &challenge.try_into().unwrap(),
+                            difficulty.try_into().unwrap(),
+                        );
                         session_id
                     }
                     _ => bail!("Expected Challenge packet."),
@@ -104,7 +113,9 @@ impl Client {
         );
 
         let node_id = NodeId::from(*self.inner.read().await.secret.public().address());
-        let sent = self.send_packet(session_packet(session, node_id, session_challenge)).await?;
+        let sent = self
+            .send_packet(session_packet(session, node_id, challenge_resp.to_vec()))
+            .await?;
 
         log::info!("Challenge response sent ({} bytes).", sent);
 

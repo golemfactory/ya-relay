@@ -12,6 +12,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
+use crate::challenge::validate_challenge;
 use crate::error::ServerError;
 use crate::packets::PacketsCreator;
 use crate::session::{NodeInfo, NodeSession, SessionId};
@@ -25,6 +26,7 @@ use ya_relay_proto::proto::request::Kind;
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
+pub const CHALLENGE_DIFFICULTY: usize = 2;
 
 #[derive(Clone)]
 pub struct Server {
@@ -207,17 +209,17 @@ impl Server {
         with: SocketAddr,
         session_id: SessionId,
     ) -> anyhow::Result<()> {
-        let raw_challenge = Challenge {
-            version: "0.0.1".to_string(),
-            caps: 0,
-            kind: 0,
-            difficulty: 0,
-            challenge: rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>().to_vec(),
-        };
+        let raw_challenge = rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>();
         let challenge = PacketKind::Packet(proto::Packet {
             session_id: session_id.vec(),
             kind: Some(proto::packet::Kind::Control(proto::Control {
-                kind: Some(proto::control::Kind::Challenge(raw_challenge.clone())),
+                kind: Some(proto::control::Kind::Challenge(Challenge {
+                    version: "0.0.1".to_string(),
+                    caps: 0,
+                    kind: 10,
+                    difficulty: CHALLENGE_DIFFICULTY as u64,
+                    challenge: raw_challenge.to_vec(),
+                })),
             })),
         });
 
@@ -231,8 +233,12 @@ impl Server {
             }) => {
                 log::info!("Got challenge from node: {}", with);
 
-                // TODO: Validate challenge.
-                if session.challenge_resp != raw_challenge.challenge {
+                // Validate the challenge
+                if !validate_challenge(
+                    &raw_challenge,
+                    &session.challenge_resp,
+                    CHALLENGE_DIFFICULTY,
+                ) {
                     bail!("Invalid challenge response")
                 }
 
