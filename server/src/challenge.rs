@@ -7,7 +7,7 @@ use sha3::{Digest, Sha3_512};
 // Currenly only used in examples and testing, not sure why its found to be dead.
 #[allow(dead_code)]
 pub fn solve_challenge(input: &[u8; CHALLENGE_SIZE], difficulty: usize) -> [u8; 68] {
-    let mut seed: i32 = 0;
+    let mut seed: u32 = 0;
     loop {
         let seed_bytes = seed.to_be_bytes();
         let result = compute_challenge(input, &seed_bytes);
@@ -18,7 +18,7 @@ pub fn solve_challenge(input: &[u8; CHALLENGE_SIZE], difficulty: usize) -> [u8; 
         }
         seed += 1;
         log::debug!("Checking new seed: {}", seed);
-        if seed == i32::MAX {
+        if seed == u32::MAX {
             panic!("Could not find seed with difficulty");
         }
     }
