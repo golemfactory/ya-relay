@@ -1,16 +1,17 @@
 use bytes::{Buf, BufMut, BytesMut};
+use derive_more::From;
 
 pub mod datagram;
 mod error;
 pub mod stream;
 
+pub use crate::codec::error::*;
 use crate::proto::{Forward, Packet};
-pub use error::*;
 
 pub const MAX_PACKET_SIZE: u32 = 2097151;
 pub const MAX_PARSE_MESSAGE_SIZE: usize = 600;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, From)]
 pub enum PacketKind {
     /// Protobuf packet
     Packet(Packet),
@@ -18,6 +19,29 @@ pub enum PacketKind {
     Forward(Forward),
     /// Bytes to forward, continuation (stream only)
     ForwardCtd(BytesMut),
+}
+
+impl PacketKind {
+    pub fn request_id(&self) -> Option<u64> {
+        use crate::proto;
+
+        if let PacketKind::Packet(proto::Packet {
+            kind: Some(proto::packet::Kind::Response(proto::Response { request_id, .. })),
+            ..
+        }) = self
+        {
+            return Some(*request_id);
+        }
+        None
+    }
+
+    pub fn session_id(&self) -> Vec<u8> {
+        match self {
+            PacketKind::Packet(Packet { session_id, .. }) => session_id.clone(),
+            PacketKind::Forward(Forward { session_id, .. }) => session_id.to_vec(),
+            PacketKind::ForwardCtd(_) => vec![],
+        }
+    }
 }
 
 #[inline(always)]

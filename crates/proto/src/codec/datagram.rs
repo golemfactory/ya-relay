@@ -11,7 +11,7 @@ pub struct Codec;
 
 impl Codec {
     pub fn stream(output: impl AsyncRead) -> impl Stream<Item = Result<PacketKind, Error>> {
-        FramedRead::new(output, Self::default())
+        FramedRead::with_capacity(output, Self::default(), MAX_PACKET_SIZE as usize)
     }
 
     pub fn sink(input: impl AsyncWrite) -> impl Sink<PacketKind, Error = Error> {
