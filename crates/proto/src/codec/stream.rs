@@ -336,41 +336,39 @@ mod tests {
     #[tokio::test]
     async fn receive_chunked() {
         let packets = vec![
-            PacketKind::Packet(Packet {
-                session_id: Vec::new(),
-                kind: Some(packet::Kind::Request(Request {
-                    kind: Some(request::Kind::Session(request::Session {
-                        challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
-                        node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
-                        public_key: vec![0x05, 0x0e, 0x0c],
-                    })),
-                })),
-            }),
-            PacketKind::Packet(Packet {
-                session_id: SESSION_ID.to_vec(),
-                kind: Some(packet::Kind::Request(Request {
-                    kind: Some(request::Kind::Register(request::Register {
-                        endpoints: vec![Endpoint {
-                            protocol: Protocol::Tcp as i32,
-                            address: "1.2.3.4".to_string(),
-                            port: 12345,
-                        }],
-                    })),
-                })),
-            }),
+            Packet::request(
+                Vec::new(),
+                request::Session {
+                    challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                    node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
+                    public_key: vec![0x05, 0x0e, 0x0c],
+                },
+            )
+            .into(),
+            Packet::request(
+                SESSION_ID.to_vec(),
+                request::Register {
+                    endpoints: vec![Endpoint {
+                        protocol: Protocol::Tcp as i32,
+                        address: "1.2.3.4".to_string(),
+                        port: 12345,
+                    }],
+                },
+            )
+            .into(),
             PacketKind::Forward(Forward {
                 session_id: SESSION_ID,
                 slot: 42,
                 payload: (0..8192).map(|_| rand::random::<u8>()).collect(),
             }),
-            PacketKind::Packet(Packet {
-                session_id: SESSION_ID.to_vec(),
-                kind: Some(packet::Kind::Request(Request {
-                    kind: Some(request::Kind::RandomNode(request::RandomNode {
-                        public_key: true,
-                    })),
-                })),
-            }),
+            Packet::request(
+                SESSION_ID.to_vec(),
+                request::Node {
+                    node_id: Vec::new(),
+                    public_key: true,
+                },
+            )
+            .into(),
         ];
 
         assert_eq!(packets, forward(packets.clone(), 1).await);
@@ -389,7 +387,9 @@ mod tests {
         let random_node = PacketKind::Packet(Packet {
             session_id: SESSION_ID.to_vec(),
             kind: Some(packet::Kind::Request(Request {
-                kind: Some(request::Kind::RandomNode(request::RandomNode {
+                request_id: 0,
+                kind: Some(request::Kind::Node(request::Node {
+                    node_id: Vec::new(),
                     public_key: true,
                 })),
             })),
@@ -400,6 +400,7 @@ mod tests {
             PacketKind::Packet(Packet {
                 session_id: Vec::new(),
                 kind: Some(packet::Kind::Request(Request {
+                    request_id: 1,
                     kind: Some(request::Kind::Session(request::Session {
                         challenge_resp: vec![0u8; MAX_PARSE_MESSAGE_SIZE],
                         node_id: vec![],

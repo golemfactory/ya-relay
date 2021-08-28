@@ -61,60 +61,55 @@ mod tests {
     use prost::Message;
     use tokio_util::codec::{Decoder, Encoder};
 
+    use crate::codec;
     use crate::codec::datagram::Codec;
-    use crate::codec::*;
-    use crate::proto::*;
+    use crate::codec::{DecodeError, Error, MAX_PACKET_SIZE};
+    use crate::proto::{self, *};
 
     const SESSION_ID: [u8; SESSION_ID_SIZE] = [0x0f; SESSION_ID_SIZE];
 
-    fn large_packet() -> packet::Kind {
-        packet::Kind::Request(Request {
-            kind: Some(request::Kind::Session(request::Session {
-                challenge_resp: vec![0u8; MAX_PACKET_SIZE as usize],
-                node_id: vec![],
-                public_key: vec![],
-            })),
+    fn large_packet() -> request::Kind {
+        request::Kind::Session(request::Session {
+            challenge_resp: vec![0u8; MAX_PACKET_SIZE as usize],
+            node_id: vec![],
+            public_key: vec![],
         })
     }
 
     #[tokio::test]
     async fn decode_datagrams() {
         let packets = vec![
-            PacketKind::Packet(Packet {
-                session_id: Vec::new(),
-                kind: Some(packet::Kind::Request(Request {
-                    kind: Some(request::Kind::Session(request::Session {
-                        challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
-                        node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
-                        public_key: vec![0x05, 0x0e, 0x0c],
-                    })),
-                })),
-            }),
-            PacketKind::Packet(Packet {
-                session_id: SESSION_ID.to_vec(),
-                kind: Some(packet::Kind::Request(Request {
-                    kind: Some(request::Kind::Register(request::Register {
-                        endpoints: vec![Endpoint {
-                            protocol: Protocol::Tcp as i32,
-                            address: "1.2.3.4".to_string(),
-                            port: 12345,
-                        }],
-                    })),
-                })),
-            }),
-            PacketKind::Forward(Forward {
+            proto::Packet::request(
+                Vec::new(),
+                request::Session {
+                    challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                    node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
+                    public_key: vec![0x05, 0x0e, 0x0c],
+                },
+            )
+            .into(),
+            proto::Packet::request(
+                SESSION_ID.to_vec(),
+                request::Session {
+                    challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                    node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
+                    public_key: vec![0x05, 0x0e, 0x0c],
+                },
+            )
+            .into(),
+            codec::PacketKind::Forward(Forward {
                 session_id: SESSION_ID,
                 slot: 42,
                 payload: (0..8192).map(|_| rand::random::<u8>()).collect(),
             }),
-            PacketKind::Packet(Packet {
-                session_id: SESSION_ID.to_vec(),
-                kind: Some(packet::Kind::Request(Request {
-                    kind: Some(request::Kind::RandomNode(request::RandomNode {
-                        public_key: true,
-                    })),
-                })),
-            }),
+            proto::Packet::request(
+                SESSION_ID.to_vec(),
+                request::Node {
+                    node_id: Vec::new(),
+                    public_key: true,
+                },
+            )
+            .into(),
         ];
 
         let mut codec_enc = Codec::default();
@@ -136,10 +131,7 @@ mod tests {
 
     #[test]
     fn decode_size_err() {
-        let packet = Packet {
-            session_id: SESSION_ID.to_vec(),
-            kind: Some(large_packet()),
-        };
+        let packet = Packet::request(SESSION_ID.to_vec(), large_packet());
         let len = packet.encoded_len();
 
         let mut codec = Codec::default();

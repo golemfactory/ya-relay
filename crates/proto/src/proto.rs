@@ -5,12 +5,6 @@ use std::sync::atomic::Ordering::SeqCst;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 
-pub use control::Kind as ControlKind;
-pub use control::{PauseForwarding, ResumeForwarding, ReverseConnection, StopForwarding};
-pub use packet::Kind as PacketKind;
-pub use request::Kind as RequestKind;
-pub use response::Kind as ResponseKind;
-
 pub const SESSION_ID_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 1;
 pub const FORWARD_TAG: u32 = 1;
@@ -18,6 +12,7 @@ pub const FORWARD_TAG: u32 = 1;
 const REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 pub type RequestId = u64;
+pub type SlotId = u32;
 
 #[derive(Clone, Default, PartialEq)]
 pub struct Forward {
