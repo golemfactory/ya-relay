@@ -35,7 +35,7 @@ impl Forward {
     pub fn encode(self, buf: &mut bytes::BytesMut) {
         encode_key(FORWARD_TAG, WireType::LengthDelimited, buf);
         buf.extend_from_slice(&self.session_id);
-        buf.extend_from_slice(&self.slot.to_le_bytes());
+        buf.extend_from_slice(&self.slot.to_be_bytes());
         buf.extend(self.payload.into_iter());
     }
 
@@ -53,7 +53,7 @@ impl Forward {
         session_id.copy_from_slice(&buf.split_to(SESSION_ID_SIZE));
 
         let slot = buf.split_to(4);
-        let slot = u32::from_le_bytes([slot[0], slot[1], slot[2], slot[3]]);
+        let slot = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]);
 
         Ok(Forward {
             session_id,
