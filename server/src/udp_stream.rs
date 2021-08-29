@@ -16,8 +16,8 @@ use crate::parse_udp_url;
 pub type InStream = Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr)>>>;
 pub type OutStream = mpsc::Sender<(PacketKind, SocketAddr)>;
 
-pub async fn udp_bind(addr: url::Url) -> anyhow::Result<(InStream, OutStream, SocketAddr)> {
-    let sock = UdpSocket::bind(&parse_udp_url(addr.clone())?).await?;
+pub async fn udp_bind(addr: &url::Url) -> anyhow::Result<(InStream, OutStream, SocketAddr)> {
+    let sock = UdpSocket::bind(&parse_udp_url(addr)?).await?;
     let addr = sock.local_addr()?;
 
     log::info!("Server listening on: {}", addr);
@@ -69,6 +69,9 @@ pub fn udp_sink(mut socket: SendHalf) -> anyhow::Result<mpsc::Sender<(PacketKind
         let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
 
         while let Some((packet, target)) = rx.next().await {
+            // Reusing the buffer, clear existing contents
+            buf.clear();
+
             if let Err(e) = codec.encode(packet, &mut buf) {
                 log::warn!("Error encoding packet. {}", e);
             } else {

@@ -1,5 +1,5 @@
 pub mod client;
-mod dispatcher;
+mod dispatch;
 pub mod key;
 pub mod server;
 

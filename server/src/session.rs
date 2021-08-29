@@ -69,6 +69,12 @@ impl From<[u8; SESSION_ID_SIZE]> for SessionId {
     }
 }
 
+impl Into<[u8; SESSION_ID_SIZE]> for SessionId {
+    fn into(self) -> [u8; SESSION_ID_SIZE] {
+        self.id
+    }
+}
+
 impl SessionId {
     pub fn generate() -> SessionId {
         SessionId {
@@ -76,8 +82,14 @@ impl SessionId {
         }
     }
 
-    pub fn vec(&self) -> Vec<u8> {
+    pub fn to_vec(&self) -> Vec<u8> {
         self.id.to_vec()
+    }
+}
+
+impl<'a> PartialEq<&'a [u8]> for SessionId {
+    fn eq(&self, other: &&'a [u8]) -> bool {
+        &self.id[..] == *other
     }
 }
 

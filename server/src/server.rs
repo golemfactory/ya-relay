@@ -17,7 +17,6 @@ use url::Url;
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
-use crate::packets::{dispatch_response, PacketsCreator};
 use crate::session::{Endpoint, NodeInfo, NodeSession, SessionId};
 use crate::state::NodesState;
 use crate::udp_stream::{udp_bind, InStream, OutStream};
@@ -26,9 +25,8 @@ use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
-use ya_relay_proto::proto::control::Challenge;
 use ya_relay_proto::proto::request::Kind;
-use ya_relay_proto::proto::StatusCode;
+use ya_relay_proto::proto::{RequestId, StatusCode};
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
@@ -59,9 +57,10 @@ impl Server {
                 if session_id.is_empty() {
                     match kind {
                         Some(proto::packet::Kind::Request(proto::Request {
+                            request_id,
                             kind: Some(proto::request::Kind::Session(_)),
                         })) => {
-                            return self.clone().new_session(from).await;
+                            return self.clone().new_session(request_id, from).await;
                         }
                         _ => return Err(BadRequest::NoSessionId.into()),
                     }
@@ -75,17 +74,19 @@ impl Server {
                 };
 
                 match kind {
-                    Some(proto::packet::Kind::Request(proto::Request { kind: Some(kind) })) => {
-                        match kind {
-                            Kind::Session(_) => {}
-                            Kind::Register(_) => {}
-                            Kind::Node(params) => self.node_request(id, from, params).await?,
-                            Kind::RandomNode(_) => {}
-                            Kind::Neighbours(_) => {}
-                            Kind::ReverseConn(_) => {}
-                            Kind::Ping(_) => self.ping_request(id, from).await?,
+                    Some(proto::packet::Kind::Request(proto::Request {
+                        request_id,
+                        kind: Some(kind),
+                    })) => match kind {
+                        Kind::Session(_) => {}
+                        Kind::Register(_) => {}
+                        Kind::Node(params) => {
+                            self.node_request(request_id, id, from, params).await?
                         }
-                    }
+                        Kind::Neighbours(_) => {}
+                        Kind::ReverseConnection(_) => {}
+                        Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
+                    },
                     Some(proto::packet::Kind::Response(_)) => {
                         log::warn!(
                             "Server shouldn't get Response packet. Sender: {}, node {}",
@@ -99,7 +100,7 @@ impl Server {
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
             }
-            // TODO: Should we send response for Forward packet??
+
             PacketKind::Forward(forward) => self.forward(forward, from).await?,
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
@@ -138,7 +139,9 @@ impl Server {
             // Replace destination slot and session id with sender slot and session_id.
             // Note: We can unwrap since SessionId type has the same array length.
             packet.slot = src_node.info.slot;
-            packet.session_id = src_node.session.vec().as_slice().try_into().unwrap();
+            packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
+
+            log::debug!("Sending forward packet to {}", endpoint.address);
 
             self.send_to(PacketKind::Forward(packet), &endpoint.address)
                 .await
@@ -157,7 +160,7 @@ impl Server {
 
     async fn public_endpoints(
         &self,
-        id: SessionId,
+        session_id: SessionId,
         addr: &SocketAddr,
     ) -> ServerResult<Vec<Endpoint>> {
         // We need new socket to check, if Node's address is public.
@@ -172,7 +175,7 @@ impl Server {
 
         // If we can ping `from` address it was public, if we don't get response
         // it could be private.
-        let ping = PacketKind::ping_packet(id);
+        let ping = proto::Packet::request(session_id.to_vec(), proto::request::Ping {}).into();
 
         codec
             .encode(ping, &mut buf)
@@ -198,7 +201,7 @@ impl Server {
                 .ok_or(InternalError::Decoding)?,
         ) {
             Ok(proto::response::Kind::Pong(_)) => {}
-            _ => return Err(BadRequest::InvalidPacket(id, "Pong".to_string()).into()),
+            _ => return Err(BadRequest::InvalidPacket(session_id, "Pong".to_string()).into()),
         };
 
         Ok(vec![Endpoint {
@@ -209,45 +212,64 @@ impl Server {
 
     async fn register_endpoints(
         &self,
-        id: SessionId,
+        request_id: RequestId,
+        session_id: SessionId,
         from: SocketAddr,
         _params: proto::request::Register,
-        mut node_info: NodeSession,
+        mut session: NodeSession,
     ) -> ServerResult<NodeSession> {
         // TODO: Note that we ignore endpoints sent by Node and only try
         //       to verify address, from which we received messages.
 
-        let endpoints = self.public_endpoints(id, &from).await?;
+        session
+            .info
+            .endpoints
+            .extend(self.public_endpoints(session_id, &from).await?.into_iter());
 
-        node_info.info.endpoints.extend(endpoints.into_iter());
-
-        let response = PacketKind::register_response(
-            id,
-            node_info
-                .info
-                .endpoints
-                .iter()
-                .cloned()
-                .map(proto::Endpoint::from)
-                .collect(),
+        let endpoints = session
+            .info
+            .endpoints
+            .iter()
+            .cloned()
+            .map(proto::Endpoint::from)
+            .collect();
+        let response = proto::Packet::response(
+            request_id,
+            session_id.to_vec(),
+            proto::StatusCode::Ok,
+            proto::response::Register { endpoints },
         );
+
         self.send_to(response, &from)
             .await
             .map_err(|_| InternalError::Send)?;
 
         log::info!("Responding to Register from: {}", from);
-        Ok(node_info)
+        Ok(session)
     }
 
-    async fn ping_request(&self, id: SessionId, from: SocketAddr) -> ServerResult<()> {
+    async fn ping_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+    ) -> ServerResult<()> {
         {
             let mut server = self.state.write().await;
-            server.nodes.update_seen(id)?;
+            server.nodes.update_seen(session_id)?;
         }
 
-        self.send_to(PacketKind::pong_response(id), &from)
-            .await
-            .map_err(|_| InternalError::Send)?;
+        self.send_to(
+            proto::Packet::response(
+                request_id,
+                session_id.to_vec(),
+                proto::StatusCode::Ok,
+                proto::response::Pong {},
+            ),
+            &from,
+        )
+        .await
+        .map_err(|_| InternalError::Send)?;
 
         log::info!("Responding to ping from: {}", from);
 
@@ -256,7 +278,8 @@ impl Server {
 
     async fn node_request(
         &self,
-        id: SessionId,
+        request_id: RequestId,
+        session_id: SessionId,
         from: SocketAddr,
         params: proto::request::Node,
     ) -> ServerResult<()> {
@@ -272,28 +295,49 @@ impl Server {
             }
         };
 
-        let response = PacketKind::node_response(id, node_info, params.public_key);
-        self.send_to(response, &from)
-            .await
-            .map_err(|_| InternalError::Send)?;
+        let public_key = if params.public_key {
+            node_info.info.public_key
+        } else {
+            vec![]
+        };
+        let node = proto::response::Node {
+            node_id: node_info.info.node_id.into_array().to_vec(),
+            public_key,
+            endpoints: node_info
+                .info
+                .endpoints
+                .into_iter()
+                .map(proto::Endpoint::from)
+                .collect(),
+            seen_ts: node_info.last_seen.timestamp() as u32,
+            slot: node_info.info.slot,
+            random: false,
+        };
+
+        self.send_to(
+            proto::Packet::response(request_id, session_id.to_vec(), proto::StatusCode::Ok, node),
+            &from,
+        )
+        .await
+        .map_err(|_| InternalError::Send)?;
 
         log::info!("Node [{}] info sent to: {}", node_id, from);
 
         Ok(())
     }
 
-    async fn new_session(self, with: SocketAddr) -> ServerResult<()> {
+    async fn new_session(self, request_id: RequestId, with: SocketAddr) -> ServerResult<()> {
         let (sender, receiver) = mpsc::channel(1);
-        let new_id = SessionId::generate();
+        let session_id = SessionId::generate();
 
-        log::info!("Initializing new session: {}", new_id);
+        log::info!("Initializing new session: {}", session_id);
 
         {
             self.state
                 .write()
                 .await
                 .starting_session
-                .entry(new_id)
+                .entry(session_id)
                 .or_insert(sender);
         }
 
@@ -301,12 +345,17 @@ impl Server {
         // TODO: We should spawn in different thread, but it's impossible since
         //       `init_session` starts actor and tokio panics.
         tokio::task::spawn_local(async move {
-            if let Err(e) = self.clone().init_session(receiver, with, new_id).await {
-                log::warn!("Error initializing session [{}], {}", new_id, e);
+            if let Err(e) = self
+                .clone()
+                .init_session(with, request_id, session_id, receiver)
+                .await
+            {
+                log::warn!("Error initializing session [{}], {}", session_id, e);
 
                 // Establishing session failed.
-                self.error_response(new_id.vec(), &with, e).await;
-                self.cleanup_initialization(&new_id).await;
+                self.error_response(request_id, session_id.to_vec(), &with, e)
+                    .await;
+                self.cleanup_initialization(&session_id).await;
             }
         });
         Ok(())
@@ -338,22 +387,23 @@ impl Server {
 
     async fn init_session(
         self,
-        mut rc: mpsc::Receiver<proto::Request>,
         with: SocketAddr,
+        request_id: RequestId,
         session_id: SessionId,
+        mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
-        let challenge = PacketKind::Packet(proto::Packet {
-            session_id: session_id.vec(),
-            kind: Some(proto::packet::Kind::Control(proto::Control {
-                kind: Some(proto::control::Kind::Challenge(Challenge {
-                    version: "0.0.1".to_string(),
-                    caps: 0,
-                    kind: 0,
-                    difficulty: 0,
-                    challenge: rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>().to_vec(),
-                })),
-            })),
-        });
+        let challenge = proto::Packet::response(
+            request_id,
+            session_id.to_vec(),
+            proto::StatusCode::Ok,
+            proto::response::Challenge {
+                version: "0.0.1".to_string(),
+                caps: 0,
+                kind: 0,
+                difficulty: 0,
+                challenge: rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>().to_vec(),
+            },
+        );
 
         self.send_to(challenge, &with)
             .await
@@ -363,6 +413,7 @@ impl Server {
 
         let node = match rc.next().await {
             Some(proto::Request {
+                request_id,
                 kind: Some(proto::request::Kind::Session(session)),
             }) => {
                 log::info!("Got challenge from node: {}", with);
@@ -387,9 +438,17 @@ impl Server {
                     last_seen: Utc::now(),
                 };
 
-                self.send_to(PacketKind::session_response(session_id), &with)
-                    .await
-                    .map_err(|_| InternalError::Send)?;
+                self.send_to(
+                    proto::Packet::response(
+                        request_id,
+                        session_id.to_vec(),
+                        proto::StatusCode::Ok,
+                        proto::response::Session {},
+                    ),
+                    &with,
+                )
+                .await
+                .map_err(|_| InternalError::Send)?;
 
                 log::info!(
                     "Session: {}. Got valid challenge from node: {}",
@@ -404,13 +463,14 @@ impl Server {
 
         match rc.next().await {
             Some(proto::Request {
+                request_id,
                 kind: Some(proto::request::Kind::Register(registration)),
             }) => {
                 log::info!("Got register from node: {}", with);
 
                 let node_id = node.info.node_id;
                 let node = self
-                    .register_endpoints(session_id, with, registration, node)
+                    .register_endpoints(request_id, session_id, with, registration, node)
                     .await?;
 
                 self.cleanup_initialization(&session_id).await;
@@ -431,12 +491,21 @@ impl Server {
         self.state.write().await.starting_session.remove(session_id);
     }
 
-    async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<()> {
-        Ok(self.inner.socket.clone().send((packet, *target)).await?)
+    async fn send_to(
+        &self,
+        packet: impl Into<PacketKind>,
+        target: &SocketAddr,
+    ) -> anyhow::Result<()> {
+        Ok(self
+            .inner
+            .socket
+            .clone()
+            .send((packet.into(), *target))
+            .await?)
     }
 
     pub async fn bind_udp(addr: url::Url) -> anyhow::Result<Server> {
-        let (input, output, addr) = udp_bind(addr.clone()).await?;
+        let (input, output, addr) = udp_bind(&addr).await?;
         let url = Url::parse(&format!("udp://{}:{}", addr.ip(), addr.port()))?;
 
         Server::bind(url, input, output)
@@ -469,44 +538,68 @@ impl Server {
         };
 
         while let Some((packet, addr)) = input.next().await {
-            let id = PacketKind::session(&packet);
-
+            let request_id = PacketKind::request_id(&packet);
+            let session_id = PacketKind::session_id(&packet);
             let error = match server.dispatch(addr, packet).await {
                 Ok(_) => continue,
                 Err(e) => e,
             };
 
             log::error!("Packet dispatch failed. {}", error);
-
-            server.error_response(id, &addr, error).await;
+            if let Some(request_id) = request_id {
+                server
+                    .error_response(request_id, session_id, &addr, error)
+                    .await;
+            }
         }
 
         log::info!("Server stopped.");
         Ok(())
     }
 
-    async fn error_response(&self, id: Vec<u8>, addr: &SocketAddr, error: Error) {
-        let response = match error {
-            Error::Undefined(_) => PacketKind::error(id, StatusCode::Undefined),
-            Error::BadRequest(_) => PacketKind::error(id, StatusCode::BadRequest),
-            Error::Unauthorized(_) => PacketKind::error(id, StatusCode::Unauthorized),
-            Error::NotFound(_) => PacketKind::error(id, StatusCode::NotFound),
-            Error::Timeout(_) => PacketKind::error(id, StatusCode::Timeout),
-            Error::Conflict(_) => PacketKind::error(id, StatusCode::Conflict),
-            Error::PayloadTooLarge(_) => PacketKind::error(id, StatusCode::PayloadTooLarge),
-            Error::TooManyRequests(_) => PacketKind::error(id, StatusCode::TooManyRequests),
-            Error::Internal(_) => PacketKind::error(id, StatusCode::ServerError),
-            Error::GatewayTimeout(_) => PacketKind::error(id, StatusCode::GatewayTimeout),
+    async fn error_response(&self, req_id: u64, id: Vec<u8>, addr: &SocketAddr, error: Error) {
+        let status_code = match error {
+            Error::Undefined(_) => StatusCode::Undefined,
+            Error::BadRequest(_) => StatusCode::BadRequest,
+            Error::Unauthorized(_) => StatusCode::Unauthorized,
+            Error::NotFound(_) => StatusCode::NotFound,
+            Error::Timeout(_) => StatusCode::Timeout,
+            Error::Conflict(_) => StatusCode::Conflict,
+            Error::PayloadTooLarge(_) => StatusCode::PayloadTooLarge,
+            Error::TooManyRequests(_) => StatusCode::TooManyRequests,
+            Error::Internal(_) => StatusCode::ServerError,
+            Error::GatewayTimeout(_) => StatusCode::GatewayTimeout,
         };
 
-        self.send_to(response, addr)
+        self.send_to(proto::Packet::error(req_id, id, status_code), addr)
             .await
             .map_err(|e| log::error!("Failed to send error response. {}.", e))
             .ok();
     }
 }
 
-pub fn parse_udp_url(url: Url) -> anyhow::Result<String> {
+pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, proto::StatusCode> {
+    match packet {
+        PacketKind::Packet(proto::Packet {
+            kind: Some(proto::packet::Kind::Response(proto::Response { kind, code, .. })),
+            ..
+        }) => match kind {
+            None => {
+                Err(proto::StatusCode::from_i32(code as i32).ok_or(proto::StatusCode::Undefined)?)
+            }
+            Some(response) => {
+                match proto::StatusCode::from_i32(code as i32) {
+                    Some(proto::StatusCode::Ok) => Ok(response),
+                    _ => Err(proto::StatusCode::from_i32(code as i32)
+                        .ok_or(proto::StatusCode::Undefined)?),
+                }
+            }
+        },
+        _ => Err(proto::StatusCode::Undefined),
+    }
+}
+
+pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
     let host = url.host_str().context("Needs host for NET URL")?;
     let port = url.port().unwrap_or(DEFAULT_NET_PORT);
 
