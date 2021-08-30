@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use chrono::{DateTime, Utc};
 use rand::Rng;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::fmt;
 use std::net::SocketAddr;
 
@@ -38,10 +38,13 @@ impl TryFrom<Vec<u8>> for SessionId {
             bail!("Invalid SessionID: {}", String::from_utf8(session)?)
         }
 
-        // Ignoring error, because we checked array length.
-        Ok(SessionId {
-            id: session.as_slice().try_into().unwrap(),
-        })
+        let mut id: [u8; SESSION_ID_SIZE] = [0; SESSION_ID_SIZE];
+        session[0..SESSION_ID_SIZE]
+            .iter()
+            .enumerate()
+            .for_each(|(i, s)| id[i] = *s);
+
+        Ok(SessionId { id })
     }
 }
 
