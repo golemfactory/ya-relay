@@ -1,10 +1,4 @@
-pub(crate) mod challenge;
-pub(crate) mod error;
-pub(crate) mod packets;
-mod server;
-pub(crate) mod session;
-
-use server::Server;
+use ya_net_server::Server;
 
 use structopt::{clap, StructOpt};
 
@@ -22,6 +16,6 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Options::from_args();
 
-    let server = Server::bind(args.address).await?;
+    let server = Server::bind_udp(args.address).await?;
     server.run().await
 }

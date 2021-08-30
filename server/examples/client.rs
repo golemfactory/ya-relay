@@ -70,7 +70,10 @@ async fn main() -> anyhow::Result<()> {
 
     match args.commands {
         Commands::Init(Init {}) => {
-            client.init_session().await?;
+            let id = client.init_session().await?;
+            let endpoints = client.register_endpoints(id, vec![]).await?;
+
+            log::info!("Discovered public endpoints: {:?}", endpoints);
         }
         Commands::FindNode(opts) => {
             client
