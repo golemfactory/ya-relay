@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
+use crate::challenge::{Challenge, DefaultChallenge};
 use crate::packets::{dispatch_response, PacketsCreator};
 use crate::server::Server;
 use crate::{parse_udp_url, SessionId};
@@ -154,10 +155,21 @@ impl Client {
 
         log::info!("Decoded packet received from server. {:?}", packet);
 
+        let challenge_resp;
+        let public_key;
+
         let session = SessionId::try_from(match packet {
             PacketKind::Packet(proto::Packet { session_id, kind }) => match kind {
                 Some(proto::packet::Kind::Control(proto::Control { kind })) => match kind {
-                    Some(proto::control::Kind::Challenge(proto::control::Challenge { .. })) => {
+                    Some(proto::control::Kind::Challenge(proto::control::Challenge {
+                        challenge,
+                        difficulty,
+                        ..
+                    })) => {
+                        let secret = self.inner.read().await.secret.clone();
+                        public_key = secret.public();
+                        challenge_resp = DefaultChallenge::with(secret)
+                            .solve(challenge.as_slice(), difficulty)?;
                         session_id
                     }
                     _ => bail!("Expected Challenge packet."),
@@ -173,7 +185,14 @@ impl Client {
         );
 
         let node_id = NodeId::from(*self.inner.read().await.secret.public().address());
-        let sent = self.send_packet(session_packet(session, node_id)).await?;
+        let sent = self
+            .send_packet(session_packet(
+                session,
+                node_id,
+                challenge_resp,
+                public_key.bytes().to_vec(),
+            ))
+            .await?;
 
         log::info!("Challenge response sent ({} bytes).", sent);
 
@@ -325,14 +344,19 @@ fn ping_packet(session_id: SessionId) -> PacketKind {
     })
 }
 
-fn session_packet(session_id: SessionId, node_id: NodeId) -> PacketKind {
+fn session_packet(
+    session_id: SessionId,
+    node_id: NodeId,
+    challenge_resp: Vec<u8>,
+    public_key: Vec<u8>,
+) -> PacketKind {
     PacketKind::Packet(proto::Packet {
         session_id: session_id.vec(),
         kind: Some(proto::packet::Kind::Request(proto::Request {
             kind: Some(proto::request::Kind::Session(proto::request::Session {
-                challenge_resp: vec![0u8; 2048_usize],
+                challenge_resp,
                 node_id: node_id.into_array().to_vec(),
-                public_key: vec![],
+                public_key,
             })),
         })),
     })
