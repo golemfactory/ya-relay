@@ -12,7 +12,7 @@ use tokio::sync::{mpsc, RwLock};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::challenge::validate_challenge;
+use crate::challenge::{Challenge, DefaultChallenge};
 use crate::error::ServerError;
 use crate::packets::PacketsCreator;
 use crate::session::{NodeInfo, NodeSession, SessionId};
@@ -21,12 +21,11 @@ use ya_client_model::NodeId;
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
-use ya_relay_proto::proto::control::Challenge;
 use ya_relay_proto::proto::request::Kind;
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
-pub const CHALLENGE_DIFFICULTY: usize = 2;
+pub const CHALLENGE_DIFFICULTY: u64 = 16;
 
 #[derive(Clone)]
 pub struct Server {
@@ -213,13 +212,15 @@ impl Server {
         let challenge = PacketKind::Packet(proto::Packet {
             session_id: session_id.vec(),
             kind: Some(proto::packet::Kind::Control(proto::Control {
-                kind: Some(proto::control::Kind::Challenge(Challenge {
-                    version: "0.0.1".to_string(),
-                    caps: 0,
-                    kind: 10,
-                    difficulty: CHALLENGE_DIFFICULTY as u64,
-                    challenge: raw_challenge.to_vec(),
-                })),
+                kind: Some(proto::control::Kind::Challenge(
+                    ya_relay_proto::proto::control::Challenge {
+                        version: "0.0.1".to_string(),
+                        caps: 0,
+                        kind: 10,
+                        difficulty: CHALLENGE_DIFFICULTY as u64,
+                        challenge: raw_challenge.to_vec(),
+                    },
+                )),
             })),
         });
 
@@ -234,12 +235,12 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // Validate the challenge
-                if !validate_challenge(
+                if !DefaultChallenge::with(session.public_key.as_slice()).validate(
                     &raw_challenge,
-                    &session.challenge_resp,
                     CHALLENGE_DIFFICULTY,
-                ) {
-                    bail!("Invalid challenge response")
+                    &session.challenge_resp,
+                )? {
+                    bail!("Invalid challenge response");
                 }
 
                 if session.node_id.len() != 20 {
