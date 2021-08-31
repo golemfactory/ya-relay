@@ -10,7 +10,8 @@ package ya_relay_proto;
        messages must not overlap,
     2. Control messages must not be responded to,
     3. Response::Node sent to Request::Node contains a corresponding `node_id`,
-    4. Response::Node sent to Request::RandomNode contains the `random` flag,
+    4. Response::Node sent to Request::Node with empty node_id (random node)
+       contains the `random` flag,
     5. Response::ReverseConnection sent to Request::ReverseConnection
        the corresponding `node_id`.
 
@@ -20,21 +21,16 @@ package ya_relay_proto;
 
 
 /*
-    a. TCP session initialization
-        Server ᐊ─          connect           ── Client
-        Server ── [  Control::Challenge    ] ─ᐅ Client
+    Server ᐊ─ [  Request::Session (E) ] ── Client
+    Server ── [  Response::Challenge  ] ─ᐅ Client
 
-    b. UDP session initialization
-        Server ᐊ─ [  Request::Session (E)  ] ── Client
-        Server ── [  Control::Challenge    ] ─ᐅ Client
+    Server ᐊ─ [  Request::Session     ] ── Client
+    Server ── [  Response::Session    ] ─ᐅ Client
 
-    Server ᐊ─ [  Request::Session      ] ── Client
-    Server ── [  Response::Session     ] ─ᐅ Client
+    Server ᐊ─ [  Request::Register    ] ── Client
+    Server ── [  Response::Register   ] ─ᐅ Client
 
-    Server ᐊ─ [  Request::Register     ] ── Client
-    Server ── [  Response::Register    ] ─ᐅ Client
-
-    (E): empty message
+    (E): empty session id
  */
 
 
@@ -65,13 +61,14 @@ message Packet {
 
 /* Requests sent to the server by the client */
 message Request {
+    uint64 request_id = 1;
+
     oneof kind {
         Session session = 10;
         Register register = 20;
         Node node = 30;
-        RandomNode random_node = 31;
         Neighbours neighbours = 40;
-        ReverseConnection reverse_conn = 50;
+        ReverseConnection reverse_connection = 50;
         Ping ping = 80;
     }
 
@@ -93,11 +90,6 @@ message Request {
         bool public_key = 2;
     }
 
-    message RandomNode {
-        /* Whether to include public key */
-        bool public_key = 1;
-    }
-
     message Neighbours {
         uint32 count = 1;
         /* Whether to include public keys */
@@ -114,51 +106,16 @@ message Request {
 
 /* Responses sent by the server to the client */
 message Response {
-    StatusCode code = 1;
+    uint64 request_id = 1;
+    StatusCode code = 2;
+
     oneof kind {
-        Session session = 10;
+        Challenge challenge = 10;
+        Session session = 11;
         Register register = 20;
         Node node = 30;
         Neighbours neighbours = 40;
         Pong pong = 80;
-    }
-
-    message Session {}
-
-    message Register {
-        /* Discovered endpoints */
-        repeated Endpoint endpoints = 1;
-    }
-
-    message Node {
-        bytes node_id = 2;
-        bytes public_key = 3;
-        repeated Endpoint endpoints = 4;
-        uint32 seen_ts = 5;
-        uint32 slot = 6;
-        /* random node flag */
-        bool random = 7;
-    }
-
-    message Neighbours {
-        repeated Node nodes = 1;
-    }
-
-    message ReverseConnection {
-        bytes node_id = 1;
-    }
-
-    message Pong {}
-}
-
-/* Control messages (w/o response) sent by server to the client */
-message Control {
-    oneof kind {
-        Challenge challenge = 10;
-        ReverseConnection reverse_conn = 20;
-        PauseForwarding pause = 30;
-        ResumeForwarding resume = 31;
-        StopForwarding stop = 32;
     }
 
     /* Challenge newly-connected nodes */
@@ -175,6 +132,47 @@ message Control {
         Kind kind = 3;
         uint64 difficulty = 4;
         bytes challenge = 5;
+    }
+
+    /* Session ACK */
+    message Session {}
+
+    /* Registered endpoints */
+    message Register {
+        /* Discovered endpoints */
+        repeated Endpoint endpoints = 1;
+    }
+
+    /* Node information */
+    message Node {
+        bytes node_id = 2;
+        bytes public_key = 3;
+        repeated Endpoint endpoints = 4;
+        uint32 seen_ts = 5;
+        uint32 slot = 6;
+        /* random node flag */
+        bool random = 7;
+    }
+
+    /* Neighbourhood */
+    message Neighbours {
+        repeated Node nodes = 1;
+    }
+
+    message ReverseConnection {
+        bytes node_id = 1;
+    }
+
+    message Pong {}
+}
+
+/* Control messages (w/o response) sent by server to the client */
+message Control {
+    oneof kind {
+        ReverseConnection reverse_connection = 10;
+        PauseForwarding pause_forwarding = 20;
+        ResumeForwarding resume_forwarding = 21;
+        StopForwarding stop_forwarding = 22;
     }
 
     /* Connect to another node */

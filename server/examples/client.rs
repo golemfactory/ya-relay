@@ -1,11 +1,9 @@
 use env_logger;
-use std::convert::TryFrom;
 use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
 use ya_net_server::testing::key::{load_or_generate, Protected};
 use ya_net_server::testing::ClientBuilder;
-use ya_net_server::SessionId;
 
 #[derive(StructOpt)]
 #[structopt(about = "NET Client")]
@@ -31,10 +29,7 @@ pub enum Commands {
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt(rename_all = "kebab-case")]
-pub struct Ping {
-    #[structopt(short = "s", long, env)]
-    session_id: String,
-}
+pub struct Ping {}
 
 #[derive(StructOpt, Clone, Debug)]
 #[structopt(rename_all = "kebab-case")]
@@ -45,8 +40,6 @@ pub struct Init {}
 pub struct FindNode {
     #[structopt(short = "n", long, env)]
     node_id: NodeId,
-    #[structopt(short = "s", long, env)]
-    session_id: String,
 }
 
 #[actix_rt::main]
@@ -59,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
     let builder = if let Some(key_file) = args.key_file {
         let password = args.key_password.clone();
         let secret = load_or_generate(&key_file, password);
-        ClientBuilder::from_url(address).with_secret(secret)
+        ClientBuilder::from_url(address).secret(secret)
     } else {
         ClientBuilder::from_url(address)
     };
@@ -70,23 +63,18 @@ async fn main() -> anyhow::Result<()> {
 
     match args.commands {
         Commands::Init(Init {}) => {
-            client.init_session().await?;
-            let endpoints = client.register_endpoints(vec![]).await?;
+            let session = client.server_session().await?;
+            let endpoints = session.register_endpoints(vec![]).await?;
 
             log::info!("Discovered public endpoints: {:?}", endpoints);
         }
         Commands::FindNode(opts) => {
-            client
-                .find_node_with_session(
-                    SessionId::try_from(opts.session_id.as_str())?,
-                    opts.node_id,
-                )
-                .await?;
+            let session = client.server_session().await?;
+            session.find_node(opts.node_id).await?;
         }
-        Commands::Ping(opts) => {
-            client
-                .ping_with_session(SessionId::try_from(opts.session_id.as_str())?)
-                .await?;
+        Commands::Ping(_) => {
+            let session = client.server_session().await?;
+            session.ping().await?;
         }
     };
 
