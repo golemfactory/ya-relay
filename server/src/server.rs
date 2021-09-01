@@ -14,6 +14,7 @@ use tokio::time::{timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
+use crate::challenge::{Challenge, DefaultChallenge};
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
@@ -30,6 +31,7 @@ use ya_relay_proto::proto::{RequestId, StatusCode};
 
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
+pub const CHALLENGE_DIFFICULTY: u64 = 16;
 
 #[derive(Clone)]
 pub struct Server {
@@ -392,6 +394,7 @@ impl Server {
         session_id: SessionId,
         mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
+        let raw_challenge = rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>();
         let challenge = proto::Packet::response(
             request_id,
             session_id.to_vec(),
@@ -399,9 +402,9 @@ impl Server {
             proto::response::Challenge {
                 version: "0.0.1".to_string(),
                 caps: 0,
-                kind: 0,
-                difficulty: 0,
-                challenge: rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>().to_vec(),
+                kind: 10,
+                difficulty: CHALLENGE_DIFFICULTY as u64,
+                challenge: raw_challenge.to_vec(),
             },
         );
 
@@ -418,7 +421,17 @@ impl Server {
             }) => {
                 log::info!("Got challenge from node: {}", with);
 
-                // TODO: Validate challenge.
+                // Validate the challenge
+                if !DefaultChallenge::with(session.public_key.as_slice())
+                    .validate(
+                        &raw_challenge,
+                        CHALLENGE_DIFFICULTY,
+                        &session.challenge_resp,
+                    )
+                    .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
+                {
+                    return Err(Unauthorized::InvalidChallenge.into());
+                }
 
                 if session.node_id.len() != 20 {
                     return Err(BadRequest::InvalidNodeId.into());

@@ -1,6 +1,7 @@
 use std::convert::TryFrom;
 
 use ya_client_model::NodeId;
+use ya_net_server::testing::key::generate;
 use ya_net_server::testing::server::init_test_server;
 use ya_net_server::testing::ClientBuilder;
 use ya_net_server::SessionId;
@@ -9,9 +10,11 @@ use ya_relay_proto::proto;
 #[serial_test::serial]
 async fn test_query_self_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let url = wrapper.server.inner.url.clone();
-
-    let client = ClientBuilder::from_url(url).build().await.unwrap();
+    let client = ClientBuilder::from_server(&wrapper.server)
+        .secret(generate())
+        .build()
+        .await
+        .unwrap();
 
     let node_id = client.node_id().await;
     let endpoints = vec![proto::Endpoint {
@@ -40,9 +43,8 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
 #[serial_test::serial]
 async fn test_request_with_invalid_session() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let url = wrapper.server.inner.url.clone();
-
-    let client = ClientBuilder::from_url(url)
+    let client = ClientBuilder::from_server(&wrapper.server)
+        .secret(generate())
         .connect()
         .build()
         .await
@@ -71,14 +73,14 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
 #[serial_test::serial]
 async fn test_query_other_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let url = wrapper.server.inner.url.clone();
-
-    let client1 = ClientBuilder::from_url(url.clone())
+    let client1 = ClientBuilder::from_server(&wrapper.server)
+        .secret(generate())
         .connect()
         .build()
         .await
         .unwrap();
-    let client2 = ClientBuilder::from_url(url)
+    let client2 = ClientBuilder::from_server(&wrapper.server)
+        .secret(generate())
         .connect()
         .build()
         .await

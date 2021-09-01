@@ -13,6 +13,8 @@ use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::RwLock;
 use url::Url;
 
+use crate::challenge::{Challenge, DefaultChallenge};
+use crate::server::Server;
 use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
 use crate::testing::key;
 use crate::udp_stream::{udp_bind, OutStream};
@@ -38,6 +40,7 @@ struct ClientState {
     config: ClientConfig,
     sink: Option<OutStream>,
     bind_addr: Option<SocketAddr>,
+
     sessions: HashMap<SocketAddr, Session>,
     responses: HashMap<SocketAddr, Dispatcher>,
     forward: HashMap<SocketAddr, ForwardSender>,
@@ -84,10 +87,15 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    pub fn from_url(srv_url: Url) -> ClientBuilder {
+    pub fn from_server(server: &Server) -> ClientBuilder {
+        let url = { server.inner.url.clone() };
+        ClientBuilder::from_url(url)
+    }
+
+    pub fn from_url(url: Url) -> ClientBuilder {
         ClientBuilder {
             bind_url: None,
-            srv_url,
+            srv_url: url,
             secret: None,
             auto_connect: false,
         }
@@ -199,15 +207,19 @@ impl Client {
             )
             .await?;
 
-        // TODO: solve challenge
-        // let challenge = response.packet;
+        let packet = response.packet;
+
+        let secret = self.state.read().await.config.secret.clone();
+        let public_key = secret.public();
+        let challenge_resp =
+            DefaultChallenge::with(secret).solve(packet.challenge.as_slice(), packet.difficulty)?;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
         let node_id = self.node_id().await;
         let packet = proto::request::Session {
-            challenge_resp: vec![0u8; 2048_usize],
+            challenge_resp,
             node_id: node_id.into_array().to_vec(),
-            public_key: vec![],
+            public_key: public_key.bytes().to_vec(),
         };
 
         let response = self

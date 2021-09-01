@@ -43,6 +43,8 @@ pub enum BadRequest {
     InvalidPacket(SessionId, String),
     #[error("Failed to decode packet.")]
     DecodingFailed,
+    #[error("Invalid Challenge. Error: {0}")]
+    InvalidChallenge(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]
@@ -51,6 +53,8 @@ pub enum Unauthorized {
     SessionNotFound(SessionId),
     #[error("Invalid session id: {0:x?}.")]
     InvalidSessionId(Vec<u8>),
+    #[error("Invalid challenge response.")]
+    InvalidChallenge,
 }
 
 #[derive(thiserror::Error, Clone, Debug)]

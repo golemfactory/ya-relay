@@ -1,3 +1,4 @@
+pub mod challenge;
 pub(crate) mod error;
 mod server;
 pub(crate) mod session;
