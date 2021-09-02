@@ -69,9 +69,9 @@ impl From<[u8; SESSION_ID_SIZE]> for SessionId {
     }
 }
 
-impl Into<[u8; SESSION_ID_SIZE]> for SessionId {
-    fn into(self) -> [u8; SESSION_ID_SIZE] {
-        self.id
+impl From<SessionId> for [u8; SESSION_ID_SIZE] {
+    fn from(session: SessionId) -> [u8; SESSION_ID_SIZE] {
+        session.id
     }
 }
 
@@ -114,7 +114,7 @@ impl TryFrom<proto::Endpoint> for Endpoint {
 
         Ok(Endpoint {
             protocol: proto::Protocol::from_i32(endpoint.protocol)
-                .ok_or(anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
+                .ok_or_else(|| anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
             address,
         })
     }

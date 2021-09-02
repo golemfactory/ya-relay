@@ -9,7 +9,7 @@ pub const SESSION_ID_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 1;
 pub const FORWARD_TAG: u32 = 1;
 
-const REQUEST_ID: AtomicU64 = AtomicU64::new(0);
+static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 pub type RequestId = u64;
 pub type SlotId = u32;
@@ -141,9 +141,9 @@ where
 
 macro_rules! impl_convert_kind {
     ($module:ident, $ident:ident) => {
-        impl Into<$crate::proto::$module::Kind> for $crate::proto::$module::$ident {
-            fn into(self) -> $crate::proto::$module::Kind {
-                $crate::proto::$module::Kind::$ident(self)
+        impl From<$crate::proto::$module::$ident> for $crate::proto::$module::Kind {
+            fn from(item: $crate::proto::$module::$ident) -> Self {
+                $crate::proto::$module::Kind::$ident(item)
             }
         }
 

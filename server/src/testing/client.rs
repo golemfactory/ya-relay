@@ -132,7 +132,7 @@ impl ClientBuilder {
 impl Client {
     pub async fn node_id(&self) -> NodeId {
         let state = self.state.read().await;
-        NodeId::from(state.config.secret.public().address().clone())
+        NodeId::from(*state.config.secret.public().address())
     }
 
     pub async fn bind_addr(&self) -> anyhow::Result<SocketAddr> {
@@ -408,28 +408,23 @@ impl Handler for Client {
 
         if let proto::Request {
             request_id,
-            kind: Some(kind),
+            kind: Some(proto::request::Kind::Ping(_)),
         } = request
         {
-            match kind {
-                proto::request::Kind::Ping(_) => {
-                    let packet = proto::Packet::response(
-                        request_id,
-                        session_id,
-                        proto::StatusCode::Ok,
-                        proto::response::Pong {},
-                    );
+            let packet = proto::Packet::response(
+                request_id,
+                session_id,
+                proto::StatusCode::Ok,
+                proto::response::Pong {},
+            );
 
-                    let client = self.clone();
-                    return async move {
-                        if let Err(e) = client.send(packet, from).await {
-                            log::warn!("Client: unable to send Pong to {}: {}", from, e);
-                        }
-                    }
-                    .boxed_local();
+            let client = self.clone();
+            return async move {
+                if let Err(e) = client.send(packet, from).await {
+                    log::warn!("Client: unable to send Pong to {}: {}", from, e);
                 }
-                _ => {}
             }
+            .boxed_local();
         }
 
         Box::pin(futures::future::ready(()))
@@ -443,7 +438,7 @@ impl Handler for Client {
                 state.forward.get(&from).cloned()
             } {
                 Some(mut sender) => {
-                    if let Err(_) = sender.send(forward.payload).await {
+                    if sender.send(forward.payload).await.is_err() {
                         log::debug!("Unable to forward packet: handler closed");
                     }
                 }
@@ -472,7 +467,7 @@ impl Session {
 
     pub async fn id(&self) -> anyhow::Result<SessionId> {
         let id = self.id.read().await;
-        id.clone().ok_or_else(|| anyhow!("Not connected"))
+        (*id).ok_or_else(|| anyhow!("Not connected"))
     }
 
     pub async fn init(&self) -> anyhow::Result<SessionId> {
@@ -518,7 +513,7 @@ impl Session {
         tokio::task::spawn_local(send.for_each(move |payload| {
             let client = client.clone();
             let forward = Forward {
-                session_id: session_id.clone().into(),
+                session_id: session_id.into(),
                 slot,
                 payload,
             };

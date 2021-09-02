@@ -75,3 +75,9 @@ impl NodesState {
         }
     }
 }
+
+impl Default for NodesState {
+    fn default() -> Self {
+        Self::new()
+    }
+}

@@ -171,11 +171,14 @@ impl Dispatcher {
 
         match self.responses.borrow_mut().remove(&request_id) {
             Some(sender) => {
-                if let Err(_) = sender.send(Dispatched {
-                    session_id,
-                    code,
-                    packet: kind,
-                }) {
+                if sender
+                    .send(Dispatched {
+                        session_id,
+                        code,
+                        packet: kind,
+                    })
+                    .is_err()
+                {
                     log::warn!("Unable to dispatch response: listener is closed");
                 }
             }

@@ -125,7 +125,7 @@ impl Server {
             let src_node = server
                 .nodes
                 .get_by_session(session_id)
-                .ok_or(Unauthorized::SessionNotFound(session_id.clone()))?;
+                .ok_or(Unauthorized::SessionNotFound(session_id))?;
 
             let dest_node = server
                 .nodes
@@ -134,7 +134,7 @@ impl Server {
             (src_node, dest_node)
         };
 
-        if dest_node.info.endpoints.len() > 0 {
+        if !dest_node.info.endpoints.is_empty() {
             // TODO: How to chose best endpoint?
             let endpoint = dest_node.info.endpoints[0].clone();
 
@@ -208,7 +208,7 @@ impl Server {
 
         Ok(vec![Endpoint {
             protocol: proto::Protocol::Udp,
-            address: addr.clone(),
+            address: *addr,
         }])
     }
 
