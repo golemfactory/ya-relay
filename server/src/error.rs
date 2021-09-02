@@ -61,6 +61,8 @@ pub enum Unauthorized {
 pub enum NotFound {
     #[error("Node [{0}] not registered.")]
     Node(NodeId),
+    #[error("Failed to find Node by slot {0}.")]
+    NodeBySlot(u32),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]
@@ -90,8 +92,8 @@ pub enum InternalError {
     Decoding,
     #[error("Binding socket failed. {0}")]
     BindingSocket(String),
-    #[error("NodeId [{0}] for session [{1}] not found.")]
-    GettingSessionInfo(NodeId, SessionId),
+    #[error("Node info for session [{0}] not found.")]
+    GettingSessionInfo(SessionId),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]
