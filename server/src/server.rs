@@ -7,10 +7,11 @@ use rand::Rng;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
+use std::ops::Sub;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{timeout, Duration};
+use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
@@ -32,6 +33,8 @@ use ya_relay_proto::proto::StatusCode;
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
+pub const SESSION_CLEANER_INTERVAL: u64 = 10; // seconds
+pub const SESSION_TIMEOUT: i64 = 60; // seconds
 
 #[derive(Clone)]
 pub struct Server {
@@ -195,12 +198,12 @@ impl Server {
                 Some(node_id) => *node_id,
             };
 
-            let mut node_info = server
+            let mut node_session = server
                 .nodes
                 .get_mut(&node_id)
                 .ok_or(InternalError::GettingSessionInfo(node_id, id))?;
 
-            node_info.last_seen = Utc::now();
+            node_session.last_seen = Utc::now();
         }
 
         self.send_to(PacketKind::pong_response(id), &from)
@@ -404,6 +407,27 @@ impl Server {
         self.state.write().await.starting_session.remove(session_id);
     }
 
+    async fn session_cleaner(&self) {
+        let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
+        loop {
+            interval.tick().await;
+            let s = self.clone();
+            s.check_session_timeouts().await;
+        }
+    }
+
+    async fn check_session_timeouts(&self) {
+        let mut server = self.state.write().await;
+        for (node_id, ns) in server.nodes.clone() {
+            let deadline = Utc::now().sub(chrono::Duration::seconds(SESSION_TIMEOUT));
+            log::debug!("Session timeout. node_id: {}, session_id: {}", node_id, ns.session);
+            if ns.last_seen < deadline {
+                server.sessions.remove(&ns.session);
+                server.nodes.remove(&node_id);
+            }
+        }
+    }
+
     async fn send_to(&self, packet: PacketKind, target: &SocketAddr) -> anyhow::Result<()> {
         Ok(self.inner.socket.clone().send((packet, *target)).await?)
     }
@@ -441,6 +465,7 @@ impl Server {
                 .take()
                 .ok_or_else(|| anyhow!("Server already running."))?
         };
+        tokio::task::spawn_local(async move { self.session_cleaner().await });
 
         while let Some((packet, addr)) = input.next().await {
             let id = PacketKind::session(&packet);
