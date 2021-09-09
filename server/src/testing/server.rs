@@ -9,6 +9,12 @@ pub struct ServerWrapper {
     handle: AbortHandle,
 }
 
+impl ServerWrapper {
+    pub fn url(&self) -> Url {
+        self.server.inner.url.clone()
+    }
+}
+
 pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
     // Initialize logger for all tests. Thi function will be called multiple times,
     // so we `try_init`.
