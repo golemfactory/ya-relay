@@ -50,7 +50,8 @@ impl NodesState {
     }
 
     pub fn check_timeouts(&mut self, timeout: i64) {
-        for (pos, slot) in self.slots.clone().iter().enumerate() {
+        let mut slots_to_unregister = vec![];
+        for (pos, slot) in self.slots.iter().enumerate() {
             if let Some(ns) = slot {
                 let deadline = Utc::now().sub(chrono::Duration::seconds(timeout));
                 if ns.last_seen < deadline {
@@ -59,9 +60,12 @@ impl NodesState {
                         ns.info.node_id,
                         ns.session
                     );
-                    self.unregister(pos.try_into().unwrap());
+                    slots_to_unregister.push(pos);
                 }
             }
+        }
+        for pos in slots_to_unregister {
+            self.unregister(pos.try_into().unwrap());
         }
     }
 
