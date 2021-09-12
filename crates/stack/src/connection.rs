@@ -1,0 +1,210 @@
+use std::cell::RefCell;
+use std::convert::TryFrom;
+use std::future::Future;
+use std::pin::Pin;
+use std::rc::Rc;
+use std::task::{Context, Poll};
+
+use smoltcp::socket::*;
+use smoltcp::wire::IpEndpoint;
+
+use crate::socket::{SocketDesc, SocketEndpoint};
+use crate::{Error, Protocol, Result};
+
+/// Virtual connection teardown reason
+#[derive(Copy, Clone, Debug)]
+pub enum DisconnectReason {
+    SinkClosed,
+    SocketClosed,
+    ConnectionFinished,
+    ConnectionFailed,
+    ConnectionTimeout,
+}
+
+/// Virtual connection representing 2 endpoints with an existing record
+/// of exchanging packets via a known protocol; not necessarily a TCP connection
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Connection {
+    pub handle: SocketHandle,
+    pub meta: ConnectionMeta,
+}
+
+impl Into<SocketDesc> for Connection {
+    fn into(self) -> SocketDesc {
+        SocketDesc {
+            protocol: self.meta.protocol,
+            local: self.meta.local.into(),
+            remote: self.meta.remote.into(),
+        }
+    }
+}
+
+impl Into<SocketHandle> for Connection {
+    fn into(self) -> SocketHandle {
+        self.handle
+    }
+}
+
+impl Into<ConnectionMeta> for Connection {
+    fn into(self) -> ConnectionMeta {
+        self.meta
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ConnectionMeta {
+    pub protocol: Protocol,
+    pub local: IpEndpoint,
+    pub remote: IpEndpoint,
+}
+
+impl ConnectionMeta {
+    pub fn new(protocol: Protocol, local: IpEndpoint, remote: IpEndpoint) -> Self {
+        Self {
+            protocol,
+            local,
+            remote,
+        }
+    }
+}
+
+impl Into<SocketDesc> for ConnectionMeta {
+    fn into(self) -> SocketDesc {
+        SocketDesc {
+            protocol: self.protocol,
+            local: self.local.into(),
+            remote: self.remote.into(),
+        }
+    }
+}
+
+impl TryFrom<SocketDesc> for ConnectionMeta {
+    type Error = ();
+
+    fn try_from(desc: SocketDesc) -> std::result::Result<Self, Self::Error> {
+        let local = match desc.local {
+            SocketEndpoint::Ip(endpoint) => endpoint,
+            _ => return Err(()),
+        };
+        let remote = match desc.remote {
+            SocketEndpoint::Ip(endpoint) => endpoint,
+            _ => return Err(()),
+        };
+        Ok(Self {
+            protocol: desc.protocol,
+            local,
+            remote,
+        })
+    }
+}
+
+/// TCP connection future
+pub struct Connect<'a> {
+    pub connection: Connection,
+    sockets: Rc<RefCell<SocketSet<'a>>>,
+}
+
+impl<'a> Connect<'a> {
+    pub fn new(connection: Connection, sockets: Rc<RefCell<SocketSet<'a>>>) -> Self {
+        Self {
+            connection,
+            sockets,
+        }
+    }
+}
+
+impl<'a> Future for Connect<'a> {
+    type Output = Result<Connection>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let sockets_rfc = self.sockets.clone();
+        let mut sockets = sockets_rfc.borrow_mut();
+        let mut socket = sockets.get::<TcpSocket>(self.connection.handle);
+
+        if !socket.is_open() {
+            Poll::Ready(Err(Error::SocketClosed))
+        } else if socket.can_send() {
+            Poll::Ready(Ok(self.connection))
+        } else {
+            socket.register_send_waker(cx.waker());
+            Poll::Pending
+        }
+    }
+}
+
+/// Packet send future
+pub struct Send<'a> {
+    data: Vec<u8>,
+    offset: usize,
+    connection: Connection,
+    sockets: Rc<RefCell<SocketSet<'a>>>,
+    sent: Box<dyn Fn()>,
+}
+
+impl<'a> Send<'a> {
+    pub fn new<F: Fn() -> () + 'static>(
+        data: Vec<u8>,
+        connection: Connection,
+        sockets: Rc<RefCell<SocketSet<'a>>>,
+        sent: F,
+    ) -> Self {
+        Self {
+            data,
+            offset: 0,
+            connection,
+            sockets,
+            sent: Box::new(sent),
+        }
+    }
+}
+
+impl<'a> Future for Send<'a> {
+    type Output = Result<()>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let result = {
+            let sockets_rfc = self.sockets.clone();
+            let mut sockets = sockets_rfc.borrow_mut();
+            let conn = &self.connection;
+
+            match conn.meta.protocol {
+                Protocol::Tcp => {
+                    let mut socket = sockets.get::<TcpSocket>(conn.handle);
+                    let result = socket.send_slice(&self.data[self.offset..]);
+                    (*self.sent)();
+
+                    return match result {
+                        Ok(count) => {
+                            self.offset += count;
+                            if self.offset >= self.data.len() {
+                                Poll::Ready(Ok(()))
+                            } else {
+                                socket.register_send_waker(cx.waker());
+                                Poll::Pending
+                            }
+                        }
+                        Err(smoltcp::Error::Exhausted) => {
+                            socket.register_send_waker(cx.waker());
+                            Poll::Pending
+                        }
+                        Err(err) => Poll::Ready(Err(Error::Other(err.to_string()))),
+                    };
+                }
+                Protocol::Udp => sockets
+                    .get::<UdpSocket>(conn.handle)
+                    .send_slice(&self.data, conn.meta.remote),
+                Protocol::Icmp => sockets
+                    .get::<IcmpSocket>(conn.handle)
+                    .send_slice(&self.data, conn.meta.remote.addr),
+                _ => sockets.get::<RawSocket>(conn.handle).send_slice(&self.data),
+            }
+        };
+
+        (*self.sent)();
+
+        match result {
+            Ok(_) => Poll::Ready(Ok(())),
+            Err(err) => Poll::Ready(Err(Error::Other(err.to_string()))),
+        }
+    }
+}
