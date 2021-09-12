@@ -1,5 +1,6 @@
 use std::convert::TryFrom;
 
+use std::ops::DerefMut;
 use ya_client_model::NodeId;
 use ya_net_server::testing::key::generate;
 use ya_net_server::testing::server::init_test_server;
@@ -60,8 +61,12 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
         session_id[0] = session_id[0] + 1;
         let session_id = SessionId::try_from(session_id)?;
 
-        let mut id = session.id.write().await;
-        id.replace(session_id);
+        let mut state = session.state.write().await;
+        if let Some(state) = state.deref_mut() {
+            state.id = session_id;
+        } else {
+            panic!("missing session state");
+        }
     }
 
     let result = session.find_node(node_id).await;
