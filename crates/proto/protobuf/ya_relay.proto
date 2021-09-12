@@ -67,6 +67,7 @@ message Request {
         Session session = 10;
         Register register = 20;
         Node node = 30;
+        Slot slot = 31;
         Neighbours neighbours = 40;
         ReverseConnection reverse_connection = 50;
         Ping ping = 80;
@@ -86,6 +87,13 @@ message Request {
     message Node {
         /* Remote node ID */
         bytes node_id = 1;
+        /* Whether to include public key */
+        bool public_key = 2;
+    }
+
+    message Slot {
+        /* Node slot ID */
+        uint32 slot = 1;
         /* Whether to include public key */
         bool public_key = 2;
     }

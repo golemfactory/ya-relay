@@ -216,7 +216,7 @@ where
                 State::Discarding { mut left, read } => {
                     left -= read;
                     if read > 0 {
-                        let _ = self.buf.split_to(read);
+                        self.buf.advance(read);
 
                         if left == 0 {
                             self.transition(State::AwaitingPrefix);

@@ -1,7 +1,12 @@
-use crate::codec::DecodeError;
-use prost::encoding::{decode_key, encode_key, WireType};
+use std::iter::FromIterator;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
+
+use bytes::{Bytes, BytesMut};
+use derive_more::From;
+use prost::encoding::{decode_key, encode_key, WireType};
+
+use crate::codec::DecodeError;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 
@@ -18,7 +23,7 @@ pub type SlotId = u32;
 pub struct Forward {
     pub session_id: [u8; SESSION_ID_SIZE],
     pub slot: u32,
-    pub payload: bytes::BytesMut,
+    pub payload: Payload,
 }
 
 impl Forward {
@@ -32,14 +37,19 @@ impl Forward {
         Self::header_size() + self.payload.len()
     }
 
-    pub fn encode(self, buf: &mut bytes::BytesMut) {
+    pub fn encode(self, buf: &mut BytesMut) {
         encode_key(FORWARD_TAG, WireType::LengthDelimited, buf);
         buf.extend_from_slice(&self.session_id);
         buf.extend_from_slice(&self.slot.to_be_bytes());
-        buf.extend(self.payload.into_iter());
+
+        match self.payload {
+            Payload::BytesMut(b) => buf.extend(b),
+            Payload::Bytes(b) => buf.extend(b),
+            Payload::Vec(b) => buf.extend(b),
+        }
     }
 
-    pub fn decode(mut buf: bytes::BytesMut) -> Result<Self, DecodeError> {
+    pub fn decode(mut buf: BytesMut) -> Result<Self, DecodeError> {
         if buf.len() < Self::header_size() {
             return Err(DecodeError::PacketTooShort);
         }
@@ -58,7 +68,7 @@ impl Forward {
         Ok(Forward {
             session_id,
             slot,
-            payload: buf,
+            payload: buf.into(),
         })
     }
 }
@@ -73,12 +83,91 @@ impl std::fmt::Debug for Forward {
     }
 }
 
-fn write_payload_fmt(f: &mut std::fmt::Formatter<'_>, buf: &[u8]) -> std::fmt::Result {
+fn write_payload_fmt(f: &mut std::fmt::Formatter<'_>, buf: impl AsRef<[u8]>) -> std::fmt::Result {
+    let buf = buf.as_ref();
     if buf.len() > 16 {
         let idx = 8.min(buf.len() / 2);
         write!(f, "{:02x?}..{:02x?}", &buf[..idx], &buf[buf.len() - idx..])
     } else {
         write!(f, "{:02x?}", &buf)
+    }
+}
+
+#[derive(Clone, From, Eq, PartialEq)]
+pub enum Payload {
+    BytesMut(BytesMut),
+    Bytes(Bytes),
+    Vec(Vec<u8>),
+}
+
+impl Payload {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::BytesMut(b) => b.len(),
+            Self::Bytes(b) => b.len(),
+            Self::Vec(b) => b.len(),
+        }
+    }
+
+    pub fn extend(&mut self, bytes: BytesMut) {
+        match std::mem::replace(self, Payload::default()) {
+            Self::BytesMut(mut b) => {
+                b.extend(bytes);
+                *self = Self::BytesMut(b);
+            }
+            Self::Bytes(b) => {
+                let mut b = BytesMut::from_iter(b.into_iter());
+                b.extend(bytes);
+                *self = Self::BytesMut(b);
+            }
+            Self::Vec(mut v) => {
+                v.extend(bytes.into_iter());
+            }
+        }
+    }
+
+    pub fn freeze(self) -> Bytes {
+        match self {
+            Self::BytesMut(b) => b.freeze(),
+            Self::Bytes(b) => b,
+            Self::Vec(b) => Bytes::from(b),
+        }
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        match self {
+            Self::BytesMut(b) => Vec::from_iter(b.into_iter()),
+            Self::Bytes(b) => Vec::from_iter(b.into_iter()),
+            Self::Vec(b) => b,
+        }
+    }
+}
+
+impl Default for Payload {
+    fn default() -> Self {
+        Self::BytesMut(Default::default())
+    }
+}
+
+impl From<Box<[u8]>> for Payload {
+    fn from(b: Box<[u8]>) -> Self {
+        Self::Vec(b.into_vec())
+    }
+}
+
+impl AsRef<[u8]> for Payload {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::BytesMut(b) => b.as_ref(),
+            Self::Bytes(b) => b.as_ref(),
+            Self::Vec(b) => b.as_slice(),
+        }
+    }
+}
+
+impl FromIterator<u8> for Payload {
+    fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
+        Self::BytesMut(BytesMut::from_iter(iter))
     }
 }
 
@@ -165,6 +254,7 @@ macro_rules! impl_convert_kind {
 impl_convert_kind!(request, Session);
 impl_convert_kind!(request, Register);
 impl_convert_kind!(request, Node);
+impl_convert_kind!(request, Slot);
 impl_convert_kind!(request, Neighbours);
 impl_convert_kind!(request, ReverseConnection);
 impl_convert_kind!(request, Ping);
