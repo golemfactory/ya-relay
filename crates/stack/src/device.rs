@@ -73,7 +73,7 @@ impl<'a> phy::TxToken for TxToken<'a> {
     where
         F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
     {
-        let mut buffer = Vec::with_capacity(len);
+        let mut buffer = vec![0; len];
         buffer.resize(len, 0);
         let result = f(&mut buffer);
         if result.is_ok() {

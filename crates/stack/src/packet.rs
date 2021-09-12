@@ -41,7 +41,7 @@ pub enum EtherFrame {
 }
 
 impl EtherFrame {
-    pub fn peek_type(data: &Box<[u8]>) -> Result<EtherType, Error> {
+    pub fn peek_type(data: &[u8]) -> Result<EtherType, Error> {
         if data.len() < ETHERNET_HDR_SIZE {
             return Err(Error::PacketMalformed("Ethernet: frame too short".into()));
         }
@@ -60,7 +60,7 @@ impl EtherFrame {
         }
     }
 
-    pub fn peek_payload(data: &Box<[u8]>) -> Result<&[u8], Error> {
+    pub fn peek_payload(data: &[u8]) -> Result<&[u8], Error> {
         if data.len() < ETHERNET_HDR_SIZE {
             return Err(Error::PacketMalformed("Ethernet: frame too short".into()));
         }
@@ -72,7 +72,7 @@ impl EtherFrame {
     }
 
     pub fn reply(&self, mut payload: Vec<u8>) -> Vec<u8> {
-        let frame: &Box<[u8]> = self.as_ref();
+        let frame: &[u8] = self.as_ref();
         payload.reserve(EtherField::PAYLOAD.start);
         payload.splice(0..0, frame[EtherField::ETHER_TYPE].iter().cloned());
         payload.splice(0..0, frame[EtherField::DST_MAC].iter().cloned());
@@ -101,17 +101,17 @@ impl TryFrom<Vec<u8>> for EtherFrame {
     }
 }
 
-impl Into<Box<[u8]>> for EtherFrame {
-    fn into(self) -> Box<[u8]> {
-        match self {
-            Self::Ip(b) | Self::Arp(b) => b,
+impl From<EtherFrame> for Box<[u8]> {
+    fn from(frame: EtherFrame) -> Self {
+        match frame {
+            EtherFrame::Ip(b) | EtherFrame::Arp(b) => b,
         }
     }
 }
 
-impl Into<Vec<u8>> for EtherFrame {
-    fn into(self) -> Vec<u8> {
-        Into::<Box<[u8]>>::into(self).into()
+impl From<EtherFrame> for Vec<u8> {
+    fn from(frame: EtherFrame) -> Self {
+        Into::<Box<[u8]>>::into(frame).into()
     }
 }
 
@@ -180,7 +180,7 @@ impl<'a> IpPacket<'a> {
 
     pub fn is_broadcast(&self) -> bool {
         match self {
-            Self::V4(ip) => &ip.dst_address[0..4] == &[255, 255, 255, 255],
+            Self::V4(ip) => ip.dst_address[0..4] == [255, 255, 255, 255],
             Self::V6(_) => false,
         }
     }
@@ -292,9 +292,8 @@ impl<'a> PeekPacket<'a> for IpV6Packet<'a> {
             return Err(Error::ProtocolNotSupported("IPv6: jumbogram".into()));
         }
 
-        match data[Ipv6Field::PROTOCOL][0] {
-            58 => IcmpV6Packet::peek(&data[Ipv6Field::PAYLOAD])?,
-            _ => (),
+        if data[Ipv6Field::PROTOCOL][0] == 58 {
+            IcmpV6Packet::peek(&data[Ipv6Field::PAYLOAD])?;
         };
 
         Ok(())
@@ -437,10 +436,10 @@ impl<'a> ArpPacket<'a> {
     fn mirror_op(&self) -> [u8; 2] {
         let op = self.get_field(ArpField::OP);
         // request
-        if op == &[0x00, 0x01] {
+        if op == [0x00, 0x01] {
             // reply
             [0x00, 0x02]
-        } else if op == &[0x00, 0x02] {
+        } else if op == [0x00, 0x02] {
             [0x00, 0x01]
         } else {
             let mut ret = [0u8; 2];
@@ -492,11 +491,11 @@ pub struct TcpPacket<'a> {
 
 impl<'a> TcpPacket<'a> {
     pub fn src_port(&self) -> u16 {
-        ntoh_u16(&self.src_port).unwrap()
+        ntoh_u16(self.src_port).unwrap()
     }
 
     pub fn dst_port(&self) -> u16 {
-        ntoh_u16(&self.dst_port).unwrap()
+        ntoh_u16(self.dst_port).unwrap()
     }
 }
 

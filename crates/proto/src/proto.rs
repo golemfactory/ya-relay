@@ -109,8 +109,16 @@ impl Payload {
         }
     }
 
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::BytesMut(b) => b.is_empty(),
+            Self::Bytes(b) => b.is_empty(),
+            Self::Vec(b) => b.is_empty(),
+        }
+    }
+
     pub fn extend(&mut self, bytes: BytesMut) {
-        match std::mem::replace(self, Payload::default()) {
+        match std::mem::take(self) {
             Self::BytesMut(mut b) => {
                 b.extend(bytes);
                 *self = Self::BytesMut(b);
@@ -122,6 +130,7 @@ impl Payload {
             }
             Self::Vec(mut v) => {
                 v.extend(bytes.into_iter());
+                *self = Self::Vec(v);
             }
         }
     }

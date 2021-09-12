@@ -257,7 +257,7 @@ impl Client {
                         .map(|node| (node.id, state.virt_ingress.tx.clone()))
                 } {
                     Some((node_id, mut tx)) => {
-                        if let Err(_) = tx.send((node_id, payload)).await {
+                        if tx.send((node_id, payload)).await.is_err() {
                             log::trace!(
                                 "[{}] ingress router: ingress handler closed for node {}",
                                 client.id(),
@@ -717,8 +717,6 @@ impl VirtNode {
         session_slot: SlotId,
     ) -> anyhow::Result<Self> {
         let default_id = NodeId::default();
-
-        let id = id.as_ref();
         if id.len() != default_id.as_ref().len() {
             anyhow::bail!("invalid NodeId");
         }
@@ -851,10 +849,10 @@ fn node_id_to_ip(node_id: impl AsRef<[u8]>) -> anyhow::Result<Ipv6Addr> {
         Ipv6Addr::from(bytes)
     };
 
-    let mut range = Ipv6AddrRange::new(addr, Ipv6Addr::from(u128::MAX))
+    let range = Ipv6AddrRange::new(addr, Ipv6Addr::from(u128::MAX))
         .chain(Ipv6AddrRange::new(Ipv6Addr::from(0u128), addr));
 
-    while let Some(ip) = range.next() {
+    for ip in range {
         let cidr = IpCidr::new(ip.into(), PREFIX_LEN);
         if cidr.address().is_unicast() {
             return Ok(ip);

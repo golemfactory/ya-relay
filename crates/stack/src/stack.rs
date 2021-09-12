@@ -51,7 +51,7 @@ impl<'a> Stack<'a> {
             let iface = self.iface.borrow();
             iface.ip_addrs().iter().next().cloned()
         }
-        .ok_or_else(|| Error::NetEmpty)
+        .ok_or(Error::NetEmpty)
     }
 
     pub fn add_address(&self, address: IpCidr) {

@@ -171,8 +171,8 @@ impl Network {
                 let protocol = socket.protocol();
                 let desc = SocketDesc {
                     protocol,
-                    local: socket.local_endpoint().into(),
-                    remote: socket.remote_endpoint().into(),
+                    local: socket.local_endpoint(),
+                    remote: socket.remote_endpoint(),
                 };
 
                 events.push(IngressEvent::Disconnected { desc });
@@ -200,7 +200,7 @@ impl Network {
                 let protocol = socket.protocol();
                 let desc = SocketDesc {
                     protocol,
-                    local: local.into(),
+                    local,
                     remote: remote.into(),
                 };
 

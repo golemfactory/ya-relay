@@ -29,25 +29,25 @@ pub struct Connection {
     pub meta: ConnectionMeta,
 }
 
-impl Into<SocketDesc> for Connection {
-    fn into(self) -> SocketDesc {
+impl From<Connection> for SocketDesc {
+    fn from(c: Connection) -> Self {
         SocketDesc {
-            protocol: self.meta.protocol,
-            local: self.meta.local.into(),
-            remote: self.meta.remote.into(),
+            protocol: c.meta.protocol,
+            local: c.meta.local.into(),
+            remote: c.meta.remote.into(),
         }
     }
 }
 
-impl Into<SocketHandle> for Connection {
-    fn into(self) -> SocketHandle {
-        self.handle
+impl From<Connection> for SocketHandle {
+    fn from(c: Connection) -> Self {
+        c.handle
     }
 }
 
-impl Into<ConnectionMeta> for Connection {
-    fn into(self) -> ConnectionMeta {
-        self.meta
+impl From<Connection> for ConnectionMeta {
+    fn from(c: Connection) -> Self {
+        c.meta
     }
 }
 
@@ -68,12 +68,12 @@ impl ConnectionMeta {
     }
 }
 
-impl Into<SocketDesc> for ConnectionMeta {
-    fn into(self) -> SocketDesc {
+impl From<ConnectionMeta> for SocketDesc {
+    fn from(c: ConnectionMeta) -> Self {
         SocketDesc {
-            protocol: self.protocol,
-            local: self.local.into(),
-            remote: self.remote.into(),
+            protocol: c.protocol,
+            local: c.local.into(),
+            remote: c.remote.into(),
         }
     }
 }
@@ -142,7 +142,7 @@ pub struct Send<'a> {
 }
 
 impl<'a> Send<'a> {
-    pub fn new<F: Fn() -> () + 'static>(
+    pub fn new<F: Fn() + 'static>(
         data: Vec<u8>,
         connection: Connection,
         sockets: Rc<RefCell<SocketSet<'a>>>,
