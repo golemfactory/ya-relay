@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
@@ -53,10 +53,11 @@ struct ClientState {
 
     sessions: HashMap<SocketAddr, Session>,
     responses: HashMap<SocketAddr, Dispatcher>,
+    slots: HashMap<SocketAddr, HashSet<SlotId>>,
 
     virt_ingress: Channel<(NodeId, Vec<u8>)>,
     virt_nodes: HashMap<Box<[u8]>, VirtNode>,
-    virt_ips: HashMap<SlotId, Box<[u8]>>,
+    virt_ips: HashMap<(SlotId, SocketAddr), Box<[u8]>>,
 }
 
 impl ClientState {
@@ -67,16 +68,11 @@ impl ClientState {
             bind_addr: Default::default(),
             sessions: Default::default(),
             responses: Default::default(),
+            slots: Default::default(),
+            virt_ingress: Default::default(),
             virt_nodes: Default::default(),
             virt_ips: Default::default(),
-            virt_ingress: Default::default(),
         }
-    }
-
-    #[allow(unused)]
-    fn remove(&mut self, addr: &SocketAddr) {
-        self.sessions.remove(addr);
-        self.responses.remove(addr);
     }
 
     fn reset(&mut self) {
@@ -332,12 +328,12 @@ impl Client {
     }
 
     async fn resolve_slot(&self, slot: SlotId, addr: SocketAddr) -> anyhow::Result<VirtNode> {
-        match self.get_slot(&slot).await {
+        match self.get_slot(slot, addr).await {
             Some(node) => Ok(node),
             None => match async {
                 let session = self.session(addr).await?;
                 session.find_slot(slot).await?;
-                Ok::<_, anyhow::Error>(self.get_slot(&slot).await)
+                Ok::<_, anyhow::Error>(self.get_slot(slot, addr).await)
             }
             .await
             {
@@ -348,13 +344,25 @@ impl Client {
         }
     }
 
-    async fn get_slot(&self, slot: &SlotId) -> Option<VirtNode> {
+    async fn get_slot(&self, slot: SlotId, addr: SocketAddr) -> Option<VirtNode> {
         let state = self.state.read().await;
         state
             .virt_ips
-            .get(slot)
+            .get(&(slot, addr))
             .map(|ip| state.virt_nodes.get(ip).cloned())
             .flatten()
+    }
+
+    async fn remove_slot(&self, slot: SlotId, addr: SocketAddr) {
+        let mut state = self.state.write().await;
+
+        if let Some(slots) = state.slots.get_mut(&addr) {
+            slots.remove(&slot);
+
+            if let Some(ip) = state.virt_ips.remove(&(slot, addr)) {
+                state.virt_nodes.remove(&ip);
+            }
+        }
     }
 }
 
@@ -441,6 +449,24 @@ impl Client {
         Ok(session_id)
     }
 
+    async fn remove_session(&self, addr: SocketAddr) {
+        let mut state = self.state.write().await;
+        state.responses.remove(&addr);
+
+        if let Some(slots) = state.slots.remove(&addr) {
+            for slot in slots {
+                if let Some(ip) = state.virt_ips.remove(&(slot, addr)) {
+                    state.virt_nodes.remove(&ip);
+                }
+            }
+        }
+
+        if let Some(session) = state.sessions.remove(&addr) {
+            let mut session_state = session.state.write().await;
+            *session_state = None;
+        }
+    }
+
     async fn register_endpoints(
         &self,
         addr: SocketAddr,
@@ -511,8 +537,16 @@ impl Client {
         {
             let mut state = self.state.write().await;
             let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
+
             state.virt_nodes.insert(ip.clone(), node);
-            state.virt_ips.insert(node.session_slot, ip);
+            state
+                .virt_ips
+                .insert((node.session_slot, node.session_addr), ip);
+            state
+                .slots
+                .entry(node.session_addr)
+                .or_default()
+                .insert(node.session_slot);
         }
 
         Ok(response)
@@ -555,6 +589,8 @@ impl Client {
                     }
                 }
             }
+
+            client.remove_slot(slot, session_addr).await;
             rx.close();
 
             log::trace!(
@@ -737,7 +773,6 @@ pub struct Session {
     pub state: Arc<RwLock<Option<SessionState>>>,
 }
 
-#[derive(Clone, Copy)]
 pub struct SessionState {
     pub id: SessionId,
 }
@@ -751,16 +786,9 @@ impl Session {
         }
     }
 
-    async fn state(&self) -> anyhow::Result<SessionState> {
-        self.state
-            .read()
-            .await
-            .ok_or_else(|| anyhow!("Not connected"))
-    }
-
     pub async fn id(&self) -> anyhow::Result<SessionId> {
         let state = self.state.read().await;
-        Ok((*state).ok_or_else(|| anyhow!("Not connected"))?.id)
+        Ok(state.as_ref().ok_or_else(|| anyhow!("Not connected"))?.id)
     }
 
     pub async fn init(&self) -> anyhow::Result<SessionId> {
@@ -768,8 +796,7 @@ impl Session {
     }
 
     pub async fn close(self) {
-        // remove IP entries used in forwarding ?
-        self.client.state.write().await.remove(&self.remote_addr);
+        self.client.remove_session(self.remote_addr).await;
     }
 
     pub async fn register_endpoints(
@@ -802,7 +829,7 @@ impl Session {
     }
 
     pub async fn forward(self, slot: SlotId) -> anyhow::Result<ForwardSender> {
-        let _ = { self.state().await?.id };
+        let _ = self.id().await?;
         self.client.forward(self.remote_addr, slot).await
     }
 }

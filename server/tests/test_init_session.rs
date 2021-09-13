@@ -37,6 +37,7 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     // Check server response.
     assert_eq!(result_endpoints.len(), 1);
     assert_eq!(result_endpoints[0], endpoints[0]);
+
     Ok(())
 }
 
@@ -101,5 +102,28 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
 
     assert_eq!(node1_id, NodeId::from(&node1_info.node_id[..]));
     assert_eq!(node2_id, NodeId::from(&node2_info.node_id[..]));
+    Ok(())
+}
+
+#[serial_test::serial]
+async fn test_close_session() -> anyhow::Result<()> {
+    let wrapper = init_test_server().await.unwrap();
+    let client = ClientBuilder::from_server(&wrapper.server)
+        .secret(generate())
+        .connect()
+        .build()
+        .await
+        .unwrap();
+
+    let node_id = client.node_id().await;
+    let session = client.server_session().await?;
+    session.find_node(node_id).await?;
+
+    let cloned_session = session.clone();
+    session.close().await;
+
+    let result = cloned_session.find_node(node_id).await;
+    assert!(result.is_err());
+
     Ok(())
 }
