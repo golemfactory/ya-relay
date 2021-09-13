@@ -135,7 +135,7 @@ impl ClientBuilder {
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
             secret: self.secret.unwrap_or_else(key::generate),
             auto_connect: self.auto_connect,
-        })?;
+        });
 
         client.spawn().await?;
 
@@ -144,11 +144,10 @@ impl ClientBuilder {
 }
 
 impl Client {
-    fn new(config: ClientConfig) -> anyhow::Result<Self> {
-        let stack = default_network(config.secret.public())?;
+    fn new(config: ClientConfig) -> Self {
+        let stack = default_network(config.secret.public());
         let state = Arc::new(RwLock::new(ClientState::new(config)));
-
-        Ok(Self { state, net: stack })
+        Self { state, net: stack }
     }
 
     pub fn id(&self) -> String {
@@ -808,7 +807,7 @@ impl Session {
     }
 }
 
-fn default_network(key: PublicKey) -> anyhow::Result<Network> {
+fn default_network(key: PublicKey) -> Network {
     let address = key.address();
     let ipv6_addr = to_ipv6(address);
     let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
@@ -829,7 +828,7 @@ fn default_network(key: PublicKey) -> anyhow::Result<Network> {
         Route::new_ipv6_gateway(ipv6_addr.into()),
     );
 
-    Ok(Network::new(name, Stack::with(iface)))
+    Network::new(name, Stack::with(iface))
 }
 
 fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
