@@ -349,7 +349,6 @@ impl Server {
                 .collect(),
             seen_ts: node_info.last_seen.timestamp() as u32,
             slot: node_info.info.slot,
-            random: false,
         };
 
         self.send_to(
