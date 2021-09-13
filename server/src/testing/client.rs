@@ -680,11 +680,7 @@ impl Handler for Client {
     fn on_forward(&self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<()> {
         let client = self.clone();
         let fut = async move {
-            log::info!(
-                "[{}] >> ingress client -> net stack from {}",
-                client.id(),
-                from
-            );
+            log::trace!("[{}] received forward packet via {}", client.id(), from);
 
             if let Err(err) = client.resolve_slot(forward.slot, from).await {
                 log::error!("[{}] on forward error: {}", client.id(), err);
