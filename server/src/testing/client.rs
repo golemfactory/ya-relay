@@ -9,7 +9,6 @@ use ethsign::{PublicKey, SecretKey};
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt, StreamExt};
-use ipnet::Ipv6AddrRange;
 use tokio::sync::RwLock;
 use url::Url;
 
@@ -35,10 +34,11 @@ pub type ForwardReceiver = mpsc::Receiver<(NodeId, Vec<u8>)>;
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
-const VIRT_STACK_POLL_INTERVAL: Duration = Duration::from_millis(2000);
+
+const STACK_POLL_INTERVAL: Duration = Duration::from_millis(2000);
 const TCP_CONNECTION_TIMEOUT: Duration = Duration::from_millis(5000);
 const TCP_BIND_PORT: u16 = 1;
-const PREFIX_LEN: u8 = 0;
+const IPV6_DEFAULT_CIDR: u8 = 0;
 
 #[derive(Clone)]
 pub struct Client {
@@ -187,7 +187,7 @@ impl Client {
         };
 
         let node_id = self.node_id().await;
-        let virt_endpoint: IpEndpoint = (node_id_to_ip(&node_id)?, TCP_BIND_PORT).into();
+        let virt_endpoint: IpEndpoint = (to_ipv6(&node_id), TCP_BIND_PORT).into();
 
         self.net.bind(Protocol::Tcp, virt_endpoint)?;
 
@@ -326,7 +326,7 @@ impl Client {
         let net = self.net.clone();
         tokio::task::spawn_local(async move {
             loop {
-                tokio::time::delay_for(VIRT_STACK_POLL_INTERVAL).await;
+                tokio::time::delay_for(STACK_POLL_INTERVAL).await;
                 net.poll();
             }
         });
@@ -718,7 +718,7 @@ impl VirtNode {
         }
 
         let id = NodeId::from(id);
-        let ip = IpAddress::from(node_id_to_ip(&id)?);
+        let ip = IpAddress::from(to_ipv6(&id));
         let endpoint = (ip, TCP_BIND_PORT).into();
 
         Ok(Self {
@@ -810,8 +810,8 @@ impl Session {
 
 fn default_network(key: PublicKey) -> anyhow::Result<Network> {
     let address = key.address();
-    let ipv6_addr = node_id_to_ip(address)?;
-    let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), PREFIX_LEN);
+    let ipv6_addr = to_ipv6(address);
+    let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
     let mut iface = default_iface();
 
     let name = format!(
@@ -832,28 +832,21 @@ fn default_network(key: PublicKey) -> anyhow::Result<Network> {
     Ok(Network::new(name, Stack::with(iface)))
 }
 
-fn node_id_to_ip(node_id: impl AsRef<[u8]>) -> anyhow::Result<Ipv6Addr> {
-    let node_id = node_id.as_ref();
-    if node_id.len() != 20 {
-        anyhow::bail!("Invalid input length");
+fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
+    const IPV6_ADDRESS_LEN: usize = 16;
+
+    let bytes = bytes.as_ref();
+    let len = IPV6_ADDRESS_LEN.min(bytes.len());
+    let mut ipv6_bytes = [0u8; IPV6_ADDRESS_LEN];
+
+    // copy source bytes
+    ipv6_bytes[..len].copy_from_slice(&bytes[..len]);
+    // no multicast addresses
+    ipv6_bytes[0] %= 0xff;
+    // no unspecified or localhost addresses
+    if ipv6_bytes[0..15] == [0u8; 15] && ipv6_bytes[15] < 0x02 {
+        ipv6_bytes[15] = 0x02;
     }
 
-    // trim and map NodeId bytes to an IPv6 bytes
-    let addr = {
-        let mut bytes = [0u8; 16];
-        bytes.copy_from_slice(&node_id[0..16]);
-        Ipv6Addr::from(bytes)
-    };
-
-    let range = Ipv6AddrRange::new(addr, Ipv6Addr::from(u128::MAX))
-        .chain(Ipv6AddrRange::new(Ipv6Addr::from(0u128), addr));
-
-    for ip in range {
-        let cidr = IpCidr::new(ip.into(), PREFIX_LEN);
-        if cidr.address().is_unicast() {
-            return Ok(ip);
-        }
-    }
-
-    Err(anyhow::anyhow!("unable to map NodeId to IPv6 address"))
+    Ipv6Addr::from(ipv6_bytes)
 }
