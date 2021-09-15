@@ -1,0 +1,19 @@
+[package]
+name = "ya-net-stack"
+version = "0.1.0"
+authors = ["Golem Factory <contact@golem.network>"]
+edition = "2018"
+homepage = "https://github.com/golemfactory/ya-relay/crates/stack"
+repository = "https://github.com/golemfactory/ya-relay"
+license = "LGPL-3.0"
+description= "Embeddable networking stack"
+
+[dependencies]
+derive_more = "0.99"
+futures = "0.3"
+log = "0.4"
+managed = {version = "0.7", features = ["std"] }
+rand = { version = "0.8", features = ["std"] }
+smoltcp = "0.7"
+thiserror = "1.0"
+tokio = { version = "0.2", features = ["rt-core", "rt-util", "time"] }

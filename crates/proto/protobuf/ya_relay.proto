@@ -3,20 +3,11 @@ syntax = "proto3";
 package ya_relay_proto;
 
 /*
-    Although this protocol follows the Request -> Response pattern to a degree,
-    requests and responses are not tied to a common ID.
-
-    1. Connection initialization messages are sent in a sequence;
-       messages must not overlap,
-    2. Control messages must not be responded to,
-    3. Response::Node sent to Request::Node contains a corresponding `node_id`,
-    4. Response::Node sent to Request::Node with empty node_id (random node)
-       contains the `random` flag,
-    5. Response::ReverseConnection sent to Request::ReverseConnection
-       the corresponding `node_id`.
-
-    In case of points 3, 4 and 5, if more than one request has been sent,
-    all requests must be resolved by a single response.
+    1. Requests and responses are tied to a common ID.
+    2. Connection initialization messages are sent in a sequence,
+    3. Control messages must not be responded to,
+    4. Response::Node sent to Request::Node contains a corresponding `node_id`,
+    5. Request::Node with empty node_id requests information on a random node.
 */
 
 
@@ -67,6 +58,7 @@ message Request {
         Session session = 10;
         Register register = 20;
         Node node = 30;
+        Slot slot = 31;
         Neighbours neighbours = 40;
         ReverseConnection reverse_connection = 50;
         Ping ping = 80;
@@ -86,6 +78,13 @@ message Request {
     message Node {
         /* Remote node ID */
         bytes node_id = 1;
+        /* Whether to include public key */
+        bool public_key = 2;
+    }
+
+    message Slot {
+        /* Node slot ID */
+        uint32 slot = 1;
         /* Whether to include public key */
         bool public_key = 2;
     }
@@ -150,8 +149,6 @@ message Response {
         repeated Endpoint endpoints = 4;
         uint32 seen_ts = 5;
         uint32 slot = 6;
-        /* random node flag */
-        bool random = 7;
     }
 
     /* Neighbourhood */
@@ -159,9 +156,7 @@ message Response {
         repeated Node nodes = 1;
     }
 
-    message ReverseConnection {
-        bytes node_id = 1;
-    }
+    message ReverseConnection {}
 
     message Pong {}
 }

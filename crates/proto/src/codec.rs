@@ -68,12 +68,12 @@ pub(self) fn read_bytes_inner(
 
     match tag {
         Some(0) => {
-            let _ = buf.split_to(off + available);
+            buf.advance(off + available);
             Err(DecodeError::PayloadInvalid { left })
         }
         Some(1) => {
             if buf.len() >= off + Forward::header_size() {
-                let _ = buf.split_to(off);
+                buf.advance(off);
                 let bytes = buf.split_to(available);
                 Err(DecodeError::Forward { bytes, left })
             } else {
@@ -82,10 +82,10 @@ pub(self) fn read_bytes_inner(
         }
         Some(kind) if kind > 1 => {
             if total > max {
-                let _ = buf.split_to(off + available);
+                buf.advance(off + available);
                 Err(DecodeError::PayloadTooLong { left })
             } else if buf.len() >= off + total {
-                let _ = buf.split_to(off);
+                buf.advance(off);
                 let bytes = buf.split_to(available);
                 Ok(Some(bytes))
             } else {

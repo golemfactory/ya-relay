@@ -85,6 +85,9 @@ impl Server {
                         Kind::Node(params) => {
                             self.node_request(request_id, id, from, params).await?
                         }
+                        Kind::Slot(params) => {
+                            self.slot_request(request_id, id, from, params).await?
+                        }
                         Kind::Neighbours(_) => {}
                         Kind::ReverseConnection(_) => {}
                         Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
@@ -293,11 +296,44 @@ impl Server {
         let node_info = {
             match self.state.read().await.nodes.get_by_node_id(node_id) {
                 None => return Err(NotFound::Node(node_id).into()),
-                Some(session) => session.clone(),
+                Some(session) => session,
             }
         };
 
-        let public_key = if params.public_key {
+        self.node_response(request_id, session_id, from, node_info, params.public_key)
+            .await
+    }
+
+    async fn slot_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        params: proto::request::Slot,
+    ) -> ServerResult<()> {
+        let node_info = {
+            match self.state.read().await.nodes.get_by_slot(params.slot) {
+                None => {
+                    log::error!("Node by slot not found.");
+                    return Err(NotFound::NodeBySlot(params.slot).into());
+                }
+                Some(session) => session,
+            }
+        };
+
+        self.node_response(request_id, session_id, from, node_info, params.public_key)
+            .await
+    }
+
+    async fn node_response(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        node_info: NodeSession,
+        public_key: bool,
+    ) -> ServerResult<()> {
+        let public_key = if public_key {
             node_info.info.public_key
         } else {
             vec![]
@@ -313,7 +349,6 @@ impl Server {
                 .collect(),
             seen_ts: node_info.last_seen.timestamp() as u32,
             slot: node_info.info.slot,
-            random: false,
         };
 
         self.send_to(
@@ -323,7 +358,12 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::info!("Node [{}] info sent to: {}", node_id, from);
+        log::info!(
+            "Node [{}] info sent to (request: {}): {}",
+            node_info.info.node_id,
+            request_id,
+            from
+        );
 
         Ok(())
     }
@@ -441,7 +481,7 @@ impl Server {
                 let info = NodeInfo {
                     node_id,
                     public_key: session.public_key,
-                    slot: u32::max_value(),
+                    slot: u32::MAX,
                     endpoints: vec![],
                 };
 
