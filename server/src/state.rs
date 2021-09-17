@@ -1,6 +1,5 @@
 use chrono::Utc;
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::ops::Sub;
 
 use crate::error::{InternalError, ServerResult, Unauthorized};
@@ -41,32 +40,26 @@ impl NodesState {
         self.slots[slot as usize] = Some(node);
     }
 
-    pub fn unregister(&mut self, pos: u32) {
-        if let Some(ns) = self.get_by_slot(pos) {
-            self.sessions.remove(&ns.session);
-            self.nodes.remove(&ns.info.node_id);
-            self.slots[pos as usize] = None;
-        };
-    }
-
     pub fn check_timeouts(&mut self, timeout: i64) {
-        let mut slots_to_unregister = vec![];
-        for (pos, slot) in self.slots.iter().enumerate() {
+        let sessions = &mut self.sessions;
+        let nodes = &mut self.nodes;
+
+        self.slots.iter_mut().for_each(|slot| {
             if let Some(ns) = slot {
                 let deadline = Utc::now().sub(chrono::Duration::seconds(timeout));
-                if ns.last_seen < deadline {
-                    log::debug!(
-                        "Session timeout. node_id: {}, session_id: {}",
-                        ns.info.node_id,
-                        ns.session
-                    );
-                    slots_to_unregister.push(pos);
+                if ns.last_seen > deadline {
+                    return;
                 }
+                log::debug!(
+                    "Session timeout. node_id: {}, session_id: {}",
+                    ns.info.node_id,
+                    ns.session
+                );
+                sessions.remove(&ns.session);
+                nodes.remove(&ns.info.node_id);
+                *slot = None;
             }
-        }
-        for pos in slots_to_unregister {
-            self.unregister(pos.try_into().unwrap());
-        }
+        });
     }
 
     pub fn update_seen(&mut self, id: SessionId) -> ServerResult<()> {
