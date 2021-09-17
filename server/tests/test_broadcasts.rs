@@ -55,6 +55,18 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
         .collect::<Vec<NodeId>>();
 
     assert_eq!(ids, ids2);
+
+    // When we take bigger neighbourhood it should contain smaller neighbouthood.
+    let ids3 = session
+        .neighbours(8)
+        .await
+        .unwrap()
+        .nodes
+        .into_iter()
+        .map(|node| NodeId::from(node.node_id.as_ref()))
+        .collect::<Vec<NodeId>>();
+
+    assert!(ids2.iter().all(|item| ids3.contains(item)));
     Ok(())
 }
 
