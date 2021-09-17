@@ -26,6 +26,7 @@ digest = "0.9"
 env_logger = { version = "0.8", default-features = false }
 ethsign = "0.8"
 futures = "0.3"
+governor = "0.3.2"
 hex = "0.4"
 log = "0.4"
 rand = { version = "0.8", features = ["std"] }
