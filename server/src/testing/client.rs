@@ -552,6 +552,29 @@ impl Client {
         Ok(response)
     }
 
+    async fn neighbours(
+        &self,
+        addr: SocketAddr,
+        session_id: SessionId,
+        count: u32,
+    ) -> anyhow::Result<proto::response::Neighbours> {
+        let packet = proto::request::Neighbours {
+            count,
+            public_key: true,
+        };
+        let response = self
+            .request::<proto::response::Neighbours>(
+                packet.into(),
+                session_id.to_vec(),
+                DEFAULT_REQUEST_TIMEOUT,
+                addr,
+            )
+            .await?
+            .packet;
+
+        Ok(response)
+    }
+
     async fn ping(&self, addr: SocketAddr, session_id: SessionId) -> anyhow::Result<()> {
         let packet = proto::request::Ping {};
         self.request::<proto::response::Pong>(
@@ -820,6 +843,13 @@ impl Session {
         let session_id = self.id().await?;
         self.client
             .find_node_by_slot(self.remote_addr, session_id, slot)
+            .await
+    }
+
+    pub async fn neighbours(&self, count: u32) -> anyhow::Result<proto::response::Neighbours> {
+        let session_id = self.id().await?;
+        self.client
+            .neighbours(self.remote_addr, session_id, count)
             .await
     }
 
