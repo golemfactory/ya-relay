@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{timeout, Duration};
+use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
@@ -32,6 +32,8 @@ use ya_relay_proto::proto::{RequestId, StatusCode};
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
+pub const SESSION_CLEANER_INTERVAL: u64 = 10; // seconds
+pub const SESSION_TIMEOUT: i64 = 60; // seconds
 
 #[derive(Clone)]
 pub struct Server {
@@ -544,6 +546,20 @@ impl Server {
         self.state.write().await.starting_session.remove(session_id);
     }
 
+    async fn session_cleaner(&self) {
+        let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
+        loop {
+            interval.tick().await;
+            let s = self.clone();
+            s.check_session_timeouts().await;
+        }
+    }
+
+    async fn check_session_timeouts(&self) {
+        let mut server = self.state.write().await;
+        server.nodes.check_timeouts(SESSION_TIMEOUT);
+    }
+
     async fn send_to(
         &self,
         packet: impl Into<PacketKind>,
@@ -589,6 +605,7 @@ impl Server {
                 .take()
                 .ok_or_else(|| anyhow!("Server already running."))?
         };
+        tokio::task::spawn_local(async move { self.session_cleaner().await });
 
         while let Some((packet, addr)) = input.next().await {
             let request_id = PacketKind::request_id(&packet);
