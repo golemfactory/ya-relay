@@ -9,6 +9,8 @@ license = "LGPL-3.0"
 description= "Embeddable networking stack"
 
 [dependencies]
+unbounded-queue = { path = "../unbounded-queue" }
+
 derive_more = "0.99"
 futures = "0.3"
 log = "0.4"

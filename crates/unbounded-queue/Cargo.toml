@@ -1,0 +1,17 @@
+[package]
+name = "unbounded-queue"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+futures = "0.3"
+thiserror = "1"
+
+[dev-dependencies]
+criterion = { version = "0.3", features = ["async_tokio"] }
+rand = "0.8"
+tokio = { version = "1", features = ["sync", "macros", "rt", "rt-multi-thread", "time"] }
+
+[[bench]]
+name = "spawn_send"
+harness = false

@@ -17,6 +17,7 @@ path = "src/main.rs"
 [dependencies]
 ya-net-stack = { path = "../crates/stack" }
 ya-relay-proto = { path = "../crates/proto" }
+unbounded-queue = { path = "../crates/unbounded-queue" }
 ya-client-model = "0.3"
 
 actix-rt = "1.1"

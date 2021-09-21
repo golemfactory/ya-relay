@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail};
 use ethsign::{PublicKey, SecretKey};
-use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::RwLock;
@@ -28,8 +27,8 @@ use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, Forward, Payload, RequestId, SlotId};
 
-pub type ForwardSender = mpsc::Sender<Vec<u8>>;
-pub type ForwardReceiver = mpsc::Receiver<(NodeId, Vec<u8>)>;
+pub type ForwardSender = unbounded_queue::Sender<Vec<u8>>;
+pub type ForwardReceiver = unbounded_queue::Receiver<(NodeId, Vec<u8>)>;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -252,7 +251,7 @@ impl Client {
                         .map(|node| (node.id, state.virt_ingress.tx.clone()))
                 } {
                     Some((node_id, mut tx)) => {
-                        if tx.send((node_id, payload)).await.is_err() {
+                        if tx.send((node_id, payload)).is_err() {
                             log::trace!(
                                 "[{}] ingress router: ingress handler closed for node {}",
                                 client.id(),
@@ -576,7 +575,7 @@ impl Client {
             .connect(node.endpoint, TCP_CONNECTION_TIMEOUT)
             .await?;
 
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = unbounded_queue::queue();
         let client = self.clone();
         let id = client.id();
 

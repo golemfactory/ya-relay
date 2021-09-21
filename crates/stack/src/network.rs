@@ -4,9 +4,8 @@ use std::convert::{TryFrom, TryInto};
 use std::ops::DerefMut;
 use std::rc::Rc;
 
-use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
-use futures::{FutureExt, SinkExt};
+use futures::FutureExt;
 use smoltcp::socket::{Socket, SocketHandle};
 use smoltcp::wire::IpEndpoint;
 use tokio::time::Duration;
@@ -146,13 +145,13 @@ impl Network {
 
     /// Take the ingress traffic receive channel
     #[inline(always)]
-    pub fn ingress_receiver(&self) -> Option<mpsc::Receiver<IngressEvent>> {
+    pub fn ingress_receiver(&self) -> Option<unbounded_queue::Receiver<IngressEvent>> {
         self.ingress.receiver()
     }
 
     /// Take the egress traffic receive channel
     #[inline(always)]
-    pub fn egress_receiver(&self) -> Option<mpsc::Receiver<EgressEvent>> {
+    pub fn egress_receiver(&self) -> Option<unbounded_queue::Receiver<EgressEvent>> {
         self.egress.receiver()
     }
 
@@ -219,10 +218,7 @@ impl Network {
 
         if !(self.ingress.tx.is_closed() || events.is_empty()) {
             let mut ingress_tx = self.ingress.tx.clone();
-            tokio::task::spawn_local(async move {
-                let mut stream = futures::stream::iter(events.into_iter().map(Ok));
-                let _ = ingress_tx.send_all(&mut stream).await;
-            });
+            let _ = ingress_tx.send_all(events);
         }
 
         sockets.prune();
@@ -271,10 +267,7 @@ impl Network {
 
         if !(self.egress.tx.is_closed() || payloads.is_empty()) {
             let mut egress_tx = self.egress.tx.clone();
-            tokio::task::spawn_local(async move {
-                let mut stream = futures::stream::iter(payloads.into_iter().map(Ok));
-                let _ = egress_tx.send_all(&mut stream).await;
-            });
+            let _ = egress_tx.send_all(payloads);
         }
 
         processed
@@ -283,19 +276,19 @@ impl Network {
 
 #[derive(Clone)]
 pub struct Channel<T> {
-    pub tx: mpsc::Sender<T>,
-    rx: Rc<RefCell<Option<mpsc::Receiver<T>>>>,
+    pub tx: unbounded_queue::Sender<T>,
+    rx: Rc<RefCell<Option<unbounded_queue::Receiver<T>>>>,
 }
 
 impl<T> Channel<T> {
-    pub fn receiver(&self) -> Option<mpsc::Receiver<T>> {
+    pub fn receiver(&self) -> Option<unbounded_queue::Receiver<T>> {
         self.rx.borrow_mut().take()
     }
 }
 
 impl<T> Default for Channel<T> {
     fn default() -> Self {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = unbounded_queue::queue_with_capacity(8);
         Self {
             tx,
             rx: Rc::new(RefCell::new(Some(rx))),
