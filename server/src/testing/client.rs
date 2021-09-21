@@ -582,7 +582,7 @@ impl Client {
             .packet;
 
         for node in &response.nodes {
-            self.add_virt_node(addr, session_id, &node).await?;
+            self.add_virt_node(addr, session_id, node).await?;
         }
 
         Ok(response)

@@ -1,6 +1,7 @@
 use chrono::Utc;
 use itertools::Itertools;
 use std::collections::HashMap;
+use std::ops::Sub;
 
 use crate::error::{InternalError, ServerResult, Unauthorized};
 use crate::session::{NodeSession, SessionId};
@@ -79,6 +80,28 @@ impl NodesState {
             .collect();
 
         Ok(neighbours)
+    }
+
+    pub fn check_timeouts(&mut self, timeout: i64) {
+        let sessions = &mut self.sessions;
+        let nodes = &mut self.nodes;
+
+        self.slots.iter_mut().for_each(|slot| {
+            if let Some(ns) = slot {
+                let deadline = Utc::now().sub(chrono::Duration::seconds(timeout));
+                if ns.last_seen > deadline {
+                    return;
+                }
+                log::debug!(
+                    "Session timeout. node_id: {}, session_id: {}",
+                    ns.info.node_id,
+                    ns.session
+                );
+                sessions.remove(&ns.session);
+                nodes.remove(&ns.info.node_id);
+                *slot = None;
+            }
+        });
     }
 
     pub fn update_seen(&mut self, id: SessionId) -> ServerResult<()> {
