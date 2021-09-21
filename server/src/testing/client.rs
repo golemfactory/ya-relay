@@ -533,7 +533,17 @@ impl Client {
             .await?
             .packet;
 
-        let node = VirtNode::try_new(&response.node_id, session_id, addr, response.slot)?;
+        self.add_virt_node(addr, session_id, &response).await?;
+        Ok(response)
+    }
+
+    async fn add_virt_node(
+        &self,
+        addr: SocketAddr,
+        session_id: SessionId,
+        packet: &proto::response::Node,
+    ) -> anyhow::Result<()> {
+        let node = VirtNode::try_new(&packet.node_id, session_id, addr, packet.slot)?;
         {
             let mut state = self.state.write().await;
             let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
@@ -548,8 +558,7 @@ impl Client {
                 .or_default()
                 .insert(node.session_slot);
         }
-
-        Ok(response)
+        Ok(())
     }
 
     async fn neighbours(
@@ -571,6 +580,10 @@ impl Client {
             )
             .await?
             .packet;
+
+        for node in &response.nodes {
+            self.add_virt_node(addr, session_id, &node).await?;
+        }
 
         Ok(response)
     }
