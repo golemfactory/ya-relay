@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{timeout, Duration};
+use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
@@ -35,6 +35,8 @@ pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
 const FORWARDER_RATE_LIMIT: u32 = 1024;
+pub const SESSION_CLEANER_INTERVAL: u64 = 10; // seconds
+pub const SESSION_TIMEOUT: i64 = 60; // seconds
 
 #[derive(Clone)]
 pub struct Server {
@@ -87,6 +89,9 @@ impl Server {
                         Kind::Register(_) => {}
                         Kind::Node(params) => {
                             self.node_request(request_id, id, from, params).await?
+                        }
+                        Kind::Slot(params) => {
+                            self.slot_request(request_id, id, from, params).await?
                         }
                         Kind::Neighbours(_) => {}
                         Kind::ReverseConnection(_) => {}
@@ -300,11 +305,44 @@ impl Server {
         let node_info = {
             match self.state.read().await.nodes.get_by_node_id(node_id) {
                 None => return Err(NotFound::Node(node_id).into()),
-                Some(session) => session.clone(),
+                Some(session) => session,
             }
         };
 
-        let public_key = if params.public_key {
+        self.node_response(request_id, session_id, from, node_info, params.public_key)
+            .await
+    }
+
+    async fn slot_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        params: proto::request::Slot,
+    ) -> ServerResult<()> {
+        let node_info = {
+            match self.state.read().await.nodes.get_by_slot(params.slot) {
+                None => {
+                    log::error!("Node by slot not found.");
+                    return Err(NotFound::NodeBySlot(params.slot).into());
+                }
+                Some(session) => session,
+            }
+        };
+
+        self.node_response(request_id, session_id, from, node_info, params.public_key)
+            .await
+    }
+
+    async fn node_response(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        node_info: NodeSession,
+        public_key: bool,
+    ) -> ServerResult<()> {
+        let public_key = if public_key {
             node_info.info.public_key
         } else {
             vec![]
@@ -320,7 +358,6 @@ impl Server {
                 .collect(),
             seen_ts: node_info.last_seen.timestamp() as u32,
             slot: node_info.info.slot,
-            random: false,
         };
 
         self.send_to(
@@ -330,7 +367,12 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::info!("Node [{}] info sent to: {}", node_id, from);
+        log::info!(
+            "Node [{}] info sent to (request: {}): {}",
+            node_info.info.node_id,
+            request_id,
+            from
+        );
 
         Ok(())
     }
@@ -448,7 +490,7 @@ impl Server {
                 let info = NodeInfo {
                     node_id,
                     public_key: session.public_key,
-                    slot: u32::max_value(),
+                    slot: u32::MAX,
                     endpoints: vec![],
                 };
 
@@ -519,6 +561,20 @@ impl Server {
         self.state.write().await.starting_session.remove(session_id);
     }
 
+    async fn session_cleaner(&self) {
+        let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
+        loop {
+            interval.tick().await;
+            let s = self.clone();
+            s.check_session_timeouts().await;
+        }
+    }
+
+    async fn check_session_timeouts(&self) {
+        let mut server = self.state.write().await;
+        server.nodes.check_timeouts(SESSION_TIMEOUT);
+    }
+
     async fn send_to(
         &self,
         packet: impl Into<PacketKind>,
@@ -564,6 +620,7 @@ impl Server {
                 .take()
                 .ok_or_else(|| anyhow!("Server already running."))?
         };
+        tokio::task::spawn_local(async move { self.session_cleaner().await });
 
         while let Some((packet, addr)) = input.next().await {
             let request_id = PacketKind::request_id(&packet);

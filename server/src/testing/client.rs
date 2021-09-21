@@ -1,12 +1,11 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::net::SocketAddr;
+use std::net::{Ipv6Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail};
-use bytes::BytesMut;
-use ethsign::SecretKey;
+use ethsign::{PublicKey, SecretKey};
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -21,19 +20,30 @@ use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
 use ya_client_model::NodeId;
+use ya_net_stack::interface::*;
+use ya_net_stack::smoltcp::iface::Route;
+use ya_net_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
+use ya_net_stack::socket::SocketEndpoint;
+use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 use ya_relay_proto::codec;
-use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
+use ya_relay_proto::proto::{self, Forward, Payload, RequestId, SlotId};
 
-pub type ForwardSender = mpsc::Sender<BytesMut>;
-pub type ForwardReceiver = mpsc::Receiver<BytesMut>;
+pub type ForwardSender = mpsc::Sender<Vec<u8>>;
+pub type ForwardReceiver = mpsc::Receiver<(NodeId, Vec<u8>)>;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 
+const STACK_POLL_INTERVAL: Duration = Duration::from_millis(2000);
+const TCP_CONNECTION_TIMEOUT: Duration = Duration::from_millis(5000);
+const TCP_BIND_PORT: u16 = 1;
+const IPV6_DEFAULT_CIDR: u8 = 0;
+
 #[derive(Clone)]
 pub struct Client {
     state: Arc<RwLock<ClientState>>,
+    net: Network,
 }
 
 struct ClientState {
@@ -43,7 +53,11 @@ struct ClientState {
 
     sessions: HashMap<SocketAddr, Session>,
     responses: HashMap<SocketAddr, Dispatcher>,
-    forward: HashMap<SocketAddr, ForwardSender>,
+    slots: HashMap<SocketAddr, HashSet<SlotId>>,
+
+    virt_ingress: Channel<(NodeId, Vec<u8>)>,
+    virt_nodes: HashMap<Box<[u8]>, VirtNode>,
+    virt_ips: HashMap<(SlotId, SocketAddr), Box<[u8]>>,
 }
 
 impl ClientState {
@@ -54,15 +68,11 @@ impl ClientState {
             bind_addr: Default::default(),
             sessions: Default::default(),
             responses: Default::default(),
-            forward: Default::default(),
+            slots: Default::default(),
+            virt_ingress: Default::default(),
+            virt_nodes: Default::default(),
+            virt_ips: Default::default(),
         }
-    }
-
-    #[allow(unused)]
-    fn remove(&mut self, addr: &SocketAddr) {
-        self.sessions.remove(addr);
-        self.responses.remove(addr);
-        self.forward.remove(addr);
     }
 
     fn reset(&mut self) {
@@ -130,6 +140,16 @@ impl ClientBuilder {
 }
 
 impl Client {
+    fn new(config: ClientConfig) -> Self {
+        let stack = default_network(config.secret.public());
+        let state = Arc::new(RwLock::new(ClientState::new(config)));
+        Self { state, net: stack }
+    }
+
+    pub fn id(&self) -> String {
+        self.net.name.as_ref().clone()
+    }
+
     pub async fn node_id(&self) -> NodeId {
         let state = self.state.read().await;
         NodeId::from(*state.config.secret.public().address())
@@ -140,15 +160,17 @@ impl Client {
             .read()
             .await
             .bind_addr
-            .ok_or_else(|| anyhow!("Client not started"))
+            .ok_or_else(|| anyhow!("client not started"))
     }
 
-    fn new(config: ClientConfig) -> Self {
-        let state = Arc::new(RwLock::new(ClientState::new(config)));
-        Self { state }
+    pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
+        let state = self.state.read().await;
+        state.virt_ingress.receiver()
     }
 
     async fn spawn(&mut self) -> anyhow::Result<()> {
+        log::debug!("[{}] starting...", self.id());
+
         let (stream, auto_connect) = {
             let mut state = self.state.write().await;
             state.reset();
@@ -156,9 +178,17 @@ impl Client {
             let (stream, sink, bind_addr) = udp_bind(&state.config.bind_url).await?;
             state.sink = Some(sink);
             state.bind_addr = Some(bind_addr);
-
             (stream, state.config.auto_connect)
         };
+
+        let node_id = self.node_id().await;
+        let virt_endpoint: IpEndpoint = (to_ipv6(&node_id), TCP_BIND_PORT).into();
+
+        self.net.bind(Protocol::Tcp, virt_endpoint)?;
+
+        self.spawn_ingress_router()?;
+        self.spawn_egress_router()?;
+        self.spawn_stack_poller();
 
         tokio::task::spawn_local(dispatch(self.clone(), stream));
 
@@ -167,7 +197,172 @@ impl Client {
             session.register_endpoints(vec![]).await?;
         }
 
+        log::debug!("[{}] started", self.id());
         Ok(())
+    }
+
+    fn spawn_ingress_router(&self) -> anyhow::Result<()> {
+        let ingress_rx = self
+            .net
+            .ingress_receiver()
+            .ok_or_else(|| anyhow::anyhow!("ingress traffic router already spawned"))?;
+
+        let client = self.clone();
+        tokio::task::spawn_local(ingress_rx.for_each(move |event| {
+            let client = client.clone();
+            async move {
+                let (desc, payload) = match event {
+                    IngressEvent::InboundConnection { desc } => {
+                        log::trace!(
+                            "[{}] ingress router: new connection from {:?} to {:?} ",
+                            client.id(),
+                            desc.remote,
+                            desc.local,
+                        );
+                        return;
+                    }
+                    IngressEvent::Disconnected { desc } => {
+                        log::trace!(
+                            "[{}] ingress router: {:?} disconnected from {:?}",
+                            client.id(),
+                            desc.remote,
+                            desc.local,
+                        );
+                        return;
+                    }
+                    IngressEvent::Packet { desc, payload } => (desc, payload),
+                };
+                let remote_address = match desc.remote {
+                    SocketEndpoint::Ip(endpoint) => endpoint.addr,
+                    _ => {
+                        log::trace!(
+                            "[{}] ingress router: remote endpoint {:?} is not supported",
+                            client.id(),
+                            desc.remote
+                        );
+                        return;
+                    }
+                };
+                match {
+                    // nodes are populated via `Client::on_forward` and `Client::forward`
+                    let state = client.state.read().await;
+                    state
+                        .virt_nodes
+                        .get(remote_address.as_bytes())
+                        .map(|node| (node.id, state.virt_ingress.tx.clone()))
+                } {
+                    Some((node_id, mut tx)) => {
+                        if tx.send((node_id, payload)).await.is_err() {
+                            log::trace!(
+                                "[{}] ingress router: ingress handler closed for node {}",
+                                client.id(),
+                                node_id
+                            );
+                        }
+                    }
+                    _ => log::trace!(
+                        "[{}] ingress router: unknown remote address {}",
+                        client.id(),
+                        remote_address
+                    ),
+                };
+            }
+        }));
+
+        Ok(())
+    }
+
+    fn spawn_egress_router(&self) -> anyhow::Result<()> {
+        let egress_rx = self
+            .net
+            .egress_receiver()
+            .ok_or_else(|| anyhow::anyhow!("egress traffic router already spawned"))?;
+
+        let client = self.clone();
+        tokio::task::spawn_local(egress_rx.for_each(move |egress| {
+            let client = client.clone();
+            async move {
+                let node = match {
+                    let state = client.state.read().await;
+                    state.virt_nodes.get(&egress.remote).cloned()
+                } {
+                    Some(node) => node,
+                    None => {
+                        log::trace!(
+                            "[{}] egress router: unknown address {:02x?}",
+                            client.id(),
+                            egress.remote
+                        );
+                        return;
+                    }
+                };
+
+                let forward = Forward {
+                    session_id: node.session_id.into(),
+                    slot: node.session_slot,
+                    payload: Payload::from(egress.payload),
+                };
+
+                if let Err(error) = client.send(forward, node.session_addr).await {
+                    log::trace!(
+                        "[{}] egress router: forward to {} failed: {}",
+                        client.id(),
+                        node.session_addr,
+                        error
+                    );
+                }
+            }
+        }));
+
+        Ok(())
+    }
+
+    fn spawn_stack_poller(&self) {
+        let net = self.net.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                tokio::time::delay_for(STACK_POLL_INTERVAL).await;
+                net.poll();
+            }
+        });
+    }
+
+    async fn resolve_slot(&self, slot: SlotId, addr: SocketAddr) -> anyhow::Result<VirtNode> {
+        match self.get_slot(slot, addr).await {
+            Some(node) => Ok(node),
+            None => match async {
+                let session = self.session(addr).await?;
+                session.find_slot(slot).await?;
+                Ok::<_, anyhow::Error>(self.get_slot(slot, addr).await)
+            }
+            .await
+            {
+                Ok(Some(node)) => Ok(node),
+                Ok(None) => anyhow::bail!("empty node response"),
+                Err(err) => anyhow::bail!("slot resolution error: {}", err),
+            },
+        }
+    }
+
+    async fn get_slot(&self, slot: SlotId, addr: SocketAddr) -> Option<VirtNode> {
+        let state = self.state.read().await;
+        state
+            .virt_ips
+            .get(&(slot, addr))
+            .map(|ip| state.virt_nodes.get(ip).cloned())
+            .flatten()
+    }
+
+    async fn remove_slot(&self, slot: SlotId, addr: SocketAddr) {
+        let mut state = self.state.write().await;
+
+        if let Some(slots) = state.slots.get_mut(&addr) {
+            slots.remove(&slot);
+
+            if let Some(ip) = state.virt_ips.remove(&(slot, addr)) {
+                state.virt_nodes.remove(&ip);
+            }
+        }
     }
 }
 
@@ -196,7 +391,8 @@ impl Client {
 
 impl Client {
     async fn init_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
-        log::info!("Client: initializing session with {}", addr);
+        let id = self.id();
+        log::info!("[{}] initializing session with {}", id, addr);
 
         let response = self
             .request::<proto::response::Challenge>(
@@ -208,20 +404,19 @@ impl Client {
             .await?;
 
         let packet = response.packet;
-
-        let secret = self.state.read().await.config.secret.clone();
-        let public_key = secret.public();
-        let challenge_resp =
-            DefaultChallenge::with(secret).solve(packet.challenge.as_slice(), packet.difficulty)?;
+        let secret_key = self.state.read().await.config.secret.clone();
+        let public_key = secret_key.public();
+        let challenge_resp = DefaultChallenge::with(secret_key)
+            .solve(packet.challenge.as_slice(), packet.difficulty)?;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
         let node_id = self.node_id().await;
+
         let packet = proto::request::Session {
             challenge_resp,
             node_id: node_id.into_array().to_vec(),
             public_key: public_key.bytes().to_vec(),
         };
-
         let response = self
             .request::<proto::response::Session>(
                 packet.into(),
@@ -233,7 +428,8 @@ impl Client {
 
         if session_id != &response.session_id[..] {
             log::error!(
-                "Client: init session id mismatch: {} vs {:?} (response)",
+                "[{}] init session id mismatch: {} vs {:?} (response)",
+                id,
                 session_id,
                 response.session_id
             )
@@ -245,11 +441,30 @@ impl Client {
                 .sessions
                 .entry(addr)
                 .or_insert_with(|| Session::new(addr, self.clone()));
-            session.id.write().await.replace(session_id);
+            let mut state = session.state.write().await;
+            state.replace(SessionState { id: session_id });
         }
 
-        log::info!("Client: session initialized with {}", addr);
+        log::info!("[{}] session initialized with {}", id, addr);
         Ok(session_id)
+    }
+
+    async fn remove_session(&self, addr: SocketAddr) {
+        let mut state = self.state.write().await;
+        state.responses.remove(&addr);
+
+        if let Some(slots) = state.slots.remove(&addr) {
+            for slot in slots {
+                if let Some(ip) = state.virt_ips.remove(&(slot, addr)) {
+                    state.virt_nodes.remove(&ip);
+                }
+            }
+        }
+
+        if let Some(session) = state.sessions.remove(&addr) {
+            let mut session_state = session.state.write().await;
+            *session_state = None;
+        }
     }
 
     async fn register_endpoints(
@@ -258,7 +473,8 @@ impl Client {
         session_id: SessionId,
         endpoints: Vec<proto::Endpoint>,
     ) -> anyhow::Result<Vec<proto::Endpoint>> {
-        log::info!("Client: registering endpoints");
+        let id = self.id();
+        log::info!("[{}] registering endpoints", id);
 
         let response = self
             .request::<proto::response::Register>(
@@ -270,7 +486,7 @@ impl Client {
             .await?
             .packet;
 
-        log::info!("Client: registration finished");
+        log::info!("[{}] registration finished", id);
 
         Ok(response.endpoints)
     }
@@ -285,7 +501,29 @@ impl Client {
             node_id: node_id.into_array().to_vec(),
             public_key: true,
         };
-        let node = self
+        self.find_node_by(addr, session_id, packet).await
+    }
+
+    async fn find_node_by_slot(
+        &self,
+        addr: SocketAddr,
+        session_id: SessionId,
+        slot: SlotId,
+    ) -> anyhow::Result<proto::response::Node> {
+        let packet = proto::request::Slot {
+            slot,
+            public_key: true,
+        };
+        self.find_node_by(addr, session_id, packet).await
+    }
+
+    async fn find_node_by(
+        &self,
+        addr: SocketAddr,
+        session_id: SessionId,
+        packet: impl Into<proto::Request>,
+    ) -> anyhow::Result<proto::response::Node> {
+        let response = self
             .request::<proto::response::Node>(
                 packet.into(),
                 session_id.to_vec(),
@@ -295,7 +533,23 @@ impl Client {
             .await?
             .packet;
 
-        Ok(node)
+        let node = VirtNode::try_new(&response.node_id, session_id, addr, response.slot)?;
+        {
+            let mut state = self.state.write().await;
+            let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
+
+            state.virt_nodes.insert(ip.clone(), node);
+            state
+                .virt_ips
+                .insert((node.session_slot, node.session_addr), ip);
+            state
+                .slots
+                .entry(node.session_addr)
+                .or_default()
+                .insert(node.session_slot);
+        }
+
+        Ok(response)
     }
 
     async fn ping(&self, addr: SocketAddr, session_id: SessionId) -> anyhow::Result<()> {
@@ -309,6 +563,44 @@ impl Client {
         .await?;
 
         Ok(())
+    }
+
+    async fn forward(
+        self,
+        session_addr: SocketAddr,
+        slot: SlotId,
+    ) -> anyhow::Result<ForwardSender> {
+        let node = self.resolve_slot(slot, session_addr).await?;
+        let connection = self
+            .net
+            .connect(node.endpoint, TCP_CONNECTION_TIMEOUT)
+            .await?;
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let client = self.clone();
+        let id = client.id();
+
+        tokio::task::spawn_local(async move {
+            while let Some(payload) = rx.next().await {
+                match client.net.send(payload, connection).await {
+                    Ok(_) => client.net.poll(),
+                    Err(e) => {
+                        log::warn!("[{}] unable to forward via {}: {}", id, session_addr, e);
+                    }
+                }
+            }
+
+            client.remove_slot(slot, session_addr).await;
+            rx.close();
+
+            log::trace!(
+                "[{}] forward: disconnected from server: {}",
+                id,
+                session_addr
+            );
+        });
+
+        Ok(tx)
     }
 }
 
@@ -324,9 +616,7 @@ impl Client {
         proto::response::Kind: TryInto<T, Error = ()>,
         T: 'static,
     {
-        let request_id = request.request_id;
-        let response = self.response::<T>(request_id, timeout, addr).await;
-
+        let response = self.response::<T>(request.request_id, timeout, addr).await;
         let packet = proto::Packet {
             session_id,
             kind: Some(proto::packet::Kind::Request(request)),
@@ -360,9 +650,9 @@ impl Client {
         addr: SocketAddr,
     ) -> anyhow::Result<()> {
         let mut sink = {
-            let mut state = self.state.write().await;
+            let state = self.state.read().await;
             match state.sink {
-                Some(ref mut sink) => sink.clone(),
+                Some(ref sink) => sink.clone(),
                 None => bail!("Not connected"),
             }
         };
@@ -386,11 +676,7 @@ impl Handler for Client {
         control: proto::Control,
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
-        log::debug!(
-            "Client: received control packet from {}: {:?}",
-            from,
-            control
-        );
+        log::debug!("received control packet from {}: {:?}", from, control);
         Box::pin(futures::future::ready(()))
     }
 
@@ -400,11 +686,7 @@ impl Handler for Client {
         request: proto::Request,
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
-        log::debug!(
-            "Client: received request packet from {}: {:?}",
-            from,
-            request
-        );
+        log::debug!("received request packet from {}: {:?}", from, request);
 
         if let proto::Request {
             request_id,
@@ -421,7 +703,7 @@ impl Handler for Client {
             let client = self.clone();
             return async move {
                 if let Err(e) = client.send(packet, from).await {
-                    log::warn!("Client: unable to send Pong to {}: {}", from, e);
+                    log::warn!("unable to send Pong to {}: {}", from, e);
                 }
             }
             .boxed_local();
@@ -432,46 +714,89 @@ impl Handler for Client {
 
     fn on_forward(&self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<()> {
         let client = self.clone();
-        async move {
-            match {
-                let state = client.state.read().await;
-                state.forward.get(&from).cloned()
-            } {
-                Some(mut sender) => {
-                    if sender.send(forward.payload).await.is_err() {
-                        log::debug!("Unable to forward packet: handler closed");
-                    }
-                }
-                None => log::debug!("No forward handler exists for {}", from),
-            }
+        let fut = async move {
+            log::trace!("[{}] received forward packet via {}", client.id(), from);
+
+            if let Err(err) = client.resolve_slot(forward.slot, from).await {
+                log::error!("[{}] on forward error: {}", client.id(), err);
+                return;
+            };
+
+            client.net.receive(forward.payload.into_vec());
+            client.net.poll();
+        };
+
+        tokio::task::spawn_local(fut);
+        futures::future::ready(()).boxed_local()
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct VirtNode {
+    id: NodeId,
+    endpoint: IpEndpoint,
+    session_id: SessionId,
+    session_addr: SocketAddr,
+    session_slot: SlotId,
+}
+
+impl VirtNode {
+    pub fn try_new(
+        id: &[u8],
+        session_id: SessionId,
+        session_addr: SocketAddr,
+        session_slot: SlotId,
+    ) -> anyhow::Result<Self> {
+        let default_id = NodeId::default();
+        if id.len() != default_id.as_ref().len() {
+            anyhow::bail!("invalid NodeId");
         }
-        .boxed_local()
+
+        let id = NodeId::from(id);
+        let ip = IpAddress::from(to_ipv6(&id));
+        let endpoint = (ip, TCP_BIND_PORT).into();
+
+        Ok(Self {
+            id,
+            endpoint,
+            session_id,
+            session_addr,
+            session_slot,
+        })
     }
 }
 
 #[derive(Clone)]
 pub struct Session {
-    pub id: Arc<RwLock<Option<SessionId>>>,
-    remote: SocketAddr,
+    remote_addr: SocketAddr,
     client: Client,
+    pub state: Arc<RwLock<Option<SessionState>>>,
+}
+
+pub struct SessionState {
+    pub id: SessionId,
 }
 
 impl Session {
-    fn new(remote: SocketAddr, client: Client) -> Self {
+    fn new(remote_addr: SocketAddr, client: Client) -> Self {
         Self {
-            id: Default::default(),
-            remote,
             client,
+            remote_addr,
+            state: Default::default(),
         }
     }
 
     pub async fn id(&self) -> anyhow::Result<SessionId> {
-        let id = self.id.read().await;
-        (*id).ok_or_else(|| anyhow!("Not connected"))
+        let state = self.state.read().await;
+        Ok(state.as_ref().ok_or_else(|| anyhow!("Not connected"))?.id)
     }
 
     pub async fn init(&self) -> anyhow::Result<SessionId> {
-        self.client.init_session(self.remote).await
+        self.client.init_session(self.remote_addr).await
+    }
+
+    pub async fn close(self) {
+        self.client.remove_session(self.remote_addr).await;
     }
 
     pub async fn register_endpoints(
@@ -480,51 +805,74 @@ impl Session {
     ) -> anyhow::Result<Vec<proto::Endpoint>> {
         let session_id = self.id().await?;
         self.client
-            .register_endpoints(self.remote, session_id, endpoints)
+            .register_endpoints(self.remote_addr, session_id, endpoints)
             .await
     }
 
     pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<proto::response::Node> {
         let session_id = self.id().await?;
         self.client
-            .find_node(self.remote, session_id, node_id)
+            .find_node(self.remote_addr, session_id, node_id)
+            .await
+    }
+
+    pub async fn find_slot(&self, slot: SlotId) -> anyhow::Result<proto::response::Node> {
+        let session_id = self.id().await?;
+        self.client
+            .find_node_by_slot(self.remote_addr, session_id, slot)
             .await
     }
 
     pub async fn ping(&self) -> anyhow::Result<()> {
         let session_id = self.id().await?;
-        self.client.ping(self.remote, session_id).await
+        self.client.ping(self.remote_addr, session_id).await
     }
 
-    pub async fn forward(
-        self,
-        slot: SlotId,
-        send: ForwardReceiver,
-        receive: ForwardSender,
-    ) -> anyhow::Result<()> {
-        let session_id = self.id().await?;
-        let addr = self.remote;
-        {
-            let mut state = self.client.state.write().await;
-            state.forward.insert(addr, receive);
-        }
-
-        let client = self.client.clone();
-        tokio::task::spawn_local(send.for_each(move |payload| {
-            let client = client.clone();
-            let forward = Forward {
-                session_id: session_id.into(),
-                slot,
-                payload,
-            };
-
-            async move {
-                if let Err(e) = client.send(forward, addr).await {
-                    log::warn!("Unable to forward packet to {}: {}", addr, e);
-                }
-            }
-        }));
-
-        Ok(())
+    pub async fn forward(self, slot: SlotId) -> anyhow::Result<ForwardSender> {
+        let _ = self.id().await?;
+        self.client.forward(self.remote_addr, slot).await
     }
+}
+
+fn default_network(key: PublicKey) -> Network {
+    let address = key.address();
+    let ipv6_addr = to_ipv6(address);
+    let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
+    let mut iface = default_iface();
+
+    let name = format!(
+        "{:02x}{:02x}{:02x}{:02x}",
+        address[0], address[1], address[2], address[3]
+    );
+
+    log::debug!("[{}] Ethernet address: {}", name, iface.ethernet_addr());
+    log::debug!("[{}] IP address: {}", name, ipv6_addr);
+
+    add_iface_address(&mut iface, ipv6_cidr);
+    add_iface_route(
+        &mut iface,
+        ipv6_cidr,
+        Route::new_ipv6_gateway(ipv6_addr.into()),
+    );
+
+    Network::new(name, Stack::with(iface))
+}
+
+fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
+    const IPV6_ADDRESS_LEN: usize = 16;
+
+    let bytes = bytes.as_ref();
+    let len = IPV6_ADDRESS_LEN.min(bytes.len());
+    let mut ipv6_bytes = [0u8; IPV6_ADDRESS_LEN];
+
+    // copy source bytes
+    ipv6_bytes[..len].copy_from_slice(&bytes[..len]);
+    // no multicast addresses
+    ipv6_bytes[0] %= 0xff;
+    // no unspecified or localhost addresses
+    if ipv6_bytes[0..15] == [0u8; 15] && ipv6_bytes[15] < 0x02 {
+        ipv6_bytes[15] = 0x02;
+    }
+
+    Ipv6Addr::from(ipv6_bytes)
 }
