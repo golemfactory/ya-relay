@@ -90,7 +90,10 @@ impl Server {
                         Kind::Slot(params) => {
                             self.slot_request(request_id, id, from, params).await?
                         }
-                        Kind::Neighbours(_) => {}
+                        Kind::Neighbours(params) => {
+                            self.neighbours_request(request_id, id, from, params)
+                                .await?
+                        }
                         Kind::ReverseConnection(_) => {}
                         Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
                     },
@@ -306,6 +309,42 @@ impl Server {
             .await
     }
 
+    async fn neighbours_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        params: proto::request::Neighbours,
+    ) -> ServerResult<()> {
+        let nodes = {
+            self.state
+                .read()
+                .await
+                .nodes
+                .neighbours(session_id, params.count)?
+        };
+
+        let nodes = nodes
+            .into_iter()
+            .map(|node_info| to_node_response(node_info, params.public_key))
+            .collect();
+
+        self.send_to(
+            proto::Packet::response(
+                request_id,
+                session_id.to_vec(),
+                proto::StatusCode::Ok,
+                proto::response::Neighbours { nodes },
+            ),
+            &from,
+        )
+        .await
+        .map_err(|_| InternalError::Send)?;
+
+        log::info!("Neighborhood sent to (request: {}): {}", request_id, from);
+        Ok(())
+    }
+
     async fn slot_request(
         &self,
         request_id: RequestId,
@@ -335,23 +374,8 @@ impl Server {
         node_info: NodeSession,
         public_key: bool,
     ) -> ServerResult<()> {
-        let public_key = if public_key {
-            node_info.info.public_key
-        } else {
-            vec![]
-        };
-        let node = proto::response::Node {
-            node_id: node_info.info.node_id.into_array().to_vec(),
-            public_key,
-            endpoints: node_info
-                .info
-                .endpoints
-                .into_iter()
-                .map(proto::Endpoint::from)
-                .collect(),
-            seen_ts: node_info.last_seen.timestamp() as u32,
-            slot: node_info.info.slot,
-        };
+        let node_id = node_info.info.node_id;
+        let node = to_node_response(node_info, public_key);
 
         self.send_to(
             proto::Packet::response(request_id, session_id.to_vec(), proto::StatusCode::Ok, node),
@@ -362,7 +386,7 @@ impl Server {
 
         log::info!(
             "Node [{}] info sent to (request: {}): {}",
-            node_info.info.node_id,
+            node_id,
             request_id,
             from
         );
@@ -666,6 +690,26 @@ pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, pr
             }
         },
         _ => Err(proto::StatusCode::Undefined),
+    }
+}
+
+pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::response::Node {
+    let public_key = match public_key {
+        true => node_info.info.public_key,
+        false => vec![],
+    };
+
+    proto::response::Node {
+        node_id: node_info.info.node_id.into_array().to_vec(),
+        public_key,
+        endpoints: node_info
+            .info
+            .endpoints
+            .into_iter()
+            .map(proto::Endpoint::from)
+            .collect(),
+        seen_ts: node_info.last_seen.timestamp() as u32,
+        slot: node_info.info.slot,
     }
 }
 

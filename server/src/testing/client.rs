@@ -533,7 +533,17 @@ impl Client {
             .await?
             .packet;
 
-        let node = VirtNode::try_new(&response.node_id, session_id, addr, response.slot)?;
+        self.add_virt_node(addr, session_id, &response).await?;
+        Ok(response)
+    }
+
+    async fn add_virt_node(
+        &self,
+        addr: SocketAddr,
+        session_id: SessionId,
+        packet: &proto::response::Node,
+    ) -> anyhow::Result<()> {
+        let node = VirtNode::try_new(&packet.node_id, session_id, addr, packet.slot)?;
         {
             let mut state = self.state.write().await;
             let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
@@ -547,6 +557,32 @@ impl Client {
                 .entry(node.session_addr)
                 .or_default()
                 .insert(node.session_slot);
+        }
+        Ok(())
+    }
+
+    async fn neighbours(
+        &self,
+        addr: SocketAddr,
+        session_id: SessionId,
+        count: u32,
+    ) -> anyhow::Result<proto::response::Neighbours> {
+        let packet = proto::request::Neighbours {
+            count,
+            public_key: true,
+        };
+        let response = self
+            .request::<proto::response::Neighbours>(
+                packet.into(),
+                session_id.to_vec(),
+                DEFAULT_REQUEST_TIMEOUT,
+                addr,
+            )
+            .await?
+            .packet;
+
+        for node in &response.nodes {
+            self.add_virt_node(addr, session_id, node).await?;
         }
 
         Ok(response)
@@ -820,6 +856,13 @@ impl Session {
         let session_id = self.id().await?;
         self.client
             .find_node_by_slot(self.remote_addr, session_id, slot)
+            .await
+    }
+
+    pub async fn neighbours(&self, count: u32) -> anyhow::Result<proto::response::Neighbours> {
+        let session_id = self.id().await?;
+        self.client
+            .neighbours(self.remote_addr, session_id, count)
             .await
     }
 
