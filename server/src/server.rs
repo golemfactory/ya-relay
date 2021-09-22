@@ -14,7 +14,7 @@ use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::challenge::{Challenge, DefaultChallenge};
+use crate::challenge;
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
@@ -488,13 +488,13 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // Validate the challenge
-                if !DefaultChallenge::with(session.public_key.as_slice())
-                    .validate(
-                        &raw_challenge,
-                        CHALLENGE_DIFFICULTY,
-                        &session.challenge_resp,
-                    )
-                    .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
+                if !challenge::verify(
+                    &raw_challenge,
+                    CHALLENGE_DIFFICULTY,
+                    &session.challenge_resp,
+                    session.public_key.as_slice(),
+                )
+                .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
                 {
                     return Err(Unauthorized::InvalidChallenge.into());
                 }

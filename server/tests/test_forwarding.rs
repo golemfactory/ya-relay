@@ -7,7 +7,6 @@ use anyhow::Context;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 
-use ya_net_server::testing::key::generate;
 use ya_net_server::testing::server::init_test_server;
 use ya_net_server::testing::ClientBuilder;
 
@@ -16,12 +15,10 @@ async fn test_two_way_packet_forward() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .secret(generate())
         .connect()
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .secret(generate())
         .connect()
         .build()
         .await?;

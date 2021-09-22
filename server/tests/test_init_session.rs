@@ -2,7 +2,6 @@ use std::convert::TryFrom;
 
 use std::ops::DerefMut;
 use ya_client_model::NodeId;
-use ya_net_server::testing::key::generate;
 use ya_net_server::testing::server::init_test_server;
 use ya_net_server::testing::ClientBuilder;
 use ya_net_server::SessionId;
@@ -12,7 +11,6 @@ use ya_relay_proto::proto;
 async fn test_query_self_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client = ClientBuilder::from_server(&wrapper.server)
-        .secret(generate())
         .build()
         .await
         .unwrap();
@@ -45,7 +43,6 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
 async fn test_request_with_invalid_session() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client = ClientBuilder::from_server(&wrapper.server)
-        .secret(generate())
         .connect()
         .build()
         .await
@@ -79,13 +76,11 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
 async fn test_query_other_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client1 = ClientBuilder::from_server(&wrapper.server)
-        .secret(generate())
         .connect()
         .build()
         .await
         .unwrap();
     let client2 = ClientBuilder::from_server(&wrapper.server)
-        .secret(generate())
         .connect()
         .build()
         .await
@@ -109,7 +104,6 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
 async fn test_close_session() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client = ClientBuilder::from_server(&wrapper.server)
-        .secret(generate())
         .connect()
         .build()
         .await

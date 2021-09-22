@@ -5,20 +5,21 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail};
-use ethsign::{PublicKey, SecretKey};
+use ethsign::PublicKey;
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::RwLock;
 use url::Url;
 
-use crate::challenge::{Challenge, DefaultChallenge};
+use crate::challenge;
 use crate::server::Server;
 use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
-use crate::testing::key;
 use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
+use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
+use std::rc::Rc;
 use ya_client_model::NodeId;
 use ya_net_stack::interface::*;
 use ya_net_stack::smoltcp::iface::Route;
@@ -80,19 +81,20 @@ impl ClientState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientConfig {
+    pub node_id: NodeId,
+    pub node_pub_key: PublicKey,
+    pub crypto: Rc<dyn CryptoProvider>,
     pub bind_url: Url,
     pub srv_addr: SocketAddr,
-    pub secret: SecretKey,
     pub auto_connect: bool,
 }
 
-#[derive(Clone, Debug)]
 pub struct ClientBuilder {
     bind_url: Option<Url>,
     srv_url: Url,
-    secret: Option<SecretKey>,
+    crypto: Option<Rc<dyn CryptoProvider>>,
     auto_connect: bool,
 }
 
@@ -106,13 +108,13 @@ impl ClientBuilder {
         ClientBuilder {
             bind_url: None,
             srv_url: url,
-            secret: None,
+            crypto: None,
             auto_connect: false,
         }
     }
 
-    pub fn secret(mut self, secret: SecretKey) -> ClientBuilder {
-        self.secret = Some(secret);
+    pub fn crypto(mut self, provider: impl CryptoProvider + 'static) -> ClientBuilder {
+        self.crypto = Some(Rc::new(provider));
         self
     }
 
@@ -125,11 +127,19 @@ impl ClientBuilder {
         let bind_url = self
             .bind_url
             .unwrap_or_else(|| Url::parse("udp://127.0.0.1:0").unwrap());
+        let crypto = self
+            .crypto
+            .unwrap_or_else(|| Rc::new(FallbackCryptoProvider::default()));
+
+        let default_id = crypto.default_id().await?;
+        let default_pub_key = crypto.get(default_id).await?.public_key().await?;
 
         let mut client = Client::new(ClientConfig {
+            node_id: default_id,
+            node_pub_key: default_pub_key,
+            crypto,
             bind_url,
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
-            secret: self.secret.unwrap_or_else(key::generate),
             auto_connect: self.auto_connect,
         });
 
@@ -141,7 +151,7 @@ impl ClientBuilder {
 
 impl Client {
     fn new(config: ClientConfig) -> Self {
-        let stack = default_network(config.secret.public());
+        let stack = default_network(config.node_pub_key.clone());
         let state = Arc::new(RwLock::new(ClientState::new(config)));
         Self { state, net: stack }
     }
@@ -152,7 +162,7 @@ impl Client {
 
     pub async fn node_id(&self) -> NodeId {
         let state = self.state.read().await;
-        NodeId::from(*state.config.secret.public().address())
+        state.config.node_id
     }
 
     pub async fn bind_addr(&self) -> anyhow::Result<SocketAddr> {
@@ -403,11 +413,16 @@ impl Client {
             )
             .await?;
 
+        let crypto = {
+            let state = self.state.read().await;
+            let default_id = state.config.crypto.default_id().await?;
+            state.config.crypto.get(default_id).await?
+        };
+        let public_key = crypto.public_key().await?;
+
         let packet = response.packet;
-        let secret_key = self.state.read().await.config.secret.clone();
-        let public_key = secret_key.public();
-        let challenge_resp = DefaultChallenge::with(secret_key)
-            .solve(packet.challenge.as_slice(), packet.difficulty)?;
+        let challenge_resp =
+            challenge::solve(packet.challenge.as_slice(), packet.difficulty, crypto).await?;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
         let node_id = self.node_id().await;

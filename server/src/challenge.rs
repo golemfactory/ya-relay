@@ -1,147 +1,100 @@
+use crate::crypto::Crypto;
 use digest::{Digest, Output};
-use std::marker::PhantomData;
 
-pub type DefaultChallenge<'k> = SignedChallenge<'k, LeadingZeros<sha3::Sha3_512>>;
 pub const SIGNATURE_SIZE: usize = std::mem::size_of::<ethsign::Signature>();
+pub const PREFIX_SIZE: usize = std::mem::size_of::<u64>();
 
-pub trait Challenge {
-    fn solve(&self, challenge: &[u8], difficulty: u64) -> anyhow::Result<Vec<u8>>;
-    fn validate(&self, challenge: &[u8], difficulty: u64, response: &[u8]) -> anyhow::Result<bool>;
+pub async fn solve(
+    challenge: &[u8],
+    difficulty: u64,
+    crypto: impl Crypto,
+) -> anyhow::Result<Vec<u8>> {
+    let solution = solve_challenge::<sha3::Sha3_512>(challenge, difficulty)?;
+    sign(solution, crypto).await
 }
 
-#[derive(Default)]
-pub struct LeadingZeros<D: Digest> {
-    marker: PhantomData<D>,
+pub fn verify(
+    challenge: &[u8],
+    difficulty: u64,
+    response: &[u8],
+    pub_key: &[u8],
+) -> anyhow::Result<bool> {
+    let inner = verify_signature(response, pub_key)?;
+    verify_challenge::<sha3::Sha3_512>(challenge, difficulty, inner)
 }
 
-impl<D: Digest> Challenge for LeadingZeros<D> {
-    fn solve(&self, challenge: &[u8], difficulty: u64) -> anyhow::Result<Vec<u8>> {
-        let mut counter: u64 = 0;
-        loop {
-            let prefix = counter.to_be_bytes();
-            let result = digest::<D>(&prefix, challenge);
+pub fn solve_challenge<D: Digest>(challenge: &[u8], difficulty: u64) -> anyhow::Result<Vec<u8>> {
+    let mut counter: u64 = 0;
+    loop {
+        let prefix = counter.to_be_bytes();
+        let result = digest::<D>(&prefix, challenge);
 
-            if leading_zeros(&result) >= difficulty {
-                let mut response = prefix.to_vec();
-                response.reserve(result.len());
-                response.extend(result.into_iter());
-                return Ok(response);
-            }
-
-            counter = counter.checked_add(1).ok_or_else(|| {
-                anyhow::anyhow!("Could not find hash for difficulty {}", difficulty)
-            })?;
-        }
-    }
-
-    fn validate(&self, challenge: &[u8], difficulty: u64, response: &[u8]) -> anyhow::Result<bool> {
-        if response.len() < 8 {
-            anyhow::bail!("Invalid response size: {}", response.len());
+        if leading_zeros(&result) >= difficulty {
+            let mut response = prefix.to_vec();
+            response.reserve(result.len());
+            response.extend(result.into_iter());
+            return Ok(response);
         }
 
-        let prefix = &response[0..8];
-        let to_verify = &response[8..];
-        let expected = digest::<D>(prefix, challenge);
-        let zeros = leading_zeros(expected.as_slice());
-
-        Ok(expected.as_slice() == to_verify && zeros >= difficulty)
+        counter = counter
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("Could not find hash for difficulty {}", difficulty))?;
     }
 }
 
-pub struct SignedChallenge<'k, C: Challenge> {
-    challenge: C,
-    key: Key<'k>,
+pub fn verify_challenge<D: Digest>(
+    challenge: &[u8],
+    difficulty: u64,
+    response: &[u8],
+) -> anyhow::Result<bool> {
+    if response.len() < PREFIX_SIZE {
+        anyhow::bail!("Invalid response size: {}", response.len());
+    }
+
+    let prefix = &response[0..PREFIX_SIZE];
+    let to_verify = &response[PREFIX_SIZE..];
+    let expected = digest::<D>(prefix, challenge);
+    let zeros = leading_zeros(expected.as_slice());
+
+    Ok(expected.as_slice() == to_verify && zeros >= difficulty)
 }
 
-impl<'k, C: Challenge> Challenge for SignedChallenge<'k, C> {
-    fn solve(&self, challenge: &[u8], difficulty: u64) -> anyhow::Result<Vec<u8>> {
-        let solved = self.challenge.solve(challenge, difficulty)?;
-        let message = sha2::Sha256::digest(solved.as_slice());
-        let sig = self.key.sign(message.as_slice())?;
+pub async fn sign(solution: Vec<u8>, crypto: impl Crypto) -> anyhow::Result<Vec<u8>> {
+    let message = sha2::Sha256::digest(solution.as_slice());
+    let sig = crypto.sign(message.as_slice()).await?;
 
-        let mut result = Vec::with_capacity(SIGNATURE_SIZE + solved.len());
-        result.push(sig.v);
-        result.extend_from_slice(&sig.r[..]);
-        result.extend_from_slice(&sig.s[..]);
-        result.extend(solved.into_iter());
-        Ok(result)
-    }
+    let mut result = Vec::with_capacity(SIGNATURE_SIZE + solution.len());
+    result.push(sig.v);
+    result.extend_from_slice(&sig.r[..]);
+    result.extend_from_slice(&sig.s[..]);
+    result.extend(solution.into_iter());
 
-    fn validate(&self, challenge: &[u8], difficulty: u64, response: &[u8]) -> anyhow::Result<bool> {
-        if response.len() < SIGNATURE_SIZE {
-            anyhow::bail!(
-                "Invalid signature size: {}, expected {}",
-                response.len(),
-                SIGNATURE_SIZE
-            );
-        }
-
-        let sig = &response[..SIGNATURE_SIZE];
-        let embedded = &response[SIGNATURE_SIZE..];
-
-        let v = sig[0];
-        let mut r = [0; 32];
-        let mut s = [0; 32];
-
-        r.copy_from_slice(&sig[1..33]);
-        s.copy_from_slice(&sig[33..]);
-
-        let message = sha2::Sha256::digest(embedded);
-        let recovered_key = ethsign::Signature { v, r, s }.recover(message.as_slice())?;
-
-        if self.key.public_eq(recovered_key.bytes()) {
-            self.challenge.validate(challenge, difficulty, embedded)
-        } else {
-            Ok(false)
-        }
-    }
+    Ok(result)
 }
 
-impl<'k, C: Challenge> SignedChallenge<'k, C> {
-    pub fn new(challenge: C, key: impl Into<Key<'k>>) -> Self {
-        let key = key.into();
-        Self { challenge, key }
+pub fn verify_signature<'b>(response: &'b [u8], pub_key: &[u8]) -> anyhow::Result<&'b [u8]> {
+    let len = response.len();
+    if len < SIGNATURE_SIZE {
+        anyhow::bail!("Signature too short: {} out of {} B", len, SIGNATURE_SIZE);
     }
 
-    pub fn with(key: impl Into<Key<'k>>) -> Self
-    where
-        C: Default,
-    {
-        Self::new(C::default(), key)
-    }
-}
+    let sig = &response[..SIGNATURE_SIZE];
+    let embedded = &response[SIGNATURE_SIZE..];
 
-pub enum Key<'k> {
-    PublicRaw(&'k [u8]),
-    Secret(ethsign::SecretKey, ethsign::PublicKey),
-}
+    let v = sig[0];
+    let mut r = [0; 32];
+    let mut s = [0; 32];
 
-impl<'k> From<&'k [u8]> for Key<'k> {
-    fn from(key: &'k [u8]) -> Self {
-        Self::PublicRaw(key)
-    }
-}
+    r.copy_from_slice(&sig[1..33]);
+    s.copy_from_slice(&sig[33..]);
 
-impl<'k> From<ethsign::SecretKey> for Key<'k> {
-    fn from(secret: ethsign::SecretKey) -> Self {
-        let public = secret.public();
-        Self::Secret(secret, public)
-    }
-}
+    let message = sha2::Sha256::digest(embedded);
+    let recovered_key = ethsign::Signature { v, r, s }.recover(message.as_slice())?;
 
-impl<'k> Key<'k> {
-    pub fn sign(&self, message: &[u8]) -> anyhow::Result<ethsign::Signature> {
-        match self {
-            Key::Secret(secret, _) => Ok(secret.sign(message)?),
-            _ => anyhow::bail!("Not a secret key"),
-        }
-    }
-
-    pub fn public_eq(&self, key: &[u8]) -> bool {
-        match self {
-            Key::PublicRaw(bytes) => *bytes == key,
-            Key::Secret(_, public) => &public.bytes()[..] == key,
-        }
+    if pub_key == recovered_key.bytes() {
+        Ok(embedded)
+    } else {
+        anyhow::bail!("Invalid public key");
     }
 }
 
