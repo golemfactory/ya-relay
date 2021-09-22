@@ -93,7 +93,7 @@ fn write_payload_fmt(f: &mut std::fmt::Formatter<'_>, buf: impl AsRef<[u8]>) -> 
     }
 }
 
-#[derive(Clone, From, Eq, PartialEq)]
+#[derive(Debug, Clone, From, Eq, PartialEq)]
 pub enum Payload {
     BytesMut(BytesMut),
     Bytes(Bytes),
@@ -177,6 +177,24 @@ impl AsRef<[u8]> for Payload {
 impl FromIterator<u8> for Payload {
     fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
         Self::BytesMut(BytesMut::from_iter(iter))
+    }
+}
+
+impl PartialEq<Payload> for Bytes {
+    fn eq(&self, other: &Payload) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl PartialEq<Payload> for BytesMut {
+    fn eq(&self, other: &Payload) -> bool {
+        self.as_ref() == other.as_ref()
+    }
+}
+
+impl PartialEq<Payload> for Vec<u8> {
+    fn eq(&self, other: &Payload) -> bool {
+        self.as_slice() == other.as_ref()
     }
 }
 
