@@ -150,6 +150,14 @@ impl Payload {
             Self::Vec(b) => b,
         }
     }
+
+    pub fn into_bytes(self) -> BytesMut {
+        match self {
+            Self::BytesMut(b) => b,
+            Self::Bytes(b) => BytesMut::from_iter(b),
+            Self::Vec(b) => BytesMut::from_iter(b),
+        }
+    }
 }
 
 impl Default for Payload {
