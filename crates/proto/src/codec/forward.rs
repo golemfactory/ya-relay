@@ -21,7 +21,6 @@ pub fn channel(buffer: usize) -> (ChannelSink, ChannelStream) {
 pub struct ForwardSink<S, E>
 where
     S: Sink<Vec<u8>, Error = E> + Unpin,
-    Error: From<E>,
 {
     sink: S,
 }
@@ -39,7 +38,6 @@ where
 impl<S, E> Clone for ForwardSink<S, E>
 where
     S: Sink<Vec<u8>, Error = E> + Clone + Unpin,
-    Error: From<E>,
 {
     fn clone(&self) -> Self {
         Self {
@@ -51,28 +49,25 @@ where
 impl<S, E> Sink<Payload> for ForwardSink<S, E>
 where
     S: Sink<Vec<u8>, Error = E> + Unpin,
-    Error: From<E>,
 {
-    type Error = Error;
+    type Error = E;
 
     fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_ready(cx).map_err(Error::from)
+        Pin::new(&mut self.sink).poll_ready(cx)
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: Payload) -> Result<(), Self::Error> {
         let mut dst = Vec::new();
         encode(item, &mut dst);
-        Pin::new(&mut self.sink)
-            .start_send(dst)
-            .map_err(Error::from)
+        Pin::new(&mut self.sink).start_send(dst)
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_flush(cx).map_err(Error::from)
+        Pin::new(&mut self.sink).poll_flush(cx)
     }
 
     fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_close(cx).map_err(Error::from)
+        Pin::new(&mut self.sink).poll_close(cx)
     }
 }
 
