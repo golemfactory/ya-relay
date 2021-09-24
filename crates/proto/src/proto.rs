@@ -1,4 +1,5 @@
 use std::iter::FromIterator;
+use std::mem::size_of;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 
@@ -10,9 +11,10 @@ use crate::codec::DecodeError;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 
+pub const FORWARD_TAG: u32 = 1;
 pub const SESSION_ID_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 1;
-pub const FORWARD_TAG: u32 = 1;
+pub const UNRELIABLE_FLAG: u16 = 0x01;
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -20,16 +22,48 @@ pub type RequestId = u64;
 pub type SlotId = u32;
 
 #[derive(Clone, Default, PartialEq)]
+#[repr(C)]
 pub struct Forward {
     pub session_id: [u8; SESSION_ID_SIZE],
     pub slot: u32,
+    pub flags: u16,
     pub payload: Payload,
 }
 
 impl Forward {
     #[inline]
     pub const fn header_size() -> usize {
-        KEY_SIZE + SESSION_ID_SIZE + std::mem::size_of::<u32>()
+        KEY_SIZE + SESSION_ID_SIZE + size_of::<u32>() + size_of::<u16>()
+    }
+
+    pub fn new(
+        session_id: impl Into<[u8; SESSION_ID_SIZE]>,
+        slot: u32,
+        payload: impl Into<Payload>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            slot,
+            flags: 0,
+            payload: payload.into(),
+        }
+    }
+
+    pub fn unreliable(
+        session_id: impl Into<[u8; SESSION_ID_SIZE]>,
+        slot: u32,
+        payload: impl Into<Payload>,
+    ) -> Self {
+        Self {
+            session_id: session_id.into(),
+            slot,
+            flags: UNRELIABLE_FLAG,
+            payload: payload.into(),
+        }
+    }
+
+    pub fn is_reliable(&self) -> bool {
+        self.flags & UNRELIABLE_FLAG != UNRELIABLE_FLAG
     }
 
     #[inline]
@@ -41,6 +75,7 @@ impl Forward {
         encode_key(FORWARD_TAG, WireType::LengthDelimited, buf);
         buf.extend_from_slice(&self.session_id);
         buf.extend_from_slice(&self.slot.to_be_bytes());
+        buf.extend_from_slice(&self.flags.to_be_bytes());
 
         match self.payload {
             Payload::BytesMut(b) => buf.extend(b),
@@ -64,10 +99,13 @@ impl Forward {
 
         let slot = buf.split_to(4);
         let slot = u32::from_be_bytes([slot[0], slot[1], slot[2], slot[3]]);
+        let flags = buf.split_to(2);
+        let flags = u16::from_be_bytes([flags[0], flags[1]]);
 
         Ok(Forward {
             session_id,
             slot,
+            flags,
             payload: buf.into(),
         })
     }
@@ -77,7 +115,13 @@ impl std::fmt::Debug for Forward {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Forward( ")?;
         write!(f, "session_id: {:2x?}, ", self.session_id)?;
-        write!(f, "slot: {}, payload: ({}) ", self.slot, self.payload.len())?;
+        write!(
+            f,
+            "slot: {}, flags: {:16b}, payload: ({} B) ",
+            self.slot,
+            self.flags,
+            self.payload.len()
+        )?;
         write_payload_fmt(f, &self.payload)?;
         write!(f, " )")
     }

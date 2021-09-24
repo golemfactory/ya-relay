@@ -21,7 +21,7 @@ use ya_net_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_net_stack::socket::SocketEndpoint;
 use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 use ya_relay_proto::codec;
-use ya_relay_proto::proto::{self, Forward, Payload, RequestId, SlotId};
+use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
 
 use crate::challenge;
 use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
@@ -31,7 +31,7 @@ use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
-pub type ForwardReceiver = mpsc::Receiver<(NodeId, Vec<u8>)>;
+pub type ForwardReceiver = mpsc::Receiver<ForwardedPayload>;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -57,7 +57,7 @@ struct ClientState {
     responses: HashMap<SocketAddr, Dispatcher>,
     slots: HashMap<SocketAddr, HashSet<SlotId>>,
 
-    virt_ingress: Channel<(NodeId, Vec<u8>)>,
+    virt_ingress: Channel<ForwardedPayload>,
     virt_nodes: HashMap<Box<[u8]>, VirtNode>,
     virt_ips: HashMap<(SlotId, SocketAddr), Box<[u8]>>,
 }
@@ -263,7 +263,13 @@ impl Client {
                         .map(|node| (node.id, state.virt_ingress.tx.clone()))
                 } {
                     Some((node_id, mut tx)) => {
-                        if tx.send((node_id, payload)).await.is_err() {
+                        let payload = ForwardedPayload {
+                            reliable: true,
+                            node_id,
+                            payload,
+                        };
+
+                        if tx.send(payload).await.is_err() {
                             log::trace!(
                                 "[{}] ingress router: ingress handler closed for node {}",
                                 client.id(),
@@ -308,12 +314,7 @@ impl Client {
                     }
                 };
 
-                let forward = Forward {
-                    session_id: node.session_id.into(),
-                    slot: node.session_slot,
-                    payload: Payload::from(egress.payload),
-                };
-
+                let forward = Forward::new(node.session_id, node.session_slot, egress.payload);
                 if let Err(error) = client.send(forward, node.session_addr).await {
                     log::trace!(
                         "[{}] egress router: forward to {} failed: {}",
@@ -641,7 +642,7 @@ impl Client {
     }
 
     async fn forward(
-        self,
+        &self,
         session_addr: SocketAddr,
         forward_id: impl Into<ForwardId>,
     ) -> anyhow::Result<ForwardSender> {
@@ -674,6 +675,45 @@ impl Client {
             log::trace!(
                 "[{}] forward: disconnected from server: {}",
                 id,
+                session_addr
+            );
+        });
+
+        Ok(tx)
+    }
+
+    async fn forward_unreliable(
+        &self,
+        session_addr: SocketAddr,
+        forward_id: impl Into<ForwardId>,
+    ) -> anyhow::Result<ForwardSender> {
+        let node = match forward_id.into() {
+            ForwardId::NodeId(node_id) => self.resolve_node(node_id, session_addr).await?,
+            ForwardId::SlotId(slot) => self.resolve_slot(slot, session_addr).await?,
+        };
+
+        let (tx, mut rx) = mpsc::channel(1);
+        let client = self.clone();
+
+        tokio::task::spawn_local(async move {
+            while let Some(payload) = rx.next().await {
+                let forward = Forward::unreliable(node.session_id, node.session_slot, payload);
+                if let Err(error) = client.send(forward, session_addr).await {
+                    log::trace!(
+                        "[{}] forward (U) to {} failed: {}",
+                        client.id(),
+                        node.session_addr,
+                        error
+                    );
+                }
+            }
+
+            client.remove_slot(node.session_slot, session_addr).await;
+            rx.close();
+
+            log::trace!(
+                "[{}] forward (U): disconnected from server: {}",
+                node.id,
                 session_addr
             );
         });
@@ -795,17 +835,41 @@ impl Handler for Client {
         let fut = async move {
             log::trace!("[{}] received forward packet via {}", client.id(), from);
 
-            if let Err(err) = client.resolve_slot(forward.slot, from).await {
-                log::error!("[{}] on forward error: {}", client.id(), err);
-                return;
+            let node = match client.resolve_slot(forward.slot, from).await {
+                Ok(node) => node,
+                Err(err) => {
+                    log::error!("[{}] on forward error: {}", client.id(), err);
+                    return;
+                }
             };
 
-            client.net.receive(forward.payload.into_vec());
-            client.net.poll();
+            if forward.is_reliable() {
+                client.net.receive(forward.payload.into_vec());
+                client.net.poll();
+            } else {
+                let mut tx = {
+                    let state = client.state.read().await;
+                    state.virt_ingress.tx.clone()
+                };
+
+                let payload = ForwardedPayload {
+                    reliable: false,
+                    node_id: node.id,
+                    payload: forward.payload.into_vec(),
+                };
+
+                if tx.send(payload).await.is_err() {
+                    log::trace!(
+                        "[{}] ingress router: ingress handler closed for node {}",
+                        client.id(),
+                        node.id
+                    );
+                }
+            }
         };
 
         tokio::task::spawn_local(fut);
-        futures::future::ready(()).boxed_local()
+        Box::pin(futures::future::ready(()))
     }
 }
 
@@ -913,10 +977,27 @@ impl Session {
         self.client.ping(self.remote_addr, session_id).await
     }
 
-    pub async fn forward(self, forward_id: impl Into<ForwardId>) -> anyhow::Result<ForwardSender> {
+    pub async fn forward(&self, forward_id: impl Into<ForwardId>) -> anyhow::Result<ForwardSender> {
         let _ = self.id().await?;
         self.client.forward(self.remote_addr, forward_id).await
     }
+
+    pub async fn forward_unreliable(
+        &self,
+        forward_id: impl Into<ForwardId>,
+    ) -> anyhow::Result<ForwardSender> {
+        let _ = self.id().await?;
+        self.client
+            .forward_unreliable(self.remote_addr, forward_id)
+            .await
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ForwardedPayload {
+    pub reliable: bool,
+    pub node_id: NodeId,
+    pub payload: Vec<u8>,
 }
 
 #[derive(From)]
