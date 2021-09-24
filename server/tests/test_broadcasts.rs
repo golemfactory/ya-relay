@@ -1,7 +1,6 @@
 use itertools::Itertools;
 
 use ya_client_model::NodeId;
-use ya_net_server::testing::key::generate;
 use ya_net_server::testing::server::{init_test_server, ServerWrapper};
 use ya_net_server::testing::{Client, ClientBuilder};
 
@@ -10,7 +9,6 @@ async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     for _ in 0..count {
         clients.push(
             ClientBuilder::from_server(&wrapper.server)
-                .secret(generate())
                 .connect()
                 .build()
                 .await
