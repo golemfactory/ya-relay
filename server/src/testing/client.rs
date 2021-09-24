@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::net::{Ipv6Addr, SocketAddr};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail};
+use derive_more::From;
 use ethsign::PublicKey;
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
@@ -12,14 +14,6 @@ use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::RwLock;
 use url::Url;
 
-use crate::challenge;
-use crate::server::Server;
-use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
-use crate::udp_stream::{udp_bind, OutStream};
-use crate::{parse_udp_url, SessionId};
-
-use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
-use std::rc::Rc;
 use ya_client_model::NodeId;
 use ya_net_stack::interface::*;
 use ya_net_stack::smoltcp::iface::Route;
@@ -28,6 +22,13 @@ use ya_net_stack::socket::SocketEndpoint;
 use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, Forward, Payload, RequestId, SlotId};
+
+use crate::challenge;
+use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
+use crate::server::Server;
+use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
+use crate::udp_stream::{udp_bind, OutStream};
+use crate::{parse_udp_url, SessionId};
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = mpsc::Receiver<(NodeId, Vec<u8>)>;
@@ -337,6 +338,24 @@ impl Client {
         });
     }
 
+    async fn resolve_node(&self, node_id: NodeId, addr: SocketAddr) -> anyhow::Result<VirtNode> {
+        let ip = to_ipv6(node_id);
+        match self.get_node(&ip.octets()).await {
+            Some(node) => Ok(node),
+            None => match async {
+                let session = self.session(addr).await?;
+                session.find_node(node_id).await?;
+                Ok::<_, anyhow::Error>(self.get_node(&ip.octets()).await)
+            }
+            .await
+            {
+                Ok(Some(node)) => Ok(node),
+                Ok(None) => anyhow::bail!("empty node response"),
+                Err(err) => anyhow::bail!("node resolution error: {}", err),
+            },
+        }
+    }
+
     async fn resolve_slot(&self, slot: SlotId, addr: SocketAddr) -> anyhow::Result<VirtNode> {
         match self.get_slot(slot, addr).await {
             Some(node) => Ok(node),
@@ -352,6 +371,11 @@ impl Client {
                 Err(err) => anyhow::bail!("slot resolution error: {}", err),
             },
         }
+    }
+
+    async fn get_node(&self, ip: &[u8]) -> Option<VirtNode> {
+        let state = self.state.read().await;
+        state.virt_nodes.get(ip).cloned()
     }
 
     async fn get_slot(&self, slot: SlotId, addr: SocketAddr) -> Option<VirtNode> {
@@ -619,9 +643,12 @@ impl Client {
     async fn forward(
         self,
         session_addr: SocketAddr,
-        slot: SlotId,
+        forward_id: impl Into<ForwardId>,
     ) -> anyhow::Result<ForwardSender> {
-        let node = self.resolve_slot(slot, session_addr).await?;
+        let node = match forward_id.into() {
+            ForwardId::NodeId(node_id) => self.resolve_node(node_id, session_addr).await?,
+            ForwardId::SlotId(slot) => self.resolve_slot(slot, session_addr).await?,
+        };
         let connection = self
             .net
             .connect(node.endpoint, TCP_CONNECTION_TIMEOUT)
@@ -641,7 +668,7 @@ impl Client {
                 }
             }
 
-            client.remove_slot(slot, session_addr).await;
+            client.remove_slot(node.session_slot, session_addr).await;
             rx.close();
 
             log::trace!(
@@ -886,10 +913,16 @@ impl Session {
         self.client.ping(self.remote_addr, session_id).await
     }
 
-    pub async fn forward(self, slot: SlotId) -> anyhow::Result<ForwardSender> {
+    pub async fn forward(self, forward_id: impl Into<ForwardId>) -> anyhow::Result<ForwardSender> {
         let _ = self.id().await?;
-        self.client.forward(self.remote_addr, slot).await
+        self.client.forward(self.remote_addr, forward_id).await
     }
+}
+
+#[derive(From)]
+pub enum ForwardId {
+    SlotId(SlotId),
+    NodeId(NodeId),
 }
 
 fn default_network(key: PublicKey) -> Network {

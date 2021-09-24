@@ -4,10 +4,19 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, BytesMut};
+use futures::channel::mpsc;
 use futures::{Sink, Stream};
 
 use crate::codec::Error;
 use crate::proto::Payload;
+
+pub type ChannelSink = ForwardSink<mpsc::Sender<Vec<u8>>, mpsc::SendError>;
+pub type ChannelStream = ForwardStream<mpsc::Receiver<Vec<u8>>>;
+
+pub fn channel(buffer: usize) -> (ChannelSink, ChannelStream) {
+    let (tx, rx) = mpsc::channel(buffer);
+    (ForwardSink::new(tx), ForwardStream::new(rx))
+}
 
 pub struct ForwardSink<S, E>
 where
@@ -24,6 +33,18 @@ where
 {
     pub fn new(sink: S) -> Self {
         Self { sink }
+    }
+}
+
+impl<S, E> Clone for ForwardSink<S, E>
+where
+    S: Sink<Vec<u8>, Error = E> + Clone + Unpin,
+    Error: From<E>,
+{
+    fn clone(&self) -> Self {
+        Self {
+            sink: self.sink.clone(),
+        }
     }
 }
 
@@ -55,20 +76,18 @@ where
     }
 }
 
-pub struct ForwardStream<S, E>
+pub struct ForwardStream<S>
 where
-    S: Stream<Item = Result<Vec<u8>, E>> + Unpin,
-    Error: From<E>,
+    S: Stream<Item = Vec<u8>> + Unpin,
 {
     stream: S,
     state: State,
     buf: BytesMut,
 }
 
-impl<S, E> ForwardStream<S, E>
+impl<S> ForwardStream<S>
 where
-    S: Stream<Item = Result<Vec<u8>, E>> + Unpin,
-    Error: From<E>,
+    S: Stream<Item = Vec<u8>> + Unpin,
 {
     pub fn new(stream: S) -> Self {
         Self {
@@ -79,10 +98,9 @@ where
     }
 }
 
-impl<S, E> ForwardStream<S, E>
+impl<S> ForwardStream<S>
 where
-    S: Stream<Item = Result<Vec<u8>, E>> + Unpin,
-    Error: From<E>,
+    S: Stream<Item = Vec<u8>> + Unpin,
 {
     #[inline(always)]
     fn transition(&mut self, state: State) {
@@ -97,10 +115,9 @@ where
     }
 }
 
-impl<S, E> Stream for ForwardStream<S, E>
+impl<S> Stream for ForwardStream<S>
 where
-    S: Stream<Item = Result<Vec<u8>, E>> + Unpin,
-    Error: From<E>,
+    S: Stream<Item = Vec<u8>> + Unpin,
 {
     type Item = Result<Payload, Error>;
 
@@ -130,7 +147,7 @@ where
         }
 
         match Pin::new(&mut self.stream).poll_next(cx) {
-            Poll::Ready(Some(Ok(bytes))) => {
+            Poll::Ready(Some(bytes)) => {
                 if bytes.is_empty() {
                     return Poll::Ready(None);
                 }
@@ -138,7 +155,6 @@ where
                 self.buf.extend(bytes);
                 self.poll_next(cx)
             }
-            Poll::Ready(Some(Err(e))) => Poll::Ready(Some(Err(e.into()))),
             Poll::Ready(None) => Poll::Ready(None),
             Poll::Pending => Poll::Pending,
         }
@@ -192,11 +208,10 @@ impl State {
 
 #[cfg(test)]
 mod tests {
-    use futures::{SinkExt, StreamExt};
+    use futures::StreamExt;
     use rand::Rng;
 
     use crate::codec::forward::{ForwardSink, ForwardStream};
-    use crate::codec::*;
     use crate::proto::*;
 
     async fn forward(messages: Vec<Vec<u8>>, chunk_size: usize) -> Vec<Payload> {
@@ -217,8 +232,8 @@ mod tests {
         tokio::task::spawn(async move {
             let _ = rx_full
                 .flat_map(|b| futures::stream::iter(b.into_iter()).chunks(chunk_size))
-                .map(|v| Ok(Ok::<_, Error>(v)))
-                .forward(tx_parts.sink_map_err(Error::from))
+                .map(|v| Ok::<_, futures::channel::mpsc::SendError>(v))
+                .forward(tx_parts)
                 .await;
         });
 
