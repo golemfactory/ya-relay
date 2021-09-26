@@ -4,19 +4,10 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 use bytes::{Buf, BytesMut};
-use futures::channel::mpsc;
 use futures::{Sink, Stream};
 
 use crate::codec::Error;
 use crate::proto::Payload;
-
-pub type ChannelSink = ForwardSink<mpsc::Sender<Vec<u8>>, mpsc::SendError>;
-pub type ChannelStream = ForwardStream<mpsc::Receiver<Vec<u8>>>;
-
-pub fn channel(buffer: usize) -> (ChannelSink, ChannelStream) {
-    let (tx, rx) = mpsc::channel(buffer);
-    (ForwardSink::new(tx), ForwardStream::new(rx))
-}
 
 pub struct ForwardSink<S, E>
 where
