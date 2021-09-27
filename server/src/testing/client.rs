@@ -3,7 +3,7 @@ use std::convert::{TryFrom, TryInto};
 use std::net::{Ipv6Addr, SocketAddr};
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
 use derive_more::From;
@@ -31,11 +31,12 @@ use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
-pub type ForwardReceiver = mpsc::Receiver<ForwardedPayload>;
+pub type ForwardReceiver = mpsc::Receiver<Forwarded>;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
+const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
 
 const STACK_POLL_INTERVAL: Duration = Duration::from_millis(2000);
 const TCP_CONNECTION_TIMEOUT: Duration = Duration::from_millis(5000);
@@ -56,8 +57,9 @@ struct ClientState {
     sessions: HashMap<SocketAddr, Session>,
     responses: HashMap<SocketAddr, Dispatcher>,
     slots: HashMap<SocketAddr, HashSet<SlotId>>,
+    neighbours: Option<Neighbourhood>,
 
-    virt_ingress: Channel<ForwardedPayload>,
+    virt_ingress: Channel<Forwarded>,
     virt_nodes: HashMap<Box<[u8]>, VirtNode>,
     virt_ips: HashMap<(SlotId, SocketAddr), Box<[u8]>>,
 }
@@ -71,6 +73,7 @@ impl ClientState {
             sessions: Default::default(),
             responses: Default::default(),
             slots: Default::default(),
+            neighbours: Default::default(),
             virt_ingress: Default::default(),
             virt_nodes: Default::default(),
             virt_ips: Default::default(),
@@ -263,7 +266,7 @@ impl Client {
                         .map(|node| (node.id, state.virt_ingress.tx.clone()))
                 } {
                     Some((node_id, mut tx)) => {
-                        let payload = ForwardedPayload {
+                        let payload = Forwarded {
                             reliable: true,
                             node_id,
                             payload,
@@ -607,6 +610,17 @@ impl Client {
         session_id: SessionId,
         count: u32,
     ) -> anyhow::Result<proto::response::Neighbours> {
+        if let Some(neighbours) = {
+            let state = self.state.read().await;
+            state.neighbours.clone()
+        } {
+            if neighbours.response.nodes.len() as u32 >= count
+                && neighbours.updated + NEIGHBOURHOOD_TTL > Instant::now()
+            {
+                return Ok(neighbours.response);
+            }
+        }
+
         let packet = proto::request::Neighbours {
             count,
             public_key: true,
@@ -623,6 +637,14 @@ impl Client {
 
         for node in &response.nodes {
             self.add_virt_node(addr, session_id, node).await?;
+        }
+
+        {
+            let mut state = self.state.write().await;
+            state.neighbours.replace(Neighbourhood {
+                updated: Instant::now(),
+                response: response.clone(),
+            });
         }
 
         Ok(response)
@@ -719,6 +741,43 @@ impl Client {
         });
 
         Ok(tx)
+    }
+
+    async fn broadcast(
+        &self,
+        session_addr: SocketAddr,
+        session_id: SessionId,
+        data: Vec<u8>,
+        count: u32,
+    ) -> anyhow::Result<()> {
+        let response = self.neighbours(session_addr, session_id, count).await?;
+        let node_ids = response
+            .nodes
+            .into_iter()
+            .filter_map(|n| NodeId::try_from(n.node_id.as_slice()).ok())
+            .collect::<Vec<_>>();
+
+        // FIXME: direct connections
+        let session = self.server_session().await?;
+        for node_id in node_ids {
+            let data = data.clone();
+            let session = session.clone();
+
+            tokio::task::spawn_local(async move {
+                match session.forward_unreliable(node_id).await {
+                    Ok(mut forward) => {
+                        if forward.send(data).await.is_err() {
+                            log::debug!("unable to broadcast message: forward channel is closed");
+                        }
+                    }
+                    Err(e) => {
+                        log::debug!("unable to broadcast message: forward channel error: {}", e);
+                    }
+                }
+            });
+        }
+
+        Ok(())
     }
 }
 
@@ -852,7 +911,7 @@ impl Handler for Client {
                     state.virt_ingress.tx.clone()
                 };
 
-                let payload = ForwardedPayload {
+                let payload = Forwarded {
                     reliable: false,
                     node_id: node.id,
                     payload: forward.payload.into_vec(),
@@ -991,10 +1050,24 @@ impl Session {
             .forward_unreliable(self.remote_addr, forward_id)
             .await
     }
+
+    pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
+        let session_id = self.id().await?;
+        self.client
+            .broadcast(self.remote_addr, session_id, data, count)
+            .await?;
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct Neighbourhood {
+    updated: Instant,
+    response: proto::response::Neighbours,
 }
 
 #[derive(Clone, Debug)]
-pub struct ForwardedPayload {
+pub struct Forwarded {
     pub reliable: bool,
     pub node_id: NodeId,
     pub payload: Vec<u8>,
