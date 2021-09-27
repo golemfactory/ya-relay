@@ -34,7 +34,7 @@ use ya_relay_proto::proto::{RequestId, StatusCode};
 pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
-const FORWARDER_RATE_LIMIT: u32 = 1024;
+const FORWARDER_RATE_LIMIT: u32 = 2048;
 pub const SESSION_CLEANER_INTERVAL: u64 = 10; // seconds
 pub const SESSION_TIMEOUT: i64 = 60; // seconds
 
@@ -141,10 +141,14 @@ impl Server {
                 .ok_or(NotFound::NodeBySlot(slot))?;
             (src_node, dest_node)
         };
-        dest_node
+        if let Err(e) = src_node
             .forwarding_limiter
-            .check()
-            .map_err(|e| InternalError::RateLimiterError(format!("{}", e)))?;
+            .check_n(NonZeroU32::new(packet.payload.len().try_into().unwrap_or(u32::MAX)).unwrap())
+        {
+            log::trace!("Rate limiting: {:?}", e);
+            // TODO: Send `PauseForwarding`
+            return Ok(());
+        }
 
         if !dest_node.info.endpoints.is_empty() {
             // TODO: How to chose best endpoint?
@@ -498,13 +502,13 @@ impl Server {
                     info,
                     session: session_id,
                     last_seen: Utc::now(),
-                    forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_minute(
-                        NonZeroU32::new(FORWARDER_RATE_LIMIT).ok_or(
+                    forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
+                        NonZeroU32::new(FORWARDER_RATE_LIMIT).ok_or_else(|| {
                             InternalError::RateLimiterError(format!(
                                 "Invalid non zero value: {}",
                                 FORWARDER_RATE_LIMIT
-                            )),
-                        )?,
+                            ))
+                        })?,
                     ))),
                 };
 
