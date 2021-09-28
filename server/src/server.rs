@@ -442,9 +442,11 @@ impl Server {
             }
         };
 
-        let request = match packet {
-            Some(proto::packet::Kind::Request(request)) => request,
-            _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
+        let request = loop {
+            match packet {
+                Some(proto::packet::Kind::Request(request)) => break request,
+                _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
+            };
         };
 
         Ok(sender
@@ -540,29 +542,40 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(session_id, "Session".to_string()).into()),
         };
 
-        match rc.next().await {
-            Some(proto::Request {
-                request_id,
-                kind: Some(proto::request::Kind::Register(registration)),
-            }) => {
-                log::info!("Got register from node: {}", with);
+        loop {
+            match rc.next().await {
+                Some(proto::Request {
+                    request_id,
+                    kind: Some(proto::request::Kind::Register(registration)),
+                }) => {
+                    log::info!("Got register from node: {}", with);
 
-                let node_id = node.info.node_id;
-                let node = self
-                    .register_endpoints(request_id, session_id, with, registration, node)
-                    .await?;
+                    let node_id = node.info.node_id;
+                    let node = self
+                        .register_endpoints(request_id, session_id, with, registration, node)
+                        .await?;
 
-                self.cleanup_initialization(&session_id).await;
+                    self.cleanup_initialization(&session_id).await;
 
-                {
-                    let mut server = self.state.write().await;
-                    server.nodes.register(node);
+                    {
+                        let mut server = self.state.write().await;
+                        server.nodes.register(node);
+                    }
+
+                    log::info!("Session: {} established for node: {}", session_id, node_id);
+                    break;
                 }
-
-                log::info!("Session: {} established for node: {}", session_id, node_id);
-            }
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Register".to_string()).into()),
-        };
+                Some(proto::Request {
+                    kind: Some(proto::request::Kind::Ping(_)),
+                    ..
+                }) => continue,
+                _ => {
+                    return Err(
+                        BadRequest::InvalidPacket(session_id, "Register".to_string()).into(),
+                    );
+                }
+            };
+        }
         Ok(())
     }
 
