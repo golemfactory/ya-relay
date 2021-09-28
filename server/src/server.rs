@@ -442,11 +442,9 @@ impl Server {
             }
         };
 
-        let request = loop {
-            match packet {
-                Some(proto::packet::Kind::Request(request)) => break request,
-                _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
-            };
+        let request = match packet {
+            Some(proto::packet::Kind::Request(request)) => request,
+            _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
         };
 
         Ok(sender
