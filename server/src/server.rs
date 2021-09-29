@@ -159,6 +159,7 @@ impl Server {
             packet.slot = src_node.info.slot;
             packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
+            log::error!("Send actually");
             log::debug!("Sending forward packet to {}", endpoint.address);
 
             self.send_to(PacketKind::Forward(packet), &endpoint.address)
