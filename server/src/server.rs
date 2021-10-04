@@ -159,7 +159,6 @@ impl Server {
             packet.slot = src_node.info.slot;
             packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
-            log::error!("Send actually");
             log::debug!("Sending forward packet to {}", endpoint.address);
 
             self.send_to(PacketKind::Forward(packet), &endpoint.address)
@@ -505,7 +504,7 @@ impl Server {
                     last_seen: Utc::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
                         NonZeroU32::new(FORWARDER_RATE_LIMIT).ok_or_else(|| {
-                            InternalError::RateLimiterError(format!(
+                            InternalError::RateLimiterInit(format!(
                                 "Invalid non zero value: {}",
                                 FORWARDER_RATE_LIMIT
                             ))
