@@ -72,6 +72,12 @@ impl Server {
 
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+
+                {
+                    let mut server = self.state.write().await;
+                    let _ = server.nodes.update_seen(id);
+                }
+
                 let node = match self.state.read().await.nodes.get_by_session(id) {
                     None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
@@ -111,7 +117,14 @@ impl Server {
                 }
             }
 
-            PacketKind::Forward(forward) => self.forward(forward, from).await?,
+            PacketKind::Forward(forward) => {
+                if let Ok(sid) = SessionId::try_from(forward.session_id.clone()) {
+                    let mut server = self.state.write().await;
+                    let _ = server.nodes.update_seen(sid);
+                }
+
+                self.forward(forward, from).await?
+            }
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
@@ -264,11 +277,6 @@ impl Server {
         session_id: SessionId,
         from: SocketAddr,
     ) -> ServerResult<()> {
-        {
-            let mut server = self.state.write().await;
-            server.nodes.update_seen(session_id)?;
-        }
-
         self.send_to(
             proto::Packet::response(
                 request_id,
