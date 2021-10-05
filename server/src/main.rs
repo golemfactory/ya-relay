@@ -16,7 +16,7 @@ struct Options {
 async fn main() -> anyhow::Result<()> {
     std::env::set_var(
         "RUST_LOG",
-        std::env::var("RUST_LOG").unwrap_or("trace".to_string()),
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace".to_string()),
     );
     env_logger::Builder::new()
         .parse_default_env()
