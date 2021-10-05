@@ -7,7 +7,8 @@ use std::time::Duration;
 use crate::{Protocol, MAX_FRAME_SIZE};
 
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(3);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(60);
+const TCP_TIMEOUT: Duration = Duration::from_secs(10);
+const TCP_KEEP_ALIVE: Duration = Duration::from_secs(5);
 
 /// Socket quintuplet
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -181,6 +182,8 @@ pub fn tcp_socket<'a>() -> TcpSocket<'a> {
     let rx_buf = TcpSocketBuffer::new(vec![0; MAX_FRAME_SIZE * 4]);
     let tx_buf = TcpSocketBuffer::new(vec![0; MAX_FRAME_SIZE * 4]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
+    socket.set_timeout(Some(TCP_TIMEOUT.into()));
+    socket.set_ack_delay(None);
     socket.set_keep_alive(Some(TCP_KEEP_ALIVE.into()));
     socket
 }
