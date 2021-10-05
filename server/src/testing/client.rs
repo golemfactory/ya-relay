@@ -58,6 +58,7 @@ struct ClientState {
     responses: HashMap<SocketAddr, Dispatcher>,
     slots: HashMap<SocketAddr, HashSet<SlotId>>,
     neighbours: Option<Neighbourhood>,
+    forward_unreliable: HashMap<(NodeId, SocketAddr), ForwardSender>,
 
     virt_ingress: Channel<Forwarded>,
     virt_nodes: HashMap<Box<[u8]>, VirtNode>,
@@ -74,6 +75,7 @@ impl ClientState {
             responses: Default::default(),
             slots: Default::default(),
             neighbours: Default::default(),
+            forward_unreliable: Default::default(),
             virt_ingress: Default::default(),
             virt_nodes: Default::default(),
             virt_ips: Default::default(),
@@ -398,7 +400,9 @@ impl Client {
             slots.remove(&slot);
 
             if let Some(ip) = state.virt_ips.remove(&(slot, addr)) {
-                state.virt_nodes.remove(&ip);
+                if let Some(node) = state.virt_nodes.remove(&ip) {
+                    state.forward_unreliable.remove(&(node.id, addr));
+                }
             }
         }
     }
@@ -547,7 +551,7 @@ impl Client {
         self.find_node_by(addr, session_id, packet).await
     }
 
-    async fn find_node_by_slot(
+    async fn find_slot(
         &self,
         addr: SocketAddr,
         session_id: SessionId,
@@ -682,6 +686,7 @@ impl Client {
         let id = client.id();
 
         tokio::task::spawn_local(async move {
+            log::trace!("forwarding message");
             while let Some(payload) = rx.next().await {
                 match client.net.send(payload, connection).await {
                     Ok(_) => client.net.poll(),
@@ -714,11 +719,24 @@ impl Client {
             ForwardId::SlotId(slot) => self.resolve_slot(slot, session_addr).await?,
         };
 
-        let (tx, mut rx) = mpsc::channel(1);
-        let client = self.clone();
+        let (tx, mut rx) = {
+            let mut state = self.state.write().await;
+            match state.forward_unreliable.get(&(node.id, session_addr)) {
+                Some(tx) => return Ok(tx.clone()),
+                None => {
+                    let (tx, rx) = mpsc::channel(1);
+                    state
+                        .forward_unreliable
+                        .insert((node.id, session_addr), tx.clone());
+                    (tx, rx)
+                }
+            }
+        };
 
+        let client = self.clone();
         tokio::task::spawn_local(async move {
             while let Some(payload) = rx.next().await {
+                log::trace!("forwarding message (U)");
                 let forward = Forward::unreliable(node.session_id, node.session_slot, payload);
                 if let Err(error) = client.send(forward, session_addr).await {
                     log::trace!(
@@ -757,6 +775,8 @@ impl Client {
             .filter_map(|n| NodeId::try_from(n.node_id.as_slice()).ok())
             .collect::<Vec<_>>();
 
+        log::debug!("broadcasting message to {} node(s)", node_ids.len());
+
         // FIXME: direct connections
         let session = self.server_session().await?;
         for node_id in node_ids {
@@ -764,14 +784,16 @@ impl Client {
             let session = session.clone();
 
             tokio::task::spawn_local(async move {
+                log::trace!("broadcasting message to {}", node_id);
+
                 match session.forward_unreliable(node_id).await {
                     Ok(mut forward) => {
                         if forward.send(data).await.is_err() {
-                            log::debug!("unable to broadcast message: forward channel is closed");
+                            log::debug!("cannot broadcast to {}: channel closed", node_id);
                         }
                     }
                     Err(e) => {
-                        log::debug!("unable to broadcast message: forward channel error: {}", e);
+                        log::debug!("cannot broadcast to {}: channel error: {}", node_id, e);
                     }
                 }
             });
@@ -1020,7 +1042,7 @@ impl Session {
     pub async fn find_slot(&self, slot: SlotId) -> anyhow::Result<proto::response::Node> {
         let session_id = self.id().await?;
         self.client
-            .find_node_by_slot(self.remote_addr, session_id, slot)
+            .find_slot(self.remote_addr, session_id, slot)
             .await
     }
 
