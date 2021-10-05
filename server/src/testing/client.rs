@@ -132,7 +132,7 @@ impl ClientBuilder {
     pub async fn build(self) -> anyhow::Result<Client> {
         let bind_url = self
             .bind_url
-            .unwrap_or_else(|| Url::parse("udp://127.0.0.1:0").unwrap());
+            .unwrap_or_else(|| Url::parse("udp://0.0.0.0:0").unwrap());
         let crypto = self
             .crypto
             .unwrap_or_else(|| Rc::new(FallbackCryptoProvider::default()));
