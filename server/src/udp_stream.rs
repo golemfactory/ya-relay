@@ -38,7 +38,7 @@ pub async fn receive_packet(socket: &mut RecvHalf) -> anyhow::Result<(PacketKind
 
     let (size, addr) = socket.recv_from(&mut buf).await?;
 
-    log::debug!("Received {} bytes from {}", size, addr);
+    log::trace!("Received {} bytes from {}", size, addr);
 
     buf.truncate(size);
 
