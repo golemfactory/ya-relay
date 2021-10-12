@@ -31,7 +31,7 @@ use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
-pub type ForwardReceiver = mpsc::Receiver<Forwarded>;
+pub type ForwardReceiver = unbounded_queue::Receiver<Forwarded>;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -249,8 +249,18 @@ impl Client {
                         );
                         return;
                     }
-                    IngressEvent::Packet { desc, payload } => (desc, payload),
+                    IngressEvent::Packet { desc, payload, .. } => (desc, payload),
                 };
+
+                if desc.protocol != Protocol::Tcp {
+                    log::trace!(
+                        "[{}] ingress router: dropping {} payload",
+                        client.id(),
+                        desc.protocol
+                    );
+                    return;
+                }
+
                 let remote_address = match desc.remote {
                     SocketEndpoint::Ip(endpoint) => endpoint.addr,
                     _ => {
@@ -262,6 +272,7 @@ impl Client {
                         return;
                     }
                 };
+
                 match {
                     // nodes are populated via `Client::on_forward` and `Client::forward`
                     let state = client.state.read().await;
@@ -279,7 +290,7 @@ impl Client {
 
                         let payload_len = payload.payload.len();
 
-                        if tx.send(payload).await.is_err() {
+                        if tx.send(payload).is_err() {
                             log::trace!(
                                 "[{}] ingress router: ingress handler closed for node {}",
                                 client.id(),
@@ -951,7 +962,7 @@ impl Handler for Client {
                     payload: forward.payload.into_vec(),
                 };
 
-                if tx.send(payload).await.is_err() {
+                if tx.send(payload).is_err() {
                     log::trace!(
                         "[{}] ingress router: ingress handler closed for node {}",
                         client.id(),

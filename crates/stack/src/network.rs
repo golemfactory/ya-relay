@@ -3,11 +3,11 @@ use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::ops::{DerefMut, Mul};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
-use futures::{Future, FutureExt, SinkExt, StreamExt};
+use futures::{Future, FutureExt, StreamExt};
 use smoltcp::socket::{Socket, SocketHandle};
 use smoltcp::wire::IpEndpoint;
 use tokio::task::{spawn_local, JoinHandle};
@@ -18,15 +18,23 @@ use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
 use crate::socket::{SocketDesc, SocketExt};
 use crate::stack::Stack;
-use crate::{Error, Result, MAX_PACKET_SIZE};
+use crate::{Error, Result};
 
-const MAX_TCP_PAYLOAD_SIZE: usize = MAX_PACKET_SIZE - 40 - 20;
+const MAX_TCP_PAYLOAD_SIZE: usize = 64000;
 
 #[derive(Clone, Debug)]
 pub enum IngressEvent {
-    Packet { desc: SocketDesc, payload: Vec<u8> },
-    InboundConnection { desc: SocketDesc },
-    Disconnected { desc: SocketDesc },
+    Packet {
+        desc: SocketDesc,
+        payload: Vec<u8>,
+        no: usize,
+    },
+    InboundConnection {
+        desc: SocketDesc,
+    },
+    Disconnected {
+        desc: SocketDesc,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -152,16 +160,11 @@ impl Network {
             let stack = stack.clone();
 
             async move {
-                let mut fut = futures::future::ok(()).boxed_local();
                 for chunk in vec.chunks(MAX_TCP_PAYLOAD_SIZE) {
                     let net = net.clone();
-                    let chunk = chunk.to_vec();
-
-                    fut = fut
-                        .then(|_| stack.send(chunk, conn, move || net.poll()))
-                        .boxed_local();
+                    stack.send(chunk.to_vec(), conn, move || net.poll()).await?;
                 }
-                fut.await.map_err(Error::from)
+                Ok(())
             }
         });
     }
@@ -192,17 +195,19 @@ impl Network {
 
     /// Take the ingress traffic receive channel
     #[inline(always)]
-    pub fn ingress_receiver(&self) -> Option<mpsc::Receiver<IngressEvent>> {
+    pub fn ingress_receiver(&self) -> Option<unbounded_queue::Receiver<IngressEvent>> {
         self.ingress.receiver()
     }
 
     /// Take the egress traffic receive channel
     #[inline(always)]
-    pub fn egress_receiver(&self) -> Option<mpsc::Receiver<EgressEvent>> {
+    pub fn egress_receiver(&self) -> Option<unbounded_queue::Receiver<EgressEvent>> {
         self.egress.receiver()
     }
 
     fn process_ingress(&self) -> (bool, usize) {
+        static COUNTER: AtomicUsize = AtomicUsize::new(0);
+
         let mut processed = false;
         let mut received = 0;
 
@@ -262,8 +267,10 @@ impl Network {
                 }
 
                 log::trace!("{}: ingress {} B IP packet", *self.name, payload.len());
+
                 received += 1;
-                events.push(IngressEvent::Packet { desc, payload });
+                let no = COUNTER.fetch_add(1, Ordering::Relaxed);
+                events.push(IngressEvent::Packet { desc, payload, no });
             }
         }
 
@@ -274,14 +281,9 @@ impl Network {
 
         if !events.is_empty() {
             let mut ingress_tx = self.ingress.tx.clone();
-            let name = self.name.clone();
-
-            spawn_local(async move {
-                let mut stream = futures::stream::iter(events.into_iter().map(Ok));
-                if ingress_tx.send_all(&mut stream).await.is_err() {
-                    log::trace!("{}: cannot receive packets: channel closed", *name);
-                }
-            });
+            if ingress_tx.send_all(events).is_err() {
+                log::trace!("{}: cannot receive packets: channel closed", *self.name);
+            }
         }
 
         (processed, received)
@@ -342,16 +344,10 @@ impl Network {
 
         if !payloads.is_empty() {
             let mut egress_tx = self.egress.tx.clone();
-            let name = self.name.clone();
-
-            spawn_local(async move {
-                let mut stream = futures::stream::iter(payloads.into_iter().map(Ok));
-                if egress_tx.send_all(&mut stream).await.is_err() {
-                    log::trace!("{}: cannot send packets: channel closed", *name);
-                }
-            });
+            if egress_tx.send_all(payloads).is_err() {
+                log::trace!("{}: cannot send packets: channel closed", *self.name);
+            }
         }
-
         (processed, sent)
     }
 }
@@ -533,19 +529,19 @@ impl StackPollerStrategy {
 
 #[derive(Clone)]
 pub struct Channel<T> {
-    pub tx: mpsc::Sender<T>,
-    rx: Rc<RefCell<Option<mpsc::Receiver<T>>>>,
+    pub tx: unbounded_queue::Sender<T>,
+    rx: Rc<RefCell<Option<unbounded_queue::Receiver<T>>>>,
 }
 
 impl<T> Channel<T> {
-    pub fn receiver(&self) -> Option<mpsc::Receiver<T>> {
+    pub fn receiver(&self) -> Option<unbounded_queue::Receiver<T>> {
         self.rx.borrow_mut().take()
     }
 }
 
 impl<T> Default for Channel<T> {
     fn default() -> Self {
-        let (tx, rx) = mpsc::channel(1);
+        let (tx, rx) = unbounded_queue::queue_with_capacity(8);
         Self {
             tx,
             rx: Rc::new(RefCell::new(Some(rx))),

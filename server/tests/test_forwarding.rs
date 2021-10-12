@@ -4,7 +4,6 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 
 use anyhow::Context;
-use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 
 use ya_net_server::testing::server::init_test_server;
@@ -47,7 +46,7 @@ async fn test_two_way_packet_forward() -> anyhow::Result<()> {
     fn spawn_receive<T: std::fmt::Debug + 'static>(
         label: &'static str,
         received: Rc<AtomicBool>,
-        rx: mpsc::Receiver<T>,
+        rx: unbounded_queue::Receiver<T>,
     ) {
         tokio::task::spawn_local({
             let received = received.clone();
