@@ -9,9 +9,10 @@ use crate::{Protocol, MAX_FRAME_SIZE};
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_TIMEOUT: Duration = Duration::from_secs(10);
 const TCP_KEEP_ALIVE: Duration = Duration::from_secs(5);
+const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
 
-const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 2;
-const RX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 2;
+const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
+const RX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
 
 /// Socket quintuplet
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -195,6 +196,7 @@ pub fn tcp_socket<'a>() -> TcpSocket<'a> {
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
     socket.set_timeout(Some(TCP_TIMEOUT));
     socket.set_keep_alive(Some(TCP_KEEP_ALIVE));
+    socket.set_ack_delay(Some(TCP_ACK_DELAY));
     socket
 }
 
