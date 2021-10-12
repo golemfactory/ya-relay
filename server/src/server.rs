@@ -118,7 +118,7 @@ impl Server {
             }
 
             PacketKind::Forward(forward) => {
-                if let Ok(sid) = SessionId::try_from(forward.session_id.clone()) {
+                if let Ok(sid) = SessionId::try_from(forward.session_id) {
                     let mut server = self.state.write().await;
                     let _ = server.nodes.update_seen(sid);
                 }

@@ -106,8 +106,7 @@ where
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: P) -> Result<(), Self::Error> {
-        let mut dst = Vec::new();
-        encode(item, &mut dst);
+        let dst = encode(item);
         Pin::new(&mut self.sink).start_send(dst)
     }
 
@@ -179,7 +178,7 @@ where
                     }
                 },
                 State::Buffering { mut left, read } => {
-                    left -= read;
+                    left -= read.min(left);
                     if left == 0 {
                         self.transition(State::AwaitingPrefix);
                         return self.poll_next(cx);
@@ -195,7 +194,7 @@ where
                 if bytes.is_empty() {
                     return Poll::Ready(None);
                 }
-                self.state.read(bytes.len());
+                self.state.on_read(bytes.len());
                 self.buf.extend(bytes);
                 self.poll_next(cx)
             }
@@ -207,18 +206,18 @@ where
 
 const PREFIX_SIZE: usize = size_of::<u32>();
 
-fn encode(payload: impl Into<Payload>, buf: &mut Vec<u8>) {
-    let payload = payload.into();
-    let len = payload.len() as u32;
-    buf.reserve(PREFIX_SIZE + len as usize);
-    buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend(payload.freeze().into_iter().take(len as usize));
+fn encode(payload: impl Into<Payload>) -> Vec<u8> {
+    let mut vec = payload.into().into_vec();
+    let len = vec.len() as u32;
+    vec.reserve(PREFIX_SIZE);
+    vec.splice(0..0, len.to_be_bytes());
+    vec
 }
 
 fn decode(buf: &mut BytesMut) -> Result<Bytes, State> {
     if buf.len() >= PREFIX_SIZE {
-        let mut length: [u8; 4] = [0u8; 4];
-        length.copy_from_slice(&buf.as_ref()[0..4]);
+        let mut length: [u8; PREFIX_SIZE] = [0u8; PREFIX_SIZE];
+        length.copy_from_slice(&buf.as_ref()[0..PREFIX_SIZE]);
 
         let length = u32::from_be_bytes(length) as usize;
         let prefixed_length = PREFIX_SIZE + length;
@@ -244,7 +243,7 @@ enum State {
 }
 
 impl State {
-    fn read(&mut self, count: usize) {
+    fn on_read(&mut self, count: usize) {
         if let Self::Buffering { left, read } = self {
             *read = (*left).min(*read + count);
         }
@@ -300,7 +299,7 @@ mod tests {
             (0..max).map(|_| rng.gen::<T>()).collect()
         }
 
-        let packets: Vec<Vec<u8>> = vec![
+        let mut packets: Vec<Vec<u8>> = vec![
             gen_vec(11),
             gen_vec(100),
             gen_vec(1),
@@ -323,6 +322,11 @@ mod tests {
         assert_eq!(packets, forward(packets.clone(), 2).await);
         assert_eq!(packets, forward(packets.clone(), 3).await);
         assert_eq!(packets, forward(packets.clone(), 4).await);
+
+        packets.push(gen_vec(65535));
+        packets.push(gen_vec(65535 * 2));
+        packets.push(gen_vec(65535));
+
         assert_eq!(packets, forward(packets.clone(), 7).await);
         assert_eq!(packets, forward(packets.clone(), 8).await);
         assert_eq!(packets, forward(packets.clone(), 16).await);

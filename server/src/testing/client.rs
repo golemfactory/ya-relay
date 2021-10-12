@@ -18,7 +18,7 @@ use ya_client_model::NodeId;
 use ya_net_stack::interface::*;
 use ya_net_stack::smoltcp::iface::Route;
 use ya_net_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
-use ya_net_stack::socket::SocketEndpoint;
+use ya_net_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
 use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
@@ -38,8 +38,6 @@ const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
 
-const STACK_POLL_INTERVAL: Duration = Duration::from_millis(2000);
-const TCP_CONNECTION_TIMEOUT: Duration = Duration::from_millis(5000);
 const TCP_BIND_PORT: u16 = 1;
 const IPV6_DEFAULT_CIDR: u8 = 0;
 
@@ -188,10 +186,14 @@ impl Client {
         log::debug!("[{}] starting...", self.id());
 
         let (stream, auto_connect) = {
-            let mut state = self.state.write().await;
-            state.reset();
+            let bind_url = {
+                let mut state = self.state.write().await;
+                state.reset();
+                state.config.bind_url.clone()
+            };
 
-            let (stream, sink, bind_addr) = udp_bind(&state.config.bind_url).await?;
+            let (stream, sink, bind_addr) = udp_bind(&bind_url).await?;
+            let mut state = self.state.write().await;
             state.sink = Some(sink);
             state.bind_addr = Some(bind_addr);
             (stream, state.config.auto_connect)
@@ -200,11 +202,11 @@ impl Client {
         let node_id = self.node_id().await;
         let virt_endpoint: IpEndpoint = (to_ipv6(&node_id), TCP_BIND_PORT).into();
 
+        self.net.spawn_local();
         self.net.bind(Protocol::Tcp, virt_endpoint)?;
 
         self.spawn_ingress_router()?;
         self.spawn_egress_router()?;
-        self.spawn_stack_poller();
 
         tokio::task::spawn_local(dispatch(self.clone(), stream));
 
@@ -239,8 +241,9 @@ impl Client {
                     }
                     IngressEvent::Disconnected { desc } => {
                         log::trace!(
-                            "[{}] ingress router: {:?} disconnected from {:?}",
+                            "[{}] ingress router: ({}) {:?} disconnected from {:?}",
                             client.id(),
+                            desc.protocol,
                             desc.remote,
                             desc.local,
                         );
@@ -274,11 +277,19 @@ impl Client {
                             payload,
                         };
 
+                        let payload_len = payload.payload.len();
+
                         if tx.send(payload).await.is_err() {
                             log::trace!(
                                 "[{}] ingress router: ingress handler closed for node {}",
                                 client.id(),
                                 node_id
+                            );
+                        } else {
+                            log::trace!(
+                                "[{}] ingress router: forwarded {} B",
+                                client.id(),
+                                payload_len
                             );
                         }
                     }
@@ -332,16 +343,6 @@ impl Client {
         }));
 
         Ok(())
-    }
-
-    fn spawn_stack_poller(&self) {
-        let net = self.net.clone();
-        tokio::task::spawn_local(async move {
-            loop {
-                tokio::time::delay_for(STACK_POLL_INTERVAL).await;
-                net.poll();
-            }
-        });
     }
 
     async fn resolve_node(&self, node_id: NodeId, addr: SocketAddr) -> anyhow::Result<VirtNode> {
@@ -410,7 +411,7 @@ impl Client {
 
 impl Client {
     pub async fn server_session(&self) -> anyhow::Result<Session> {
-        let addr = self.state.read().await.config.srv_addr;
+        let addr = { self.state.read().await.config.srv_addr };
         Ok(self.session(addr).await?)
     }
 
@@ -447,7 +448,7 @@ impl Client {
 
         let crypto = {
             let state = self.state.read().await;
-            let default_id = state.config.crypto.default_id().await?;
+            let default_id = { state.config.crypto.default_id() }.await?;
             state.config.crypto.get(default_id).await?
         };
         let public_key = crypto.public_key().await?;
@@ -508,7 +509,10 @@ impl Client {
             }
         }
 
-        if let Some(session) = state.sessions.remove(&addr) {
+        let removed = state.sessions.remove(&addr);
+        drop(state);
+
+        if let Some(session) = removed {
             let mut session_state = session.state.write().await;
             *session_state = None;
         }
@@ -676,20 +680,22 @@ impl Client {
             ForwardId::NodeId(node_id) => self.resolve_node(node_id, session_addr).await?,
             ForwardId::SlotId(slot) => self.resolve_slot(slot, session_addr).await?,
         };
-        let connection = self
-            .net
-            .connect(node.endpoint, TCP_CONNECTION_TIMEOUT)
-            .await?;
+        let connection = self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?;
 
-        let (tx, mut rx) = mpsc::channel(1);
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
         let client = self.clone();
         let id = client.id();
 
         tokio::task::spawn_local(async move {
-            log::trace!("forwarding message");
+            log::trace!("forwarding messages to {:?}", node);
+
             while let Some(payload) = rx.next().await {
-                match client.net.send(payload, connection).await {
-                    Ok(_) => client.net.poll(),
+                match client.net.send(payload, connection) {
+                    Ok(fut) => {
+                        if let Err(e) = fut.await {
+                            log::warn!("[{}] unable to forward via {}: {}", id, session_addr, e);
+                        }
+                    }
                     Err(e) => {
                         log::warn!("[{}] unable to forward via {}: {}", id, session_addr, e);
                     }
@@ -736,7 +742,8 @@ impl Client {
         let client = self.clone();
         tokio::task::spawn_local(async move {
             while let Some(payload) = rx.next().await {
-                log::trace!("forwarding message (U)");
+                log::trace!("forwarding message (U) to {:?}", node);
+
                 let forward = Forward::unreliable(node.session_id, node.session_slot, payload);
                 if let Err(error) = client.send(forward, session_addr).await {
                     log::trace!(
@@ -914,7 +921,12 @@ impl Handler for Client {
     fn on_forward(&self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<()> {
         let client = self.clone();
         let fut = async move {
-            log::trace!("[{}] received forward packet via {}", client.id(), from);
+            log::trace!(
+                "[{}] received forward packet ({} B) via {}",
+                client.id(),
+                forward.payload.len(),
+                from
+            );
 
             let node = match client.resolve_slot(forward.slot, from).await {
                 Ok(node) => node,
