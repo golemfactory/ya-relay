@@ -1,6 +1,15 @@
+use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::SeqCst;
+use std::time::Duration;
+
+use anyhow::Context;
 use itertools::Itertools;
+use futures::channel::mpsc;
+use futures::StreamExt;
 
 use ya_client_model::NodeId;
+use ya_net_server::testing::client::Forwarded;
 use ya_net_server::testing::server::{init_test_server, ServerWrapper};
 use ya_net_server::testing::{Client, ClientBuilder};
 
@@ -90,5 +99,53 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
 
     // Node neighbourhood consists of all nodes beside requesting node.
     assert_eq!(ids.len(), 2);
+    Ok(())
+}
+
+#[serial_test::serial]
+async fn test_broadcast() -> anyhow::Result<()> {
+    const NEIGHBOURHOOD_SIZE:u32 = 10;
+    let wrapper = init_test_server().await.unwrap();
+    let mut clients = start_clients(&wrapper, NEIGHBOURHOOD_SIZE).await;
+
+    fn spawn_receive(
+        received: Rc<AtomicUsize>,
+        rx: mpsc::Receiver<Forwarded>,
+    ) {
+        tokio::task::spawn_local({
+            let received = received.clone();
+            async move {
+                rx.for_each(|item| {
+                    let received = received.clone();
+                    async move {
+                        println!("received {:?}", item);
+                        received.clone().fetch_add(item.payload.len(), SeqCst);
+                    }
+                })
+                .await;
+            }
+        });
+    }
+    let mut received = vec![];
+    let broadcasting_client = clients.pop().unwrap();
+
+    for client in clients {
+        let counter = Rc::new(AtomicUsize::new(0));
+        received.push(counter.clone());
+        let rx = client
+            .forward_receiver()
+            .await
+            .context("no forward receiver")?;
+        spawn_receive(counter, rx);
+    }
+
+    let session = broadcasting_client.server_session().await?;
+    let data = vec![1 as u8];
+    session.broadcast(data, NEIGHBOURHOOD_SIZE).await?;
+    tokio::time::delay_for(Duration::from_millis(100)).await;
+
+    for receiver in received {
+        assert_eq!(receiver.load(SeqCst), 1);
+    }
     Ok(())
 }
