@@ -1,4 +1,5 @@
 use std::convert::TryFrom;
+use std::time::Duration;
 
 use std::ops::DerefMut;
 use ya_client_model::NodeId;
@@ -119,5 +120,28 @@ async fn test_close_session() -> anyhow::Result<()> {
     let result = cloned_session.find_node(node_id).await;
     assert!(result.is_err());
 
+    Ok(())
+}
+
+#[serial_test::serial]
+async fn test_restart_server() -> anyhow::Result<()> {
+    let wrapper = init_test_server().await.unwrap();
+    let client = ClientBuilder::from_server(&wrapper.server)
+        .connect()
+        .build()
+        .await
+        .unwrap();
+    let node_id = client.node_id().await;
+    let session = client.server_session().await?;
+
+    // Abort server
+    drop(wrapper);
+
+    let wrapper = init_test_server().await.unwrap();
+    tokio::time::delay_for(Duration::from_millis(100)).await;
+
+    let session = client.server_session().await?;
+    let result = session.find_node(node_id).await;
+    assert!(result.is_ok());
     Ok(())
 }
