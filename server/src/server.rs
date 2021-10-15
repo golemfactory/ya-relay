@@ -29,11 +29,16 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
 
-pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
-pub const SESSION_CLEANER_INTERVAL: u64 = 10; // seconds
-pub const SESSION_TIMEOUT: i64 = 60; // seconds
+
+lazy_static::lazy_static! {
+    static ref DEFAULT_NET_PORT: u16 = typed_from_env::<u16>("DEFAULT_NET_PORT", 7464);
+
+    static ref SESSION_CLEANER_INTERVAL: Duration = Duration::new(typed_from_env::<u64>("SESSION_CLEANER_INTERVAL", 10), 0); // seconds
+    static ref SESSION_TIMEOUT: i64 = typed_from_env::<i64>("SESSION_TIMEOUT", 60); // seconds
+
+}
 
 #[derive(Clone)]
 pub struct Server {
@@ -586,17 +591,22 @@ impl Server {
     }
 
     async fn session_cleaner(&self) {
-        let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
+        log::debug!(
+            "Starting session cleaner at interval {}s",
+            (*SESSION_CLEANER_INTERVAL).as_secs()
+        );
+        let mut interval = time::interval(*SESSION_CLEANER_INTERVAL);
         loop {
             interval.tick().await;
             let s = self.clone();
+            log::trace!("Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
         }
     }
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(SESSION_TIMEOUT);
+        server.nodes.check_timeouts(*SESSION_TIMEOUT);
     }
 
     async fn send_to(
@@ -730,7 +740,14 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
 
 pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
     let host = url.host_str().context("Needs host for NET URL")?;
-    let port = url.port().unwrap_or(DEFAULT_NET_PORT);
+    let port = url.port().unwrap_or(*DEFAULT_NET_PORT);
 
     Ok(format!("{}:{}", host, port))
+}
+
+// Extract typed data from enviromnt variable
+fn typed_from_env<T: std::str::FromStr + Copy>(env_key: &str, def_value: T) -> T {
+    std::env::var(env_key)
+        .map(|s| s.parse::<T>().unwrap_or(def_value))
+        .unwrap_or(def_value)
 }
