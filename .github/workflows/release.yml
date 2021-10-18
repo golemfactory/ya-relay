@@ -128,8 +128,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.release_upload_url.outputs.result }}
-          asset_path: ./target/x86_64-unknown-linux-musl/release/ya-zksync-faucet
-          asset_name: ya-zksync-faucet
+          asset_path: ./target/x86_64-unknown-linux-musl/release/ya-net-server
+          asset_name: ya-net-server
           asset_content_type: application/octet-stream
       # - name: Upload Release Asset [Provider]
       #   id: upload-release-asset-prov
