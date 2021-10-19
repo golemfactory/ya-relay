@@ -31,7 +31,7 @@ use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
-pub type ForwardReceiver = unbounded_queue::Receiver<Forwarded>;
+pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -281,7 +281,7 @@ impl Client {
                         .get(remote_address.as_bytes())
                         .map(|node| (node.id, state.virt_ingress.tx.clone()))
                 } {
-                    Some((node_id, mut tx)) => {
+                    Some((node_id, tx)) => {
                         let payload = Forwarded {
                             reliable: true,
                             node_id,
@@ -951,7 +951,7 @@ impl Handler for Client {
                 client.net.receive(forward.payload.into_vec());
                 client.net.poll();
             } else {
-                let mut tx = {
+                let tx = {
                     let state = client.state.read().await;
                     state.virt_ingress.tx.clone()
                 };

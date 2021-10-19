@@ -10,6 +10,7 @@ use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::socket::{Socket, SocketHandle};
 use smoltcp::wire::IpEndpoint;
+use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
 
 use crate::connection::{Connection, ConnectionMeta};
@@ -195,13 +196,13 @@ impl Network {
 
     /// Take the ingress traffic receive channel
     #[inline(always)]
-    pub fn ingress_receiver(&self) -> Option<unbounded_queue::Receiver<IngressEvent>> {
+    pub fn ingress_receiver(&self) -> Option<mpsc::UnboundedReceiver<IngressEvent>> {
         self.ingress.receiver()
     }
 
     /// Take the egress traffic receive channel
     #[inline(always)]
-    pub fn egress_receiver(&self) -> Option<unbounded_queue::Receiver<EgressEvent>> {
+    pub fn egress_receiver(&self) -> Option<mpsc::UnboundedReceiver<EgressEvent>> {
         self.egress.receiver()
     }
 
@@ -280,9 +281,12 @@ impl Network {
         });
 
         if !events.is_empty() {
-            let mut ingress_tx = self.ingress.tx.clone();
-            if ingress_tx.send_all(events).is_err() {
-                log::trace!("{}: cannot receive packets: channel closed", *self.name);
+            let ingress_tx = self.ingress.tx.clone();
+            for event in events {
+                if ingress_tx.send(event).is_err() {
+                    log::trace!("{}: cannot receive packets: channel closed", *self.name);
+                    break;
+                }
             }
         }
 
@@ -296,7 +300,7 @@ impl Network {
         let iface_rfc = self.stack.iface();
         let mut iface = iface_rfc.borrow_mut();
         let device = iface.device_mut();
-        let mut payloads = Vec::new();
+        let mut events = Vec::new();
 
         while let Some(data) = device.next_phy_tx() {
             processed = true;
@@ -336,16 +340,19 @@ impl Network {
             };
 
             sent += 1;
-            payloads.push(EgressEvent {
+            events.push(EgressEvent {
                 remote: remote.into(),
                 payload: frame.into(),
             });
         }
 
-        if !payloads.is_empty() {
-            let mut egress_tx = self.egress.tx.clone();
-            if egress_tx.send_all(payloads).is_err() {
-                log::trace!("{}: cannot send packets: channel closed", *self.name);
+        if !events.is_empty() {
+            let egress_tx = self.egress.tx.clone();
+            for event in events {
+                if egress_tx.send(event).is_err() {
+                    log::trace!("{}: cannot send packets: channel closed", *self.name);
+                    break;
+                }
             }
         }
         (processed, sent)
@@ -529,19 +536,19 @@ impl StackPollerStrategy {
 
 #[derive(Clone)]
 pub struct Channel<T> {
-    pub tx: unbounded_queue::Sender<T>,
-    rx: Rc<RefCell<Option<unbounded_queue::Receiver<T>>>>,
+    pub tx: mpsc::UnboundedSender<T>,
+    rx: Rc<RefCell<Option<mpsc::UnboundedReceiver<T>>>>,
 }
 
 impl<T> Channel<T> {
-    pub fn receiver(&self) -> Option<unbounded_queue::Receiver<T>> {
+    pub fn receiver(&self) -> Option<mpsc::UnboundedReceiver<T>> {
         self.rx.borrow_mut().take()
     }
 }
 
 impl<T> Default for Channel<T> {
     fn default() -> Self {
-        let (tx, rx) = unbounded_queue::queue_with_capacity(8);
+        let (tx, rx) = mpsc::unbounded_channel();
         Self {
             tx,
             rx: Rc::new(RefCell::new(Some(rx))),
