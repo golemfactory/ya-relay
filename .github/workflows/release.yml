@@ -180,6 +180,8 @@ jobs:
         with:
           debVersion: ${{ steps.version.outputs.version }}
           pkgName: ya-net-server
+          subdir: server
+
       - name: Upload Release Deb
         id: upload-release-asset-prov
         uses: actions/upload-release-asset@v1
