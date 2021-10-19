@@ -141,63 +141,52 @@ jobs:
       #     asset_path: ./releases/${{ steps.pack.outputs.providerArtifact }}
       #     asset_name: ${{ steps.pack.outputs.providerArtifact }}
       #     asset_content_type: ${{ steps.pack.outputs.providerMedia }}
-  # build-deb:
-  #   needs: create-release
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Get upload url
-  #       id: release_upload_url
-  #       uses: actions/github-script@0.9.0
-  #       with:
-  #         github-token: ${{secrets.GITHUB_TOKEN}}
-  #         result-encoding: string
-  #         script: |
-  #           let tag = context.payload.ref.replace(/.*\//, '');
-  #           let release =  await github.request("GET /repos/:owner/:repo/releases/tags/:tag", {
-  #             owner: context.repo.owner,
-  #             repo: context.repo.repo,
-  #             tag: tag
-  #           });
-  #           console.log(release.data.upload_url);
-  #           return release.data.upload_url
-  #
-  #     - name: Check out repository
-  #       uses: actions/checkout@v2
-  #     - name: Extract Version
-  #       id: version
-  #       shell: bash
-  #       env:
-  #         OS_NAME: ${{ matrix.os }}
-  #         GITHUB_REF: ${{ github.ref }}
-  #       run: |
-  #         TAG_NAME="${GITHUB_REF##*/}"
-  #         TAGV_NAME="${TAG_NAME#pre-rel-}"
-  #         VERSION=${TAGV_NAME#v}
-  #         echo "::set-output name=tagv::${TAG_NAME}"
-  #         echo "::set-output name=version::${VERSION}"
-  #     - uses: golemfactory/build-deb-action@main
-  #       id: deb
-  #       with:
-  #         debVersion: ${{ steps.version.outputs.version }}
-  #         variants: default provider
-  #         pkgName: golem
-  #     - name: Upload Release Deb [Core]
-  #       id: upload-release-asset-core
-  #       uses: actions/upload-release-asset@v1
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #       with:
-  #         upload_url: ${{ steps.release_upload_url.outputs.result }}
-  #         asset_path: ${{ steps.deb.outputs.deb }}
-  #         asset_name: golem-requestor_${{ steps.version.outputs.tagv }}_amd64.deb
-  #         asset_content_type: application/vnd.debian.binary-package
-  #     - name: Upload Release Deb [Prov]
-  #       id: upload-release-asset-prov
-  #       uses: actions/upload-release-asset@v1
-  #       env:
-  #         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  #       with:
-  #         upload_url: ${{ steps.release_upload_url.outputs.result }}
-  #         asset_path: ${{ steps.deb.outputs.deb_provider }}
-  #         asset_name: golem-provider_${{ steps.version.outputs.tagv }}_amd64.deb
-  #         asset_content_type: application/vnd.debian.binary-package
+  build-deb:
+    needs: create-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get upload url
+        id: release_upload_url
+        uses: actions/github-script@0.9.0
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          result-encoding: string
+          script: |
+            let tag = context.payload.ref.replace(/.*\//, '');
+            let release =  await github.request("GET /repos/:owner/:repo/releases/tags/:tag", {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag: tag
+            });
+            console.log(release.data.upload_url);
+            return release.data.upload_url
+
+      - name: Check out repository
+        uses: actions/checkout@v2
+      - name: Extract Version
+        id: version
+        shell: bash
+        env:
+          OS_NAME: ${{ matrix.os }}
+          GITHUB_REF: ${{ github.ref }}
+        run: |
+          TAG_NAME="${GITHUB_REF##*/}"
+          TAGV_NAME="${TAG_NAME#pre-rel-}"
+          VERSION=${TAGV_NAME#v}
+          echo "::set-output name=tagv::${TAG_NAME}"
+          echo "::set-output name=version::${VERSION}"
+      - uses: golemfactory/build-deb-action@main
+        id: deb
+        with:
+          debVersion: ${{ steps.version.outputs.version }}
+          pkgName: ya-net-server
+      - name: Upload Release Deb
+        id: upload-release-asset-prov
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.release_upload_url.outputs.result }}
+          asset_path: ${{ steps.deb.outputs.deb }}
+          asset_name: ya_net_server_${{ steps.version.outputs.tagv }}_amd64.deb
+          asset_content_type: application/vnd.debian.binary-package
