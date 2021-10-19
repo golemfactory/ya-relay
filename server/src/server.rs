@@ -55,6 +55,14 @@ pub struct ServerImpl {
 
 impl Server {
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> ServerResult<()> {
+        let session_id = PacketKind::session_id(&packet);
+        if !session_id.is_empty() {
+            let id = SessionId::try_from(session_id.clone())
+                .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+            let mut server = self.state.write().await;
+            let _ = server.nodes.update_seen(id);
+        }
+
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
@@ -72,11 +80,6 @@ impl Server {
 
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
-
-                {
-                    let mut server = self.state.write().await;
-                    let _ = server.nodes.update_seen(id);
-                }
 
                 let node = match self.state.read().await.nodes.get_by_session(id) {
                     None => return self.clone().establish_session(id, from, kind).await,
@@ -117,14 +120,7 @@ impl Server {
                 }
             }
 
-            PacketKind::Forward(forward) => {
-                if let Ok(sid) = SessionId::try_from(forward.session_id) {
-                    let mut server = self.state.write().await;
-                    let _ = server.nodes.update_seen(sid);
-                }
-
-                self.forward(forward, from).await?
-            }
+            PacketKind::Forward(forward) => self.forward(forward, from).await?,
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }

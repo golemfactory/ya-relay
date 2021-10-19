@@ -35,7 +35,7 @@ impl<T> Default for Queue<T> {
 }
 
 impl<T> Queue<T> {
-    pub fn sender(&mut self) -> Sender<T> {
+    pub fn sender(&self) -> Sender<T> {
         self.sender.clone()
     }
 

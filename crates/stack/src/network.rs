@@ -367,7 +367,7 @@ struct StackSender {
 impl StackSender {
     pub fn send(&self, data: Vec<u8>, conn: Connection) -> Result<ProcessedFuture> {
         let mut sender = {
-            let mut inner = self.inner.borrow_mut();
+            let inner = self.inner.borrow();
             inner.queue.sender()
         };
         sender.send((data, conn))
@@ -681,14 +681,11 @@ mod tests {
         spawn_local(async move {
             let net = net.clone();
             rx.for_each(|vec| async {
-                match net.send(vec, conn) {
-                    Ok(fut) => {
-                        if let Err(e) = fut.await {
-                            eprintln!("failed to send packet: {}", e);
-                        }
-                    }
-                    Err(e) => eprintln!("failed to send packet: {}", e),
-                }
+                let _ = net
+                    .send(vec, conn)
+                    .unwrap_or_else(|e| Box::pin(futures::future::err(e)))
+                    .await
+                    .map_err(|e| eprintln!("failed to send packet: {}", e));
             })
             .await;
         });

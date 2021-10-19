@@ -701,16 +701,14 @@ impl Client {
             log::trace!("forwarding messages to {:?}", node);
 
             while let Some(payload) = rx.next().await {
-                match client.net.send(payload, connection) {
-                    Ok(fut) => {
-                        if let Err(e) = fut.await {
-                            log::warn!("[{}] unable to forward via {}: {}", id, session_addr, e);
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("[{}] unable to forward via {}: {}", id, session_addr, e);
-                    }
-                }
+                let _ = client
+                    .net
+                    .send(payload, connection)
+                    .unwrap_or_else(|e| Box::pin(futures::future::err(e)))
+                    .await
+                    .map_err(|e| {
+                        log::warn!("[{}] unable to forward via {}: {}", id, session_addr, e)
+                    });
             }
 
             client.remove_slot(node.session_slot, session_addr).await;
