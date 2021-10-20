@@ -14,7 +14,7 @@ use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::challenge::{Challenge, DefaultChallenge};
+use crate::challenge;
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
@@ -55,6 +55,14 @@ pub struct ServerImpl {
 
 impl Server {
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> ServerResult<()> {
+        let session_id = PacketKind::session_id(&packet);
+        if !session_id.is_empty() {
+            let id = SessionId::try_from(session_id.clone())
+                .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+            let mut server = self.state.write().await;
+            let _ = server.nodes.update_seen(id);
+        }
+
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
@@ -72,6 +80,7 @@ impl Server {
 
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+
                 let node = match self.state.read().await.nodes.get_by_session(id) {
                     None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
@@ -264,11 +273,6 @@ impl Server {
         session_id: SessionId,
         from: SocketAddr,
     ) -> ServerResult<()> {
-        {
-            let mut server = self.state.write().await;
-            server.nodes.update_seen(session_id)?;
-        }
-
         self.send_to(
             proto::Packet::response(
                 request_id,
@@ -488,13 +492,13 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // Validate the challenge
-                if !DefaultChallenge::with(session.public_key.as_slice())
-                    .validate(
-                        &raw_challenge,
-                        CHALLENGE_DIFFICULTY,
-                        &session.challenge_resp,
-                    )
-                    .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
+                if !challenge::verify(
+                    &raw_challenge,
+                    CHALLENGE_DIFFICULTY,
+                    &session.challenge_resp,
+                    session.public_key.as_slice(),
+                )
+                .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
                 {
                     return Err(Unauthorized::InvalidChallenge.into());
                 }
@@ -540,29 +544,40 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(session_id, "Session".to_string()).into()),
         };
 
-        match rc.next().await {
-            Some(proto::Request {
-                request_id,
-                kind: Some(proto::request::Kind::Register(registration)),
-            }) => {
-                log::info!("Got register from node: {}", with);
+        loop {
+            match rc.next().await {
+                Some(proto::Request {
+                    request_id,
+                    kind: Some(proto::request::Kind::Register(registration)),
+                }) => {
+                    log::info!("Got register from node: {}", with);
 
-                let node_id = node.info.node_id;
-                let node = self
-                    .register_endpoints(request_id, session_id, with, registration, node)
-                    .await?;
+                    let node_id = node.info.node_id;
+                    let node = self
+                        .register_endpoints(request_id, session_id, with, registration, node)
+                        .await?;
 
-                self.cleanup_initialization(&session_id).await;
+                    self.cleanup_initialization(&session_id).await;
 
-                {
-                    let mut server = self.state.write().await;
-                    server.nodes.register(node);
+                    {
+                        let mut server = self.state.write().await;
+                        server.nodes.register(node);
+                    }
+
+                    log::info!("Session: {} established for node: {}", session_id, node_id);
+                    break;
                 }
-
-                log::info!("Session: {} established for node: {}", session_id, node_id);
-            }
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Register".to_string()).into()),
-        };
+                Some(proto::Request {
+                    kind: Some(proto::request::Kind::Ping(_)),
+                    ..
+                }) => continue,
+                _ => {
+                    return Err(
+                        BadRequest::InvalidPacket(session_id, "Register".to_string()).into(),
+                    );
+                }
+            };
+        }
         Ok(())
     }
 

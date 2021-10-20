@@ -2,6 +2,7 @@ use env_logger;
 use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
+use ya_net_server::crypto::FallbackCryptoProvider;
 use ya_net_server::testing::key::{load_or_generate, Protected};
 use ya_net_server::testing::ClientBuilder;
 
@@ -52,7 +53,7 @@ async fn main() -> anyhow::Result<()> {
     let builder = if let Some(key_file) = args.key_file {
         let password = args.key_password.clone();
         let secret = load_or_generate(&key_file, password);
-        ClientBuilder::from_url(address).secret(secret)
+        ClientBuilder::from_url(address).crypto(FallbackCryptoProvider::new(secret))
     } else {
         ClientBuilder::from_url(address)
     };

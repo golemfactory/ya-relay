@@ -1,5 +1,6 @@
 use rand::Rng;
-use ya_net_server::challenge::{Challenge, DefaultChallenge, SIGNATURE_SIZE};
+use ya_net_server::challenge::{self, PREFIX_SIZE, SIGNATURE_SIZE};
+use ya_net_server::crypto::{CryptoProvider, FallbackCryptoProvider};
 
 #[actix_rt::main]
 async fn main() -> anyhow::Result<()> {
@@ -15,16 +16,21 @@ async fn main() -> anyhow::Result<()> {
 
     log::info!("Computing challenge");
 
-    let challenge = DefaultChallenge::with(secret);
-    let response = challenge.solve(&sample, difficulty)?;
+    let provider = FallbackCryptoProvider::new(secret);
+    let crypto = provider.get(provider.default_id().await?).await?;
+    let response = challenge::solve(&sample, difficulty, crypto).await?;
     let result = &response[SIGNATURE_SIZE..];
 
-    log::info!("Prefix: {:?}", &result[0..8]);
-    log::info!("Result: {:?}", &result[8..72]);
+    log::info!("Prefix: {:?}", &result[0..PREFIX_SIZE]);
+    log::info!("Result: {:?}", &result[PREFIX_SIZE..]);
     log::info!("Length: {:?}", result.len());
 
-    let challenge = DefaultChallenge::with(public_bytes.as_slice());
-    let check = challenge.validate(&sample, difficulty, response.as_slice())?;
+    let check = challenge::verify(
+        &sample,
+        difficulty,
+        response.as_slice(),
+        public_bytes.as_slice(),
+    )?;
     log::info!("Check: {}", check);
 
     Ok(())

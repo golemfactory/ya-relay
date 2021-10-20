@@ -129,9 +129,12 @@ impl<'a> Stack<'a> {
         let mut sockets = self.sockets.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
+        let protocol = Protocol::Tcp;
         let handle = sockets.add(tcp_socket());
-        let port = ports.next(Protocol::Tcp)?;
+        let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
+
+        log::trace!("connecting to {} ({})", remote, protocol);
 
         if let Err(e) = {
             let mut socket = sockets.get::<TcpSocket>(handle);
@@ -143,11 +146,10 @@ impl<'a> Stack<'a> {
         }
 
         let meta = ConnectionMeta {
-            protocol: Protocol::Tcp,
+            protocol,
             local,
             remote,
         };
-
         Ok(Connect::new(
             Connection { handle, meta },
             self.sockets.clone(),
@@ -158,14 +160,15 @@ impl<'a> Stack<'a> {
         let mut sockets = self.sockets.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
-        let port = match protocol {
-            Protocol::Tcp => sockets.get::<TcpSocket>(handle).local_endpoint().port,
-            Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint().port,
+        let endpoint = match protocol {
+            Protocol::Tcp => sockets.get::<TcpSocket>(handle).local_endpoint(),
+            Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint(),
             _ => return,
         };
 
-        ports.free(protocol, port);
-        sockets.release(handle);
+        log::trace!("disconnecting {} ({})", endpoint, protocol);
+
+        ports.free(protocol, endpoint.port);
     }
 
     pub fn send<B: Into<Vec<u8>>, F: Fn() + 'static>(

@@ -1,4 +1,5 @@
 pub mod challenge;
+pub mod crypto;
 pub(crate) mod error;
 mod server;
 pub(crate) mod session;

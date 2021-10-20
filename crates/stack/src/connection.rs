@@ -164,13 +164,17 @@ impl<'a> Future for Send<'a> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let result = {
             let sockets_rfc = self.sockets.clone();
-            let mut sockets = sockets_rfc.borrow_mut();
             let conn = &self.connection;
 
             match conn.meta.protocol {
                 Protocol::Tcp => {
-                    let mut socket = sockets.get::<TcpSocket>(conn.handle);
-                    let result = socket.send_slice(&self.data[self.offset..]);
+                    let result = {
+                        let mut sockets = sockets_rfc.borrow_mut();
+                        let mut socket = sockets.get::<TcpSocket>(conn.handle);
+                        socket.register_send_waker(cx.waker());
+                        socket.send_slice(&self.data[self.offset..])
+                    };
+
                     (*self.sent)();
 
                     return match result {
@@ -179,24 +183,28 @@ impl<'a> Future for Send<'a> {
                             if self.offset >= self.data.len() {
                                 Poll::Ready(Ok(()))
                             } else {
-                                socket.register_send_waker(cx.waker());
                                 Poll::Pending
                             }
                         }
-                        Err(smoltcp::Error::Exhausted) => {
-                            socket.register_send_waker(cx.waker());
-                            Poll::Pending
-                        }
+                        Err(smoltcp::Error::Exhausted) => Poll::Pending,
                         Err(err) => Poll::Ready(Err(Error::Other(err.to_string()))),
                     };
                 }
-                Protocol::Udp => sockets
-                    .get::<UdpSocket>(conn.handle)
-                    .send_slice(&self.data, conn.meta.remote),
-                Protocol::Icmp => sockets
-                    .get::<IcmpSocket>(conn.handle)
-                    .send_slice(&self.data, conn.meta.remote.addr),
-                _ => sockets.get::<RawSocket>(conn.handle).send_slice(&self.data),
+                Protocol::Udp => {
+                    let mut sockets = sockets_rfc.borrow_mut();
+                    let mut socket = sockets.get::<UdpSocket>(conn.handle);
+                    socket.send_slice(&self.data, conn.meta.remote)
+                }
+                Protocol::Icmp => {
+                    let mut sockets = sockets_rfc.borrow_mut();
+                    let mut socket = sockets.get::<IcmpSocket>(conn.handle);
+                    socket.send_slice(&self.data, conn.meta.remote.addr)
+                }
+                _ => {
+                    let mut sockets = sockets_rfc.borrow_mut();
+                    let mut socket = sockets.get::<RawSocket>(conn.handle);
+                    socket.send_slice(&self.data)
+                }
             }
         };
 
