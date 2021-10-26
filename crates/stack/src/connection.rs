@@ -122,15 +122,17 @@ impl<'a> Future for Connect<'a> {
         // TODO: we need to loop because `.get()` panics when connection was dropped
         //let mut socket = sockets.get::<TcpSocket>(self.connection.handle);
         let mut socket = {
-            if let Some(s) = sockets.iter_mut().find(|s| s.handle() == self.connection.handle) {
-                  if let Some(ts) = TcpSocket::downcast(s) {
-                      ts
-                  }
-                  else {
-                      return Poll::Ready(Err(Error::SocketClosed))
-                  }
+            if let Some(s) = sockets
+                .iter_mut()
+                .find(|s| s.handle() == self.connection.handle)
+            {
+                if let Some(ts) = TcpSocket::downcast(s) {
+                    ts
+                } else {
+                    return Poll::Ready(Err(Error::SocketClosed));
+                }
             } else {
-                return Poll::Ready(Err(Error::SocketClosed))
+                return Poll::Ready(Err(Error::SocketClosed));
             }
         };
 
