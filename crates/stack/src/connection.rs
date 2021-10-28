@@ -119,7 +119,17 @@ impl<'a> Future for Connect<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let sockets_rfc = self.sockets.clone();
         let mut sockets = sockets_rfc.borrow_mut();
-        let mut socket = sockets.get::<TcpSocket>(self.connection.handle);
+        // TODO: we need to loop because `.get()` panics when connection was dropped
+        //let mut socket = sockets.get::<TcpSocket>(self.connection.handle);
+        let mut socket = match sockets
+            .iter_mut()
+            .find(|s| s.handle() == self.connection.handle)
+            .map(TcpSocket::downcast)
+            .flatten()
+        {
+            Some(s) => s,
+            None => return Poll::Ready(Err(Error::SocketClosed)),
+        };
 
         if !socket.is_open() {
             Poll::Ready(Err(Error::SocketClosed))

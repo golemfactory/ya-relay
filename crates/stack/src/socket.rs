@@ -7,8 +7,8 @@ use smoltcp::wire::{IpEndpoint, IpProtocol, IpVersion};
 use crate::{Protocol, MAX_FRAME_SIZE};
 
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
-const TCP_TIMEOUT: Duration = Duration::from_secs(10);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(5);
+const TCP_TIMEOUT: Duration = Duration::from_secs(6);
+const TCP_KEEP_ALIVE: Duration = Duration::from_secs(3);
 const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
 
 const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
