@@ -1143,7 +1143,7 @@ fn default_network(key: PublicKey) -> Network {
         Route::new_ipv6_gateway(ipv6_addr.into()),
     );
 
-    Network::new(name, Stack::with(iface))
+    Network::new(name, Stack::new(iface))
 }
 
 fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {

@@ -1,10 +1,10 @@
 use derive_more::From;
-use managed::ManagedSlice;
 use smoltcp::socket::*;
+use smoltcp::storage::PacketMetadata;
 use smoltcp::time::Duration;
-use smoltcp::wire::{IpEndpoint, IpProtocol, IpVersion};
+use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 
-use crate::{Protocol, MAX_FRAME_SIZE};
+use crate::{Error, Protocol, MAX_FRAME_SIZE};
 
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
 const TCP_TIMEOUT: Duration = Duration::from_secs(6);
@@ -44,6 +44,15 @@ pub enum SocketEndpoint {
     Other,
 }
 
+impl SocketEndpoint {
+    pub fn ip_endpoint(&self) -> Result<IpEndpoint, Error> {
+        match self {
+            SocketEndpoint::Ip(endpoint) => Ok(*endpoint),
+            other => Err(Error::EndpointInvalid(*other)),
+        }
+    }
+}
+
 impl PartialEq<IpEndpoint> for SocketEndpoint {
     fn eq(&self, other: &IpEndpoint) -> bool {
         match &self {
@@ -65,6 +74,13 @@ impl From<Option<IpEndpoint>> for SocketEndpoint {
 impl From<u16> for SocketEndpoint {
     fn from(ident: u16) -> Self {
         Self::Icmp(IcmpEndpoint::Ident(ident))
+    }
+}
+
+impl<T: Into<IpAddress>> From<(T, u16)> for SocketEndpoint {
+    fn from((t, port): (T, u16)) -> Self {
+        let endpoint: IpEndpoint = (t, port).into();
+        Self::from(endpoint)
     }
 }
 
@@ -218,10 +234,12 @@ pub fn raw_socket<'a>(ip_version: IpVersion, ip_protocol: IpProtocol) -> RawSock
     RawSocket::new(ip_version, ip_protocol, rx_buf, tx_buf)
 }
 
-fn meta_storage<'a, T: Clone>() -> ManagedSlice<'a, T> {
-    ManagedSlice::Owned(Vec::new())
+#[inline]
+fn meta_storage<H: Clone>() -> Vec<PacketMetadata<H>> {
+    vec![PacketMetadata::EMPTY; RX_BUFFER_SIZE]
 }
 
+#[inline]
 fn payload_storage<T: Default + Clone>() -> Vec<T> {
-    vec![Default::default(); RX_BUFFER_SIZE]
+    vec![Default::default(); 4 * RX_BUFFER_SIZE]
 }

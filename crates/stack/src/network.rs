@@ -17,37 +17,19 @@ use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
-use crate::socket::{SocketDesc, SocketExt};
+use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
 use crate::stack::Stack;
 use crate::{Error, Result};
 
+pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
+pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
+
 const MAX_TCP_PAYLOAD_SIZE: usize = 64000;
-
-#[derive(Clone, Debug)]
-pub enum IngressEvent {
-    Packet {
-        desc: SocketDesc,
-        payload: Vec<u8>,
-        no: usize,
-    },
-    InboundConnection {
-        desc: SocketDesc,
-    },
-    Disconnected {
-        desc: SocketDesc,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub struct EgressEvent {
-    pub remote: Box<[u8]>,
-    pub payload: Box<[u8]>,
-}
 
 #[derive(Clone)]
 pub struct Network {
     pub name: Rc<String>,
-    stack: Stack<'static>,
+    pub stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
     bindings: Rc<RefCell<HashSet<SocketHandle>>>,
@@ -58,9 +40,9 @@ pub struct Network {
 
 impl Network {
     /// Creates a new Network instance
-    pub fn new(name: String, stack: Stack<'static>) -> Self {
+    pub fn new(name: impl ToString, stack: Stack<'static>) -> Self {
         let network = Self {
-            name: Rc::new(name),
+            name: Rc::new(name.to_string()),
             stack,
             sender: Default::default(),
             poller: Default::default(),
@@ -75,15 +57,36 @@ impl Network {
     }
 
     /// Listen on a local endpoint
-    pub fn bind(&self, protocol: Protocol, endpoint: impl Into<IpEndpoint>) -> Result<()> {
-        let handle = self.stack.bind(protocol, endpoint.into())?;
+    pub fn bind(
+        &self,
+        protocol: Protocol,
+        endpoint: impl Into<SocketEndpoint>,
+    ) -> Result<SocketHandle> {
+        let handle = self.stack.bind(protocol, endpoint)?;
         self.bindings.borrow_mut().insert(handle);
+        Ok(handle)
+    }
+
+    /// Stop listening on a local endpoint
+    pub fn unbind(&self, protocol: Protocol, endpoint: impl Into<SocketEndpoint>) -> Result<()> {
+        let handle = self.stack.unbind(protocol, endpoint)?;
+        self.bindings.borrow_mut().remove(&handle);
         Ok(())
     }
 
-    #[inline(always)]
-    fn is_bound(&self, handle: &SocketHandle) -> bool {
-        self.bindings.borrow().contains(handle)
+    /// Returns whether a socket is bound on an endpoint
+    pub fn get_bound(
+        &self,
+        protocol: Protocol,
+        endpoint: impl Into<SocketEndpoint>,
+    ) -> Option<SocketHandle> {
+        let endpoint = endpoint.into();
+        let sockets = self.stack.sockets();
+        let sockets_ref = sockets.borrow_mut();
+        sockets_ref
+            .iter()
+            .find(|s| s.protocol() == protocol && s.local_endpoint() == endpoint)
+            .map(|s| s.handle())
     }
 
     /// Initiate a TCP connection
@@ -117,7 +120,7 @@ impl Network {
     }
 
     #[inline(always)]
-    fn is_connected(&self, meta: &ConnectionMeta) -> bool {
+    pub fn is_connected(&self, meta: &ConnectionMeta) -> bool {
         self.connections.borrow().contains_key(meta)
     }
 
@@ -128,20 +131,16 @@ impl Network {
     }
 
     fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
-        { self.connections.borrow_mut().remove(meta) }.map(|connection| {
-            self.stack
-                .close(connection.meta.protocol, connection.handle);
-            connection
-        })
+        self.connections.borrow_mut().remove(meta)
     }
 
     /// Inject send data into the stack
     #[inline(always)]
-    pub fn send(
+    pub fn send<'a>(
         &self,
         data: impl Into<Vec<u8>>,
         connection: Connection,
-    ) -> Result<ProcessedFuture> {
+    ) -> Result<ProcessedFuture<'a>> {
         self.sender.send(data.into(), connection)
     }
 
@@ -196,13 +195,13 @@ impl Network {
 
     /// Take the ingress traffic receive channel
     #[inline(always)]
-    pub fn ingress_receiver(&self) -> Option<mpsc::UnboundedReceiver<IngressEvent>> {
+    pub fn ingress_receiver(&self) -> Option<IngressReceiver> {
         self.ingress.receiver()
     }
 
     /// Take the egress traffic receive channel
     #[inline(always)]
-    pub fn egress_receiver(&self) -> Option<mpsc::UnboundedReceiver<EgressEvent>> {
+    pub fn egress_receiver(&self) -> Option<EgressReceiver> {
         self.egress.receiver()
     }
 
@@ -212,8 +211,8 @@ impl Network {
         let mut processed = false;
         let mut received = 0;
 
-        let socket_rfc = self.stack.sockets();
-        let mut sockets = socket_rfc.borrow_mut();
+        let sockets_rfc = self.stack.sockets();
+        let mut sockets = sockets_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
 
@@ -229,8 +228,8 @@ impl Network {
                     remote: socket.remote_endpoint(),
                 };
 
-                if let Ok(key) = desc.try_into() {
-                    remove.push((key, handle));
+                if let Ok(meta) = desc.try_into() {
+                    remove.push((meta, handle));
                     events.push(IngressEvent::Disconnected { desc });
                 }
                 continue;
@@ -258,7 +257,7 @@ impl Network {
                     remote: remote.into(),
                 };
 
-                if self.is_bound(&handle) {
+                if self.bindings.borrow().contains(&handle) {
                     if let Ok(meta) = desc.try_into() {
                         if !self.is_connected(&meta) {
                             self.add_connection(Connection { handle, meta });
@@ -275,8 +274,12 @@ impl Network {
             }
         }
 
-        remove.into_iter().for_each(|(key, handle)| {
-            self.close_connection(&key);
+        drop(sockets);
+        remove.into_iter().for_each(|(meta, handle)| {
+            self.close_connection(&meta);
+            self.stack.close(meta.protocol, handle);
+
+            let mut sockets = sockets_rfc.borrow_mut();
             sockets.remove(handle);
         });
 
@@ -305,45 +308,18 @@ impl Network {
         while let Some(data) = device.next_phy_tx() {
             processed = true;
 
-            let len = data.len();
-            let frame = match EtherFrame::try_from(data) {
-                Ok(frame) => frame,
+            match EtherFrame::try_from(data) {
+                Ok(frame) => {
+                    if let Some(event) = EgressEvent::from_frame(frame) {
+                        sent += 1;
+                        events.push(event);
+                    }
+                }
                 Err(err) => {
                     log::trace!("{}: egress Ethernet frame error: {}", *self.name, err);
                     continue;
                 }
             };
-
-            let remote = match &frame {
-                EtherFrame::Ip(_) => {
-                    let packet = IpPacket::packet(frame.payload());
-                    let dst_address = packet.dst_address();
-                    log::trace!(
-                        "{}: egress {} B IP packet to {:02x?}",
-                        *self.name,
-                        len,
-                        dst_address
-                    );
-                    dst_address.to_vec()
-                }
-                EtherFrame::Arp(_) => {
-                    let packet = ArpPacket::packet(frame.payload());
-                    let dst_address = packet.get_field(ArpField::TPA);
-                    log::trace!(
-                        "{}: egress {} B ARP packet to {:02x?}",
-                        *self.name,
-                        len,
-                        dst_address
-                    );
-                    dst_address.to_vec()
-                }
-            };
-
-            sent += 1;
-            events.push(EgressEvent {
-                remote: remote.into(),
-                payload: frame.into(),
-            });
         }
 
         if !events.is_empty() {
@@ -359,13 +335,54 @@ impl Network {
     }
 }
 
+#[derive(Clone, Debug)]
+pub enum IngressEvent {
+    /// New connection to a bound endpoint
+    InboundConnection { desc: SocketDesc },
+    /// Disconnection from a bound endpoint
+    Disconnected { desc: SocketDesc },
+    /// Bound endpoint packet
+    Packet {
+        desc: SocketDesc,
+        payload: Vec<u8>,
+        no: usize,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct EgressEvent {
+    pub remote: Box<[u8]>,
+    pub payload: Box<[u8]>,
+}
+
+impl EgressEvent {
+    #[inline(always)]
+    pub fn from_frame(frame: EtherFrame) -> Option<Self> {
+        let remote = match &frame {
+            EtherFrame::Ip(_) => {
+                let packet = IpPacket::packet(frame.payload());
+                packet.dst_address().into()
+            }
+            EtherFrame::Arp(_) => {
+                let packet = ArpPacket::packet(frame.payload());
+                packet.get_field(ArpField::TPA).into()
+            }
+        };
+
+        Some(EgressEvent {
+            remote,
+            payload: frame.into(),
+        })
+    }
+}
+
 #[derive(Clone, Default)]
 struct StackSender {
     inner: Rc<RefCell<StackSenderInner>>,
 }
 
 impl StackSender {
-    pub fn send(&self, data: Vec<u8>, conn: Connection) -> Result<ProcessedFuture> {
+    pub fn send<'a>(&self, data: Vec<u8>, conn: Connection) -> Result<ProcessedFuture<'a>> {
         let mut sender = {
             let inner = self.inner.borrow();
             inner.queue.sender()
@@ -568,7 +585,6 @@ mod tests {
     use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
     use tokio::task::spawn_local;
 
-    use crate::interface::{add_iface_address, add_iface_route, default_iface};
     use crate::{Connection, IngressEvent, Network, Protocol, Stack};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -581,10 +597,10 @@ mod tests {
             _ => panic!("unspecified address"),
         };
 
-        let mut iface = default_iface();
-        add_iface_address(&mut iface, ipv4_cidr);
-        add_iface_route(&mut iface, ipv4_cidr, route);
-        Network::new(ip.to_string(), Stack::with(iface))
+        let stack = Stack::default();
+        stack.add_address(ipv4_cidr);
+        stack.add_route(ipv4_cidr, route);
+        Network::new(ip, stack)
     }
 
     fn produce_data<S, E>(

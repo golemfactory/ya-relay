@@ -10,6 +10,11 @@ pub type CaptureInterface<'a> = EthernetInterface<'a, CaptureDevice>;
 
 /// Creates a default network interface
 pub fn default_iface<'a>() -> CaptureInterface<'a> {
+    default_iface_builder().finalize()
+}
+
+/// Creates a default network interface builder
+pub fn default_iface_builder<'a>() -> EthernetInterfaceBuilder<'a, CaptureDevice> {
     let neighbor_cache = NeighborCache::new(BTreeMap::new());
     let routes = Routes::new(BTreeMap::new());
     let addrs = Vec::new();
@@ -26,16 +31,21 @@ pub fn default_iface<'a>() -> CaptureInterface<'a> {
         .neighbor_cache(neighbor_cache)
         .ip_addrs(addrs)
         .routes(routes)
-        .finalize()
 }
 
 /// Assigns a new interface IP address
 pub fn add_iface_address(iface: &mut CaptureInterface, node_ip: IpCidr) {
     iface.update_ip_addrs(|addrs| match addrs {
-        ManagedSlice::Owned(ref mut vec) => vec.push(node_ip),
+        ManagedSlice::Owned(ref mut vec) => {
+            if !vec.iter().any(|ip| *ip == node_ip) {
+                vec.push(node_ip);
+            }
+        }
         ManagedSlice::Borrowed(ref slice) => {
             let mut vec = slice.to_vec();
-            vec.push(node_ip);
+            if !vec.iter().any(|ip| *ip == node_ip) {
+                vec.push(node_ip);
+            }
             *addrs = vec.into();
         }
     });

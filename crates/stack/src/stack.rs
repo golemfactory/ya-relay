@@ -4,7 +4,7 @@ use std::rc::Rc;
 use smoltcp::iface::Route;
 use smoltcp::socket::*;
 use smoltcp::time::Instant;
-use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
+use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::connection::{Connect, Connection, ConnectionMeta, Send};
 use crate::interface::*;
@@ -20,20 +20,14 @@ pub struct Stack<'a> {
     ports: Rc<RefCell<port::Allocator>>,
 }
 
+impl<'a> Default for Stack<'a> {
+    fn default() -> Self {
+        Self::new(default_iface())
+    }
+}
+
 impl<'a> Stack<'a> {
-    pub fn new(net_ip: IpCidr, net_route: Route) -> Self {
-        let sockets = SocketSet::new(Vec::with_capacity(8));
-        let mut iface = default_iface();
-        add_iface_route(&mut iface, net_ip, net_route);
-
-        Self {
-            iface: Rc::new(RefCell::new(iface)),
-            sockets: Rc::new(RefCell::new(sockets)),
-            ports: Default::default(),
-        }
-    }
-
-    pub fn with(iface: CaptureInterface<'a>) -> Self {
+    pub fn new(iface: CaptureInterface<'a>) -> Self {
         let sockets = SocketSet::new(Vec::with_capacity(8));
         Self {
             iface: Rc::new(RefCell::new(iface)),
@@ -42,8 +36,9 @@ impl<'a> Stack<'a> {
         }
     }
 
-    pub fn addresses(&self) -> Vec<IpCidr> {
-        self.iface.borrow().ip_addrs().to_vec()
+    pub fn phy_address(&self) -> EthernetAddress {
+        let iface = self.iface.borrow();
+        iface.ethernet_addr()
     }
 
     pub fn address(&self) -> Result<IpCidr> {
@@ -54,9 +49,18 @@ impl<'a> Stack<'a> {
         .ok_or(Error::NetEmpty)
     }
 
+    pub fn addresses(&self) -> Vec<IpCidr> {
+        self.iface.borrow().ip_addrs().to_vec()
+    }
+
     pub fn add_address(&self, address: IpCidr) {
         let mut iface = self.iface.borrow_mut();
         add_iface_address(&mut (*iface), address);
+    }
+
+    pub fn add_route(&self, net_ip: IpCidr, route: Route) {
+        let mut iface = self.iface.borrow_mut();
+        add_iface_route(&mut (*iface), net_ip, route);
     }
 
     pub(crate) fn iface(&self) -> Rc<RefCell<CaptureInterface<'a>>> {
@@ -95,10 +99,10 @@ impl<'a> Stack<'a> {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
             }
-            Protocol::Icmp => {
-                if let SocketEndpoint::Icmp(e) = endpoint {
+            Protocol::Icmp | Protocol::Ipv6Icmp => {
+                if let SocketEndpoint::Icmp(ep) = endpoint {
                     let mut socket = icmp_socket();
-                    socket.bind(e).map_err(|e| Error::Other(e.to_string()))?;
+                    socket.bind(ep).map_err(|e| Error::Other(e.to_string()))?;
                     sockets.add(socket)
                 } else {
                     return Err(Error::Other("Expected an ICMP endpoint".to_string()));
@@ -107,10 +111,10 @@ impl<'a> Stack<'a> {
             _ => {
                 let ip_version = {
                     match endpoint {
-                        SocketEndpoint::Ip(e) => match e.addr {
+                        SocketEndpoint::Ip(ep) => match ep.addr {
                             IpAddress::Ipv4(_) => IpVersion::Ipv4,
                             IpAddress::Ipv6(_) => IpVersion::Ipv6,
-                            _ => return Err(Error::Other(format!("Invalid address: {}", e.addr))),
+                            _ => return Err(Error::Other(format!("Invalid address: {}", ep.addr))),
                         },
                         _ => return Err(Error::Other("Expected an IP endpoint".to_string())),
                     }
@@ -120,6 +124,31 @@ impl<'a> Stack<'a> {
                 sockets.add(socket)
             }
         };
+
+        Ok(handle)
+    }
+
+    pub fn unbind(
+        &self,
+        protocol: Protocol,
+        endpoint: impl Into<SocketEndpoint>,
+    ) -> Result<SocketHandle> {
+        let endpoint = endpoint.into();
+        let mut sockets = self.sockets.borrow_mut();
+        let handle = sockets
+            .iter_mut()
+            .find(|s| s.local_endpoint() == endpoint)
+            .map(|s| match protocol {
+                Protocol::Tcp => TcpSocket::downcast(s).map(|s| s.handle()),
+                Protocol::Udp => UdpSocket::downcast(s).map(|s| s.handle()),
+                Protocol::Icmp | Protocol::Ipv6Icmp => IcmpSocket::downcast(s).map(|s| s.handle()),
+                _ => None,
+            })
+            .flatten()
+            .ok_or(Error::SocketClosed)?;
+
+        self.close(protocol, handle);
+        sockets.remove(handle);
         Ok(handle)
     }
 
@@ -158,26 +187,28 @@ impl<'a> Stack<'a> {
 
     pub fn close(&self, protocol: Protocol, handle: SocketHandle) {
         let mut sockets = self.sockets.borrow_mut();
-        let mut ports = self.ports.borrow_mut();
-
-        let endpoint = match protocol {
-            Protocol::Tcp => sockets.get::<TcpSocket>(handle).local_endpoint(),
-            Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint(),
-            _ => return,
+        let endpoint = match sockets.iter().find(|s| s.handle() == handle) {
+            Some(_) => match protocol {
+                Protocol::Tcp => sockets.get::<TcpSocket>(handle).local_endpoint(),
+                Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint(),
+                _ => return,
+            },
+            None => return,
         };
 
         log::trace!("disconnecting {} ({})", endpoint, protocol);
 
+        let mut ports = self.ports.borrow_mut();
         ports.free(protocol, endpoint.port);
     }
 
     pub fn send<B: Into<Vec<u8>>, F: Fn() + 'static>(
         &self,
         data: B,
-        meta: Connection,
+        conn: Connection,
         f: F,
     ) -> Send<'a> {
-        Send::new(data.into(), meta, self.sockets.clone(), f)
+        Send::new(data.into(), conn, self.sockets.clone(), f)
     }
 
     pub fn receive<B: Into<Vec<u8>>>(&self, data: B) {

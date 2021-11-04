@@ -5,6 +5,7 @@ use std::convert::TryFrom;
 use std::ops::Deref;
 
 use crate::{Error, Protocol};
+use smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
 
 pub const ETHERNET_HDR_SIZE: usize = 14;
 
@@ -67,17 +68,12 @@ impl EtherFrame {
         Ok(&data[EtherField::PAYLOAD])
     }
 
-    pub fn payload(&self) -> &[u8] {
-        &self.as_ref()[EtherField::PAYLOAD]
+    pub const fn payload_off() -> usize {
+        ETHERNET_HDR_SIZE
     }
 
-    pub fn reply(&self, mut payload: Vec<u8>) -> Vec<u8> {
-        let frame: &[u8] = self.as_ref();
-        payload.reserve(EtherField::PAYLOAD.start);
-        payload.splice(0..0, frame[EtherField::ETHER_TYPE].iter().cloned());
-        payload.splice(0..0, frame[EtherField::DST_MAC].iter().cloned());
-        payload.splice(0..0, frame[EtherField::SRC_MAC].iter().cloned());
-        payload
+    pub fn payload(&self) -> &[u8] {
+        &self.as_ref()[EtherField::PAYLOAD]
     }
 }
 
@@ -143,6 +139,13 @@ pub enum IpPacket<'a> {
 }
 
 impl<'a> IpPacket<'a> {
+    pub fn protocol(&self) -> u8 {
+        match self {
+            Self::V4(ip) => ip.protocol,
+            Self::V6(ip) => ip.protocol,
+        }
+    }
+
     pub fn src_address(&self) -> &'a [u8] {
         match self {
             Self::V4(ip) => ip.src_address,
@@ -164,10 +167,10 @@ impl<'a> IpPacket<'a> {
         }
     }
 
-    pub fn protocol(&self) -> u8 {
+    pub fn payload_off(&self) -> usize {
         match self {
-            Self::V4(ip) => ip.protocol,
-            Self::V6(ip) => ip.protocol,
+            Self::V4(ip) => ip.payload_off(),
+            Self::V6(ip) => ip.payload_off(),
         }
     }
 
@@ -182,6 +185,13 @@ impl<'a> IpPacket<'a> {
         match self {
             Self::V4(ip) => ip.dst_address[0..4] == [255, 255, 255, 255],
             Self::V6(_) => false,
+        }
+    }
+
+    pub fn is_multicast(&self) -> bool {
+        match self {
+            Self::V4(ip) => ip.dst_address[0] & 0xf0 == 224,
+            Self::V6(ip) => ip.dst_address[0] == 0xff,
         }
     }
 }
@@ -204,8 +214,8 @@ impl<'a> PeekPacket<'a> for IpPacket<'a> {
     }
 }
 
-pub struct Ipv4Field;
-impl Ipv4Field {
+pub struct IpV4Field;
+impl IpV4Field {
     pub const IHL: BitField = (0, 4..8);
     pub const TOTAL_LEN: Field = 2..4;
     pub const PROTOCOL: Field = 9..10;
@@ -218,10 +228,25 @@ pub struct IpV4Packet<'a> {
     pub dst_address: &'a [u8],
     pub protocol: u8,
     pub payload: &'a [u8],
+    pub payload_off: usize,
 }
 
 impl<'a> IpV4Packet<'a> {
     pub const MIN_HEADER_LEN: usize = 20;
+
+    #[inline]
+    pub fn payload_off(&self) -> usize {
+        self.payload_off
+    }
+
+    fn read_header_len(data: &'a [u8]) -> usize {
+        let ihl = get_bit_field(data, IpV4Field::IHL) as usize;
+        if ihl >= 5 {
+            4 * ihl
+        } else {
+            Self::MIN_HEADER_LEN
+        }
+    }
 }
 
 impl<'a> PeekPacket<'a> for IpV4Packet<'a> {
@@ -231,8 +256,9 @@ impl<'a> PeekPacket<'a> for IpV4Packet<'a> {
             return Err(Error::PacketMalformed("IPv4: header too short".into()));
         }
 
-        let len = ntoh_u16(&data[Ipv4Field::TOTAL_LEN]).unwrap() as usize;
-        let payload_off = Self::MIN_HEADER_LEN + 4 * get_bit_field(data, Ipv4Field::IHL) as usize;
+        let len = ntoh_u16(&data[IpV4Field::TOTAL_LEN]).unwrap() as usize;
+        let payload_off = Self::read_header_len(data);
+
         if data_len < len || len < payload_off {
             return Err(Error::PacketMalformed("IPv4: payload too short".into()));
         }
@@ -240,18 +266,20 @@ impl<'a> PeekPacket<'a> for IpV4Packet<'a> {
     }
 
     fn packet(data: &'a [u8]) -> Self {
-        let payload_off = get_bit_field(data, Ipv4Field::IHL) as usize * 4 + 20;
+        let payload_off = Self::read_header_len(data);
+
         Self {
-            src_address: &data[Ipv4Field::SRC_ADDR],
-            dst_address: &data[Ipv4Field::DST_ADDR],
-            protocol: data[Ipv4Field::PROTOCOL][0],
+            src_address: &data[IpV4Field::SRC_ADDR],
+            dst_address: &data[IpV4Field::DST_ADDR],
+            protocol: data[IpV4Field::PROTOCOL][0],
             payload: &data[payload_off..],
+            payload_off,
         }
     }
 }
 
-pub struct Ipv6Field;
-impl Ipv6Field {
+pub struct IpV6Field;
+impl IpV6Field {
     pub const PAYLOAD_LEN: Field = 4..6;
     pub const PROTOCOL: Field = 6..7;
     pub const SRC_ADDR: Field = 8..24;
@@ -270,6 +298,11 @@ pub struct IpV6Packet<'a> {
 impl<'a> IpV6Packet<'a> {
     pub const MIN_HEADER_LEN: usize = 40;
 
+    #[inline]
+    pub fn payload_off(&self) -> usize {
+        IpV6Field::PAYLOAD.start
+    }
+
     pub fn inferred_dst_address(&self) -> &'a [u8] {
         match &self.next_header {
             IpV6NextHeader::IcmpV6(icmp_v6) => icmp_v6.dst_address().unwrap_or(self.dst_address),
@@ -285,31 +318,31 @@ impl<'a> PeekPacket<'a> for IpV6Packet<'a> {
             return Err(Error::PacketMalformed("IPv6: header too short".into()));
         }
 
-        let len = Self::MIN_HEADER_LEN + ntoh_u16(&data[Ipv6Field::PAYLOAD_LEN]).unwrap() as usize;
+        let len = Self::MIN_HEADER_LEN + ntoh_u16(&data[IpV6Field::PAYLOAD_LEN]).unwrap() as usize;
         if data_len < len as usize {
             return Err(Error::PacketMalformed("IPv6: payload too short".into()));
         } else if len == Self::MIN_HEADER_LEN {
             return Err(Error::ProtocolNotSupported("IPv6: jumbogram".into()));
         }
 
-        if data[Ipv6Field::PROTOCOL][0] == 58 {
-            IcmpV6Packet::peek(&data[Ipv6Field::PAYLOAD])?;
+        if data[IpV6Field::PROTOCOL][0] == 58 {
+            IcmpV6Packet::peek(&data[IpV6Field::PAYLOAD])?;
         };
 
         Ok(())
     }
 
     fn packet(data: &'a [u8]) -> Self {
-        let payload = &data[Ipv6Field::PAYLOAD];
-        let protocol = data[Ipv6Field::PROTOCOL][0];
+        let payload = &data[IpV6Field::PAYLOAD];
+        let protocol = data[IpV6Field::PROTOCOL][0];
         let next_header = match protocol {
             58 => IpV6NextHeader::IcmpV6(IcmpV6Packet::packet(payload)),
             _ => IpV6NextHeader::Other,
         };
 
         Self {
-            src_address: &data[Ipv6Field::SRC_ADDR],
-            dst_address: &data[Ipv6Field::DST_ADDR],
+            src_address: &data[IpV6Field::SRC_ADDR],
+            dst_address: &data[IpV6Field::DST_ADDR],
             protocol,
             payload,
             next_header,
@@ -354,12 +387,16 @@ impl<'a> PeekPacket<'a> for IcmpV6Packet<'a> {
         }
 
         match data[IcmpV6Field::TYPE][0] {
-            135 | 136 => {
+            135 => {
                 if data_len < Self::MIN_HEADER_SIZE + 16 {
                     return Err(Error::PacketMalformed("ICMPv6: payload too short".into()));
                 }
             }
-            _ => {}
+            _ => {
+                if data_len < Self::MIN_HEADER_SIZE {
+                    return Err(Error::PacketMalformed("ICMPv6: payload too short".into()));
+                }
+            }
         }
 
         Ok(())
@@ -371,9 +408,17 @@ impl<'a> PeekPacket<'a> for IcmpV6Packet<'a> {
         Self {
             type_,
             message: match type_ {
-                135 => IcmpV6Message::NdpNeighborSolicitation {
-                    dst_address: &payload[NdpField::TARGET_ADDRESS],
-                },
+                IcmpV6Message::NDP_ROUTER_SOLICITATION => IcmpV6Message::NdpRouterSolicitation {},
+                IcmpV6Message::NDP_ROUTER_ADVERTISEMENT => IcmpV6Message::NdpRouterAdvertisement {},
+                IcmpV6Message::NDP_NEIGHBOR_SOLICITATION => {
+                    IcmpV6Message::NdpNeighborSolicitation {
+                        dst_address: &payload[NdpNeighborSolicitationField::TARGET_ADDRESS],
+                    }
+                }
+                IcmpV6Message::NDP_NEIGHBOR_ADVERTISEMENT => {
+                    IcmpV6Message::NdpNeighborAdvertisement {}
+                }
+                IcmpV6Message::NDP_REDIRECT => IcmpV6Message::NdpRedirect {},
                 _ => IcmpV6Message::Other,
             },
         }
@@ -381,12 +426,53 @@ impl<'a> PeekPacket<'a> for IcmpV6Packet<'a> {
 }
 
 pub enum IcmpV6Message<'a> {
+    NdpRouterSolicitation {},
+    NdpRouterAdvertisement {},
     NdpNeighborSolicitation { dst_address: &'a [u8] },
+    NdpNeighborAdvertisement {},
+    NdpRedirect {},
     Other,
 }
 
-pub struct NdpField;
-impl NdpField {
+impl<'a> IcmpV6Message<'a> {
+    pub const NDP_ROUTER_SOLICITATION: u8 = 133;
+    pub const NDP_ROUTER_ADVERTISEMENT: u8 = 134;
+    pub const NDP_NEIGHBOR_SOLICITATION: u8 = 135;
+    pub const NDP_NEIGHBOR_ADVERTISEMENT: u8 = 136;
+    pub const NDP_REDIRECT: u8 = 137;
+}
+
+pub struct NdpNeighborSolicitationField;
+impl NdpNeighborSolicitationField {
+    pub const TARGET_ADDRESS: Field = 4..20;
+}
+
+pub struct NdpRouterAdvertisementField;
+impl NdpRouterAdvertisementField {
+    /// Hop count to set
+    pub const CUR_HOP_LIMIT: Field = 0..1;
+    /// Managed address configuration flag
+    pub const M: BitField = (1, 0..1);
+    /// Other configuration flag
+    pub const O: BitField = (1, 1..2);
+    /// Router lifetime in seconds
+    pub const ROUTER_LIFETIME: Field = 2..4;
+    /// The time, in milliseconds, that a node assumes a neighbor is
+    /// reachable after having received a reachability confirmation
+    pub const REACHABLE_TIME: Field = 4..8;
+    /// The time, in milliseconds, between retransmitted Neighbor Solicitation messages
+    pub const RETRANS_TIMER: Field = 8..16;
+}
+
+pub struct NdpNeighborAdvertisementField;
+impl NdpNeighborAdvertisementField {
+    /// Router flag
+    pub const R: BitField = (0, 0..1);
+    /// Solicited flag
+    pub const S: BitField = (0, 1..2);
+    /// Override flag
+    pub const O: BitField = (0, 2..3);
+    /// Target address
     pub const TARGET_ADDRESS: Field = 4..20;
 }
 
@@ -420,32 +506,6 @@ impl<'a> ArpPacket<'a> {
     #[inline(always)]
     pub fn get_field(&self, field: Field) -> &[u8] {
         &self.inner[field]
-    }
-
-    pub fn mirror(&self) -> Vec<u8> {
-        let mut buf = Vec::with_capacity(ArpField::TPA.end);
-        buf.extend(self.inner[0..ArpField::OP.start].iter().cloned());
-        buf.extend(self.mirror_op().iter().cloned());
-        buf.extend(self.get_field(ArpField::THA).iter().cloned());
-        buf.extend(self.get_field(ArpField::TPA).iter().cloned());
-        buf.extend(self.get_field(ArpField::SHA).iter().cloned());
-        buf.extend(self.get_field(ArpField::SPA).iter().cloned());
-        buf
-    }
-
-    fn mirror_op(&self) -> [u8; 2] {
-        let op = self.get_field(ArpField::OP);
-        // request
-        if op == [0x00, 0x01] {
-            // reply
-            [0x00, 0x02]
-        } else if op == [0x00, 0x02] {
-            [0x00, 0x01]
-        } else {
-            let mut ret = [0u8; 2];
-            ret.copy_from_slice(op);
-            ret
-        }
     }
 }
 
@@ -487,6 +547,7 @@ impl TcpField {
 pub struct TcpPacket<'a> {
     pub src_port: &'a [u8],
     pub dst_port: &'a [u8],
+    pub payload_off: usize,
 }
 
 impl<'a> TcpPacket<'a> {
@@ -505,8 +566,8 @@ impl<'a> PeekPacket<'a> for TcpPacket<'a> {
             return Err(Error::PacketMalformed("TCP: packet too short".into()));
         }
 
-        let off = get_bit_field(data, TcpField::DATA_OFF) as usize;
-        if data.len() < off {
+        let payload_off = get_bit_field(data, TcpField::DATA_OFF) as usize;
+        if data.len() < payload_off {
             return Err(Error::PacketMalformed("TCP: packet too short".into()));
         }
 
@@ -514,16 +575,123 @@ impl<'a> PeekPacket<'a> for TcpPacket<'a> {
     }
 
     fn packet(data: &'a [u8]) -> Self {
+        let payload_off = get_bit_field(data, TcpField::DATA_OFF) as usize;
         Self {
             src_port: &data[TcpField::SRC_PORT],
             dst_port: &data[TcpField::DST_PORT],
+            payload_off,
         }
+    }
+}
+
+pub struct UdpField;
+impl UdpField {
+    pub const SRC_PORT: Field = 0..2;
+    pub const DST_PORT: Field = 2..4;
+    pub const LEN: Field = 4..6;
+    pub const PAYLOAD: Rest = 8..;
+}
+
+pub struct UdpPacket<'a> {
+    pub src_port: &'a [u8],
+    pub dst_port: &'a [u8],
+}
+
+impl<'a> UdpPacket<'a> {
+    pub fn src_port(&self) -> u16 {
+        ntoh_u16(self.src_port).unwrap()
+    }
+
+    pub fn dst_port(&self) -> u16 {
+        ntoh_u16(self.dst_port).unwrap()
+    }
+}
+
+impl<'a> PeekPacket<'a> for UdpPacket<'a> {
+    fn peek(data: &'a [u8]) -> Result<(), Error> {
+        if data.len() < 8 {
+            return Err(Error::PacketMalformed("UDP: packet too short".into()));
+        }
+
+        let len = ntoh_u16(&data[UdpField::LEN]).unwrap() as usize;
+        if data.len() < len {
+            return Err(Error::PacketMalformed("UDP: packet too short".into()));
+        }
+
+        Ok(())
+    }
+
+    fn packet(data: &'a [u8]) -> Self {
+        Self {
+            src_port: &data[UdpField::SRC_PORT],
+            dst_port: &data[UdpField::DST_PORT],
+        }
+    }
+}
+
+/// Convert `IpAddress` to boxed bytes
+#[inline(always)]
+pub fn ip_hton(ip: IpAddress) -> Box<[u8]> {
+    match ip {
+        IpAddress::Ipv4(ip) => ip.as_bytes().into(),
+        IpAddress::Ipv6(ip) => ip.as_bytes().into(),
+        _ => vec![0, 0, 0, 0].into(),
+    }
+}
+
+/// Convert a byte slice to `IpAddress`
+#[inline(always)]
+pub fn ip_ntoh(data: &[u8]) -> Option<IpAddress> {
+    if data.len() == 4 {
+        Some(IpAddress::v4(data[0], data[1], data[2], data[3]))
+    } else if data.len() == 16 {
+        Some(IpAddress::Ipv6(Ipv6Address::from_bytes(data)))
+    } else {
+        None
+    }
+}
+
+pub fn write_field(data: &mut [u8], field: Field, value: &[u8]) -> bool {
+    if value.len() == field.len() && data.len() >= field.end {
+        data[field].copy_from_slice(value);
+        true
+    } else {
+        false
+    }
+}
+
+/// Read a bit field spanning over a single byte
+#[inline(always)]
+pub fn read_bit_field(data: &[u8], bit_field: BitField) -> Option<u8> {
+    if data.len() >= bit_field.0 && bit_field.1.len() <= 8 {
+        Some(get_bit_field(data, bit_field))
+    } else {
+        None
+    }
+}
+
+/// Write a bit field spanning over a single byte
+#[inline(always)]
+pub fn write_bit_field(data: &mut [u8], bit_field: BitField, value: u8) -> bool {
+    if data.len() >= bit_field.0 && bit_field.1.len() <= 8 {
+        set_bit_field(data, bit_field, value);
+        true
+    } else {
+        false
     }
 }
 
 #[inline(always)]
 fn get_bit_field(data: &[u8], bit_field: BitField) -> u8 {
-    (data[bit_field.0] << bit_field.1.start) >> (bit_field.1.start + (8 - bit_field.1.end))
+    (data[bit_field.0] << bit_field.1.start) >> (8 - bit_field.1.len())
+}
+
+#[inline(always)]
+fn set_bit_field(data: &mut [u8], bit_field: BitField, value: u8) {
+    let bit_len = bit_field.1.len();
+    let mask = (0xff_u8 << (8 - bit_len)) >> bit_field.1.start;
+    data[bit_field.0] &= !mask;
+    data[bit_field.0] |= (value << (8 - bit_len)) >> bit_field.1.start;
 }
 
 macro_rules! impl_ntoh_n {
@@ -544,3 +712,27 @@ macro_rules! impl_ntoh_n {
 impl_ntoh_n!(ntoh_u16, u16, 2);
 impl_ntoh_n!(ntoh_u32, u32, 4);
 impl_ntoh_n!(ntoh_u64, u64, 8);
+
+#[cfg(test)]
+mod tests {
+    use crate::packet::{get_bit_field, set_bit_field};
+
+    #[test]
+    fn change_bit_field() {
+        for len in 1..8 {
+            for off in 0..8 {
+                let mut bytes = [0u8; 1];
+                let range = off..8.min(off + len);
+                println!("range: {:?}", range);
+
+                set_bit_field(&mut bytes, (0, range.clone()), 0xff);
+                println!("byte: {:#010b}", bytes[0]);
+
+                assert_eq!(
+                    get_bit_field(&bytes, (0, range.clone())),
+                    0xff_u8 >> (8 - range.len())
+                );
+            }
+        }
+    }
+}

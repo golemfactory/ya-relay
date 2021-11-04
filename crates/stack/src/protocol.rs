@@ -1,6 +1,8 @@
+use std::convert::TryFrom;
+
 /// IP sub-protocol identifiers
 #[allow(unused)]
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, num_derive::FromPrimitive)]
 #[non_exhaustive]
 #[repr(u8)]
 pub enum Protocol {
@@ -26,6 +28,17 @@ pub enum Protocol {
     Smp = 121,
     Sctp = 132,
     Ethernet = 143,
+}
+
+impl TryFrom<u8> for Protocol {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match num_traits::FromPrimitive::from_u8(value) {
+            Some(protocol) => Ok(protocol),
+            None => Err(value),
+        }
+    }
 }
 
 impl std::fmt::Display for Protocol {
