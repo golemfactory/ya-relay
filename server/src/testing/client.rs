@@ -449,7 +449,7 @@ impl Client {
         log::info!("[{}] initializing session with {}", id, addr);
 
         let response = self
-            .request::<proto::response::Challenge>(
+            .request::<proto::response::Session>(
                 proto::request::Session::default().into(),
                 vec![],
                 SESSION_REQUEST_TIMEOUT,
@@ -464,7 +464,11 @@ impl Client {
         };
         let public_key = crypto.public_key().await?;
 
-        let packet = response.packet;
+        let packet = response.packet.challenge_req.ok_or(anyhow!(
+            "Expected ChallengeRequest while initializing session with {}",
+            addr
+        ))?;
+
         let challenge_resp =
             challenge::solve(packet.challenge.as_slice(), packet.difficulty, crypto).await?;
 
@@ -473,6 +477,7 @@ impl Client {
 
         let packet = proto::request::Session {
             challenge_resp,
+            challenge_req: None,
             node_id: node_id.into_array().to_vec(),
             public_key: public_key.bytes().to_vec(),
         };

@@ -338,7 +338,6 @@ impl_convert_kind!(request, Neighbours);
 impl_convert_kind!(request, ReverseConnection);
 impl_convert_kind!(request, Ping);
 
-impl_convert_kind!(response, Challenge);
 impl_convert_kind!(response, Session);
 impl_convert_kind!(response, Register);
 impl_convert_kind!(response, Node);

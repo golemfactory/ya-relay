@@ -474,12 +474,16 @@ impl Server {
             request_id,
             session_id.to_vec(),
             proto::StatusCode::Ok,
-            proto::response::Challenge {
-                version: "0.0.1".to_string(),
-                caps: 0,
-                kind: 10,
-                difficulty: CHALLENGE_DIFFICULTY as u64,
-                challenge: raw_challenge.to_vec(),
+            proto::response::Session {
+                public_key: vec![],
+                challenge_req: Some(proto::ChallengeRequest {
+                    version: "0.0.1".to_string(),
+                    caps: 0,
+                    kind: 10,
+                    difficulty: CHALLENGE_DIFFICULTY as u64,
+                    challenge: raw_challenge.to_vec(),
+                }),
+                challenge_resp: vec![],
             },
         );
 
@@ -531,7 +535,7 @@ impl Server {
                         request_id,
                         session_id.to_vec(),
                         proto::StatusCode::Ok,
-                        proto::response::Session {},
+                        proto::response::Session::default(),
                     ),
                     &with,
                 )
