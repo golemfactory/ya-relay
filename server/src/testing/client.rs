@@ -1,8 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::net::{Ipv6Addr, SocketAddr};
 use std::rc::Rc;
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,11 +23,10 @@ use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
 
-use crate::challenge;
-use crate::challenge::{prepare_challenge_request, CHALLENGE_DIFFICULTY};
 use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
 use crate::server::Server;
 use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
+use crate::testing::session::Session;
 use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
@@ -36,8 +34,6 @@ pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
-const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
-const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
 
 const TCP_BIND_PORT: u16 = 1;
@@ -45,24 +41,24 @@ const IPV6_DEFAULT_CIDR: u8 = 0;
 
 #[derive(Clone)]
 pub struct Client {
-    state: Arc<RwLock<ClientState>>,
+    pub(crate) state: Arc<RwLock<ClientState>>,
     net: Network,
 }
 
-struct ClientState {
-    config: ClientConfig,
-    sink: Option<OutStream>,
-    bind_addr: Option<SocketAddr>,
+pub(crate) struct ClientState {
+    pub(crate) config: ClientConfig,
+    pub(crate) sink: Option<OutStream>,
+    pub(crate) bind_addr: Option<SocketAddr>,
 
-    sessions: HashMap<SocketAddr, Session>,
-    responses: HashMap<SocketAddr, Dispatcher>,
-    slots: HashMap<SocketAddr, HashSet<SlotId>>,
-    neighbours: Option<Neighbourhood>,
-    forward_unreliable: HashMap<(NodeId, SocketAddr), ForwardSender>,
+    pub(crate) sessions: HashMap<SocketAddr, Session>,
+    pub(crate) responses: HashMap<SocketAddr, Dispatcher>,
+    pub(crate) slots: HashMap<SocketAddr, HashSet<SlotId>>,
+    pub(crate) neighbours: Option<Neighbourhood>,
+    pub(crate) forward_unreliable: HashMap<(NodeId, SocketAddr), ForwardSender>,
 
-    virt_ingress: Channel<Forwarded>,
-    virt_nodes: HashMap<Box<[u8]>, VirtNode>,
-    virt_ips: HashMap<(SlotId, SocketAddr), Box<[u8]>>,
+    pub(crate) virt_ingress: Channel<Forwarded>,
+    pub(crate) virt_nodes: HashMap<Box<[u8]>, VirtNode>,
+    pub(crate) virt_ips: HashMap<(SlotId, SocketAddr), Box<[u8]>>,
 }
 
 impl ClientState {
@@ -177,6 +173,12 @@ impl Client {
             .await
             .bind_addr
             .ok_or_else(|| anyhow!("client not started"))
+    }
+
+    pub async fn crypto(&self) -> anyhow::Result<Rc<dyn Crypto>> {
+        let state = self.state.read().await;
+        let default_id = { state.config.crypto.default_id() }.await?;
+        Ok(state.config.crypto.get(default_id).await?)
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
@@ -423,176 +425,7 @@ impl Client {
 }
 
 impl Client {
-    pub async fn server_session(&self) -> anyhow::Result<Session> {
-        let addr = { self.state.read().await.config.srv_addr };
-        Ok(self.session(addr).await?)
-    }
-
-    pub async fn session(&self, addr: SocketAddr) -> anyhow::Result<Session> {
-        let session = {
-            let mut state = self.state.write().await;
-            if let Some(session) = state.sessions.get(&addr) {
-                return Ok(session.clone());
-            }
-            state
-                .sessions
-                .entry(addr)
-                .or_insert_with(|| Session::new(addr, self.clone()))
-                .clone()
-        };
-        session.init().await?;
-        Ok(session)
-    }
-
-    pub async fn crypto(&self) -> anyhow::Result<Rc<dyn Crypto>> {
-        let state = self.state.read().await;
-        let default_id = { state.config.crypto.default_id() }.await?;
-        Ok(state.config.crypto.get(default_id).await?)
-    }
-}
-
-impl Client {
-    async fn init_session(&self, addr: SocketAddr, challenge: bool) -> anyhow::Result<SessionId> {
-        let id = self.id();
-        log::info!("[{}] initializing session with {}", id, addr);
-
-        let (request, raw_challenge) = prepare_challenge_request();
-        let request = match challenge {
-            true => request,
-            false => proto::request::Session::default(),
-        };
-
-        let response = self
-            .request::<proto::response::Session>(
-                request.into(),
-                vec![],
-                SESSION_REQUEST_TIMEOUT,
-                addr,
-            )
-            .await?;
-
-        let crypto = self.crypto().await?;
-        let public_key = crypto.public_key().await?;
-
-        let packet = response.packet.challenge_req.ok_or_else(|| {
-            anyhow!(
-                "Expected ChallengeRequest while initializing session with {}",
-                addr
-            )
-        })?;
-
-        let challenge_resp =
-            challenge::solve(packet.challenge.as_slice(), packet.difficulty, crypto).await?;
-
-        let session_id = SessionId::try_from(response.session_id.clone())?;
-        let node_id = self.node_id().await;
-
-        let packet = proto::request::Session {
-            challenge_resp,
-            challenge_req: None,
-            node_id: node_id.into_array().to_vec(),
-            public_key: public_key.bytes().to_vec(),
-        };
-        let response = self
-            .request::<proto::response::Session>(
-                packet.into(),
-                session_id.to_vec(),
-                SESSION_REQUEST_TIMEOUT,
-                addr,
-            )
-            .await?;
-
-        if session_id != &response.session_id[..] {
-            log::error!(
-                "[{}] init session id mismatch: {} vs {:?} (response)",
-                id,
-                session_id,
-                response.session_id
-            )
-        }
-
-        if challenge {
-            // Validate the challenge
-            if !challenge::verify(
-                &raw_challenge,
-                CHALLENGE_DIFFICULTY,
-                &response.packet.challenge_resp,
-                response.packet.public_key.as_slice(),
-            )
-            .map_err(|e| anyhow!("Invalid challenge: {}", e))?
-            {
-                bail!("Challenge verification failed.")
-            }
-        }
-
-        {
-            let mut state = self.state.write().await;
-            let session = state
-                .sessions
-                .entry(addr)
-                .or_insert_with(|| Session::new(addr, self.clone()));
-            let mut state = session.state.write().await;
-            state.replace(SessionState { id: session_id });
-        }
-
-        log::info!("[{}] session initialized with {}", id, addr);
-        Ok(session_id)
-    }
-
-    async fn init_p2p_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
-        self.init_session(addr, true).await
-    }
-
-    async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
-        self.init_session(addr, false).await
-    }
-
-    async fn remove_session(&self, addr: SocketAddr) {
-        let mut state = self.state.write().await;
-        state.responses.remove(&addr);
-
-        if let Some(slots) = state.slots.remove(&addr) {
-            for slot in slots {
-                if let Some(ip) = state.virt_ips.remove(&(slot, addr)) {
-                    state.virt_nodes.remove(&ip);
-                }
-            }
-        }
-
-        let removed = state.sessions.remove(&addr);
-        drop(state);
-
-        if let Some(session) = removed {
-            let mut session_state = session.state.write().await;
-            *session_state = None;
-        }
-    }
-
-    async fn register_endpoints(
-        &self,
-        addr: SocketAddr,
-        session_id: SessionId,
-        endpoints: Vec<proto::Endpoint>,
-    ) -> anyhow::Result<Vec<proto::Endpoint>> {
-        let id = self.id();
-        log::info!("[{}] registering endpoints", id);
-
-        let response = self
-            .request::<proto::response::Register>(
-                proto::request::Register { endpoints }.into(),
-                session_id.to_vec(),
-                REGISTER_REQUEST_TIMEOUT,
-                addr,
-            )
-            .await?
-            .packet;
-
-        log::info!("[{}] registration finished", id);
-
-        Ok(response.endpoints)
-    }
-
-    async fn find_node(
+    pub(crate) async fn find_node(
         &self,
         addr: SocketAddr,
         session_id: SessionId,
@@ -605,7 +438,7 @@ impl Client {
         self.find_node_by(addr, session_id, packet).await
     }
 
-    async fn find_slot(
+    pub(crate) async fn find_slot(
         &self,
         addr: SocketAddr,
         session_id: SessionId,
@@ -636,44 +469,6 @@ impl Client {
 
         self.add_virt_node(addr, session_id, &response).await?;
         Ok(response)
-    }
-
-    async fn try_direct_session(
-        &self,
-        packet: &proto::response::Node,
-    ) -> anyhow::Result<SocketAddr> {
-        let node_id = NodeId::from(&packet.node_id[..]);
-        if packet.endpoints.is_empty() {
-            bail!(
-                "Node {} has no public endpoints. Not establishing p2p session",
-                node_id
-            )
-        }
-
-        for endpoint in packet.endpoints.iter() {
-            let ip = match IpAddr::from_str(&endpoint.address) {
-                Ok(ip) => ip,
-                Err(_) => continue,
-            };
-
-            let addr = SocketAddr::new(ip, endpoint.port as u16);
-            self.init_p2p_session(addr)
-                .await
-                .map_err(|e| {
-                    log::debug!(
-                        "Failed to establish p2p session with node {}, address: {}. Error: {}",
-                        node_id,
-                        addr,
-                        e
-                    )
-                })
-                .ok();
-        }
-
-        bail!(
-            "All attempts to establish direct session with node: {} failed",
-            node_id
-        )
     }
 
     async fn add_virt_node(
@@ -710,7 +505,7 @@ impl Client {
         Ok(())
     }
 
-    async fn neighbours(
+    pub(crate) async fn neighbours(
         &self,
         addr: SocketAddr,
         session_id: SessionId,
@@ -756,7 +551,7 @@ impl Client {
         Ok(response)
     }
 
-    async fn ping(&self, addr: SocketAddr, session_id: SessionId) -> anyhow::Result<()> {
+    pub(crate) async fn ping(&self, addr: SocketAddr, session_id: SessionId) -> anyhow::Result<()> {
         let packet = proto::request::Ping {};
         self.request::<proto::response::Pong>(
             packet.into(),
@@ -769,7 +564,7 @@ impl Client {
         Ok(())
     }
 
-    async fn forward(
+    pub(crate) async fn forward(
         &self,
         session_addr: SocketAddr,
         forward_id: impl Into<ForwardId>,
@@ -811,7 +606,7 @@ impl Client {
         Ok(tx)
     }
 
-    async fn forward_unreliable(
+    pub(crate) async fn forward_unreliable(
         &self,
         session_addr: SocketAddr,
         forward_id: impl Into<ForwardId>,
@@ -864,7 +659,7 @@ impl Client {
         Ok(tx)
     }
 
-    async fn broadcast(
+    pub(crate) async fn broadcast(
         &self,
         session_addr: SocketAddr,
         session_id: SessionId,
@@ -907,7 +702,7 @@ impl Client {
 }
 
 impl Client {
-    async fn request<T>(
+    pub(crate) async fn request<T>(
         &self,
         request: proto::Request,
         session_id: Vec<u8>,
@@ -1098,100 +893,7 @@ impl VirtNode {
 }
 
 #[derive(Clone)]
-pub struct Session {
-    remote_addr: SocketAddr,
-    client: Client,
-    pub state: Arc<RwLock<Option<SessionState>>>,
-}
-
-pub struct SessionState {
-    pub id: SessionId,
-}
-
-impl Session {
-    fn new(remote_addr: SocketAddr, client: Client) -> Self {
-        Self {
-            client,
-            remote_addr,
-            state: Default::default(),
-        }
-    }
-
-    pub async fn id(&self) -> anyhow::Result<SessionId> {
-        let state = self.state.read().await;
-        Ok(state.as_ref().ok_or_else(|| anyhow!("Not connected"))?.id)
-    }
-
-    pub async fn init(&self) -> anyhow::Result<SessionId> {
-        self.client.init_server_session(self.remote_addr).await
-    }
-
-    pub async fn close(self) {
-        self.client.remove_session(self.remote_addr).await;
-    }
-
-    pub async fn register_endpoints(
-        &self,
-        endpoints: Vec<proto::Endpoint>,
-    ) -> anyhow::Result<Vec<proto::Endpoint>> {
-        let session_id = self.id().await?;
-        self.client
-            .register_endpoints(self.remote_addr, session_id, endpoints)
-            .await
-    }
-
-    pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<proto::response::Node> {
-        let session_id = self.id().await?;
-        self.client
-            .find_node(self.remote_addr, session_id, node_id)
-            .await
-    }
-
-    pub async fn find_slot(&self, slot: SlotId) -> anyhow::Result<proto::response::Node> {
-        let session_id = self.id().await?;
-        self.client
-            .find_slot(self.remote_addr, session_id, slot)
-            .await
-    }
-
-    pub async fn neighbours(&self, count: u32) -> anyhow::Result<proto::response::Neighbours> {
-        let session_id = self.id().await?;
-        self.client
-            .neighbours(self.remote_addr, session_id, count)
-            .await
-    }
-
-    pub async fn ping(&self) -> anyhow::Result<()> {
-        let session_id = self.id().await?;
-        self.client.ping(self.remote_addr, session_id).await
-    }
-
-    pub async fn forward(&self, forward_id: impl Into<ForwardId>) -> anyhow::Result<ForwardSender> {
-        let _ = self.id().await?;
-        self.client.forward(self.remote_addr, forward_id).await
-    }
-
-    pub async fn forward_unreliable(
-        &self,
-        forward_id: impl Into<ForwardId>,
-    ) -> anyhow::Result<ForwardSender> {
-        let _ = self.id().await?;
-        self.client
-            .forward_unreliable(self.remote_addr, forward_id)
-            .await
-    }
-
-    pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
-        let session_id = self.id().await?;
-        self.client
-            .broadcast(self.remote_addr, session_id, data, count)
-            .await?;
-        Ok(())
-    }
-}
-
-#[derive(Clone)]
-struct Neighbourhood {
+pub(crate) struct Neighbourhood {
     updated: Instant,
     response: proto::response::Neighbours,
 }
