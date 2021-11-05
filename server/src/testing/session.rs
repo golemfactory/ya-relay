@@ -1,7 +1,6 @@
 use anyhow::{anyhow, bail};
-use std::convert::TryFrom;
-use std::net::{IpAddr, SocketAddr};
-use std::str::FromStr;
+use std::convert::{TryFrom, TryInto};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -242,12 +241,11 @@ impl Client {
         }
 
         for endpoint in packet.endpoints.iter() {
-            let ip = match IpAddr::from_str(&endpoint.address) {
-                Ok(ip) => ip,
+            let addr = match endpoint.clone().try_into() {
+                Ok(addr) => addr,
                 Err(_) => continue,
             };
 
-            let addr = SocketAddr::new(ip, endpoint.port as u16);
             self.init_p2p_session(addr)
                 .await
                 .map_err(|e| {

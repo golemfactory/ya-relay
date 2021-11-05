@@ -50,6 +50,10 @@ pub(crate) struct ClientState {
     pub(crate) sink: Option<OutStream>,
     pub(crate) bind_addr: Option<SocketAddr>,
 
+    /// If address is None after registering endpoints on Server, that means
+    /// we don't have public IP.
+    pub(crate) public_addr: Option<SocketAddr>,
+
     pub(crate) sessions: HashMap<SocketAddr, Session>,
     pub(crate) responses: HashMap<SocketAddr, Dispatcher>,
     pub(crate) slots: HashMap<SocketAddr, HashSet<SlotId>>,
@@ -67,6 +71,7 @@ impl ClientState {
             config,
             sink: Default::default(),
             bind_addr: Default::default(),
+            public_addr: None,
             sessions: Default::default(),
             responses: Default::default(),
             slots: Default::default(),
@@ -216,7 +221,16 @@ impl Client {
 
         if auto_connect {
             let session = self.server_session().await?;
-            session.register_endpoints(vec![]).await?;
+            let endpoints = session.register_endpoints(vec![]).await?;
+
+            // If there is any (correct) endpoint on the list, that means we have public IP.
+            match endpoints
+                .into_iter()
+                .find_map(|endpoint| endpoint.try_into().ok())
+            {
+                Some(addr) => self.state.write().await.public_addr = Some(addr),
+                None => self.state.write().await.public_addr = None,
+            }
         }
 
         log::debug!("[{}] started", self.id());

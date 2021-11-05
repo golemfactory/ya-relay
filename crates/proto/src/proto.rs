@@ -1,5 +1,9 @@
+use anyhow::anyhow;
+use std::convert::TryFrom;
 use std::iter::FromIterator;
 use std::mem::size_of;
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 
@@ -304,6 +308,17 @@ where
             request_id: REQUEST_ID.fetch_add(1, SeqCst),
             kind: Some(t.into()),
         }
+    }
+}
+
+impl TryFrom<Endpoint> for SocketAddr {
+    type Error = anyhow::Error;
+
+    fn try_from(endpoint: Endpoint) -> anyhow::Result<Self> {
+        let ip = IpAddr::from_str(&endpoint.address)
+            .map_err(|e| anyhow!("Unable to parse IP address. Error: {}", e))?;
+
+        Ok(SocketAddr::new(ip, endpoint.port as u16))
     }
 }
 
