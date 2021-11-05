@@ -26,7 +26,7 @@ use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
 use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
 use crate::server::Server;
 use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
-use crate::testing::session::Session;
+use crate::testing::session::{Session, StartingSessions};
 use crate::udp_stream::{udp_bind, OutStream};
 use crate::{parse_udp_url, SessionId};
 
@@ -54,7 +54,11 @@ pub(crate) struct ClientState {
     /// we don't have public IP.
     pub(crate) public_addr: Option<SocketAddr>,
 
+    pub(crate) starting_sessions: Option<StartingSessions>,
+
+    pub(crate) p2p_sessions: HashMap<NodeId, Session>,
     pub(crate) sessions: HashMap<SocketAddr, Session>,
+
     pub(crate) responses: HashMap<SocketAddr, Dispatcher>,
     pub(crate) slots: HashMap<SocketAddr, HashSet<SlotId>>,
     pub(crate) neighbours: Option<Neighbourhood>,
@@ -72,6 +76,8 @@ impl ClientState {
             sink: Default::default(),
             bind_addr: Default::default(),
             public_addr: None,
+            starting_sessions: None,
+            p2p_sessions: Default::default(),
             sessions: Default::default(),
             responses: Default::default(),
             slots: Default::default(),
@@ -180,6 +186,10 @@ impl Client {
             .ok_or_else(|| anyhow!("client not started"))
     }
 
+    pub async fn public_addr(&self) -> Option<SocketAddr> {
+        self.state.read().await.public_addr
+    }
+
     pub async fn crypto(&self) -> anyhow::Result<Rc<dyn Crypto>> {
         let state = self.state.read().await;
         let default_id = { state.config.crypto.default_id() }.await?;
@@ -204,6 +214,7 @@ impl Client {
             let (stream, sink, bind_addr) = udp_bind(&bind_url).await?;
             let mut state = self.state.write().await;
             state.sink = Some(sink);
+            state.starting_sessions = Some(StartingSessions::new(self.clone()));
             state.bind_addr = Some(bind_addr);
             (stream, state.config.auto_connect)
         };
@@ -493,12 +504,13 @@ impl Client {
     ) -> anyhow::Result<()> {
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
-        let addr = match self.try_direct_session(packet).await {
-            Ok(session_addr) => session_addr,
-            Err(e) => {
-                log::info!("{}", e);
-                addr
-            }
+        let (addr, session_id) = match self
+            .try_direct_session(packet)
+            .await
+            .map_err(|e| log::info!("{}", e))
+        {
+            Ok(session) => (session.remote_addr, session.id().await?),
+            Err(_) => (addr, session_id),
         };
 
         let node = VirtNode::try_new(&packet.node_id, session_id, addr, packet.slot)?;
@@ -689,11 +701,9 @@ impl Client {
 
         log::debug!("broadcasting message to {} node(s)", node_ids.len());
 
-        // FIXME: direct connections
-        let session = self.server_session().await?;
         for node_id in node_ids {
             let data = data.clone();
-            let session = session.clone();
+            let session = self.optimal_session(node_id).await?;
 
             tokio::task::spawn_local(async move {
                 log::trace!("broadcasting message to {}", node_id);
@@ -755,7 +765,7 @@ impl Client {
         dispatcher.response::<T>(request_id, timeout)
     }
 
-    async fn send(
+    pub(crate) async fn send(
         &self,
         packet: impl Into<codec::PacketKind>,
         addr: SocketAddr,
@@ -799,28 +809,37 @@ impl Handler for Client {
     ) -> LocalBoxFuture<()> {
         log::debug!("received request packet from {}: {:?}", from, request);
 
-        if let proto::Request {
-            request_id,
-            kind: Some(proto::request::Kind::Ping(_)),
-        } = request
-        {
-            let packet = proto::Packet::response(
+        let (request_id, kind) = match request {
+            proto::Request {
                 request_id,
-                session_id,
-                proto::StatusCode::Ok,
-                proto::response::Pong {},
-            );
+                kind: Some(kind),
+            } => (request_id, kind),
+            _ => return Box::pin(futures::future::ready(())),
+        };
 
-            let client = self.clone();
-            return async move {
-                if let Err(e) = client.send(packet, from).await {
-                    log::warn!("unable to send Pong to {}: {}", from, e);
+        match kind {
+            proto::request::Kind::Ping(_) => {
+                let packet = proto::Packet::response(
+                    request_id,
+                    session_id,
+                    proto::StatusCode::Ok,
+                    proto::response::Pong {},
+                );
+
+                let client = self.clone();
+                async move {
+                    if let Err(e) = client.send(packet, from).await {
+                        log::warn!("unable to send Pong to {}: {}", from, e);
+                    }
                 }
+                .boxed_local()
             }
-            .boxed_local();
-        }
+            proto::request::Kind::Session(request) => {
+                Box::pin(self.dispatch_session(session_id, request_id, from, request))
+            }
 
-        Box::pin(futures::future::ready(()))
+            _ => Box::pin(futures::future::ready(())),
+        }
     }
 
     fn on_forward(&self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<()> {
@@ -873,7 +892,7 @@ impl Handler for Client {
 
 #[derive(Copy, Clone, Debug)]
 pub struct VirtNode {
-    id: NodeId,
+    pub(crate) id: NodeId,
     endpoint: IpEndpoint,
     session_id: SessionId,
     session_addr: SocketAddr,

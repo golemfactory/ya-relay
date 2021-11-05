@@ -1,26 +1,32 @@
 use anyhow::{anyhow, bail};
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
 use crate::challenge;
-use crate::challenge::{prepare_challenge_request, CHALLENGE_DIFFICULTY};
+use crate::challenge::{
+    prepare_challenge_request, prepare_challenge_response, CHALLENGE_DIFFICULTY,
+};
 use crate::testing::client::{ForwardId, ForwardSender};
 use crate::testing::Client;
 use crate::SessionId;
 
+use crate::error::{BadRequest, Error, InternalError, ServerResult, Unauthorized};
 use ya_client_model::NodeId;
 use ya_relay_proto::proto;
-use ya_relay_proto::proto::SlotId;
+use ya_relay_proto::proto::{RequestId, SlotId, StatusCode};
 
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
 
 #[derive(Clone)]
 pub struct Session {
-    remote_addr: SocketAddr,
+    pub remote_addr: SocketAddr,
     client: Client,
     pub state: Arc<RwLock<Option<SessionState>>>,
 }
@@ -44,7 +50,11 @@ impl Session {
     }
 
     pub async fn init(&self) -> anyhow::Result<SessionId> {
-        self.client.init_server_session(self.remote_addr).await
+        self.client
+            .init_server_session(self.remote_addr)
+            .await?
+            .id()
+            .await
     }
 
     pub async fn close(self) {
@@ -112,14 +122,21 @@ impl Session {
 }
 
 impl Client {
-    async fn init_session(&self, addr: SocketAddr, challenge: bool) -> anyhow::Result<SessionId> {
+    async fn init_session(&self, addr: SocketAddr, challenge: bool) -> anyhow::Result<Session> {
         let id = self.id();
+        let node_id = self.node_id().await;
+
         log::info!("[{}] initializing session with {}", id, addr);
 
         let (request, raw_challenge) = prepare_challenge_request();
         let request = match challenge {
             true => request,
             false => proto::request::Session::default(),
+        };
+
+        let request = proto::request::Session {
+            node_id: node_id.into_array().to_vec(),
+            ..request
         };
 
         let response = self
@@ -145,7 +162,6 @@ impl Client {
             challenge::solve(packet.challenge.as_slice(), packet.difficulty, crypto).await?;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
-        let node_id = self.node_id().await;
 
         let packet = proto::request::Session {
             challenge_resp,
@@ -185,26 +201,41 @@ impl Client {
             }
         }
 
+        let session = self.add_session(addr, session_id).await;
+
+        log::info!("[{}] session initialized with address: {}", id, addr);
+        Ok(session)
+    }
+
+    async fn init_p2p_session(&self, addr: SocketAddr, node_id: NodeId) -> anyhow::Result<Session> {
+        let session = self.init_session(addr, true).await?;
         {
-            let mut state = self.state.write().await;
-            let session = state
-                .sessions
-                .entry(addr)
-                .or_insert_with(|| Session::new(addr, self.clone()));
-            let mut state = session.state.write().await;
-            state.replace(SessionState { id: session_id });
+            Ok(self
+                .state
+                .write()
+                .await
+                .p2p_sessions
+                .entry(node_id)
+                .or_insert(session)
+                .clone())
         }
-
-        log::info!("[{}] session initialized with {}", id, addr);
-        Ok(session_id)
     }
 
-    async fn init_p2p_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
-        self.init_session(addr, true).await
-    }
-
-    async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
+    async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<Session> {
         self.init_session(addr, false).await
+    }
+
+    pub(crate) async fn add_session(&self, addr: SocketAddr, session_id: SessionId) -> Session {
+        let mut state = self.state.write().await;
+        let session = state
+            .sessions
+            .entry(addr)
+            .or_insert_with(|| Session::new(addr, self.clone()));
+
+        let mut state = session.state.write().await;
+        state.replace(SessionState { id: session_id });
+
+        session.clone()
     }
 
     async fn remove_session(&self, addr: SocketAddr) {
@@ -214,7 +245,10 @@ impl Client {
         if let Some(slots) = state.slots.remove(&addr) {
             for slot in slots {
                 if let Some(ip) = state.virt_ips.remove(&(slot, addr)) {
-                    state.virt_nodes.remove(&ip);
+                    let node = state.virt_nodes.remove(&ip);
+                    if let Some(node) = node {
+                        state.p2p_sessions.remove(&node.id);
+                    }
                 }
             }
         }
@@ -228,10 +262,27 @@ impl Client {
         }
     }
 
+    pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Session> {
+        // Find node on server. p2p session will be established, if possible.
+        let server = self.server_session().await?;
+        server.find_node(node_id).await?;
+
+        // If p2p session was established, we can find it, otherwise
+        // communication will be forwarder through relay server.
+        Ok(self
+            .state
+            .read()
+            .await
+            .p2p_sessions
+            .get(&node_id)
+            .cloned()
+            .unwrap_or(server))
+    }
+
     pub(crate) async fn try_direct_session(
         &self,
         packet: &proto::response::Node,
-    ) -> anyhow::Result<SocketAddr> {
+    ) -> anyhow::Result<Session> {
         let node_id = NodeId::from(&packet.node_id[..]);
         if packet.endpoints.is_empty() {
             bail!(
@@ -246,17 +297,17 @@ impl Client {
                 Err(_) => continue,
             };
 
-            self.init_p2p_session(addr)
-                .await
-                .map_err(|e| {
+            match self.init_p2p_session(addr, node_id).await {
+                Ok(session) => return Ok(session),
+                Err(e) => {
                     log::debug!(
                         "Failed to establish p2p session with node {}, address: {}. Error: {}",
                         node_id,
                         addr,
                         e
                     )
-                })
-                .ok();
+                }
+            }
         }
 
         bail!(
@@ -308,5 +359,246 @@ impl Client {
         };
         session.init().await?;
         Ok(session)
+    }
+
+    pub async fn dispatch_session<'a>(
+        &self,
+        session_id: Vec<u8>,
+        request_id: RequestId,
+        from: SocketAddr,
+        request: proto::request::Session,
+    ) {
+        if let Some(session) = { self.state.read().await.starting_sessions.clone() } {
+            session
+                .dispatch_session(session_id, request_id, from, request)
+                .await;
+        };
+    }
+}
+
+type Sessions = Arc<Mutex<HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>>>;
+
+#[derive(Clone)]
+pub(crate) struct StartingSessions {
+    sessions: Sessions,
+    client: Client,
+}
+
+impl StartingSessions {
+    pub fn new(client: Client) -> StartingSessions {
+        StartingSessions {
+            sessions: Arc::new(Mutex::new(Default::default())),
+            client,
+        }
+    }
+
+    pub async fn dispatch_session(
+        self,
+        session_id: Vec<u8>,
+        request_id: RequestId,
+        from: SocketAddr,
+        request: proto::request::Session,
+    ) {
+        // This will be new session.
+        match session_id.is_empty() {
+            true => self.clone().new_session(request_id, from, request).await,
+            false => self
+                .existing_session(session_id, request_id, from, request)
+                .await
+                .map_err(|e| e.into()),
+        }
+        .map_err(|e| log::warn!("{}", e))
+        .ok();
+    }
+
+    pub async fn new_session(
+        self,
+        request_id: RequestId,
+        with: SocketAddr,
+        request: proto::request::Session,
+    ) -> anyhow::Result<()> {
+        if request.node_id.len() != 20 {
+            return Err(BadRequest::InvalidNodeId.into());
+        }
+
+        let session_id = SessionId::generate();
+        let node_id = NodeId::from(&request.node_id[..]);
+        let (sender, receiver) = mpsc::channel(1);
+
+        log::info!(
+            "Node {} ({}) tries to establish p2p session.",
+            node_id,
+            with
+        );
+
+        {
+            self.sessions
+                .lock()
+                .unwrap()
+                .entry(session_id)
+                .or_insert(sender);
+        }
+
+        // TODO: Add timeout for session initialization.
+        tokio::task::spawn_local(async move {
+            if let Err(e) = self
+                .clone()
+                .init_session_handler(with, request_id, session_id, request, receiver)
+                .await
+            {
+                log::warn!(
+                    "Error initializing session {} with node {}. Error: {}",
+                    session_id,
+                    node_id,
+                    e
+                );
+
+                // Establishing session failed.
+                self.error_response(request_id, session_id.to_vec(), &with, e)
+                    .await;
+                self.cleanup_initialization(&session_id).await;
+            }
+        });
+        Ok(())
+    }
+
+    async fn existing_session(
+        &self,
+        id: Vec<u8>,
+        request_id: RequestId,
+        _from: SocketAddr,
+        request: proto::request::Session,
+    ) -> ServerResult<()> {
+        let id = SessionId::try_from(id.clone()).map_err(|_| Unauthorized::InvalidSessionId(id))?;
+        let mut sender = {
+            match { self.sessions.lock().unwrap().get(&id).cloned() } {
+                Some(sender) => sender.clone(),
+                None => return Err(Unauthorized::SessionNotFound(id).into()),
+            }
+        };
+
+        Ok(sender
+            .send((request_id, request))
+            .await
+            .map_err(|_| InternalError::Send)?)
+    }
+
+    async fn init_session_handler(
+        self,
+        with: SocketAddr,
+        request_id: RequestId,
+        session_id: SessionId,
+        request: proto::request::Session,
+        mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
+    ) -> ServerResult<()> {
+        if request.node_id.len() != 20 {
+            return Err(BadRequest::InvalidNodeId.into());
+        }
+
+        let node_id = NodeId::from(&request.node_id[..]);
+
+        let (packet, raw_challenge) = prepare_challenge_response();
+        let challenge = proto::Packet::response(
+            request_id,
+            session_id.to_vec(),
+            proto::StatusCode::Ok,
+            packet,
+        );
+
+        self.client
+            .send(challenge, with)
+            .await
+            .map_err(|_| InternalError::Send)?;
+
+        log::info!("Challenge sent to Node: {}, address: {}", node_id, with);
+
+        if let Some((request_id, session)) = rc.next().await {
+            log::info!("Got challenge from node: {}, address: {}", node_id, with);
+
+            // Validate the challenge
+            if !challenge::verify(
+                &raw_challenge,
+                CHALLENGE_DIFFICULTY,
+                &session.challenge_resp,
+                session.public_key.as_slice(),
+            )
+            .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
+            {
+                return Err(Unauthorized::InvalidChallenge.into());
+            }
+
+            log::info!(
+                "Challenge from Node: {}, address: {} verified.",
+                node_id,
+                with
+            );
+
+            let crypto = self
+                .client
+                .crypto()
+                .await
+                .map_err(|e| InternalError::Generic(e.to_string()))?;
+            let public_key = crypto
+                .public_key()
+                .await
+                .map_err(|e| InternalError::Generic(e.to_string()))?;
+
+            let challenge_resp = match request.challenge_req {
+                Some(request) => {
+                    challenge::solve(request.challenge.as_slice(), request.difficulty, crypto)
+                        .await
+                        .map_err(|e| InternalError::Generic(e.to_string()))?
+                }
+                None => vec![],
+            };
+
+            let packet = proto::response::Session {
+                challenge_resp,
+                challenge_req: None,
+                public_key: public_key.bytes().to_vec(),
+            };
+
+            self.client
+                .send(
+                    proto::Packet::response(
+                        request_id,
+                        session_id.to_vec(),
+                        proto::StatusCode::Ok,
+                        packet,
+                    ),
+                    with,
+                )
+                .await
+                .map_err(|_| InternalError::Send)?;
+
+            self.client.add_session(with, session_id).await;
+        }
+
+        Ok(())
+    }
+
+    async fn error_response(&self, req_id: u64, id: Vec<u8>, addr: &SocketAddr, error: Error) {
+        let status_code = match error {
+            Error::Undefined(_) => StatusCode::Undefined,
+            Error::BadRequest(_) => StatusCode::BadRequest,
+            Error::Unauthorized(_) => StatusCode::Unauthorized,
+            Error::NotFound(_) => StatusCode::NotFound,
+            Error::Timeout(_) => StatusCode::Timeout,
+            Error::Conflict(_) => StatusCode::Conflict,
+            Error::PayloadTooLarge(_) => StatusCode::PayloadTooLarge,
+            Error::TooManyRequests(_) => StatusCode::TooManyRequests,
+            Error::Internal(_) => StatusCode::ServerError,
+            Error::GatewayTimeout(_) => StatusCode::GatewayTimeout,
+        };
+
+        self.client
+            .send(proto::Packet::error(req_id, id, status_code), *addr)
+            .await
+            .map_err(|e| log::error!("Failed to send error response. {}.", e))
+            .ok();
+    }
+
+    async fn cleanup_initialization(&self, session_id: &SessionId) {
+        self.sessions.lock().unwrap().remove(session_id);
     }
 }
