@@ -1,7 +1,8 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::net::{Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::rc::Rc;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -24,6 +25,7 @@ use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
 
 use crate::challenge;
+use crate::challenge::{prepare_challenge_request, CHALLENGE_DIFFICULTY};
 use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
 use crate::server::Server;
 use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
@@ -441,33 +443,43 @@ impl Client {
         session.init().await?;
         Ok(session)
     }
+
+    pub async fn crypto(&self) -> anyhow::Result<Rc<dyn Crypto>> {
+        let state = self.state.read().await;
+        let default_id = { state.config.crypto.default_id() }.await?;
+        Ok(state.config.crypto.get(default_id).await?)
+    }
 }
 
 impl Client {
-    async fn init_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
+    async fn init_session(&self, addr: SocketAddr, challenge: bool) -> anyhow::Result<SessionId> {
         let id = self.id();
         log::info!("[{}] initializing session with {}", id, addr);
 
+        let (request, raw_challenge) = prepare_challenge_request();
+        let request = match challenge {
+            true => request,
+            false => proto::request::Session::default(),
+        };
+
         let response = self
             .request::<proto::response::Session>(
-                proto::request::Session::default().into(),
+                request.into(),
                 vec![],
                 SESSION_REQUEST_TIMEOUT,
                 addr,
             )
             .await?;
 
-        let crypto = {
-            let state = self.state.read().await;
-            let default_id = { state.config.crypto.default_id() }.await?;
-            state.config.crypto.get(default_id).await?
-        };
+        let crypto = self.crypto().await?;
         let public_key = crypto.public_key().await?;
 
-        let packet = response.packet.challenge_req.ok_or(anyhow!(
-            "Expected ChallengeRequest while initializing session with {}",
-            addr
-        ))?;
+        let packet = response.packet.challenge_req.ok_or_else(|| {
+            anyhow!(
+                "Expected ChallengeRequest while initializing session with {}",
+                addr
+            )
+        })?;
 
         let challenge_resp =
             challenge::solve(packet.challenge.as_slice(), packet.difficulty, crypto).await?;
@@ -499,6 +511,20 @@ impl Client {
             )
         }
 
+        if challenge {
+            // Validate the challenge
+            if !challenge::verify(
+                &raw_challenge,
+                CHALLENGE_DIFFICULTY,
+                &response.packet.challenge_resp,
+                response.packet.public_key.as_slice(),
+            )
+            .map_err(|e| anyhow!("Invalid challenge: {}", e))?
+            {
+                bail!("Challenge verification failed.")
+            }
+        }
+
         {
             let mut state = self.state.write().await;
             let session = state
@@ -511,6 +537,14 @@ impl Client {
 
         log::info!("[{}] session initialized with {}", id, addr);
         Ok(session_id)
+    }
+
+    async fn init_p2p_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
+        self.init_session(addr, true).await
+    }
+
+    async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<SessionId> {
+        self.init_session(addr, false).await
     }
 
     async fn remove_session(&self, addr: SocketAddr) {
@@ -604,12 +638,60 @@ impl Client {
         Ok(response)
     }
 
+    async fn try_direct_session(
+        &self,
+        packet: &proto::response::Node,
+    ) -> anyhow::Result<SocketAddr> {
+        let node_id = NodeId::from(&packet.node_id[..]);
+        if packet.endpoints.is_empty() {
+            bail!(
+                "Node {} has no public endpoints. Not establishing p2p session",
+                node_id
+            )
+        }
+
+        for endpoint in packet.endpoints.iter() {
+            let ip = match IpAddr::from_str(&endpoint.address) {
+                Ok(ip) => ip,
+                Err(_) => continue,
+            };
+
+            let addr = SocketAddr::new(ip, endpoint.port as u16);
+            self.init_p2p_session(addr)
+                .await
+                .map_err(|e| {
+                    log::debug!(
+                        "Failed to establish p2p session with node {}, address: {}. Error: {}",
+                        node_id,
+                        addr,
+                        e
+                    )
+                })
+                .ok();
+        }
+
+        bail!(
+            "All attempts to establish direct session with node: {} failed",
+            node_id
+        )
+    }
+
     async fn add_virt_node(
         &self,
         addr: SocketAddr,
         session_id: SessionId,
         packet: &proto::response::Node,
     ) -> anyhow::Result<()> {
+        // If node has public IP, we can establish direct session with him
+        // instead of forwarding messages through relay.
+        let addr = match self.try_direct_session(packet).await {
+            Ok(session_addr) => session_addr,
+            Err(e) => {
+                log::info!("{}", e);
+                addr
+            }
+        };
+
         let node = VirtNode::try_new(&packet.node_id, session_id, addr, packet.slot)?;
         {
             let mut state = self.state.write().await;
@@ -1041,7 +1123,7 @@ impl Session {
     }
 
     pub async fn init(&self) -> anyhow::Result<SessionId> {
-        self.client.init_session(self.remote_addr).await
+        self.client.init_server_session(self.remote_addr).await
     }
 
     pub async fn close(self) {

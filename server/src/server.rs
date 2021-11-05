@@ -3,7 +3,6 @@ use bytes::BytesMut;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
-use rand::Rng;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
@@ -15,6 +14,7 @@ use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
 use crate::challenge;
+use crate::challenge::{prepare_challenge_response, CHALLENGE_DIFFICULTY};
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
@@ -28,9 +28,6 @@ use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
-
-pub const CHALLENGE_SIZE: usize = 16;
-pub const CHALLENGE_DIFFICULTY: u64 = 16;
 
 lazy_static::lazy_static! {
     static ref DEFAULT_NET_PORT: u16 = typed_from_env::<u16>("DEFAULT_NET_PORT", 7464);
@@ -469,22 +466,12 @@ impl Server {
         session_id: SessionId,
         mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
-        let raw_challenge = rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>();
+        let (packet, raw_challenge) = prepare_challenge_response();
         let challenge = proto::Packet::response(
             request_id,
             session_id.to_vec(),
             proto::StatusCode::Ok,
-            proto::response::Session {
-                public_key: vec![],
-                challenge_req: Some(proto::ChallengeRequest {
-                    version: "0.0.1".to_string(),
-                    caps: 0,
-                    kind: 10,
-                    difficulty: CHALLENGE_DIFFICULTY as u64,
-                    challenge: raw_challenge.to_vec(),
-                }),
-                challenge_resp: vec![],
-            },
+            packet,
         );
 
         self.send_to(challenge, &with)

@@ -1,8 +1,14 @@
 use crate::crypto::Crypto;
 use digest::{Digest, Output};
+use rand::Rng;
+
+use ya_relay_proto::proto;
 
 pub const SIGNATURE_SIZE: usize = std::mem::size_of::<ethsign::Signature>();
 pub const PREFIX_SIZE: usize = std::mem::size_of::<u64>();
+
+pub const CHALLENGE_SIZE: usize = 16;
+pub const CHALLENGE_DIFFICULTY: u64 = 16;
 
 pub async fn solve(
     challenge: &[u8],
@@ -116,4 +122,37 @@ fn leading_zeros(result: &[u8]) -> u64 {
         }
     }
     total
+}
+
+pub fn prepare_challenge() -> (proto::ChallengeRequest, [u8; CHALLENGE_SIZE]) {
+    let raw_challenge = rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>();
+    let request = proto::ChallengeRequest {
+        version: "0.0.1".to_string(),
+        caps: 0,
+        kind: 10,
+        difficulty: CHALLENGE_DIFFICULTY as u64,
+        challenge: raw_challenge.to_vec(),
+    };
+    (request, raw_challenge)
+}
+
+pub fn prepare_challenge_request() -> (proto::request::Session, [u8; CHALLENGE_SIZE]) {
+    let (challenge, raw_challenge) = prepare_challenge();
+    let request = proto::request::Session {
+        node_id: vec![],
+        public_key: vec![],
+        challenge_req: Some(challenge),
+        challenge_resp: vec![],
+    };
+    (request, raw_challenge)
+}
+
+pub fn prepare_challenge_response() -> (proto::response::Session, [u8; CHALLENGE_SIZE]) {
+    let (challenge, raw_challenge) = prepare_challenge();
+    let response = proto::response::Session {
+        public_key: vec![],
+        challenge_req: Some(challenge),
+        challenge_resp: vec![],
+    };
+    (response, raw_challenge)
 }
