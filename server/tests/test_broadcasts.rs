@@ -1,8 +1,8 @@
 use itertools::Itertools;
 
 use ya_client_model::NodeId;
-use ya_net_server::testing::server::{init_test_server, ServerWrapper};
-use ya_net_server::testing::{Client, ClientBuilder};
+use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
+use ya_relay_server::testing::{Client, ClientBuilder};
 
 async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     let mut clients = vec![];
