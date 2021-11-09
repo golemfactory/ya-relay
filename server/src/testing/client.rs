@@ -18,7 +18,7 @@ use ya_client_model::NodeId;
 use ya_net_stack::interface::*;
 use ya_net_stack::smoltcp::iface::Route;
 use ya_net_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
-use ya_net_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
+use ya_net_stack::socket::{SocketEndpoint, DEFAULT_TCP_CONN_TIMEOUT};
 use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
@@ -691,7 +691,10 @@ impl Client {
             ForwardId::NodeId(node_id) => self.resolve_node(node_id, session_addr).await?,
             ForwardId::SlotId(slot) => self.resolve_slot(slot, session_addr).await?,
         };
-        let connection = self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?;
+        let connection = self
+            .net
+            .connect(node.endpoint, DEFAULT_TCP_CONN_TIMEOUT)
+            .await?;
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
         let client = self.clone();

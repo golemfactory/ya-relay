@@ -6,10 +6,15 @@ use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::{Error, Protocol, MAX_FRAME_SIZE};
 
+pub const DEFAULT_TCP_CONN_TIMEOUT: Duration = Duration::from_secs(9);
+pub const DEFAULT_TCP_TIMEOUT: Duration = Duration::from_secs(75 * 9);
+pub const DEFAULT_TCP_KEEP_ALIVE: Duration = Duration::from_secs(75);
+pub const DEFAULT_TCP_ACK_DELAY: Duration = Duration::from_millis(200);
+
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
-const TCP_TIMEOUT: Duration = Duration::from_secs(6);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(3);
-const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
+pub const TCP_TIMEOUT: Duration = Duration::from_secs(6);
+pub const TCP_KEEP_ALIVE: Duration = Duration::from_secs(3);
+pub const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
 
 const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
 const RX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
@@ -210,9 +215,9 @@ pub fn tcp_socket<'a>() -> TcpSocket<'a> {
     let rx_buf = TcpSocketBuffer::new(vec![0; RX_BUFFER_SIZE]);
     let tx_buf = TcpSocketBuffer::new(vec![0; TCP_TX_BUFFER_SIZE]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
-    socket.set_timeout(Some(TCP_TIMEOUT));
-    socket.set_keep_alive(Some(TCP_KEEP_ALIVE));
-    socket.set_ack_delay(Some(TCP_ACK_DELAY));
+    socket.set_timeout(Some(DEFAULT_TCP_TIMEOUT));
+    socket.set_keep_alive(Some(DEFAULT_TCP_KEEP_ALIVE));
+    socket.set_ack_delay(Some(DEFAULT_TCP_ACK_DELAY));
     socket
 }
 
