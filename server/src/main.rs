@@ -1,4 +1,4 @@
-use ya_net_server::Server;
+use ya_relay_server::Server;
 
 use chrono::Local;
 use std::io::Write;

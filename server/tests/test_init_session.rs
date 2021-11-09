@@ -2,10 +2,10 @@ use std::convert::TryFrom;
 
 use std::ops::DerefMut;
 use ya_client_model::NodeId;
-use ya_net_server::testing::server::init_test_server;
-use ya_net_server::testing::ClientBuilder;
-use ya_net_server::SessionId;
 use ya_relay_proto::proto;
+use ya_relay_server::testing::server::init_test_server;
+use ya_relay_server::testing::ClientBuilder;
+use ya_relay_server::SessionId;
 
 #[serial_test::serial]
 async fn test_query_self_node_info() -> anyhow::Result<()> {

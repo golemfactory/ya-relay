@@ -128,8 +128,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.release_upload_url.outputs.result }}
-          asset_path: ./target/x86_64-unknown-linux-musl/release/ya-net-server
-          asset_name: ya-net-server
+          asset_path: ./target/x86_64-unknown-linux-musl/release/ya-relay-server
+          asset_name: ya-relay-server
           asset_content_type: application/octet-stream
       # - name: Upload Release Asset [Provider]
       #   id: upload-release-asset-prov
@@ -181,7 +181,7 @@ jobs:
         id: deb
         with:
           debVersion: ${{ steps.version.outputs.version }}
-          pkgName: ya-net-server
+          pkgName: ya-relay-server
           subdir: server
 
       - name: Upload Release Deb
@@ -192,5 +192,5 @@ jobs:
         with:
           upload_url: ${{ steps.release_upload_url.outputs.result }}
           asset_path: ${{ steps.deb.outputs.deb }}
-          asset_name: ya_net_server_${{ steps.version.outputs.tagv }}_amd64.deb
+          asset_name: ya_relay_server_${{ steps.version.outputs.tagv }}_amd64.deb
           asset_content_type: application/vnd.debian.binary-package

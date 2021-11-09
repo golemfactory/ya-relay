@@ -2,9 +2,9 @@ use env_logger;
 use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
-use ya_net_server::crypto::FallbackCryptoProvider;
-use ya_net_server::testing::key::{load_or_generate, Protected};
-use ya_net_server::testing::ClientBuilder;
+use ya_relay_server::crypto::FallbackCryptoProvider;
+use ya_relay_server::testing::key::{load_or_generate, Protected};
+use ya_relay_server::testing::ClientBuilder;
 
 #[derive(StructOpt)]
 #[structopt(about = "NET Client")]
