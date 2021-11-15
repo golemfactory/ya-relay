@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ethsign::{PublicKey, SecretKey, Signature};
+pub use ethsign::{PublicKey, SecretKey, Signature};
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
 
 use ya_client_model::NodeId;
 
-use crate::testing::key::generate;
+use crate::key::generate;
 
 pub trait CryptoProvider {
     fn default_id<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<NodeId>>;

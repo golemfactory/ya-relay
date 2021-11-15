@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::ops::Sub;
 
 use crate::error::{InternalError, ServerResult, Unauthorized};
-use crate::session::{NodeSession, SessionId};
+use ya_relay_core::session::{NodeSession, SessionId};
 
 use ya_client_model::NodeId;
 
