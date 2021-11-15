@@ -3,9 +3,14 @@ use bytes::BytesMut;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
-use governor::{Quota, RateLimiter};
+use governor::clock::{DefaultClock, Clock, QuantaInstant};
+use governor::{
+    NegativeMultiDecision,
+    Quota,
+    RateLimiter,
+};
 use rand::Rng;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
@@ -47,6 +52,7 @@ pub struct Server {
 pub struct ServerState {
     pub nodes: NodesState,
     pub starting_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
+    resume_forwarding: BTreeSet<(QuantaInstant, SessionId, SocketAddr)>,
 
     recv_socket: Option<InStream>,
 }
@@ -120,7 +126,7 @@ impl Server {
         Ok(())
     }
 
-    async fn forward(&self, mut packet: proto::Forward, _from: SocketAddr) -> ServerResult<()> {
+    async fn forward(&self, mut packet: proto::Forward, from: SocketAddr) -> ServerResult<()> {
         let session_id = SessionId::from(packet.session_id);
         let slot = packet.slot;
 
@@ -146,7 +152,22 @@ impl Server {
             .check_n(NonZeroU32::new(packet.payload.len().try_into().unwrap_or(u32::MAX)).unwrap())
         {
             log::trace!("Rate limiting: {:?}", e);
-            // TODO: Send `PauseForwarding`
+            match e {
+                NegativeMultiDecision::InsufficientCapacity(cells) => {
+                    // the query was invalid as the rate limite parameters can never accomodate the
+                    // number of cells queried for.
+                    log::warn!("Rate limited packet dropped. Exceeds limit. size: {}, from: {}", cells, &from);
+                },
+                NegativeMultiDecision::BatchNonConforming(cells, retry_at) => {
+                    log::debug!("Rate limited packet. size: {}, retry_at: {}", cells, retry_at);
+                    let mut server = self.state.write().await;
+                    server.resume_forwarding.insert((retry_at.earliest_possible(), session_id.clone(), from.clone()));
+                    let control_packet = proto::Packet::control(session_id.to_vec(), ya_relay_proto::proto::control::PauseForwarding { slot });
+                    self.send_to(PacketKind::Packet(control_packet), &from)
+                        .await
+                        .map_err(|_| InternalError::Send)?;
+                        }
+            }
             return Ok(());
         }
 
@@ -579,6 +600,36 @@ impl Server {
         server.nodes.check_timeouts(SESSION_TIMEOUT);
     }
 
+    async fn forward_resumer(&self) {
+        let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
+        loop {
+            interval.tick().await;
+            let s = self.clone();
+            s.check_resume_forwarding().await;
+        }
+    }
+
+    async fn check_resume_forwarding(&self) {
+        let mut server = self.state.write().await;
+        let clock = DefaultClock::default();
+        let rs_fwd = server.resume_forwarding.clone();
+        let mut set_iter = rs_fwd.iter();
+        while let Some(elem) = set_iter.next() {
+            let (resume_at, session_id, socket_addr) = elem.clone();
+            let now = clock.now();
+            if resume_at > now {
+                break;
+            }
+            server.resume_forwarding.remove(elem);
+            if let Some(node_session) = server.nodes.get_by_session(session_id.clone()) {
+                let control_packet = proto::Packet::control(session_id.to_vec(), ya_relay_proto::proto::control::ResumeForwarding { slot: node_session.info.slot });
+                if let Err(e) = self.send_to(PacketKind::Packet(control_packet), &socket_addr).await {
+                    log::warn!("Can not send ResumeForwarding. {}", e);
+                }
+            }
+        }
+    }
+
     async fn send_to(
         &self,
         packet: impl Into<PacketKind>,
@@ -609,6 +660,7 @@ impl Server {
             nodes: NodesState::new(),
             starting_session: Default::default(),
             recv_socket: Some(input),
+            resume_forwarding: BTreeSet::new(),
         }));
 
         Ok(Server { state, inner })
@@ -616,6 +668,8 @@ impl Server {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let server = self.clone();
+        let server_session_cleaner = self.clone();
+        let server_forward_resumer = self.clone();
         let mut input = {
             self.state
                 .write()
@@ -624,7 +678,8 @@ impl Server {
                 .take()
                 .ok_or_else(|| anyhow!("Server already running."))?
         };
-        tokio::task::spawn_local(async move { self.session_cleaner().await });
+        tokio::task::spawn_local(async move { server_session_cleaner.session_cleaner().await });
+        tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
         while let Some((packet, addr)) = input.next().await {
             let request_id = PacketKind::request_id(&packet);
