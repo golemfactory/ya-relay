@@ -1,5 +1,3 @@
-use anyhow::{anyhow, Context};
-use bytes::BytesMut;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
@@ -14,31 +12,24 @@ use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::challenge;
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
-use crate::session::{Endpoint, NodeInfo, NodeSession, SessionId};
 use crate::state::NodesState;
-use crate::udp_stream::{udp_bind, InStream, OutStream};
 
 use ya_client_model::NodeId;
+use ya_relay_core::challenge;
+use ya_relay_core::session::{Endpoint, NodeInfo, NodeSession, SessionId};
+use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
+use ya_relay_core::{SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT};
 use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
 
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
-
-lazy_static::lazy_static! {
-    static ref DEFAULT_NET_PORT: u16 = typed_from_env::<u16>("DEFAULT_NET_PORT", 7464);
-
-    static ref SESSION_CLEANER_INTERVAL: Duration = Duration::new(typed_from_env::<u64>("SESSION_CLEANER_INTERVAL", 10), 0); // seconds
-    static ref SESSION_TIMEOUT: i64 = typed_from_env::<i64>("SESSION_TIMEOUT", 60); // seconds
-
-}
 
 #[derive(Clone)]
 pub struct Server {
@@ -652,7 +643,7 @@ impl Server {
                 .await
                 .recv_socket
                 .take()
-                .ok_or_else(|| anyhow!("Server already running."))?
+                .ok_or_else(|| anyhow::anyhow!("Server already running."))?
         };
         tokio::task::spawn_local(async move { self.session_cleaner().await });
 
@@ -736,18 +727,4 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         seen_ts: node_info.last_seen.timestamp() as u32,
         slot: node_info.info.slot,
     }
-}
-
-pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
-    let host = url.host_str().context("Needs host for NET URL")?;
-    let port = url.port().unwrap_or(*DEFAULT_NET_PORT);
-
-    Ok(format!("{}:{}", host, port))
-}
-
-// Extract typed data from enviromnt variable
-fn typed_from_env<T: std::str::FromStr + Copy>(env_key: &str, def_value: T) -> T {
-    std::env::var(env_key)
-        .map(|s| s.parse::<T>().unwrap_or(def_value))
-        .unwrap_or(def_value)
 }

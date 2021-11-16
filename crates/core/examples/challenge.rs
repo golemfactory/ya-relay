@@ -1,6 +1,6 @@
 use rand::Rng;
-use ya_relay_server::challenge::{self, PREFIX_SIZE, SIGNATURE_SIZE};
-use ya_relay_server::crypto::{CryptoProvider, FallbackCryptoProvider};
+use ya_relay_core::challenge::{self, PREFIX_SIZE, SIGNATURE_SIZE};
+use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider};
 
 #[actix_rt::main]
 async fn main() -> anyhow::Result<()> {
