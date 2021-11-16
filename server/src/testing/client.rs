@@ -504,13 +504,13 @@ impl Client {
     ) -> anyhow::Result<()> {
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
-        let (addr, session_id) = match self
+        let (addr, session_id, slot) = match self
             .try_direct_session(packet)
             .await
             .map_err(|e| log::info!("{}", e))
         {
-            Ok(session) => (session.remote_addr, session.id().await?),
-            Err(_) => (addr, session_id),
+            Ok(session) => (session.remote_addr, session.id().await?, 0),
+            Err(_) => (addr, session_id, packet.slot),
         };
 
         let node = VirtNode::try_new(&packet.node_id, session_id, addr, packet.slot)?;
@@ -837,7 +837,12 @@ impl Handler for Client {
             proto::request::Kind::Session(request) => {
                 Box::pin(self.dispatch_session(session_id, request_id, from, request))
             }
-
+            proto::request::Kind::Node(request) => {
+                Box::pin(self.dispatch_get_node(session_id, request_id, from, request))
+            }
+            proto::request::Kind::Slot(request) => {
+                Box::pin(self.dispatch_get_slot(session_id, request_id, from, request))
+            }
             _ => Box::pin(futures::future::ready(())),
         }
     }

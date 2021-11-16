@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail};
+use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -16,10 +17,10 @@ use crate::testing::client::{ForwardId, ForwardSender};
 use crate::testing::Client;
 use crate::SessionId;
 
-use crate::error::{BadRequest, Error, InternalError, ServerResult, Unauthorized};
+use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
 use ya_client_model::NodeId;
 use ya_relay_proto::proto;
-use ya_relay_proto::proto::{RequestId, SlotId, StatusCode};
+use ya_relay_proto::proto::{Endpoint, Protocol, RequestId, SlotId, StatusCode};
 
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -263,6 +264,10 @@ impl Client {
     }
 
     pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Session> {
+        if let Some(session) = self.state.read().await.p2p_sessions.get(&node_id).cloned() {
+            return Ok(session);
+        }
+
         // Find node on server. p2p session will be established, if possible.
         let server = self.server_session().await?;
         server.find_node(node_id).await?;
@@ -374,6 +379,126 @@ impl Client {
                 .await;
         };
     }
+
+    pub async fn dispatch_get_node<'a>(
+        &self,
+        session_id: Vec<u8>,
+        request_id: RequestId,
+        from: SocketAddr,
+        request: proto::request::Node,
+    ) {
+        let config = { self.state.read().await.config.clone() };
+        // TODO:
+        // if params.node_id.len() != 20 {
+        //     return Err(BadRequest::InvalidNodeId.into());
+        // }
+
+        let our_node_id = config.node_id;
+        let request_node_id = NodeId::from(&request.node_id[..]);
+
+        // At this point we respond only to requests about our node.
+        if our_node_id != request_node_id {
+            self.error_response(
+                request_id,
+                session_id.to_vec(),
+                &from,
+                BadRequest::InvalidNodeId.into(),
+            )
+            .await;
+            return;
+        }
+
+        let response = self
+            .our_node_info(request_id, session_id, request.public_key)
+            .await;
+
+        self.send(response, from)
+            .await
+            .map_err(|_| log::warn!("Failed to send response to GetNode from: {}.", from))
+            .ok();
+    }
+
+    pub async fn dispatch_get_slot<'a>(
+        &self,
+        session_id: Vec<u8>,
+        request_id: RequestId,
+        from: SocketAddr,
+        request: proto::request::Slot,
+    ) {
+        // if request.slot != 0 {
+        //     self.error_response(
+        //         request_id,
+        //         session_id.to_vec(),
+        //         &from,
+        //         NotFound::NodeBySlot(request.slot).into(),
+        //     )
+        //     .await;
+        //     return;
+        // }
+
+        let response = self
+            .our_node_info(request_id, session_id, request.public_key)
+            .await;
+
+        self.send(response, from)
+            .await
+            .map_err(|_| log::warn!("Failed to send response to GetSlot from: {}.", from))
+            .ok();
+    }
+
+    pub async fn our_node_info(
+        &self,
+        request_id: RequestId,
+        session_id: Vec<u8>,
+        public_key: bool,
+    ) -> proto::Packet {
+        let config = { self.state.read().await.config.clone() };
+        let public_ip = self.public_addr().await;
+
+        let packet = proto::response::Node {
+            node_id: config.node_id.into_array().to_vec(),
+            public_key: match public_key {
+                true => config.node_pub_key.bytes().to_vec(),
+                false => vec![],
+            },
+            endpoints: public_ip.map_or(vec![], |ip| {
+                vec![Endpoint {
+                    protocol: Protocol::Udp as i32,
+                    address: ip.ip().to_string(),
+                    port: ip.port() as u32,
+                }]
+            }),
+            seen_ts: Utc::now().timestamp() as u32,
+            slot: 0,
+        };
+
+        proto::Packet::response(
+            request_id,
+            session_id.to_vec(),
+            proto::StatusCode::Ok,
+            packet,
+        )
+    }
+
+    async fn error_response(&self, req_id: u64, id: Vec<u8>, addr: &SocketAddr, error: Error) {
+        let status_code = match error {
+            Error::Undefined(_) => StatusCode::Undefined,
+            Error::BadRequest(_) => StatusCode::BadRequest,
+            Error::Unauthorized(_) => StatusCode::Unauthorized,
+            Error::NotFound(_) => StatusCode::NotFound,
+            Error::Timeout(_) => StatusCode::Timeout,
+            Error::Conflict(_) => StatusCode::Conflict,
+            Error::PayloadTooLarge(_) => StatusCode::PayloadTooLarge,
+            Error::TooManyRequests(_) => StatusCode::TooManyRequests,
+            Error::Internal(_) => StatusCode::ServerError,
+            Error::GatewayTimeout(_) => StatusCode::GatewayTimeout,
+        };
+
+        self.send(proto::Packet::error(req_id, id, status_code), *addr)
+            .await
+            .map_err(|e| log::error!("Failed to send error response. {}.", e))
+            .ok();
+    }
 }
 
 type Sessions = Arc<Mutex<HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>>>;
@@ -454,7 +579,8 @@ impl StartingSessions {
                 );
 
                 // Establishing session failed.
-                self.error_response(request_id, session_id.to_vec(), &with, e)
+                self.client
+                    .error_response(request_id, session_id.to_vec(), &with, e)
                     .await;
                 self.cleanup_initialization(&session_id).await;
             }
@@ -575,27 +701,6 @@ impl StartingSessions {
         }
 
         Ok(())
-    }
-
-    async fn error_response(&self, req_id: u64, id: Vec<u8>, addr: &SocketAddr, error: Error) {
-        let status_code = match error {
-            Error::Undefined(_) => StatusCode::Undefined,
-            Error::BadRequest(_) => StatusCode::BadRequest,
-            Error::Unauthorized(_) => StatusCode::Unauthorized,
-            Error::NotFound(_) => StatusCode::NotFound,
-            Error::Timeout(_) => StatusCode::Timeout,
-            Error::Conflict(_) => StatusCode::Conflict,
-            Error::PayloadTooLarge(_) => StatusCode::PayloadTooLarge,
-            Error::TooManyRequests(_) => StatusCode::TooManyRequests,
-            Error::Internal(_) => StatusCode::ServerError,
-            Error::GatewayTimeout(_) => StatusCode::GatewayTimeout,
-        };
-
-        self.client
-            .send(proto::Packet::error(req_id, id, status_code), *addr)
-            .await
-            .map_err(|e| log::error!("Failed to send error response. {}.", e))
-            .ok();
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
