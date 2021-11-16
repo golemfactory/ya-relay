@@ -7,8 +7,8 @@ use anyhow::Context;
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 
-use ya_net_server::testing::server::init_test_server;
-use ya_net_server::testing::ClientBuilder;
+use ya_relay_client::ClientBuilder;
+use ya_relay_server::testing::server::init_test_server;
 
 #[serial_test::serial]
 async fn test_two_way_packet_forward() -> anyhow::Result<()> {

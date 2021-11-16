@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
 use derive_more::From;
-use ethsign::PublicKey;
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt, StreamExt};
@@ -15,20 +14,19 @@ use tokio::sync::RwLock;
 use url::Url;
 
 use ya_client_model::NodeId;
-use ya_net_stack::interface::*;
-use ya_net_stack::smoltcp::iface::Route;
-use ya_net_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
-use ya_net_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
-use ya_net_stack::{Channel, IngressEvent, Network, Protocol, Stack};
+use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider, PublicKey};
+use ya_relay_core::udp_stream::{udp_bind, OutStream};
+use ya_relay_core::{session::SessionId, utils::parse_udp_url};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, Forward, RequestId, SlotId};
+use ya_relay_stack::interface::*;
+use ya_relay_stack::smoltcp::iface::Route;
+use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
+use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
+use ya_relay_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 
-use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
-use crate::server::Server;
-use crate::testing::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
-use crate::testing::session::{Session, StartingSessions};
-use crate::udp_stream::{udp_bind, OutStream};
-use crate::{parse_udp_url, SessionId};
+use crate::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
+use crate::session::{Session, StartingSessions};
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
@@ -112,11 +110,6 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
-    pub fn from_server(server: &Server) -> ClientBuilder {
-        let url = { server.inner.url.clone() };
-        ClientBuilder::from_url(url)
-    }
-
     pub fn from_url(url: Url) -> ClientBuilder {
         ClientBuilder {
             bind_url: None,

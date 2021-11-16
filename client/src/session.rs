@@ -9,16 +9,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use crate::challenge;
-use crate::challenge::{
-    prepare_challenge_request, prepare_challenge_response, CHALLENGE_DIFFICULTY,
-};
-use crate::testing::client::{ForwardId, ForwardSender};
-use crate::testing::Client;
-use crate::SessionId;
+use crate::client::{ForwardId, ForwardSender};
+use crate::Client;
 
-use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use ya_relay_core::error::{
+    BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized,
+};
+
 use ya_client_model::NodeId;
+use ya_relay_core::challenge::{
+    self, prepare_challenge_request, prepare_challenge_response, CHALLENGE_DIFFICULTY,
+};
+use ya_relay_core::session::SessionId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{Endpoint, Protocol, RequestId, SlotId, StatusCode};
 
