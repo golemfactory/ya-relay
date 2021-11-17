@@ -1,12 +1,8 @@
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
-use governor::clock::{DefaultClock, Clock, QuantaInstant};
-use governor::{
-    NegativeMultiDecision,
-    Quota,
-    RateLimiter,
-};
+use governor::clock::{Clock, DefaultClock, QuantaInstant};
+use governor::{NegativeMultiDecision, Quota, RateLimiter};
 use rand::Rng;
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
@@ -165,19 +161,34 @@ impl Server {
                 NegativeMultiDecision::InsufficientCapacity(cells) => {
                     // the query was invalid as the rate limite parameters can never accomodate the
                     // number of cells queried for.
-                    log::warn!("Rate limited packet dropped. Exceeds limit. size: {}, from: {}", cells, &from);
-                },
+                    log::warn!(
+                        "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
+                        cells,
+                        &from
+                    );
+                }
                 NegativeMultiDecision::BatchNonConforming(cells, retry_at) => {
-                    log::debug!("Rate limited packet. size: {}, retry_at: {}", cells, retry_at);
+                    log::debug!(
+                        "Rate limited packet. size: {}, retry_at: {}",
+                        cells,
+                        retry_at
+                    );
                     {
                         let mut server = self.state.write().await;
-                        server.resume_forwarding.insert((retry_at.earliest_possible(), session_id.clone(), from.clone()));
+                        server.resume_forwarding.insert((
+                            retry_at.earliest_possible(),
+                            session_id.clone(),
+                            from.clone(),
+                        ));
                     }
-                    let control_packet = proto::Packet::control(session_id.to_vec(), ya_relay_proto::proto::control::PauseForwarding { slot });
+                    let control_packet = proto::Packet::control(
+                        session_id.to_vec(),
+                        ya_relay_proto::proto::control::PauseForwarding { slot },
+                    );
                     self.send_to(PacketKind::Packet(control_packet), &from)
                         .await
                         .map_err(|_| InternalError::Send)?;
-                        }
+                }
             }
             return Ok(());
         }
@@ -652,9 +663,11 @@ impl Server {
     }
 
     async fn check_resume_forwarding(&self) {
-        let mut server = self.state.write().await;
         let clock = DefaultClock::default();
-        let rs_fwd = server.resume_forwarding.clone();
+        let rs_fwd = {
+            let server = self.state.read().await;
+            server.resume_forwarding.clone()
+        };
         let mut set_iter = rs_fwd.iter();
         while let Some(elem) = set_iter.next() {
             let (resume_at, session_id, socket_addr) = elem.clone();
@@ -662,10 +675,22 @@ impl Server {
             if resume_at > now {
                 break;
             }
-            server.resume_forwarding.remove(elem);
-            if let Some(node_session) = server.nodes.get_by_session(session_id.clone()) {
-                let control_packet = proto::Packet::control(session_id.to_vec(), ya_relay_proto::proto::control::ResumeForwarding { slot: node_session.info.slot });
-                if let Err(e) = self.send_to(PacketKind::Packet(control_packet), &socket_addr).await {
+            let nodes = {
+                let mut server = self.state.write().await;
+                server.resume_forwarding.remove(elem);
+                server.nodes.get_by_session(session_id.clone())
+            };
+            if let Some(node_session) = nodes {
+                let control_packet = proto::Packet::control(
+                    session_id.to_vec(),
+                    ya_relay_proto::proto::control::ResumeForwarding {
+                        slot: node_session.info.slot,
+                    },
+                );
+                if let Err(e) = self
+                    .send_to(PacketKind::Packet(control_packet), &socket_addr)
+                    .await
+                {
                     log::warn!("Can not send ResumeForwarding. {}", e);
                 }
             }
