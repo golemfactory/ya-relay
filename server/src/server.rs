@@ -160,8 +160,10 @@ impl Server {
                 },
                 NegativeMultiDecision::BatchNonConforming(cells, retry_at) => {
                     log::debug!("Rate limited packet. size: {}, retry_at: {}", cells, retry_at);
-                    let mut server = self.state.write().await;
-                    server.resume_forwarding.insert((retry_at.earliest_possible(), session_id.clone(), from.clone()));
+                    {
+                        let mut server = self.state.write().await;
+                        server.resume_forwarding.insert((retry_at.earliest_possible(), session_id.clone(), from.clone()));
+                    }
                     let control_packet = proto::Packet::control(session_id.to_vec(), ya_relay_proto::proto::control::PauseForwarding { slot });
                     self.send_to(PacketKind::Packet(control_packet), &from)
                         .await
@@ -604,8 +606,7 @@ impl Server {
         let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
         loop {
             interval.tick().await;
-            let s = self.clone();
-            s.check_resume_forwarding().await;
+            self.check_resume_forwarding().await;
         }
     }
 
