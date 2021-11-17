@@ -11,3 +11,5 @@ Cargo.lock
 
 # Do not accidentally commit private keys
 **/*.key.json
+
+.env

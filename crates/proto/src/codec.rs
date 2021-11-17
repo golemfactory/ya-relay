@@ -1,12 +1,14 @@
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use derive_more::From;
-
-pub mod datagram;
-mod error;
-pub mod stream;
 
 pub use crate::codec::error::*;
 use crate::proto::{Forward, Packet};
+pub use bytes::BytesMut;
+
+pub mod datagram;
+mod error;
+pub mod forward;
+pub mod stream;
 
 pub const MAX_PACKET_SIZE: u32 = 2097151;
 pub const MAX_PARSE_MESSAGE_SIZE: usize = 600;

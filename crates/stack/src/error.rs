@@ -40,6 +40,9 @@ pub enum Error {
     Forbidden,
     #[error("Cancelled")]
     Cancelled,
+
+    #[error("Queue closed")]
+    QueueClosed,
     #[error("{0}")]
     Other(String),
 }

@@ -359,6 +359,7 @@ mod tests {
             PacketKind::Forward(Forward {
                 session_id: SESSION_ID,
                 slot: 42,
+                flags: 0,
                 payload: (0..8192).map(|_| rand::random::<u8>()).collect(),
             }),
             Packet::request(
