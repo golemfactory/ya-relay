@@ -83,25 +83,35 @@ impl NodesState {
     }
 
     pub fn check_timeouts(&mut self, timeout: i64) {
-        let sessions = &mut self.sessions;
-        let nodes = &mut self.nodes;
-
-        self.slots.iter_mut().for_each(|slot| {
-            if let Some(ns) = slot {
-                let deadline = Utc::now().sub(chrono::Duration::seconds(timeout));
-                if ns.last_seen > deadline {
-                    return;
+        self.slots
+            .iter()
+            .filter_map(|slot| {
+                if let Some(ns) = slot {
+                    let deadline = Utc::now().sub(chrono::Duration::seconds(timeout));
+                    if ns.last_seen > deadline {
+                        return None;
+                    }
+                    log::debug!(
+                        "Session timeout. node_id: {}, session_id: {}",
+                        ns.info.node_id,
+                        ns.session
+                    );
+                    Some(ns.info.slot)
+                } else {
+                    None
                 }
-                log::debug!(
-                    "Session timeout. node_id: {}, session_id: {}",
-                    ns.info.node_id,
-                    ns.session
-                );
-                sessions.remove(&ns.session);
-                nodes.remove(&ns.info.node_id);
-                *slot = None;
-            }
-        });
+            })
+            .collect::<Vec<u32>>()
+            .into_iter()
+            .for_each(|slot| self.remove_session(slot));
+    }
+
+    pub fn remove_session(&mut self, slot: u32) {
+        if let Some(session) = &self.slots[slot as usize] {
+            self.sessions.remove(&session.session);
+            self.nodes.remove(&session.info.node_id);
+            self.slots[slot as usize] = None;
+        }
     }
 
     pub fn update_seen(&mut self, id: SessionId) -> ServerResult<()> {
@@ -134,7 +144,8 @@ impl NodesState {
     }
 
     fn empty_slot(&self) -> u32 {
-        match self.slots.iter().position(|slot| slot.is_none()) {
+        // Slot 0 reserved for direct communication will not be used.
+        1 + match self.slots.iter().skip(1).position(|slot| slot.is_none()) {
             None => self.slots.len() as u32,
             Some(idx) => idx as u32,
         }

@@ -148,27 +148,16 @@ impl Server {
             (src_node, dest_node)
         };
 
-        if !dest_node.info.endpoints.is_empty() {
-            // TODO: How to chose best endpoint?
-            let endpoint = dest_node.info.endpoints[0].clone();
+        // Replace destination slot and session id with sender slot and session_id.
+        // Note: We can unwrap since SessionId type has the same array length.
+        packet.slot = src_node.info.slot;
+        packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
-            // Replace destination slot and session id with sender slot and session_id.
-            // Note: We can unwrap since SessionId type has the same array length.
-            packet.slot = src_node.info.slot;
-            packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
+        log::debug!("Sending forward packet to {}", dest_node.address);
 
-            log::debug!("Sending forward packet to {}", endpoint.address);
-
-            self.send_to(PacketKind::Forward(packet), &endpoint.address)
-                .await
-                .map_err(|_| InternalError::Send)?;
-        } else {
-            log::info!(
-                "Can't forward packet for session [{}]. Node [{}] has no public address.",
-                session_id,
-                dest_node.info.node_id
-            );
-        }
+        self.send_to(PacketKind::Forward(packet), &dest_node.address)
+            .await
+            .map_err(|_| InternalError::Send)?;
 
         // TODO: We should update `last_seen` timestamp of `src_node`.
         Ok(())
@@ -237,10 +226,18 @@ impl Server {
         // TODO: Note that we ignore endpoints sent by Node and only try
         //       to verify address, from which we received messages.
 
-        session
-            .info
-            .endpoints
-            .extend(self.public_endpoints(session_id, &from).await?.into_iter());
+        let node_id = session.info.node_id;
+        let endpoints = self.public_endpoints(session_id, &from).await?;
+
+        for endpoint in endpoints.iter() {
+            log::info!(
+                "Discovered public endpoint {} for Node [{}]",
+                endpoint.address,
+                node_id
+            )
+        }
+
+        session.info.endpoints.extend(endpoints.into_iter());
 
         let endpoints = session
             .info
@@ -260,7 +257,11 @@ impl Server {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::info!("Responding to Register from: {}", from);
+        log::debug!(
+            "Responding to Register from Node: [{}], address: {}",
+            node_id,
+            from
+        );
         Ok(session)
     }
 
@@ -282,7 +283,7 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::info!("Responding to ping from: {}", from);
+        log::trace!("Responding to ping from: {}", from);
 
         Ok(())
     }
@@ -297,8 +298,10 @@ impl Server {
         if params.node_id.len() != 20 {
             return Err(BadRequest::InvalidNodeId.into());
         }
-
         let node_id = NodeId::from(&params.node_id[..]);
+
+        log::debug!("{} requested Node [{}] info.", from, node_id);
+
         let node_info = {
             match self.state.read().await.nodes.get_by_node_id(node_id) {
                 None => return Err(NotFound::Node(node_id).into()),
@@ -356,7 +359,7 @@ impl Server {
         let node_info = {
             match self.state.read().await.nodes.get_by_slot(params.slot) {
                 None => {
-                    log::error!("Node by slot not found.");
+                    log::error!("Node by slot {} not found.", params.slot);
                     return Err(NotFound::NodeBySlot(params.slot).into());
                 }
                 Some(session) => session,
@@ -508,6 +511,7 @@ impl Server {
 
                 let node = NodeSession {
                     info,
+                    address: with,
                     session: session_id,
                     last_seen: Utc::now(),
                 };
@@ -541,7 +545,11 @@ impl Server {
                     request_id,
                     kind: Some(proto::request::Kind::Register(registration)),
                 }) => {
-                    log::info!("Got register from node: {}", with);
+                    log::trace!(
+                        "Got register from Node: [{}] (request {})",
+                        with,
+                        request_id
+                    );
 
                     let node_id = node.info.node_id;
                     let node = self
@@ -555,7 +563,11 @@ impl Server {
                         server.nodes.register(node);
                     }
 
-                    log::info!("Session: {} established for node: {}", session_id, node_id);
+                    log::info!(
+                        "Session: {} established with Node: [{}]",
+                        session_id,
+                        node_id
+                    );
                     break;
                 }
                 Some(proto::Request {

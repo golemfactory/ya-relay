@@ -183,7 +183,10 @@ impl Dispatcher {
                     log::warn!("Unable to dispatch response: listener is closed");
                 }
             }
-            None => log::warn!("Unable to dispatch response: listener does not exist"),
+            None => log::warn!(
+                "Unable to dispatch response: listener does not exist. {:?}",
+                kind
+            ),
         }
     }
 }

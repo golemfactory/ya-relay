@@ -23,8 +23,8 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 13).await;
 
-    let node_id = clients[0].node_id().await;
-    let session = clients[0].server_session().await?;
+    let node_id = clients[0].node_id();
+    let session = clients[0].sessions.server_session().await?;
 
     let ids = session
         .neighbours(5)
@@ -73,8 +73,8 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 3).await;
 
-    let node_id = clients[0].node_id().await;
-    let session = clients[0].server_session().await?;
+    let node_id = clients[0].node_id();
+    let session = clients[0].sessions.server_session().await?;
 
     let ids = session
         .neighbours(5)
