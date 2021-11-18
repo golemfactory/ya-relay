@@ -4,7 +4,7 @@ use futures::{SinkExt, StreamExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
 use governor::{NegativeMultiDecision, Quota, RateLimiter};
 use rand::Rng;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
@@ -664,20 +664,30 @@ impl Server {
 
     async fn check_resume_forwarding(&self) {
         let clock = DefaultClock::default();
-        let rs_fwd = {
-            let server = self.state.read().await;
-            server.resume_forwarding.clone()
-        };
-        let mut set_iter = rs_fwd.iter();
-        while let Some(elem) = set_iter.next() {
-            let (resume_at, session_id, socket_addr) = elem.clone();
-            let now = clock.now();
-            if resume_at > now {
-                break;
-            }
-            let nodes = {
-                let mut server = self.state.write().await;
+        let mut to_resume = HashSet::new();
+        {
+            let mut server = self.state.write().await;
+            let rs_fwd = server.resume_forwarding.clone();
+            let mut set_iter = rs_fwd.iter();
+
+            // First iteration to release write lock as soon as possible
+            while let Some(elem) = set_iter.next() {
+                let (resume_at, session_id, socket_addr) = elem.clone();
+                let now = clock.now();
+                if resume_at > now {
+                    break;
+                }
+                to_resume.insert((session_id, socket_addr));
                 server.resume_forwarding.remove(elem);
+            }
+        };
+
+        // Second iteration with read lock only
+        let mut to_resume_iter = to_resume.iter();
+        while let Some(elem) = to_resume_iter.next() {
+            let (session_id, socket_addr) = elem.clone();
+            let nodes = {
+                let server = self.state.read().await;
                 server.nodes.get_by_session(session_id.clone())
             };
             if let Some(node_session) = nodes {
