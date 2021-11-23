@@ -3,15 +3,15 @@ use std::time::Duration;
 
 use std::ops::DerefMut;
 use ya_client_model::NodeId;
-use ya_net_server::testing::server::init_test_server;
-use ya_net_server::testing::ClientBuilder;
-use ya_net_server::SessionId;
+use ya_relay_client::ClientBuilder;
+use ya_relay_core::session::SessionId;
 use ya_relay_proto::proto;
+use ya_relay_server::testing::server::init_test_server;
 
 #[serial_test::serial]
 async fn test_query_self_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_server(&wrapper.server)
+    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
         .build()
         .await
         .unwrap();
@@ -43,7 +43,7 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
 #[serial_test::serial]
 async fn test_request_with_invalid_session() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_server(&wrapper.server)
+    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
         .connect()
         .build()
         .await
@@ -76,12 +76,12 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
 #[serial_test::serial]
 async fn test_query_other_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let client1 = ClientBuilder::from_server(&wrapper.server)
+    let client1 = ClientBuilder::from_url(wrapper.server.inner.url.clone())
         .connect()
         .build()
         .await
         .unwrap();
-    let client2 = ClientBuilder::from_server(&wrapper.server)
+    let client2 = ClientBuilder::from_url(wrapper.server.inner.url.clone())
         .connect()
         .build()
         .await
@@ -104,7 +104,7 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
 #[serial_test::serial]
 async fn test_close_session() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_server(&wrapper.server)
+    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
         .connect()
         .build()
         .await
@@ -126,18 +126,18 @@ async fn test_close_session() -> anyhow::Result<()> {
 #[serial_test::serial]
 async fn test_restart_server() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_server(&wrapper.server)
+    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
         .connect()
         .build()
         .await
         .unwrap();
     let node_id = client.node_id().await;
-    let session = client.server_session().await?;
+    let _session = client.server_session().await?;
 
     // Abort server
     drop(wrapper);
 
-    let wrapper = init_test_server().await.unwrap();
+    let _wrapper = init_test_server().await.unwrap();
     tokio::time::delay_for(Duration::from_millis(100)).await;
 
     let session = client.server_session().await?;

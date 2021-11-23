@@ -1,5 +1,3 @@
-use anyhow::{anyhow, Context};
-use bytes::BytesMut;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
@@ -14,26 +12,24 @@ use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::challenge;
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
-use crate::session::{Endpoint, NodeInfo, NodeSession, SessionId};
 use crate::state::NodesState;
-use crate::udp_stream::{udp_bind, InStream, OutStream};
 
 use ya_client_model::NodeId;
+use ya_relay_core::challenge;
+use ya_relay_core::session::{Endpoint, NodeInfo, NodeSession, SessionId};
+use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
+use ya_relay_core::{SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT};
 use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
 
-pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
-pub const SESSION_CLEANER_INTERVAL: u64 = 10; // seconds
-pub const SESSION_TIMEOUT: i64 = 60; // seconds
 
 #[derive(Clone)]
 pub struct Server {
@@ -55,6 +51,14 @@ pub struct ServerImpl {
 
 impl Server {
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> ServerResult<()> {
+        let session_id = PacketKind::session_id(&packet);
+        if !session_id.is_empty() {
+            let id = SessionId::try_from(session_id.clone())
+                .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+            let mut server = self.state.write().await;
+            let _ = server.nodes.update_seen(id);
+        }
+
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
@@ -72,11 +76,6 @@ impl Server {
 
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
-
-                {
-                    let mut server = self.state.write().await;
-                    let _ = server.nodes.update_seen(id);
-                }
 
                 let node = match self.state.read().await.nodes.get_by_session(id) {
                     None => return self.clone().establish_session(id, from, kind).await,
@@ -117,14 +116,7 @@ impl Server {
                 }
             }
 
-            PacketKind::Forward(forward) => {
-                if let Ok(sid) = SessionId::try_from(forward.session_id) {
-                    let mut server = self.state.write().await;
-                    let _ = server.nodes.update_seen(sid);
-                }
-
-                self.forward(forward, from).await?
-            }
+            PacketKind::Forward(forward) => self.forward(forward, from).await?,
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
@@ -590,17 +582,22 @@ impl Server {
     }
 
     async fn session_cleaner(&self) {
-        let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
+        log::debug!(
+            "Starting session cleaner at interval {}s",
+            (*SESSION_CLEANER_INTERVAL).as_secs()
+        );
+        let mut interval = time::interval(*SESSION_CLEANER_INTERVAL);
         loop {
             interval.tick().await;
             let s = self.clone();
+            log::trace!("Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
         }
     }
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(SESSION_TIMEOUT);
+        server.nodes.check_timeouts(*SESSION_TIMEOUT);
     }
 
     async fn send_to(
@@ -646,7 +643,7 @@ impl Server {
                 .await
                 .recv_socket
                 .take()
-                .ok_or_else(|| anyhow!("Server already running."))?
+                .ok_or_else(|| anyhow::anyhow!("Server already running."))?
         };
         tokio::task::spawn_local(async move { self.session_cleaner().await });
 
@@ -730,11 +727,4 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         seen_ts: node_info.last_seen.timestamp() as u32,
         slot: node_info.info.slot,
     }
-}
-
-pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
-    let host = url.host_str().context("Needs host for NET URL")?;
-    let port = url.port().unwrap_or(DEFAULT_NET_PORT);
-
-    Ok(format!("{}:{}", host, port))
 }

@@ -1,0 +1,36 @@
+[package]
+name = "ya-relay-core"
+version = "0.1.0"
+authors = ["Golem Factory <contact@golem.network>"]
+edition = "2018"
+homepage = "https://github.com/golemfactory/ya-relay/crates/core"
+repository = "https://github.com/golemfactory/ya-relay"
+license = "LGPL-3.0"
+description= "Golem relay base functionality"
+
+
+[dependencies]
+ya-relay-stack = { path = "../stack" }
+ya-relay-proto = { path = "../proto" }
+
+anyhow = "1.0"
+chrono = "0.4"
+digest = "0.9"
+ethsign = "0.8"
+futures = "0.3"
+hex = "0.4"
+lazy_static = "1.4"
+log = "0.4"
+rand = { version = "0.8", features = ["std"] }
+serde_json = "1.0"
+sha2 = "0.9"
+sha3 = "0.9"
+tokio = { version = "0.2", features = ["tcp", "udp", "net", "sync", "macros", "rt-core", "stream", "time"] }
+tokio-util = { version = "0.3", features = ["codec"] }
+ya-client-model = "0.3"
+url = "2.1"
+uuid = { version = "0.8", features = ["v4"] }
+
+[dev-dependencies]
+actix-rt = "1.1"
+env_logger = { version = "0.8", default-features = false }

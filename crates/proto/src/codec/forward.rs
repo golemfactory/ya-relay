@@ -1,4 +1,3 @@
-use std::borrow::BorrowMut;
 use std::mem::size_of;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -106,8 +105,7 @@ where
     }
 
     fn start_send(mut self: Pin<&mut Self>, item: P) -> Result<(), Self::Error> {
-        let mut dst = Vec::new();
-        encode(item, &mut dst);
+        let dst = encode(item);
         Pin::new(&mut self.sink).start_send(dst)
     }
 
@@ -125,7 +123,6 @@ where
     S: Stream<Item = Vec<u8>> + Unpin,
 {
     stream: S,
-    state: State,
     buf: BytesMut,
 }
 
@@ -136,8 +133,7 @@ where
     pub fn new(stream: S) -> Self {
         Self {
             stream,
-            state: State::AwaitingPrefix,
-            buf: BytesMut::with_capacity(1024),
+            buf: BytesMut::with_capacity(65535),
         }
     }
 }
@@ -146,11 +142,6 @@ impl<S> PrefixedStream<S>
 where
     S: Stream<Item = Vec<u8>> + Unpin,
 {
-    #[inline(always)]
-    fn transition(&mut self, state: State) {
-        let _ = std::mem::replace(&mut self.state, state);
-    }
-
     #[inline(always)]
     fn maybe_wake(&mut self, cx: &mut Context<'_>) {
         if !self.buf.is_empty() {
@@ -167,26 +158,9 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.buf.is_empty() {
-            match std::mem::replace(self.state.borrow_mut(), State::Poisoned) {
-                State::AwaitingPrefix => match decode(&mut self.buf) {
-                    Ok(bytes) => {
-                        self.transition(State::AwaitingPrefix);
-                        self.maybe_wake(cx);
-                        return Poll::Ready(Some(Ok(bytes)));
-                    }
-                    Err(state) => {
-                        self.transition(state);
-                    }
-                },
-                State::Buffering { mut left, read } => {
-                    left -= read;
-                    if left == 0 {
-                        self.transition(State::AwaitingPrefix);
-                        return self.poll_next(cx);
-                    }
-                    self.transition(State::Buffering { left, read: 0 });
-                }
-                State::Poisoned => panic!("Programming error: no proper state set"),
+            if let Ok(bytes) = decode(&mut self.buf) {
+                self.maybe_wake(cx);
+                return Poll::Ready(Some(Ok(bytes)));
             }
         }
 
@@ -195,7 +169,6 @@ where
                 if bytes.is_empty() {
                     return Poll::Ready(None);
                 }
-                self.state.read(bytes.len());
                 self.buf.extend(bytes);
                 self.poll_next(cx)
             }
@@ -207,47 +180,30 @@ where
 
 const PREFIX_SIZE: usize = size_of::<u32>();
 
-fn encode(payload: impl Into<Payload>, buf: &mut Vec<u8>) {
-    let payload = payload.into();
-    let len = payload.len() as u32;
-    buf.reserve(PREFIX_SIZE + len as usize);
-    buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend(payload.freeze().into_iter().take(len as usize));
+fn encode(payload: impl Into<Payload>) -> Vec<u8> {
+    let mut vec = payload.into().into_vec();
+    let len = vec.len() as u32;
+    vec.reserve(PREFIX_SIZE);
+    vec.splice(0..0, len.to_be_bytes());
+    vec
 }
 
-fn decode(buf: &mut BytesMut) -> Result<Bytes, State> {
-    if buf.len() >= PREFIX_SIZE {
-        let mut length: [u8; 4] = [0u8; 4];
-        length.copy_from_slice(&buf.as_ref()[0..4]);
-
-        let length = u32::from_be_bytes(length) as usize;
-        let prefixed_length = PREFIX_SIZE + length;
-
-        if buf.len() >= prefixed_length as usize {
-            buf.advance(PREFIX_SIZE);
-            let bytes = buf.split_to(length);
-            Ok(bytes.freeze())
-        } else {
-            let left = prefixed_length - buf.len();
-            Err(State::Buffering { left, read: 0 })
-        }
-    } else {
-        Err(State::AwaitingPrefix)
+fn decode(buf: &mut BytesMut) -> Result<Bytes, ()> {
+    if buf.len() < PREFIX_SIZE {
+        return Err(());
     }
-}
 
-#[derive(Copy, Clone, Debug)]
-enum State {
-    AwaitingPrefix,
-    Buffering { left: usize, read: usize },
-    Poisoned,
-}
+    let mut length: [u8; PREFIX_SIZE] = [0u8; PREFIX_SIZE];
+    length.copy_from_slice(&buf.as_ref()[0..PREFIX_SIZE]);
+    let length = u32::from_be_bytes(length) as usize;
+    let prefixed_length = PREFIX_SIZE + length;
 
-impl State {
-    fn read(&mut self, count: usize) {
-        if let Self::Buffering { left, read } = self {
-            *read = (*left).min(*read + count);
-        }
+    if buf.len() >= prefixed_length {
+        buf.advance(PREFIX_SIZE);
+        let bytes = buf.split_to(length);
+        Ok(bytes.freeze())
+    } else {
+        Err(())
     }
 }
 
@@ -300,7 +256,7 @@ mod tests {
             (0..max).map(|_| rng.gen::<T>()).collect()
         }
 
-        let packets: Vec<Vec<u8>> = vec![
+        let mut packets: Vec<Vec<u8>> = vec![
             gen_vec(11),
             gen_vec(100),
             gen_vec(1),
@@ -323,6 +279,11 @@ mod tests {
         assert_eq!(packets, forward(packets.clone(), 2).await);
         assert_eq!(packets, forward(packets.clone(), 3).await);
         assert_eq!(packets, forward(packets.clone(), 4).await);
+
+        packets.push(gen_vec(65535));
+        packets.push(gen_vec(65535 * 2));
+        packets.push(gen_vec(65535));
+
         assert_eq!(packets, forward(packets.clone(), 7).await);
         assert_eq!(packets, forward(packets.clone(), 8).await);
         assert_eq!(packets, forward(packets.clone(), 16).await);

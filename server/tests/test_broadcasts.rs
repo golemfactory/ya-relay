@@ -4,20 +4,19 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 
 use anyhow::Context;
-use itertools::Itertools;
-use futures::channel::mpsc;
 use futures::StreamExt;
+use itertools::Itertools;
+use tokio::sync::mpsc;
 
 use ya_client_model::NodeId;
-use ya_net_server::testing::client::Forwarded;
-use ya_net_server::testing::server::{init_test_server, ServerWrapper};
-use ya_net_server::testing::{Client, ClientBuilder};
+use ya_relay_client::{client::Forwarded, Client, ClientBuilder};
+use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     let mut clients = vec![];
     for _ in 0..count {
         clients.push(
-            ClientBuilder::from_server(&wrapper.server)
+            ClientBuilder::from_url(wrapper.server.inner.url.clone())
                 .connect()
                 .build()
                 .await
@@ -104,14 +103,11 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
 
 #[serial_test::serial]
 async fn test_broadcast() -> anyhow::Result<()> {
-    const NEIGHBOURHOOD_SIZE:u32 = 10;
+    const NEIGHBOURHOOD_SIZE: u32 = 10;
     let wrapper = init_test_server().await.unwrap();
     let mut clients = start_clients(&wrapper, NEIGHBOURHOOD_SIZE).await;
 
-    fn spawn_receive(
-        received: Rc<AtomicUsize>,
-        rx: mpsc::Receiver<Forwarded>,
-    ) {
+    fn spawn_receive(received: Rc<AtomicUsize>, rx: mpsc::UnboundedReceiver<Forwarded>) {
         tokio::task::spawn_local({
             let received = received.clone();
             async move {

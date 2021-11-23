@@ -1,4 +1,4 @@
-use ya_net_server::Server;
+use ya_relay_server::server::Server;
 
 use chrono::Local;
 use std::io::Write;
@@ -14,9 +14,10 @@ struct Options {
 
 #[actix_rt::main]
 async fn main() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
     std::env::set_var(
         "RUST_LOG",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace".to_string()),
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,smoltcp=info".to_string()),
     );
     env_logger::Builder::new()
         .parse_default_env()

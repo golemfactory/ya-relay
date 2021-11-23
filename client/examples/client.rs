@@ -2,9 +2,9 @@ use env_logger;
 use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
-use ya_net_server::crypto::FallbackCryptoProvider;
-use ya_net_server::testing::key::{load_or_generate, Protected};
-use ya_net_server::testing::ClientBuilder;
+use ya_relay_client::ClientBuilder;
+use ya_relay_core::crypto::FallbackCryptoProvider;
+use ya_relay_core::key::{load_or_generate, Protected};
 
 #[derive(StructOpt)]
 #[structopt(about = "NET Client")]
@@ -45,6 +45,11 @@ pub struct FindNode {
 
 #[actix_rt::main]
 async fn main() -> anyhow::Result<()> {
+    dotenv::dotenv().ok();
+    std::env::set_var(
+        "RUST_LOG",
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,smoltcp=info".to_string()),
+    );
     env_logger::init();
 
     let args = Options::from_args();
