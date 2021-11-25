@@ -1,5 +1,5 @@
 [package]
-name = "ya-net-stack"
+name = "ya-relay-stack"
 version = "0.1.0"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
@@ -12,8 +12,14 @@ description= "Embeddable networking stack"
 derive_more = "0.99"
 futures = "0.3"
 log = "0.4"
-managed = {version = "0.7", features = ["std"] }
+managed = { version = "0.7", features = ["std"] }
 rand = { version = "0.8", features = ["std"] }
 smoltcp = "0.7"
 thiserror = "1.0"
 tokio = { version = "0.2", features = ["rt-core", "rt-util", "time"] }
+
+[dev-dependencies]
+anyhow = "1.0"
+hex = "0.4"
+sha3 = "0.8"
+tokio = { version = "0.2", features = ["macros", "rt-core", "rt-util", "sync", "time"] }

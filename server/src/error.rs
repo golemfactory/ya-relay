@@ -1,4 +1,4 @@
-use crate::session::SessionId;
+use ya_relay_core::session::SessionId;
 
 use ya_client_model::NodeId;
 
@@ -39,7 +39,7 @@ pub enum BadRequest {
     NoSessionId,
     #[error("Invalid NodeId.")]
     InvalidNodeId,
-    #[error("Invalid packet type for session [{0}]. Expected: ")]
+    #[error("Invalid packet type for session [{0}]. Expected: {1}")]
     InvalidPacket(SessionId, String),
     #[error("Failed to decode packet.")]
     DecodingFailed,

@@ -1,13 +1,18 @@
 use derive_more::From;
 use managed::ManagedSlice;
 use smoltcp::socket::*;
+use smoltcp::time::Duration;
 use smoltcp::wire::{IpEndpoint, IpProtocol, IpVersion};
-use std::time::Duration;
 
 use crate::{Protocol, MAX_FRAME_SIZE};
 
-pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(3);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(60);
+pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
+const TCP_TIMEOUT: Duration = Duration::from_secs(6);
+const TCP_KEEP_ALIVE: Duration = Duration::from_secs(3);
+const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
+
+const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
+const RX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
 
 /// Socket quintuplet
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -69,7 +74,7 @@ pub trait SocketExt {
     fn local_endpoint(&self) -> SocketEndpoint;
     fn remote_endpoint(&self) -> SocketEndpoint;
 
-    fn is_open(&self) -> bool;
+    fn is_closed(&self) -> bool;
 
     fn can_recv(&self) -> bool;
     fn recv(&mut self) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, smoltcp::Error>;
@@ -104,12 +109,20 @@ impl<'a> SocketExt for Socket<'a> {
         }
     }
 
-    fn is_open(&self) -> bool {
+    fn is_closed(&self) -> bool {
         match &self {
-            Self::Tcp(s) => s.is_open(),
-            Self::Udp(s) => s.is_open(),
-            Self::Icmp(s) => s.is_open(),
-            Self::Raw(_) => true,
+            Self::Tcp(s) => matches!(
+                s.state(),
+                TcpState::FinWait1
+                    | TcpState::FinWait2
+                    | TcpState::CloseWait
+                    | TcpState::Closing
+                    | TcpState::LastAck
+                    | TcpState::Closed
+            ),
+            Self::Udp(s) => !s.is_open(),
+            Self::Icmp(s) => !s.is_open(),
+            Self::Raw(_) => false,
         }
     }
 
@@ -178,10 +191,12 @@ impl<'a> SocketExt for Socket<'a> {
 }
 
 pub fn tcp_socket<'a>() -> TcpSocket<'a> {
-    let rx_buf = TcpSocketBuffer::new(vec![0; MAX_FRAME_SIZE * 4]);
-    let tx_buf = TcpSocketBuffer::new(vec![0; MAX_FRAME_SIZE * 4]);
+    let rx_buf = TcpSocketBuffer::new(vec![0; RX_BUFFER_SIZE]);
+    let tx_buf = TcpSocketBuffer::new(vec![0; TCP_TX_BUFFER_SIZE]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
-    socket.set_keep_alive(Some(TCP_KEEP_ALIVE.into()));
+    socket.set_timeout(Some(TCP_TIMEOUT));
+    socket.set_keep_alive(Some(TCP_KEEP_ALIVE));
+    socket.set_ack_delay(Some(TCP_ACK_DELAY));
     socket
 }
 
@@ -208,5 +223,5 @@ fn meta_storage<'a, T: Clone>() -> ManagedSlice<'a, T> {
 }
 
 fn payload_storage<T: Default + Clone>() -> Vec<T> {
-    vec![Default::default(); MAX_FRAME_SIZE]
+    vec![Default::default(); RX_BUFFER_SIZE]
 }

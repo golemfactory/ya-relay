@@ -1,11 +1,10 @@
-use anyhow::{anyhow, Context};
-use bytes::BytesMut;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
-use governor::{Quota, RateLimiter};
+use governor::clock::{Clock, DefaultClock, QuantaInstant};
+use governor::{NegativeMultiDecision, Quota, RateLimiter};
 use rand::Rng;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
@@ -16,27 +15,26 @@ use tokio::time::{self, timeout, Duration};
 use tokio_util::codec::{Decoder, Encoder};
 use url::Url;
 
-use crate::challenge::{Challenge, DefaultChallenge};
 use crate::error::{
     BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
 };
-use crate::session::{Endpoint, NodeInfo, NodeSession, SessionId};
 use crate::state::NodesState;
-use crate::udp_stream::{udp_bind, InStream, OutStream};
 
 use ya_client_model::NodeId;
+use ya_relay_core::challenge;
+use ya_relay_core::session::{Endpoint, NodeInfo, NodeSession, SessionId};
+use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
+use ya_relay_core::{SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT};
 use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
 
-pub const DEFAULT_NET_PORT: u16 = 7464;
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
 const FORWARDER_RATE_LIMIT: u32 = 2048;
-pub const SESSION_CLEANER_INTERVAL: u64 = 10; // seconds
-pub const SESSION_TIMEOUT: i64 = 60; // seconds
+const FORWARDER_RESUME_INTERVAL: u64 = 1; // seconds
 
 #[derive(Clone)]
 pub struct Server {
@@ -47,6 +45,7 @@ pub struct Server {
 pub struct ServerState {
     pub nodes: NodesState,
     pub starting_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
+    resume_forwarding: BTreeSet<(QuantaInstant, SessionId, SocketAddr)>,
 
     recv_socket: Option<InStream>,
 }
@@ -58,6 +57,14 @@ pub struct ServerImpl {
 
 impl Server {
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> ServerResult<()> {
+        let session_id = PacketKind::session_id(&packet);
+        if !session_id.is_empty() {
+            let id = SessionId::try_from(session_id.clone())
+                .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+            let mut server = self.state.write().await;
+            let _ = server.nodes.update_seen(id);
+        }
+
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
@@ -75,6 +82,7 @@ impl Server {
 
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+
                 let node = match self.state.read().await.nodes.get_by_session(id) {
                     None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
@@ -93,7 +101,10 @@ impl Server {
                         Kind::Slot(params) => {
                             self.slot_request(request_id, id, from, params).await?
                         }
-                        Kind::Neighbours(_) => {}
+                        Kind::Neighbours(params) => {
+                            self.neighbours_request(request_id, id, from, params)
+                                .await?
+                        }
                         Kind::ReverseConnection(_) => {}
                         Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
                     },
@@ -120,7 +131,7 @@ impl Server {
         Ok(())
     }
 
-    async fn forward(&self, mut packet: proto::Forward, _from: SocketAddr) -> ServerResult<()> {
+    async fn forward(&self, mut packet: proto::Forward, from: SocketAddr) -> ServerResult<()> {
         let session_id = SessionId::from(packet.session_id);
         let slot = packet.slot;
 
@@ -146,7 +157,39 @@ impl Server {
             .check_n(NonZeroU32::new(packet.payload.len().try_into().unwrap_or(u32::MAX)).unwrap())
         {
             log::trace!("Rate limiting: {:?}", e);
-            // TODO: Send `PauseForwarding`
+            match e {
+                NegativeMultiDecision::InsufficientCapacity(cells) => {
+                    // the query was invalid as the rate limite parameters can never accomodate the
+                    // number of cells queried for.
+                    log::warn!(
+                        "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
+                        cells,
+                        &from
+                    );
+                }
+                NegativeMultiDecision::BatchNonConforming(cells, retry_at) => {
+                    log::debug!(
+                        "Rate limited packet. size: {}, retry_at: {}",
+                        cells,
+                        retry_at
+                    );
+                    {
+                        let mut server = self.state.write().await;
+                        server.resume_forwarding.insert((
+                            retry_at.earliest_possible(),
+                            session_id.clone(),
+                            from.clone(),
+                        ));
+                    }
+                    let control_packet = proto::Packet::control(
+                        session_id.to_vec(),
+                        ya_relay_proto::proto::control::PauseForwarding { slot },
+                    );
+                    self.send_to(PacketKind::Packet(control_packet), &from)
+                        .await
+                        .map_err(|_| InternalError::Send)?;
+                }
+            }
             return Ok(());
         }
 
@@ -272,11 +315,6 @@ impl Server {
         session_id: SessionId,
         from: SocketAddr,
     ) -> ServerResult<()> {
-        {
-            let mut server = self.state.write().await;
-            server.nodes.update_seen(session_id)?;
-        }
-
         self.send_to(
             proto::Packet::response(
                 request_id,
@@ -317,6 +355,42 @@ impl Server {
             .await
     }
 
+    async fn neighbours_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        params: proto::request::Neighbours,
+    ) -> ServerResult<()> {
+        let nodes = {
+            self.state
+                .read()
+                .await
+                .nodes
+                .neighbours(session_id, params.count)?
+        };
+
+        let nodes = nodes
+            .into_iter()
+            .map(|node_info| to_node_response(node_info, params.public_key))
+            .collect();
+
+        self.send_to(
+            proto::Packet::response(
+                request_id,
+                session_id.to_vec(),
+                proto::StatusCode::Ok,
+                proto::response::Neighbours { nodes },
+            ),
+            &from,
+        )
+        .await
+        .map_err(|_| InternalError::Send)?;
+
+        log::info!("Neighborhood sent to (request: {}): {}", request_id, from);
+        Ok(())
+    }
+
     async fn slot_request(
         &self,
         request_id: RequestId,
@@ -346,23 +420,8 @@ impl Server {
         node_info: NodeSession,
         public_key: bool,
     ) -> ServerResult<()> {
-        let public_key = if public_key {
-            node_info.info.public_key
-        } else {
-            vec![]
-        };
-        let node = proto::response::Node {
-            node_id: node_info.info.node_id.into_array().to_vec(),
-            public_key,
-            endpoints: node_info
-                .info
-                .endpoints
-                .into_iter()
-                .map(proto::Endpoint::from)
-                .collect(),
-            seen_ts: node_info.last_seen.timestamp() as u32,
-            slot: node_info.info.slot,
-        };
+        let node_id = node_info.info.node_id;
+        let node = to_node_response(node_info, public_key);
 
         self.send_to(
             proto::Packet::response(request_id, session_id.to_vec(), proto::StatusCode::Ok, node),
@@ -373,7 +432,7 @@ impl Server {
 
         log::info!(
             "Node [{}] info sent to (request: {}): {}",
-            node_info.info.node_id,
+            node_id,
             request_id,
             from
         );
@@ -475,13 +534,13 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // Validate the challenge
-                if !DefaultChallenge::with(session.public_key.as_slice())
-                    .validate(
-                        &raw_challenge,
-                        CHALLENGE_DIFFICULTY,
-                        &session.challenge_resp,
-                    )
-                    .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
+                if !challenge::verify(
+                    &raw_challenge,
+                    CHALLENGE_DIFFICULTY,
+                    &session.challenge_resp,
+                    session.public_key.as_slice(),
+                )
+                .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
                 {
                     return Err(Unauthorized::InvalidChallenge.into());
                 }
@@ -535,29 +594,40 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(session_id, "Session".to_string()).into()),
         };
 
-        match rc.next().await {
-            Some(proto::Request {
-                request_id,
-                kind: Some(proto::request::Kind::Register(registration)),
-            }) => {
-                log::info!("Got register from node: {}", with);
+        loop {
+            match rc.next().await {
+                Some(proto::Request {
+                    request_id,
+                    kind: Some(proto::request::Kind::Register(registration)),
+                }) => {
+                    log::info!("Got register from node: {}", with);
 
-                let node_id = node.info.node_id;
-                let node = self
-                    .register_endpoints(request_id, session_id, with, registration, node)
-                    .await?;
+                    let node_id = node.info.node_id;
+                    let node = self
+                        .register_endpoints(request_id, session_id, with, registration, node)
+                        .await?;
 
-                self.cleanup_initialization(&session_id).await;
+                    self.cleanup_initialization(&session_id).await;
 
-                {
-                    let mut server = self.state.write().await;
-                    server.nodes.register(node);
+                    {
+                        let mut server = self.state.write().await;
+                        server.nodes.register(node);
+                    }
+
+                    log::info!("Session: {} established for node: {}", session_id, node_id);
+                    break;
                 }
-
-                log::info!("Session: {} established for node: {}", session_id, node_id);
-            }
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Register".to_string()).into()),
-        };
+                Some(proto::Request {
+                    kind: Some(proto::request::Kind::Ping(_)),
+                    ..
+                }) => continue,
+                _ => {
+                    return Err(
+                        BadRequest::InvalidPacket(session_id, "Register".to_string()).into(),
+                    );
+                }
+            };
+        }
         Ok(())
     }
 
@@ -566,17 +636,70 @@ impl Server {
     }
 
     async fn session_cleaner(&self) {
-        let mut interval = time::interval(Duration::new(SESSION_CLEANER_INTERVAL, 0));
+        log::debug!(
+            "Starting session cleaner at interval {}s",
+            (*SESSION_CLEANER_INTERVAL).as_secs()
+        );
+        let mut interval = time::interval(*SESSION_CLEANER_INTERVAL);
         loop {
             interval.tick().await;
             let s = self.clone();
+            log::trace!("Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
         }
     }
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(SESSION_TIMEOUT);
+        server.nodes.check_timeouts(*SESSION_TIMEOUT);
+    }
+
+    async fn forward_resumer(&self) {
+        let mut interval = time::interval(Duration::new(FORWARDER_RESUME_INTERVAL, 0));
+        loop {
+            interval.tick().await;
+            self.check_resume_forwarding().await;
+        }
+    }
+
+    async fn check_resume_forwarding(&self) {
+        let clock = DefaultClock::default();
+        let mut to_resume = Vec::new();
+        {
+            let mut server = self.state.write().await;
+
+            // First iteration to release write lock as soon as possible
+            // FIXME: Use .drain_filter() on (resume_at <= now) when it becomes stable
+            for elem in server.resume_forwarding.iter() {
+                let (resume_at, session_id, socket_addr) = elem;
+                let now = clock.now();
+                if resume_at > &now {
+                    let elem = elem.clone();
+                    let mut split = server.resume_forwarding.split_off(&elem);
+                    std::mem::swap(&mut split, &mut server.resume_forwarding);
+                    break;
+                }
+                if let Some(node_session) = server.nodes.get_by_session(session_id.clone()) {
+                    to_resume.push((node_session, *session_id, *socket_addr));
+                }
+            }
+        };
+
+        // Second iteration without locks
+        for (node_session, session_id, socket_addr) in to_resume {
+            let control_packet = proto::Packet::control(
+                session_id.to_vec(),
+                ya_relay_proto::proto::control::ResumeForwarding {
+                    slot: node_session.info.slot,
+                },
+            );
+            if let Err(e) = self
+                .send_to(PacketKind::Packet(control_packet), &socket_addr)
+                .await
+            {
+                log::warn!("Can not send ResumeForwarding. {}", e);
+            }
+        }
     }
 
     async fn send_to(
@@ -609,6 +732,7 @@ impl Server {
             nodes: NodesState::new(),
             starting_session: Default::default(),
             recv_socket: Some(input),
+            resume_forwarding: BTreeSet::new(),
         }));
 
         Ok(Server { state, inner })
@@ -616,15 +740,18 @@ impl Server {
 
     pub async fn run(self) -> anyhow::Result<()> {
         let server = self.clone();
+        let server_session_cleaner = self.clone();
+        let server_forward_resumer = self.clone();
         let mut input = {
             self.state
                 .write()
                 .await
                 .recv_socket
                 .take()
-                .ok_or_else(|| anyhow!("Server already running."))?
+                .ok_or_else(|| anyhow::anyhow!("Server already running."))?
         };
-        tokio::task::spawn_local(async move { self.session_cleaner().await });
+        tokio::task::spawn_local(async move { server_session_cleaner.session_cleaner().await });
+        tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
         while let Some((packet, addr)) = input.next().await {
             let request_id = PacketKind::request_id(&packet);
@@ -688,9 +815,22 @@ pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, pr
     }
 }
 
-pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
-    let host = url.host_str().context("Needs host for NET URL")?;
-    let port = url.port().unwrap_or(DEFAULT_NET_PORT);
+pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::response::Node {
+    let public_key = match public_key {
+        true => node_info.info.public_key,
+        false => vec![],
+    };
 
-    Ok(format!("{}:{}", host, port))
+    proto::response::Node {
+        node_id: node_info.info.node_id.into_array().to_vec(),
+        public_key,
+        endpoints: node_info
+            .info
+            .endpoints
+            .into_iter()
+            .map(proto::Endpoint::from)
+            .collect(),
+        seen_ts: node_info.last_seen.timestamp() as u32,
+        slot: node_info.info.slot,
+    }
 }
