@@ -667,20 +667,21 @@ impl Server {
         let mut to_resume = Vec::new();
         {
             let mut server = self.state.write().await;
-            let rs_fwd = server.resume_forwarding.clone();
-            let mut set_iter = rs_fwd.iter();
 
             // First iteration to release write lock as soon as possible
-            while let Some(elem) = set_iter.next() {
-                let (resume_at, session_id, socket_addr) = elem.clone();
+            // FIXME: Use .drain_filter() on (resume_at <= now) when it becomes stable
+            for elem in server.resume_forwarding.iter() {
+                let (resume_at, session_id, socket_addr) = elem;
                 let now = clock.now();
-                if resume_at > now {
+                if resume_at > &now {
+                    let elem = elem.clone();
+                    let mut split = server.resume_forwarding.split_off(&elem);
+                    std::mem::swap(&mut split, &mut server.resume_forwarding);
                     break;
                 }
                 if let Some(node_session) = server.nodes.get_by_session(session_id.clone()) {
-                    to_resume.push((node_session, session_id, socket_addr));
+                    to_resume.push((node_session, *session_id, *socket_addr));
                 }
-                server.resume_forwarding.remove(elem);
             }
         };
 
