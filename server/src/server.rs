@@ -177,8 +177,8 @@ impl Server {
                         let mut server = self.state.write().await;
                         server.resume_forwarding.insert((
                             retry_at.earliest_possible(),
-                            session_id.clone(),
-                            from.clone(),
+                            session_id,
+                            from,
                         ));
                     }
                     let control_packet = proto::Packet::control(
@@ -674,12 +674,12 @@ impl Server {
                 let (resume_at, session_id, socket_addr) = elem;
                 let now = clock.now();
                 if resume_at > &now {
-                    let elem = elem.clone();
+                    let elem = *elem;
                     let mut split = server.resume_forwarding.split_off(&elem);
                     std::mem::swap(&mut split, &mut server.resume_forwarding);
                     break;
                 }
-                if let Some(node_session) = server.nodes.get_by_session(session_id.clone()) {
+                if let Some(node_session) = server.nodes.get_by_session(*session_id) {
                     to_resume.push((node_session, *session_id, *socket_addr));
                 }
             }
