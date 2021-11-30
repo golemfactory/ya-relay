@@ -6,6 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail};
+use chrono::{DateTime, Utc};
 use derive_more::From;
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
@@ -55,6 +56,7 @@ struct ClientState {
     slots: HashMap<SocketAddr, HashSet<SlotId>>,
     neighbours: Option<Neighbourhood>,
     forward_unreliable: HashMap<(NodeId, SocketAddr), ForwardSender>,
+    forward_paused_till: Option<DateTime<Utc>>,
 
     virt_ingress: Channel<Forwarded>,
     virt_nodes: HashMap<Box<[u8]>, VirtNode>,
@@ -72,6 +74,7 @@ impl ClientState {
             slots: Default::default(),
             neighbours: Default::default(),
             forward_unreliable: Default::default(),
+            forward_paused_till: Default::default(),
             virt_ingress: Default::default(),
             virt_nodes: Default::default(),
             virt_ips: Default::default(),
@@ -680,6 +683,14 @@ impl Client {
         session_addr: SocketAddr,
         forward_id: impl Into<ForwardId>,
     ) -> anyhow::Result<ForwardSender> {
+        if let Some(date) = self.state.read().await.forward_paused_till {
+            if date > Utc::now() {
+                anyhow::bail!("Forwarding is paused")
+            }
+            else {
+                self.state.write().await.forward_paused_till = None
+            }
+        }
         let node = match forward_id.into() {
             ForwardId::NodeId(node_id) => self.resolve_node(node_id, session_addr).await?,
             ForwardId::SlotId(slot) => self.resolve_slot(slot, session_addr).await?,
@@ -885,6 +896,19 @@ impl Handler for Client {
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
         log::debug!("received control packet from {}: {:?}", from, control);
+
+        if let Some(kind) = control.kind {
+
+            log::info!("Got {:?}!", kind);
+
+            if let ya_relay_proto::proto::control::Kind::PauseForwarding(message) = kind {
+                return async move {
+                    log::info!("Got Pause! {:?}", message);
+                    self.state.write().await.forward_paused_till = Some(Utc::now() + chrono::Duration::seconds(60))
+                }
+                .boxed_local()
+            }
+        }
         Box::pin(futures::future::ready(()))
     }
 

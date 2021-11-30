@@ -11,6 +11,7 @@ ya-relay-core = { path = "../crates/core" }
 ya-client-model = "0.3"
 
 anyhow = "1.0"
+chrono = "0.4"
 derive_more = "0.99"
 env_logger = { version = "0.8", default-features = false }
 futures = "0.3"
