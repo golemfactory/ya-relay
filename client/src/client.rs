@@ -683,14 +683,6 @@ impl Client {
         session_addr: SocketAddr,
         forward_id: impl Into<ForwardId>,
     ) -> anyhow::Result<ForwardSender> {
-        if let Some(date) = self.state.read().await.forward_paused_till {
-            if date > Utc::now() {
-                anyhow::bail!("Forwarding is paused")
-            }
-            else {
-                self.state.write().await.forward_paused_till = None
-            }
-        }
         let node = match forward_id.into() {
             ForwardId::NodeId(node_id) => self.resolve_node(node_id, session_addr).await?,
             ForwardId::SlotId(slot) => self.resolve_slot(slot, session_addr).await?,
@@ -704,7 +696,8 @@ impl Client {
         tokio::task::spawn_local(async move {
             log::trace!("forwarding messages to {:?}", node);
 
-            while let Some(payload) = rx.next().await {
+            while let Some(payload) = client.get_next_fwd_payload(&mut rx).await {
+                log::trace!("forwarding message {:?} to {:?}", payload, node);
                 let _ = client
                     .net
                     .send(payload, connection)
@@ -754,8 +747,9 @@ impl Client {
 
         let client = self.clone();
         tokio::task::spawn_local(async move {
-            while let Some(payload) = rx.next().await {
-                log::trace!("forwarding message (U) to {:?}", node);
+            log::trace!("forwarding messages (U) to {:?}", node);
+            while let Some(payload) = client.get_next_fwd_payload(&mut rx).await {
+                log::trace!("forwarding message (U) {:?} to {:?}", payload, node);
 
                 let forward = Forward::unreliable(node.session_id, node.session_slot, payload);
                 if let Err(error) = client.send(forward, session_addr).await {
@@ -820,6 +814,23 @@ impl Client {
         }
 
         Ok(())
+    }
+
+    async fn get_next_fwd_payload<T>(&self, rx: &mut mpsc::Receiver<T>) -> Option<T> {
+        let raw_date = {
+            // dont lock the state longer then needed.
+            self.state.read().await.forward_paused_till
+        };
+        if let Some(date) = raw_date {
+            if let Ok(duration) = (date - Utc::now()).to_std() {
+                log::debug!("Receiver Paused!!! {:?}", duration);
+                tokio::time::delay_for(duration).await;
+                log::debug!("Receiver Continues...");
+            }
+            self.state.write().await.forward_paused_till = None;
+            log::debug!("reset date");
+        }
+        rx.next().await
     }
 }
 
@@ -898,15 +909,15 @@ impl Handler for Client {
         log::debug!("received control packet from {}: {:?}", from, control);
 
         if let Some(kind) = control.kind {
-
             log::info!("Got {:?}!", kind);
 
             if let ya_relay_proto::proto::control::Kind::PauseForwarding(message) = kind {
                 return async move {
                     log::info!("Got Pause! {:?}", message);
-                    self.state.write().await.forward_paused_till = Some(Utc::now() + chrono::Duration::seconds(60))
+                    self.state.write().await.forward_paused_till =
+                        Some(Utc::now() + chrono::Duration::seconds(1))
                 }
-                .boxed_local()
+                .boxed_local();
             }
         }
         Box::pin(futures::future::ready(()))

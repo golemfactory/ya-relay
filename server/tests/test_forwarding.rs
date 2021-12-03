@@ -155,6 +155,10 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     let rec_cnt = received2.load(SeqCst);
     println!("Received counter: {}", rec_cnt);
     assert!(rec_cnt <= 2048);
+    tokio::time::delay_for(Duration::from_secs(2)).await;
+    let rec_cnt = received2.load(SeqCst);
+    println!("Received counter: {}", rec_cnt);
+    assert!(rec_cnt > 2048);
 
     Ok(())
 }
