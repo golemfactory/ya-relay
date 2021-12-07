@@ -16,6 +16,7 @@ use ya_relay_core::crypto::CryptoProvider;
 use ya_relay_core::error::Error;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
+use ya_relay_core::utils::parse_node_id;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
@@ -23,12 +24,13 @@ use ya_relay_stack::Channel;
 
 use crate::client::{ClientConfig, ForwardId, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
+use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::{Session, StartingSessions};
-use crate::virtual_layer::{TcpLayer, VirtNode};
+use crate::virtual_layer::TcpLayer;
 
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
 
-/// Managing server and peer-to-peer sessions.
+/// Managing relay server and peer-to-peer sessions.
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
 /// like `NodeId` or `SlotId`.
@@ -38,6 +40,8 @@ pub struct SessionsLayer {
     pub config: Arc<ClientConfig>,
 
     pub virtual_tcp: TcpLayer,
+    pub registry: NodesRegistry,
+
     state: Arc<RwLock<SessionLayerState>>,
 }
 
@@ -61,6 +65,7 @@ impl SessionsLayer {
             sink: None,
             config: config.clone(),
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
+            registry: NodesRegistry::new(),
             state: Arc::new(RwLock::new(SessionLayerState {
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
@@ -93,7 +98,7 @@ impl SessionsLayer {
     ) -> anyhow::Result<Arc<Session>> {
         let node_id = self.config.node_id;
 
-        log::info!("[{}] initializing session with {}", node_id, addr);
+        log::debug!("[{}] initializing session with {}", node_id, addr);
 
         let tmp_session = self.temporary_session(addr).await?;
 
@@ -175,6 +180,12 @@ impl SessionsLayer {
         addr: SocketAddr,
         node_id: NodeId,
     ) -> anyhow::Result<Arc<Session>> {
+        log::info!(
+            "Initializing p2p session with Node: {}, address: {}",
+            node_id,
+            addr
+        );
+
         let session = self.init_session(addr, true).await?;
         {
             let mut state = self.state.write().await;
@@ -185,6 +196,8 @@ impl SessionsLayer {
     }
 
     async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<Arc<Session>> {
+        log::info!("Initializing session with NET relay server at: {}", addr);
+
         let session = self.init_session(addr, false).await?;
 
         self.state
@@ -233,9 +246,8 @@ impl SessionsLayer {
         let session = Session::new(addr, id, self.out_stream()?);
 
         // Incoming sessions are always p2p sessions, so we use slot=0.
-        self.virtual_tcp
-            .add_virt_node(&node_id.into_array(), session.clone(), 0)
-            .await?;
+        let node = self.registry.add_node(node_id, session.clone(), 0).await?;
+        self.virtual_tcp.add_virt_node(node).await?;
 
         {
             let mut state = self.state.write().await;
@@ -246,34 +258,39 @@ impl SessionsLayer {
         Ok(session)
     }
 
+    async fn remove_node(&self, node_id: NodeId) {
+        self.registry.remove_node(node_id).await.ok();
+
+        {
+            let mut state = self.state.write().await;
+
+            if let Some(mut tx) = state.forward_unreliable.remove(&node_id) {
+                tx.close().await.ok();
+            }
+
+            if let Some(session) = state.p2p_sessions.remove(&node_id) {
+                state.nodes_addr.remove(&session.remote);
+            }
+        }
+    }
+
     // async fn remove_session(&self, to_remove: Arc<Session>) {
-    //     let nodes = {
-    //         let mut state = self.state.write().await;
+    //     let mut state = self.state.write().await;
     //
-    //         state.sessions.remove(&to_remove.remote);
-    //         state.nodes_addr.remove(&to_remove.remote);
+    //     state.sessions.remove(&to_remove.remote);
     //
-    //         // Collect all nodes, that use this session to forward communicates.
-    //         state
-    //             .p2p_sessions
-    //             .iter()
-    //             .filter_map(
-    //                 |(node_id, session)| match session.remote == to_remove.remote {
-    //                     true => Some(node_id),
-    //                     false => None,
-    //                 },
-    //             )
-    //             .cloned()
-    //             .collect::<Vec<NodeId>>()
-    //     };
+    //     if let Some(node_id) = state.nodes_addr.remove(&to_remove.remote) {
+    //         state.p2p_sessions.remove(&node_id);
     //
-    //     // TODO: Should we synchronize?
-    //     for node in nodes {
-    //         self.virtual_tcp
-    //             .remove_node(node)
-    //             .await
-    //             .map_err(|e| log::warn!("Failed to remove virtual node {}, error: {}", node, e))
-    //             .ok();
+    //         // In case of p2p Session it is enough to remove information about Node
+    //         // with which we have this Session established.
+    //         // TODO: If we will allow to forward through other Nodes than relay server,
+    //         //       we should look for all Nodes, that use this Session.
+    //         self.registry.remove_node(node_id).await.ok();
+    //         self.virtual_tcp.remove_node(node_id).await.ok();
+    //     } else {
+    //         // This is case we remove relay server session, which isn't associated with
+    //         // any NodeId.
     //     }
     // }
 
@@ -283,8 +300,8 @@ impl SessionsLayer {
     ) -> anyhow::Result<Arc<Session>> {
         // Maybe we already have optimal session resolved.
         if let Ok(node) = match forward_id.clone().into() {
-            ForwardId::NodeId(node_id) => self.virtual_tcp.resolve_node(node_id).await,
-            ForwardId::SlotId(slot) => self.virtual_tcp.resolve_slot(slot).await,
+            ForwardId::NodeId(node_id) => self.registry.resolve_node(node_id).await,
+            ForwardId::SlotId(slot) => self.registry.resolve_slot(slot).await,
         } {
             return Ok(node.session);
         }
@@ -292,7 +309,7 @@ impl SessionsLayer {
         // Find node on server. p2p session will be established, if possible. Otherwise
         // communication will be forwarder through relay server.
         let server = self.server_session().await?;
-        self.resolve(server, forward_id).await
+        Ok(self.resolve(server, forward_id).await?.session)
     }
 
     pub async fn forward(
@@ -301,8 +318,17 @@ impl SessionsLayer {
         node_id: NodeId,
     ) -> anyhow::Result<ForwardSender> {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
-        // TODO: Handle removing slot, like in previous Client code.
-        self.virtual_tcp.connect(node_id).await
+
+        let node = self.registry.resolve_node(node_id).await?;
+        let (sender, disconnected) = self.virtual_tcp.connect(node).await?;
+
+        let myself = self.clone();
+        tokio::task::spawn_local(async move {
+            disconnected.await.ok();
+            myself.remove_node(node_id).await;
+        });
+
+        Ok(sender)
     }
 
     pub async fn forward_unreliable(
@@ -310,7 +336,7 @@ impl SessionsLayer {
         session: Arc<Session>,
         node_id: NodeId,
     ) -> anyhow::Result<ForwardSender> {
-        let node = self.virtual_tcp.resolve_node(node_id).await?;
+        let node = self.registry.resolve_node(node_id).await?;
 
         let (tx, rx) = {
             let mut state = self.state.write().await;
@@ -331,13 +357,13 @@ impl SessionsLayer {
     async fn forward_unreliable_handler(
         self,
         session: Arc<Session>,
-        node: VirtNode,
+        node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
         while let Some(payload) = rx.next().await {
             log::trace!("Forwarding message (U) to {}", node.id);
 
-            let forward = Forward::unreliable(session.id(), node.session_slot, payload);
+            let forward = Forward::unreliable(session.id(), node.slot, payload);
             if let Err(error) = session.send(forward).await {
                 log::trace!(
                     "[{}] forward (U) to {} through {} failed: {}",
@@ -349,7 +375,7 @@ impl SessionsLayer {
             }
         }
 
-        //client.remove_slot(node.session_slot).await;
+        self.remove_node(node.id).await;
         rx.close();
 
         log::trace!(
@@ -363,7 +389,7 @@ impl SessionsLayer {
         &self,
         session: Arc<Session>,
         forward_id: impl Into<ForwardId>,
-    ) -> anyhow::Result<Arc<Session>> {
+    ) -> anyhow::Result<NodeEntry> {
         let node = match forward_id.into() {
             ForwardId::NodeId(node_id) => session.find_node(node_id).await?,
             ForwardId::SlotId(slot) => session.find_slot(slot).await?,
@@ -381,18 +407,16 @@ impl SessionsLayer {
             Err(_) => (self.server_session().await?, node.slot),
         };
 
-        self.virtual_tcp
-            .add_virt_node(&node.node_id[..], session.clone(), slot)
-            .await?;
-
-        Ok(session)
+        self.registry
+            .add_node(parse_node_id(&node.node_id)?, session.clone(), slot)
+            .await
     }
 
     pub async fn try_direct_session(
         &self,
         packet: &proto::response::Node,
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id = NodeId::from(&packet.node_id[..]);
+        let node_id = parse_node_id(&packet.node_id)?;
         if packet.endpoints.is_empty() {
             bail!(
                 "Node [{}] has no public endpoints. Not establishing p2p session",
@@ -614,7 +638,7 @@ impl Handler for SessionsLayer {
                 }
             } else {
                 // Messages forwarded through relay server or other relay Node.
-                match myself.virtual_tcp.resolve_slot(forward.slot).await {
+                match myself.registry.resolve_slot(forward.slot).await {
                     Ok(node) => node.id,
                     Err(_) => {
                         log::debug!(
@@ -624,8 +648,8 @@ impl Handler for SessionsLayer {
 
                         // Try to establish session in case we can't find Node.
                         let session = myself.server_session().await?;
-                        myself.resolve(session, forward.slot).await?;
-                        myself.virtual_tcp.resolve_slot(forward.slot).await?.id
+                        let node = myself.resolve(session, forward.slot).await?;
+                        myself.virtual_tcp.add_virt_node(node).await?.id
                     }
                 }
             };

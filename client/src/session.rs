@@ -16,6 +16,7 @@ use ya_relay_core::crypto::CryptoProvider;
 use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
+use ya_relay_core::utils::parse_node_id;
 use ya_relay_proto::proto::{RequestId, SlotId};
 use ya_relay_proto::{codec, proto};
 
@@ -254,12 +255,8 @@ impl StartingSessions {
         with: SocketAddr,
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
-        if request.node_id.len() != 20 {
-            return Err(BadRequest::InvalidNodeId.into());
-        }
-
+        let node_id = parse_node_id(&request.node_id)?;
         let session_id = SessionId::generate();
-        let node_id = NodeId::from(&request.node_id[..]);
         let (sender, receiver) = mpsc::channel(1);
 
         log::info!(
@@ -337,11 +334,7 @@ impl StartingSessions {
         request: proto::request::Session,
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> ServerResult<()> {
-        if request.node_id.len() != 20 {
-            return Err(BadRequest::InvalidNodeId.into());
-        }
-
-        let node_id = NodeId::from(&request.node_id[..]);
+        let node_id = parse_node_id(&request.node_id)?;
 
         let (packet, raw_challenge) = prepare_challenge_response();
         let challenge = proto::Packet::response(
@@ -358,10 +351,10 @@ impl StartingSessions {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::info!("Challenge sent to Node: [{}], address: {}", node_id, with);
+        log::debug!("Challenge sent to Node: [{}], address: {}", node_id, with);
 
         if let Some((request_id, session)) = rc.next().await {
-            log::info!(
+            log::debug!(
                 "Got challenge response from node: [{}], address: {}",
                 node_id,
                 with
@@ -379,7 +372,7 @@ impl StartingSessions {
                 return Err(Unauthorized::InvalidChallenge.into());
             }
 
-            log::info!(
+            log::debug!(
                 "Challenge from Node: [{}], address: {} verified.",
                 node_id,
                 with

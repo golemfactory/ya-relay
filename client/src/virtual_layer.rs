@@ -1,5 +1,6 @@
 use anyhow::anyhow;
 use futures::channel::mpsc;
+use futures::channel::oneshot;
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
@@ -9,7 +10,6 @@ use tokio::sync::RwLock;
 use ya_client_model::NodeId;
 use ya_relay_core::crypto::PublicKey;
 
-use ya_relay_core::session::SessionId;
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface};
 use ya_relay_stack::smoltcp::iface::Route;
@@ -19,6 +19,7 @@ use ya_relay_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 
 use crate::client::ClientConfig;
 use crate::client::{ForwardSender, Forwarded};
+use crate::registry::NodeEntry;
 use crate::session::Session;
 use crate::ForwardReceiver;
 
@@ -31,7 +32,6 @@ pub struct VirtNode {
     pub id: NodeId,
     pub endpoint: IpEndpoint,
     pub session: Arc<Session>,
-    pub session_id: SessionId,
     pub session_slot: SlotId,
 }
 
@@ -49,7 +49,6 @@ struct TcpLayerState {
     ingress: Channel<Forwarded>,
 
     nodes: HashMap<Box<[u8]>, VirtNode>,
-    slots: HashMap<SlotId, NodeId>,
     ips: HashMap<NodeId, Box<[u8]>>,
 }
 
@@ -63,13 +62,11 @@ impl VirtNode {
         let id = NodeId::from(id);
         let ip = IpAddress::from(to_ipv6(&id));
         let endpoint = (ip, TCP_BIND_PORT).into();
-        let session_id = session.id();
 
         Ok(Self {
             id,
             endpoint,
             session,
-            session_id,
             session_slot,
         })
     }
@@ -83,7 +80,6 @@ impl TcpLayer {
             state: Arc::new(RwLock::new(TcpLayerState {
                 ingress,
                 nodes: Default::default(),
-                slots: Default::default(),
                 ips: Default::default(),
             })),
         }
@@ -113,51 +109,40 @@ impl TcpLayer {
         state.resolve_node(node)
     }
 
-    pub async fn resolve_slot(&self, slot: SlotId) -> anyhow::Result<VirtNode> {
-        let state = self.state.read().await;
-        state.resolve_slot(slot)
-    }
-
-    pub async fn add_virt_node(
-        &self,
-        node_id: &[u8],
-        session: Arc<Session>,
-        slot: SlotId,
-    ) -> anyhow::Result<()> {
-        let node = VirtNode::try_new(node_id, session, slot)?;
+    pub async fn add_virt_node(&self, node: NodeEntry) -> anyhow::Result<VirtNode> {
+        let node = VirtNode::try_new(&node.id.into_array(), node.session, node.slot)?;
         {
             let mut state = self.state.write().await;
             let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
 
             state.nodes.insert(ip.clone(), node.clone());
             state.ips.insert(node.id, ip);
-
-            // 0 slots are for direct messages, without forwarding.
-            if node.session_slot != 0 {
-                state.slots.insert(node.session_slot, node.id);
-            }
         }
-        Ok(())
+        Ok(node)
     }
 
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
-        let node = self.resolve_node(node_id).await?;
-        {
-            let mut state = self.state.write().await;
+        let mut state = self.state.write().await;
 
-            state.slots.remove(&node.session_slot);
-            if let Some(ip) = state.ips.remove(&node.id) {
-                state.nodes.remove(&ip);
-            }
+        if let Some(ip) = state.ips.remove(&node_id) {
+            state.nodes.remove(&ip);
         }
         Ok(())
     }
 
-    pub async fn connect(&self, node: NodeId) -> anyhow::Result<ForwardSender> {
-        let node = self.resolve_node(node).await?;
+    /// Connects to other Node and returns `Sink` for sending data
+    /// and channel that will notify us, when connection will be broken.
+    pub async fn connect(
+        &self,
+        node: NodeEntry,
+    ) -> anyhow::Result<(ForwardSender, oneshot::Receiver<()>)> {
+        // This will override previous Node settings, if we had them.
+        let node = self.add_virt_node(node).await?;
         let connection = self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?;
 
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
+        let (disconnect_tx, disconnect_rx) = oneshot::channel();
+
         let id = self.id();
         let myself = self.clone();
 
@@ -180,7 +165,14 @@ impl TcpLayer {
                     });
             }
 
-            //client.remove_slot(node.session_slot, session_addr).await;
+            // Cleanup all internal info about Node.
+            myself
+                .remove_node(node.id)
+                .await
+                .map_err(|e| log::warn!("TcpLayer - error removing node {}: {}", node.id, e))
+                .ok();
+
+            disconnect_tx.send(()).ok();
             rx.close();
 
             log::trace!(
@@ -190,7 +182,7 @@ impl TcpLayer {
             );
         });
 
-        Ok(tx)
+        Ok((tx, disconnect_rx))
     }
 
     pub fn receive(&self, payload: Payload) {
@@ -320,7 +312,7 @@ impl TcpLayer {
                     }
                 };
 
-                let forward = Forward::new(node.session_id, node.session_slot, egress.payload);
+                let forward = Forward::new(node.session.id, node.session_slot, egress.payload);
                 if let Err(error) = node.session.send(forward).await {
                     log::trace!(
                         "[{}] egress router: forward to {} failed: {}",
@@ -337,15 +329,6 @@ impl TcpLayer {
 }
 
 impl TcpLayerState {
-    fn resolve_slot(&self, slot: SlotId) -> anyhow::Result<VirtNode> {
-        let node_id = self
-            .slots
-            .get(&slot)
-            .cloned()
-            .ok_or_else(|| anyhow!("Virtual node for slot {} not found.", slot))?;
-        self.resolve_node(node_id)
-    }
-
     fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
         let ip = self
             .ips

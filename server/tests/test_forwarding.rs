@@ -124,8 +124,8 @@ async fn test_forward_reliable() -> anyhow::Result<()> {
 
     println!("Forwarding: reliable");
 
-    let mut tx1 = client1.forward(client2.node_id()).await?;
-    let mut tx2 = client2.forward(client1.node_id()).await?;
+    let mut tx1 = client1.forward(client2.node_id()).await.unwrap();
+    let mut tx2 = client2.forward(client1.node_id()).await.unwrap();
 
     tx1.send(vec![1u8]).await?;
     tx2.send(vec![2u8]).await?;
