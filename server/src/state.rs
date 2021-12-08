@@ -27,6 +27,11 @@ impl NodesState {
     }
 
     pub fn register(&mut self, mut node: NodeSession) {
+        // We don't want to store the same Node multiple times.
+        if let Some(node) = self.get_by_node_id(node.info.node_id) {
+            self.remove_session(node.info.slot);
+        }
+
         let slot = self.empty_slot();
 
         if slot as usize >= self.slots.len() {

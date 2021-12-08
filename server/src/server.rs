@@ -345,7 +345,12 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::info!("Neighborhood sent to (request: {}): {}", request_id, from);
+        log::info!(
+            "Neighborhood sent to (request: {}): {}, session: {}",
+            request_id,
+            from,
+            session_id
+        );
         Ok(())
     }
 
