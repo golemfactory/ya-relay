@@ -246,9 +246,7 @@ impl SessionsLayer {
         let session = Session::new(addr, id, self.out_stream()?);
 
         // Incoming sessions are always p2p sessions, so we use slot=0.
-        let node = self.registry.add_node(node_id, session.clone(), 0).await?;
-        self.virtual_tcp.add_virt_node(node).await?;
-
+        self.registry.add_node(node_id, session.clone(), 0).await?;
         {
             let mut state = self.state.write().await;
 
@@ -407,14 +405,9 @@ impl SessionsLayer {
             Err(_) => (self.server_session().await?, node.slot),
         };
 
-        let node_id = parse_node_id(&node.node_id)?;
-        let node = self
-            .registry
-            .add_node(node_id, session.clone(), slot)
-            .await?;
-        self.virtual_tcp.add_virt_node(node.clone()).await?;
-
-        Ok(node)
+        self.registry
+            .add_node(parse_node_id(&node.node_id)?, session.clone(), slot)
+            .await
     }
 
     pub async fn try_direct_session(
@@ -649,21 +642,24 @@ impl Handler for SessionsLayer {
                 from
             );
 
-            let node_id = if forward.slot == 0 {
+            let node = if forward.slot == 0 {
                 // Direct message from other Node.
                 match myself.state.read().await.nodes_addr.get(&from).cloned() {
-                    Some(id) => id,
+                    Some(id) => myself.registry.resolve_node(id).await?,
                     None => {
                         // In this case we can't establish session, because we don't have
                         // neither NodeId nor SlotId.
-                        log::warn!("Forward packet from unknown address: {}", from);
+                        log::warn!(
+                            "Forward packet from unknown address: {}. Can't resolve.",
+                            from
+                        );
                         return Ok(());
                     }
                 }
             } else {
                 // Messages forwarded through relay server or other relay Node.
                 match myself.registry.resolve_slot(forward.slot).await {
-                    Ok(node) => node.id,
+                    Ok(node) => node,
                     Err(_) => {
                         log::debug!(
                             "Forwarding from unknown Node (slot {}). Resolving..",
@@ -672,15 +668,15 @@ impl Handler for SessionsLayer {
 
                         // Try to establish session in case we can't find Node.
                         let session = myself.server_session().await?;
-                        myself.resolve(session, forward.slot).await?.id
+                        myself.resolve(session, forward.slot).await?
                     }
                 }
             };
 
             if forward.is_reliable() {
-                myself.virtual_tcp.receive(forward.payload);
+                myself.virtual_tcp.receive(node, forward.payload).await;
             } else {
-                myself.dispatch_unreliable(node_id, forward).await;
+                myself.dispatch_unreliable(node.id, forward).await;
             }
             anyhow::Result::<()>::Ok(())
         }

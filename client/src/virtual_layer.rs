@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 
 use ya_client_model::NodeId;
 use ya_relay_core::crypto::PublicKey;
+use ya_relay_core::utils::parse_node_id;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface};
@@ -54,12 +55,7 @@ struct TcpLayerState {
 
 impl VirtNode {
     pub fn try_new(id: &[u8], session: Arc<Session>, session_slot: SlotId) -> anyhow::Result<Self> {
-        let default_id = NodeId::default();
-        if id.len() != default_id.as_ref().len() {
-            anyhow::bail!("Invalid NodeId");
-        }
-
-        let id = NodeId::from(id);
+        let id = parse_node_id(id)?;
         let ip = IpAddress::from(to_ipv6(&id));
         let endpoint = (ip, TCP_BIND_PORT).into();
 
@@ -185,7 +181,11 @@ impl TcpLayer {
         Ok((tx, disconnect_rx))
     }
 
-    pub fn receive(&self, payload: Payload) {
+    pub async fn receive(&self, node: NodeEntry, payload: Payload) {
+        if let Err(_) = self.resolve_node(node.id).await {
+            self.add_virt_node(node).await.ok();
+        }
+
         self.net.receive(payload.into_vec());
         self.net.poll();
     }
