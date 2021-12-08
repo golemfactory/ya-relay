@@ -28,7 +28,8 @@ use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::{Session, StartingSessions};
 use crate::virtual_layer::TcpLayer;
 
-const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
+const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
+const CHALLENGE_REQUEST_TIMEOUT: Duration = Duration::from_millis(8000);
 
 /// Managing relay server and peer-to-peer sessions.
 /// This is the only layer, that should know real IP addresses and ports
@@ -127,13 +128,12 @@ impl SessionsLayer {
             )
         })?;
 
-        let challenge_resp =
-            challenge::solve(packet.challenge.as_slice(), packet.difficulty, crypto).await?;
-
+        let challenge_handle =
+            challenge::solve_blocking(packet.challenge, packet.difficulty, crypto);
         let session_id = SessionId::try_from(response.session_id.clone())?;
 
         let packet = proto::request::Session {
-            challenge_resp,
+            challenge_resp: challenge_handle.await?,
             challenge_req: None,
             node_id: node_id.into_array().to_vec(),
             public_key: public_key.bytes().to_vec(),
@@ -142,7 +142,7 @@ impl SessionsLayer {
             .request::<proto::response::Session>(
                 packet.into(),
                 session_id.to_vec(),
-                SESSION_REQUEST_TIMEOUT,
+                CHALLENGE_REQUEST_TIMEOUT,
             )
             .await?;
 
@@ -407,9 +407,14 @@ impl SessionsLayer {
             Err(_) => (self.server_session().await?, node.slot),
         };
 
-        self.registry
-            .add_node(parse_node_id(&node.node_id)?, session.clone(), slot)
-            .await
+        let node_id = parse_node_id(&node.node_id)?;
+        let node = self
+            .registry
+            .add_node(node_id, session.clone(), slot)
+            .await?;
+        self.virtual_tcp.add_virt_node(node.clone()).await?;
+
+        Ok(node)
     }
 
     pub async fn try_direct_session(
@@ -553,6 +558,25 @@ impl SessionsLayer {
         let mut stream = self.out_stream()?;
         Ok(stream.send((packet.into(), addr)).await?)
     }
+
+    pub async fn solve_challenge<'a>(
+        &self,
+        request: proto::request::Session,
+    ) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
+        let request = match request.challenge_req {
+            Some(request) => request,
+            None => return Box::pin(futures::future::ready(Ok(vec![]))),
+        };
+
+        let crypto = match self.config.crypto.get(self.config.node_id).await {
+            Ok(crypto) => crypto,
+            Err(e) => return Box::pin(futures::future::ready(Err(e))),
+        };
+
+        // Compute challenge in different thread to avoid blocking runtime.
+        // Note: computing starts here, not after awaiting.
+        challenge::solve_blocking(request.challenge, request.difficulty, crypto)
+    }
 }
 
 impl Handler for SessionsLayer {
@@ -648,8 +672,7 @@ impl Handler for SessionsLayer {
 
                         // Try to establish session in case we can't find Node.
                         let session = myself.server_session().await?;
-                        let node = myself.resolve(session, forward.slot).await?;
-                        myself.virtual_tcp.add_virt_node(node).await?.id
+                        myself.resolve(session, forward.slot).await?.id
                     }
                 }
             };

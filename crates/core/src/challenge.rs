@@ -1,5 +1,8 @@
 use crate::crypto::Crypto;
+
 use digest::{Digest, Output};
+use futures::future::LocalBoxFuture;
+use futures::FutureExt;
 use rand::Rng;
 
 use ya_relay_proto::proto;
@@ -17,6 +20,24 @@ pub async fn solve(
 ) -> anyhow::Result<Vec<u8>> {
     let solution = solve_challenge::<sha3::Sha3_512>(challenge, difficulty)?;
     sign(solution, crypto).await
+}
+
+pub fn solve_blocking<'a>(
+    challenge: Vec<u8>,
+    difficulty: u64,
+    crypto: impl Crypto + 'a,
+) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
+    // Compute challenge in different thread to avoid blocking runtime.
+    // Note: computing starts here, not after awaiting.
+    let challenge_handle = tokio::task::spawn_blocking(move || {
+        solve_challenge::<sha3::Sha3_512>(challenge.as_slice(), difficulty)
+    });
+
+    async move {
+        let solution = challenge_handle.await??;
+        sign(solution, crypto).await
+    }
+    .boxed_local()
 }
 
 pub fn verify(

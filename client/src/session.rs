@@ -12,7 +12,6 @@ use crate::session_layer::SessionsLayer;
 
 use ya_client_model::NodeId;
 use ya_relay_core::challenge::{self, prepare_challenge_response, CHALLENGE_DIFFICULTY};
-use ya_relay_core::crypto::CryptoProvider;
 use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
@@ -353,6 +352,9 @@ impl StartingSessions {
 
         log::debug!("Challenge sent to Node: [{}], address: {}", node_id, with);
 
+        // Compute challenge in different thread to avoid blocking runtime.
+        let challenge_handle = self.layer.solve_challenge(request).await;
+
         if let Some((request_id, session)) = rc.next().await {
             log::debug!(
                 "Got challenge response from node: [{}], address: {}",
@@ -378,39 +380,13 @@ impl StartingSessions {
                 with
             );
 
-            let crypto = self
-                .layer
-                .config
-                .crypto
-                .get(self.layer.config.node_id)
-                .await
-                .map_err(|e| InternalError::Generic(e.to_string()))?;
-            let public_key = crypto
-                .public_key()
-                .await
-                .map_err(|e| InternalError::Generic(e.to_string()))?;
-
-            let challenge_resp = match request.challenge_req {
-                Some(request) => {
-                    challenge::solve(request.challenge.as_slice(), request.difficulty, crypto)
-                        .await
-                        .map_err(|e| InternalError::Generic(e.to_string()))?
-                }
-                None => vec![],
-            };
-
             let packet = proto::response::Session {
-                challenge_resp,
+                challenge_resp: challenge_handle
+                    .await
+                    .map_err(|e| InternalError::Generic(e.to_string()))?,
                 challenge_req: None,
-                public_key: public_key.bytes().to_vec(),
+                public_key: self.layer.config.public_key().await?.bytes().to_vec(),
             };
-
-            // Session must be ready to receive messages, before we send last packet
-            // if we want to avoid race conditions.
-            self.layer
-                .add_incoming_session(with, session_id, node_id)
-                .await
-                .map_err(|e| InternalError::Generic(e.to_string()))?;
 
             tmp_session
                 .send(proto::Packet::response(
@@ -421,6 +397,11 @@ impl StartingSessions {
                 ))
                 .await
                 .map_err(|_| InternalError::Send)?;
+
+            self.layer
+                .add_incoming_session(with, session_id, node_id)
+                .await
+                .map_err(|e| InternalError::Generic(e.to_string()))?;
 
             log::info!(
                 "Incoming P2P session {} with Node: [{}], address: {} established.",

@@ -13,6 +13,7 @@ use url::Url;
 
 use ya_client_model::NodeId;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
+use ya_relay_core::error::InternalError;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_proto::proto::SlotId;
 
@@ -179,16 +180,13 @@ impl Client {
         let broadcast_futures = node_ids
             .iter()
             .map(|node_id| {
-                let myself = self.clone();
                 let data = data.clone();
                 let node_id = *node_id;
 
                 async move {
-                    let session = myself.sessions.optimal_session(node_id).await?;
-
                     log::trace!("Broadcasting message to {}", node_id);
 
-                    match self.sessions.forward_unreliable(session, node_id).await {
+                    match self.forward_unreliable(node_id).await {
                         Ok(mut forward) => {
                             if forward.send(data).await.is_err() {
                                 bail!("Cannot broadcast to {}: channel closed", node_id);
@@ -254,6 +252,20 @@ impl ClientBuilder {
         client.spawn().await?;
 
         Ok(client)
+    }
+}
+
+impl ClientConfig {
+    pub async fn public_key(&self) -> Result<PublicKey, InternalError> {
+        let crypto = self
+            .crypto
+            .get(self.node_id)
+            .await
+            .map_err(|e| InternalError::Generic(e.to_string()))?;
+        crypto
+            .public_key()
+            .await
+            .map_err(|e| InternalError::Generic(e.to_string()))
     }
 }
 
