@@ -415,11 +415,20 @@ impl StartingSessions {
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
-        self.state
-            .lock()
-            .unwrap()
-            .incoming_sessions
-            .remove(session_id);
-        // TODO: Remove temporary session
+        let mut state = self.state.lock().unwrap();
+
+        state.incoming_sessions.remove(session_id);
+        let addr =
+            state
+                .tmp_sessions
+                .iter()
+                .find_map(|(_, session)| match session.id == *session_id {
+                    true => Some(session.remote.clone()),
+                    false => None,
+                });
+
+        if let Some(addr) = addr {
+            state.tmp_sessions.remove(&addr);
+        }
     }
 }

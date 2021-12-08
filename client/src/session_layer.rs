@@ -52,7 +52,6 @@ pub struct SessionLayerState {
 
     forward_unreliable: HashMap<NodeId, ForwardSender>,
 
-    /// TODO: Consider removing
     p2p_sessions: HashMap<NodeId, Arc<Session>>,
     ingress_channel: Channel<Forwarded>,
 
