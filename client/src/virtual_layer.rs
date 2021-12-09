@@ -182,7 +182,7 @@ impl TcpLayer {
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
-        if let Err(_) = self.resolve_node(node.id).await {
+        if self.resolve_node(node.id).await.is_err() {
             self.add_virt_node(node).await.ok();
         }
 

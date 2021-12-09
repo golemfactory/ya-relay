@@ -271,26 +271,6 @@ impl SessionsLayer {
         }
     }
 
-    // async fn remove_session(&self, to_remove: Arc<Session>) {
-    //     let mut state = self.state.write().await;
-    //
-    //     state.sessions.remove(&to_remove.remote);
-    //
-    //     if let Some(node_id) = state.nodes_addr.remove(&to_remove.remote) {
-    //         state.p2p_sessions.remove(&node_id);
-    //
-    //         // In case of p2p Session it is enough to remove information about Node
-    //         // with which we have this Session established.
-    //         // TODO: If we will allow to forward through other Nodes than relay server,
-    //         //       we should look for all Nodes, that use this Session.
-    //         self.registry.remove_node(node_id).await.ok();
-    //         self.virtual_tcp.remove_node(node_id).await.ok();
-    //     } else {
-    //         // This is case we remove relay server session, which isn't associated with
-    //         // any NodeId.
-    //     }
-    // }
-
     pub async fn optimal_session(
         &self,
         forward_id: impl Into<ForwardId> + Clone,

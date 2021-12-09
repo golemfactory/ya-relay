@@ -423,7 +423,7 @@ impl StartingSessions {
                 .tmp_sessions
                 .iter()
                 .find_map(|(_, session)| match session.id == *session_id {
-                    true => Some(session.remote.clone()),
+                    true => Some(session.remote),
                     false => None,
                 });
 

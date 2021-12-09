@@ -94,3 +94,9 @@ impl NodeRegistryState {
             .ok_or_else(|| anyhow!("NodeEntry for node id {} not found.", node))
     }
 }
+
+impl Default for NodesRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}

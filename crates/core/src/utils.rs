@@ -11,7 +11,7 @@ pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
     Ok(format!("{}:{}", host, port))
 }
 
-// Extract typed data from enviromnt variable
+// Extract typed data from environment variable
 pub fn typed_from_env<T: std::str::FromStr + Copy>(env_key: &str, def_value: T) -> T {
     std::env::var(env_key)
         .map(|s| s.parse::<T>().unwrap_or(def_value))
@@ -20,7 +20,7 @@ pub fn typed_from_env<T: std::str::FromStr + Copy>(env_key: &str, def_value: T) 
 
 pub fn parse_node_id(id: &[u8]) -> Result<NodeId, BadRequest> {
     if id.len() != NodeId::default().as_ref().len() {
-        return Err(BadRequest::InvalidNodeId.into());
+        return Err(BadRequest::InvalidNodeId);
     }
     Ok(NodeId::from(id))
 }

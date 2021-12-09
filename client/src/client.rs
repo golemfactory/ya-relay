@@ -229,6 +229,11 @@ impl ClientBuilder {
         self
     }
 
+    pub fn listen(mut self, url: Url) -> ClientBuilder {
+        self.bind_url = Some(url);
+        self
+    }
+
     pub async fn build(self) -> anyhow::Result<Client> {
         let bind_url = self
             .bind_url
