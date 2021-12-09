@@ -36,6 +36,9 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(4000);
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
+lazy_static::lazy_static! {
+    static ref DEFAULT_PAUSE_TIMEOUT: chrono::Duration = chrono::Duration::seconds(1);
+}
 
 const TCP_BIND_PORT: u16 = 1;
 const IPV6_DEFAULT_CIDR: u8 = 0;
@@ -823,12 +826,11 @@ impl Client {
         };
         if let Some(date) = raw_date {
             if let Ok(duration) = (date - Utc::now()).to_std() {
-                log::debug!("Receiver Paused!!! {:?}", duration);
+                log::trace!("Receiver Paused!!! {:?}", duration);
                 tokio::time::delay_for(duration).await;
-                log::debug!("Receiver Continues...");
+                log::trace!("Receiver Continues...");
             }
             self.state.write().await.forward_paused_till = None;
-            log::debug!("reset date");
         }
         rx.next().await
     }
@@ -909,16 +911,20 @@ impl Handler for Client {
         log::debug!("received control packet from {}: {:?}", from, control);
 
         if let Some(kind) = control.kind {
-            log::info!("Got {:?}!", kind);
-
-            if let ya_relay_proto::proto::control::Kind::PauseForwarding(message) = kind {
-                return async move {
-                    log::info!("Got Pause! {:?}", message);
-                    self.state.write().await.forward_paused_till =
-                        Some(Utc::now() + chrono::Duration::seconds(1))
+            match kind {
+                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Pause! {:?}", message);
+                        self.state.write().await.forward_paused_till =
+                            Some(Utc::now() + *DEFAULT_PAUSE_TIMEOUT)
+                    }
+                    .boxed_local();
                 }
-                .boxed_local();
-            }
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(_message) => {
+                    log::trace!("Got resume, not implemented yet");
+                }
+                _ => (),
+            };
         }
         Box::pin(futures::future::ready(()))
     }

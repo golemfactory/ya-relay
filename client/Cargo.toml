@@ -15,6 +15,7 @@ chrono = "0.4"
 derive_more = "0.99"
 env_logger = { version = "0.8", default-features = false }
 futures = "0.3"
+lazy_static = "1.4"
 log = "0.4"
 tokio = { version = "0.2", features = ["tcp", "udp", "net", "sync", "macros", "rt-core", "stream", "time"] }
 url = "2.1"
