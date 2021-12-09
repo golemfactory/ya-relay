@@ -10,6 +10,8 @@ use tokio::sync::mpsc;
 use ya_relay_client::client::Forwarded;
 use ya_relay_client::ClientBuilder;
 use ya_relay_server::testing::server::init_test_server;
+use ya_relay_core::key::{load_or_generate, Protected};
+use ya_relay_core::crypto::FallbackCryptoProvider;
 
 #[serial_test::serial]
 async fn test_two_way_packet_forward() -> anyhow::Result<()> {
@@ -106,11 +108,14 @@ async fn test_two_way_packet_forward() -> anyhow::Result<()> {
 async fn test_rate_limiter() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
+    let password = Some(Protected::new(""));
     let client1 = ClientBuilder::from_url(wrapper.url())
+        .crypto(FallbackCryptoProvider::new(load_or_generate("./client1.json", password.clone())))
         .connect()
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
+        .crypto(FallbackCryptoProvider::new(load_or_generate("./client2.json", password)))
         .connect()
         .build()
         .await?;
@@ -155,7 +160,7 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     let rec_cnt = received2.load(SeqCst);
     println!("Received counter: {}", rec_cnt);
     assert!(rec_cnt <= 2048);
-    tokio::time::delay_for(Duration::from_secs(2)).await;
+    tokio::time::delay_for(Duration::from_secs(4)).await;
     let rec_cnt = received2.load(SeqCst);
     println!("Received counter: {}", rec_cnt);
     assert!(rec_cnt > 2048);

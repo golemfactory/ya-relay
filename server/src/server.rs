@@ -663,6 +663,7 @@ impl Server {
     }
 
     async fn check_resume_forwarding(&self) {
+        log::trace!("check_resume_forwarding");
         let clock = DefaultClock::default();
         let mut to_resume = Vec::new();
         {
@@ -680,6 +681,7 @@ impl Server {
                     break;
                 }
                 if let Some(node_session) = server.nodes.get_by_session(*session_id) {
+                    log::trace!("adding node_session {:?}", node_session.info.node_id);
                     to_resume.push((node_session, *session_id, *socket_addr));
                 }
             }

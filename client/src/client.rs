@@ -14,6 +14,7 @@ use futures::{FutureExt, SinkExt, StreamExt};
 use tokio::sync::RwLock;
 use url::Url;
 
+
 use ya_client_model::NodeId;
 use ya_relay_core::challenge;
 use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider, PublicKey};
@@ -28,6 +29,7 @@ use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
 use ya_relay_stack::{Channel, IngressEvent, Network, Protocol, Stack};
 
 use crate::dispatch::{dispatch, Dispatched, Dispatcher, Handler};
+use crate::timeout::IntoTimeoutFuture;
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
@@ -821,16 +823,29 @@ impl Client {
             // dont lock the state longer then needed.
             self.state.read().await.forward_paused_till
         };
+        log::trace!("get_next_fwd_payload!!! {:?}", raw_date);
         if let Some(date) = raw_date {
             if let Ok(duration) = (date - Utc::now()).to_std() {
-                log::debug!("Receiver Paused!!! {:?}", duration);
+                log::trace!("Receiver Paused!!! {:?}", duration);
+
                 tokio::time::delay_for(duration).await;
-                log::debug!("Receiver Continues...");
+                // TODO Enable early exit?
+                // let _ = self.check_early_resume().timeout(Some(duration)).await;
+
+                log::trace!("Receiver Continues...");
             }
             self.state.write().await.forward_paused_till = None;
-            log::debug!("reset date");
+            log::trace!("reset date");
         }
         rx.next().await
+    }
+
+    async fn check_early_resume(&self) {
+        while {self.state.read().await.forward_paused_till}.is_some() {
+            log::trace!("Still paused...");
+            tokio::time::delay_for(Duration::from_millis(50)).await;
+        }
+        log::trace!("Got early resume!");
     }
 }
 
@@ -909,15 +924,23 @@ impl Handler for Client {
         log::debug!("received control packet from {}: {:?}", from, control);
 
         if let Some(kind) = control.kind {
-            log::info!("Got {:?}!", kind);
-
-            if let ya_relay_proto::proto::control::Kind::PauseForwarding(message) = kind {
-                return async move {
-                    log::info!("Got Pause! {:?}", message);
-                    self.state.write().await.forward_paused_till =
-                        Some(Utc::now() + chrono::Duration::seconds(1))
-                }
-                .boxed_local();
+            match kind {
+                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Pause! {:?}", message);
+                        self.state.write().await.forward_paused_till =
+                            Some(Utc::now() + chrono::Duration::seconds(1))
+                    }
+                    .boxed_local();
+                },
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Resume! {:?}", message);
+                        self.state.write().await.forward_paused_till = None
+                    }
+                    .boxed_local();
+                },
+                _ => { log::trace!("Un-handled control packet: {:?}", kind)}
             }
         }
         Box::pin(futures::future::ready(()))
