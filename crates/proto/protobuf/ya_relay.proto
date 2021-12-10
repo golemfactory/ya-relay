@@ -12,16 +12,25 @@ package ya_relay_proto;
 
 
 /*
-    Server ᐊ─ [  Request::Session (E) ] ── Client
-    Server ── [  Response::Challenge  ] ─ᐅ Client
+P2P
+    Client A <- [  Request  :: Session (Ei|Rq) ] -- Client B
+    Client A -- [  Response :: Session (Rq)    ] -> Client B
+    Client A <- [  Request  :: Session (Rs)    ] -- Client B
+    Client A -- [  Response :: Session (Rs)    ] -> Client B
 
-    Server ᐊ─ [  Request::Session     ] ── Client
-    Server ── [  Response::Session    ] ─ᐅ Client
+    (Ei): empty session id
+    (Rq): challenge request
+    (Rs): challenge response
 
-    Server ᐊ─ [  Request::Register    ] ── Client
-    Server ── [  Response::Register   ] ─ᐅ Client
+Central Server
+    Server   <- [  Request  :: Session (Ei) ] -- Client A
+    Server   -- [  Response :: Session (Rq) ] -> Client A
+    Server   <- [  Request  :: Session (Rs) ] -- Client A
+    Server   -- [  Response :: Session      ] -> Client A
 
-    (E): empty session id
+    (Ei): empty session id
+    (Rq): challenge request
+    (Rs): challenge response
  */
 
 
@@ -50,6 +59,27 @@ message Packet {
     }
 */
 
+/* Challenge newly-connected nodes */
+message ChallengeRequest {
+    enum Kind {
+        UNDEFINED = 0;
+        SHA3_512_LEADING_ZEROS = 10;
+    }
+
+    string version = 1;
+    /* Capabilities bit field */
+    uint64 caps = 2;
+
+    Kind kind = 3;
+    uint64 difficulty = 4;
+    bytes challenge = 5;
+}
+
+/* Response to session challenge */
+message ChallengeResponse {
+    bytes data = 1;
+}
+
 /* Requests sent to the server by the client */
 message Request {
     uint64 request_id = 1;
@@ -65,9 +95,10 @@ message Request {
     }
 
     message Session {
-        bytes challenge_resp = 1;
         bytes node_id = 2;
         bytes public_key = 3;
+        ChallengeRequest challenge_req = 4;
+        bytes challenge_resp = 5;
     }
 
     message Register {
@@ -109,7 +140,6 @@ message Response {
     StatusCode code = 2;
 
     oneof kind {
-        Challenge challenge = 10;
         Session session = 11;
         Register register = 20;
         Node node = 30;
@@ -117,24 +147,12 @@ message Response {
         Pong pong = 80;
     }
 
-    /* Challenge newly-connected nodes */
-    message Challenge {
-        enum Kind {
-            UNDEFINED = 0;
-            SHA3_512_LEADING_ZEROS = 10;
-        }
-
-        string version = 1;
-        /* Capabilities bit field */
-        uint64 caps = 2;
-
-        Kind kind = 3;
-        uint64 difficulty = 4;
-        bytes challenge = 5;
-    }
-
     /* Session ACK */
-    message Session {}
+    message Session {
+        bytes public_key = 3;
+        ChallengeRequest challenge_req = 4;
+        bytes challenge_resp = 5;
+    }
 
     /* Registered endpoints */
     message Register {

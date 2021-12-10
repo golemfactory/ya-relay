@@ -31,8 +31,8 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 13).await;
 
-    let node_id = clients[0].node_id().await;
-    let session = clients[0].server_session().await?;
+    let node_id = clients[0].node_id();
+    let session = clients[0].sessions.server_session().await?;
 
     let ids = session
         .neighbours(5)
@@ -81,8 +81,8 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 3).await;
 
-    let node_id = clients[0].node_id().await;
-    let session = clients[0].server_session().await?;
+    let node_id = clients[0].node_id();
+    let session = clients[0].sessions.server_session().await?;
 
     let ids = session
         .neighbours(5)
@@ -103,9 +103,9 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
 
 #[serial_test::serial]
 async fn test_broadcast() -> anyhow::Result<()> {
-    const NEIGHBOURHOOD_SIZE: u32 = 10;
+    const NEIGHBOURHOOD_SIZE: u32 = 8;
     let wrapper = init_test_server().await.unwrap();
-    let mut clients = start_clients(&wrapper, NEIGHBOURHOOD_SIZE).await;
+    let mut clients = start_clients(&wrapper, NEIGHBOURHOOD_SIZE + 1).await;
 
     fn spawn_receive(received: Rc<AtomicUsize>, rx: mpsc::UnboundedReceiver<Forwarded>) {
         tokio::task::spawn_local({
@@ -135,9 +135,10 @@ async fn test_broadcast() -> anyhow::Result<()> {
         spawn_receive(counter, rx);
     }
 
-    let session = broadcasting_client.server_session().await?;
     let data = vec![1 as u8];
-    session.broadcast(data, NEIGHBOURHOOD_SIZE).await?;
+    broadcasting_client
+        .broadcast(data, NEIGHBOURHOOD_SIZE)
+        .await?;
     tokio::time::delay_for(Duration::from_millis(100)).await;
 
     for receiver in received {

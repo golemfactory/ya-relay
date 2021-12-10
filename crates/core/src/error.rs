@@ -1,4 +1,4 @@
-use ya_relay_core::session::SessionId;
+use crate::session::SessionId;
 
 use ya_client_model::NodeId;
 
@@ -94,6 +94,8 @@ pub enum InternalError {
     BindingSocket(String),
     #[error("Node info for session [{0}] not found.")]
     GettingSessionInfo(SessionId),
+    #[error("{0}")]
+    Generic(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]

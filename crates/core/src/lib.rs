@@ -1,5 +1,6 @@
 pub mod challenge;
 pub mod crypto;
+pub mod error;
 pub mod key;
 pub mod session;
 pub mod udp_stream;
