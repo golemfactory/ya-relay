@@ -245,7 +245,7 @@ impl SessionsLayer {
         let session = Session::new(addr, id, self.out_stream()?);
 
         // Incoming sessions are always p2p sessions, so we use slot=0.
-        self.registry.add_node(node_id, session.clone(), 0).await?;
+        self.registry.add_node(node_id, session.clone(), 0).await;
         {
             let mut state = self.state.write().await;
 
@@ -340,7 +340,7 @@ impl SessionsLayer {
         while let Some(payload) = rx.next().await {
             log::trace!("Forwarding message (U) to {}", node.id);
 
-            let forward = Forward::unreliable(session.id(), node.slot, payload);
+            let forward = Forward::unreliable(session.id, node.slot, payload);
             if let Err(error) = session.send(forward).await {
                 log::trace!(
                     "[{}] forward (U) to {} through {} failed: {}",
@@ -384,9 +384,10 @@ impl SessionsLayer {
             Err(_) => (self.server_session().await?, node.slot),
         };
 
-        self.registry
+        Ok(self
+            .registry
             .add_node(parse_node_id(&node.node_id)?, session.clone(), slot)
-            .await
+            .await)
     }
 
     pub async fn try_direct_session(
@@ -623,7 +624,7 @@ impl Handler for SessionsLayer {
 
             let node = if forward.slot == 0 {
                 // Direct message from other Node.
-                match myself.state.read().await.nodes_addr.get(&from).cloned() {
+                match { myself.state.read().await.nodes_addr.get(&from).cloned() } {
                     Some(id) => myself.registry.resolve_node(id).await?,
                     None => {
                         // In this case we can't establish session, because we don't have

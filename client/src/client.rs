@@ -125,13 +125,15 @@ impl Client {
     }
 
     pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+        log::trace!("Forward reliable {} to {}", self.config.node_id, node_id);
+
         // Establish session here, if it didn't existed.
         let session = self.sessions.optimal_session(node_id).await?;
         self.sessions.forward(session, node_id).await
     }
 
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        log::trace!("{} forward_unreliable to {}", self.config.node_id, node_id);
+        log::trace!("Forward unreliable {} to {}", self.config.node_id, node_id);
 
         // Establish session here, if it didn't existed.
         let session = self.sessions.optimal_session(node_id).await?;

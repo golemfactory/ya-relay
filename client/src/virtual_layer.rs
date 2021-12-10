@@ -81,7 +81,7 @@ impl TcpLayer {
         }
     }
 
-    pub fn id(&self) -> String {
+    fn net_id(&self) -> String {
         self.net.name.as_ref().clone()
     }
 
@@ -139,7 +139,7 @@ impl TcpLayer {
         let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
         let (disconnect_tx, disconnect_rx) = oneshot::channel();
 
-        let id = self.id();
+        let id = self.net_id();
         let myself = self.clone();
 
         tokio::task::spawn_local(async move {
@@ -204,7 +204,7 @@ impl TcpLayer {
                     IngressEvent::InboundConnection { desc } => {
                         log::trace!(
                             "[{}] ingress router: new connection from {:?} to {:?} ",
-                            myself.id(),
+                            myself.net_id(),
                             desc.remote,
                             desc.local,
                         );
@@ -213,7 +213,7 @@ impl TcpLayer {
                     IngressEvent::Disconnected { desc } => {
                         log::trace!(
                             "[{}] ingress router: ({}) {:?} disconnected from {:?}",
-                            myself.id(),
+                            myself.net_id(),
                             desc.protocol,
                             desc.remote,
                             desc.local,
@@ -226,7 +226,7 @@ impl TcpLayer {
                 if desc.protocol != Protocol::Tcp {
                     log::trace!(
                         "[{}] ingress router: dropping {} payload",
-                        myself.id(),
+                        myself.net_id(),
                         desc.protocol
                     );
                     return;
@@ -237,7 +237,7 @@ impl TcpLayer {
                     _ => {
                         log::trace!(
                             "[{}] ingress router: remote endpoint {:?} is not supported",
-                            myself.id(),
+                            myself.net_id(),
                             desc.remote
                         );
                         return;
@@ -264,20 +264,20 @@ impl TcpLayer {
                         if tx.send(payload).is_err() {
                             log::trace!(
                                 "[{}] ingress router: ingress handler closed for node {}",
-                                myself.id(),
+                                myself.net_id(),
                                 node_id
                             );
                         } else {
                             log::trace!(
                                 "[{}] ingress router: forwarded {} B",
-                                myself.id(),
+                                myself.net_id(),
                                 payload_len
                             );
                         }
                     }
                     _ => log::trace!(
                         "[{}] ingress router: unknown remote address {}",
-                        myself.id(),
+                        myself.net_id(),
                         remote_address
                     ),
                 };
@@ -305,7 +305,7 @@ impl TcpLayer {
                     None => {
                         log::trace!(
                             "[{}] egress router: unknown address {:02x?}",
-                            myself.id(),
+                            myself.net_id(),
                             egress.remote
                         );
                         return;
@@ -316,7 +316,7 @@ impl TcpLayer {
                 if let Err(error) = node.session.send(forward).await {
                     log::trace!(
                         "[{}] egress router: forward to {} failed: {}",
-                        myself.id(),
+                        myself.net_id(),
                         node.id,
                         error
                     );

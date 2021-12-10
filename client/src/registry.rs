@@ -43,7 +43,7 @@ impl NodesRegistry {
         node_id: NodeId,
         session: Arc<Session>,
         slot: SlotId,
-    ) -> anyhow::Result<NodeEntry> {
+    ) -> NodeEntry {
         let node = NodeEntry {
             id: node_id,
             session,
@@ -54,8 +54,8 @@ impl NodesRegistry {
             let mut state = self.state.write().await;
             state.nodes.insert(node_id, node.clone());
             state.slots.insert(slot, node_id);
+            node
         }
-        Ok(node)
     }
 
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {

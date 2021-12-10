@@ -44,10 +44,6 @@ impl Session {
         })
     }
 
-    pub fn id(&self) -> SessionId {
-        self.id
-    }
-
     pub fn dispatcher(&self) -> Dispatcher {
         self.dispatcher.clone()
     }
@@ -56,8 +52,7 @@ impl Session {
         &self,
         endpoints: Vec<proto::Endpoint>,
     ) -> anyhow::Result<Vec<proto::Endpoint>> {
-        let id = self.id();
-        log::info!("[{}] registering endpoints.", id);
+        log::info!("[{}] registering endpoints.", self.id);
 
         let response = self
             .request::<proto::response::Register>(
@@ -68,7 +63,7 @@ impl Session {
             .await?
             .packet;
 
-        log::info!("[{}] endpoints registration finished.", id);
+        log::info!("[{}] endpoints registration finished.", self.id);
 
         Ok(response.endpoints)
     }
@@ -115,14 +110,15 @@ impl Session {
             count,
             public_key: true,
         };
-        Ok(self
+        let neighbours = self
             .request::<proto::response::Neighbours>(
                 packet.into(),
                 self.id.to_vec(),
                 DEFAULT_REQUEST_TIMEOUT,
             )
             .await?
-            .packet)
+            .packet;
+        Ok(neighbours)
     }
 
     pub async fn ping(&self) -> anyhow::Result<()> {
@@ -149,7 +145,7 @@ impl Session {
         proto::response::Kind: TryInto<T, Error = ()>,
         T: 'static,
     {
-        let response = self.response::<T>(request.request_id, timeout).await;
+        let response = self.response::<T>(request.request_id, timeout);
         let packet = proto::Packet {
             session_id,
             kind: Some(proto::packet::Kind::Request(request)),
@@ -160,7 +156,7 @@ impl Session {
     }
 
     #[inline(always)]
-    pub(crate) async fn response<'a, T>(
+    pub(crate) fn response<'a, T>(
         &self,
         request_id: RequestId,
         timeout: Duration,
@@ -186,21 +182,20 @@ pub(crate) struct StartingSessions {
     sink: OutStream,
 }
 
+#[derive(Default)]
 struct StartingSessionsState {
     /// Initialization of session started by other peers.
     incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
     /// Temporary sessions stored during initialization period.
-    /// After session is established, it is moved to SessionsLayer.
+    /// After session is established, new struct in SessionsLayer is created
+    /// and this one is removed.
     tmp_sessions: HashMap<SocketAddr, Arc<Session>>,
 }
 
 impl StartingSessions {
     pub fn new(layer: SessionsLayer, sink: OutStream) -> StartingSessions {
         StartingSessions {
-            state: Arc::new(Mutex::new(StartingSessionsState {
-                tmp_sessions: Default::default(),
-                incoming_sessions: Default::default(),
-            })),
+            state: Arc::new(Mutex::new(StartingSessionsState::default())),
             sink,
             layer,
         }
@@ -238,7 +233,7 @@ impl StartingSessions {
     ) {
         // This will be new session.
         match session_id.is_empty() {
-            true => self.clone().new_session(request_id, from, request).await,
+            true => self.new_session(request_id, from, request).await,
             false => self
                 .existing_session(session_id, request_id, from, request)
                 .await
@@ -299,12 +294,14 @@ impl StartingSessions {
 
     async fn existing_session(
         &self,
-        id: Vec<u8>,
+        raw_id: Vec<u8>,
         request_id: RequestId,
         _from: SocketAddr,
         request: proto::request::Session,
     ) -> ServerResult<()> {
-        let id = SessionId::try_from(id.clone()).map_err(|_| Unauthorized::InvalidSessionId(id))?;
+        let id = SessionId::try_from(raw_id.clone())
+            .map_err(|_| Unauthorized::InvalidSessionId(raw_id))?;
+
         let mut sender = {
             match {
                 self.state
@@ -363,14 +360,15 @@ impl StartingSessions {
             );
 
             // Validate the challenge
-            if !challenge::verify(
+            let verification = challenge::verify(
                 &raw_challenge,
                 CHALLENGE_DIFFICULTY,
                 &session.challenge_resp,
                 session.public_key.as_slice(),
             )
-            .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
-            {
+            .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?;
+
+            if !verification {
                 return Err(Unauthorized::InvalidChallenge.into());
             }
 

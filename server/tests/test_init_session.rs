@@ -52,7 +52,7 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
 
     let node_id = client.node_id();
     let session = client.sessions.server_session().await?;
-    let session_id = session.id();
+    let session_id = session.id;
 
     // Change session id to invalid.
     let mut session_id = session_id.to_vec();
@@ -95,6 +95,7 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
     Ok(())
 }
 
+// TODO: Make this test work, when we will have implementation of Session restarts.
 // #[serial_test::serial]
 // async fn test_close_session() -> anyhow::Result<()> {
 //     let wrapper = init_test_server().await.unwrap();
