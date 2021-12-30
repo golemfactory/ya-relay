@@ -54,6 +54,7 @@ async fn dispatch_response<H>(
 ) where
     H: Handler,
 {
+    // TODO: We don't handle errors without packet kind here.
     match response.kind {
         Some(kind) => match handler.dispatcher(from).await {
             Some(dispatcher) => {
@@ -61,7 +62,7 @@ async fn dispatch_response<H>(
             }
             None => log::warn!("Unexpected response from {}: {:?}", from, kind),
         },
-        None => log::debug!("Empty response kind"),
+        None => log::debug!("Empty response kind from: {}", from),
     }
 }
 
@@ -182,7 +183,10 @@ impl Dispatcher {
                     log::warn!("Unable to dispatch response: listener is closed");
                 }
             }
-            None => log::warn!("Unable to dispatch response: listener does not exist"),
+            None => log::warn!(
+                "Unable to dispatch response: listener does not exist. {:?}",
+                kind
+            ),
         }
     }
 }

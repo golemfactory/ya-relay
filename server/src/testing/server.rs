@@ -1,5 +1,7 @@
+use chrono::Local;
 use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
+use std::io::Write;
 use url::Url;
 
 use crate::server::Server;
@@ -18,7 +20,19 @@ impl ServerWrapper {
 pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
     // Initialize logger for all tests. Thi function will be called multiple times,
     // so we `try_init`.
-    let _ = env_logger::builder().try_init();
+    let _ = env_logger::Builder::new()
+        .parse_default_env()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {:5} {}] {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.module_path().unwrap_or("<unnamed>"),
+                record.args()
+            )
+        })
+        .try_init();
 
     let server = Server::bind_udp(Url::parse("udp://127.0.0.1:0")?).await?;
 
