@@ -175,8 +175,8 @@ impl Server {
                         let mut server = self.state.write().await;
                         server.resume_forwarding.insert((
                             retry_at.earliest_possible(),
-                            session_id.clone(),
-                            from.clone(),
+                            session_id,
+                            from,
                         ));
                     }
                     let control_packet = proto::Packet::control(
@@ -676,14 +676,14 @@ impl Server {
         let clock = DefaultClock::default();
         let rs_fwd = server.resume_forwarding.clone();
         let mut set_iter = rs_fwd.iter();
-        while let Some(elem) = set_iter.next() {
-            let (resume_at, session_id, socket_addr) = elem.clone();
+        for elem in set_iter.by_ref() {
+            let (resume_at, session_id, socket_addr) = *elem;
             let now = clock.now();
             if resume_at > now {
                 break;
             }
             server.resume_forwarding.remove(elem);
-            if let Some(node_session) = server.nodes.get_by_session(session_id.clone()) {
+            if let Some(node_session) = server.nodes.get_by_session(session_id) {
                 let control_packet = proto::Packet::control(
                     session_id.to_vec(),
                     ya_relay_proto::proto::control::ResumeForwarding {
