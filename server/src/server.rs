@@ -1,12 +1,8 @@
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
-use governor::clock::{DefaultClock, Clock, QuantaInstant};
-use governor::{
-    NegativeMultiDecision,
-    Quota,
-    RateLimiter,
-};
+use governor::clock::{Clock, DefaultClock, QuantaInstant};
+use governor::{NegativeMultiDecision, Quota, RateLimiter};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
@@ -25,21 +21,18 @@ use crate::state::NodesState;
 
 use ya_client_model::NodeId;
 
-use ya_relay_core::challenge;
 use ya_relay_core::challenge::prepare_challenge_response;
+use ya_relay_core::challenge::{self, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{Endpoint, NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
-use ya_relay_core::{SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT};
+use ya_relay_core::{
+    FORWARDER_RATE_LIMIT, FORWARDER_RESUME_INTERVAL, SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT,
+};
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
-
-pub const CHALLENGE_SIZE: usize = 16;
-pub const CHALLENGE_DIFFICULTY: u64 = 16;
-const FORWARDER_RATE_LIMIT: u32 = 2048;
-const FORWARDER_RESUME_INTERVAL: u64 = 1; // seconds
 
 #[derive(Clone)]
 pub struct Server {
@@ -166,19 +159,34 @@ impl Server {
                 NegativeMultiDecision::InsufficientCapacity(cells) => {
                     // the query was invalid as the rate limite parameters can never accomodate the
                     // number of cells queried for.
-                    log::warn!("Rate limited packet dropped. Exceeds limit. size: {}, from: {}", cells, &from);
-                },
+                    log::warn!(
+                        "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
+                        cells,
+                        &from
+                    );
+                }
                 NegativeMultiDecision::BatchNonConforming(cells, retry_at) => {
-                    log::debug!("Rate limited packet. size: {}, retry_at: {}", cells, retry_at);
+                    log::debug!(
+                        "Rate limited packet. size: {}, retry_at: {}",
+                        cells,
+                        retry_at
+                    );
                     {
                         let mut server = self.state.write().await;
-                        server.resume_forwarding.insert((retry_at.earliest_possible(), session_id.clone(), from.clone()));
+                        server.resume_forwarding.insert((
+                            retry_at.earliest_possible(),
+                            session_id.clone(),
+                            from.clone(),
+                        ));
                     }
-                    let control_packet = proto::Packet::control(session_id.to_vec(), ya_relay_proto::proto::control::PauseForwarding { slot });
+                    let control_packet = proto::Packet::control(
+                        session_id.to_vec(),
+                        ya_relay_proto::proto::control::PauseForwarding { slot },
+                    );
                     self.send_to(PacketKind::Packet(control_packet), &from)
                         .await
                         .map_err(|_| InternalError::Send)?;
-                        }
+                }
             }
             return Ok(());
         }
@@ -555,10 +563,10 @@ impl Server {
                     session: session_id,
                     last_seen: Utc::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
-                        NonZeroU32::new(FORWARDER_RATE_LIMIT).ok_or_else(|| {
+                        NonZeroU32::new(*FORWARDER_RATE_LIMIT).ok_or_else(|| {
                             InternalError::RateLimiterInit(format!(
                                 "Invalid non zero value: {}",
-                                FORWARDER_RATE_LIMIT
+                                *FORWARDER_RATE_LIMIT
                             ))
                         })?,
                     ))),
@@ -656,7 +664,7 @@ impl Server {
     }
 
     async fn forward_resumer(&self) {
-        let mut interval = time::interval(Duration::new(FORWARDER_RESUME_INTERVAL, 0));
+        let mut interval = time::interval(*FORWARDER_RESUME_INTERVAL);
         loop {
             interval.tick().await;
             self.check_resume_forwarding().await;
@@ -676,8 +684,16 @@ impl Server {
             }
             server.resume_forwarding.remove(elem);
             if let Some(node_session) = server.nodes.get_by_session(session_id.clone()) {
-                let control_packet = proto::Packet::control(session_id.to_vec(), ya_relay_proto::proto::control::ResumeForwarding { slot: node_session.info.slot });
-                if let Err(e) = self.send_to(PacketKind::Packet(control_packet), &socket_addr).await {
+                let control_packet = proto::Packet::control(
+                    session_id.to_vec(),
+                    ya_relay_proto::proto::control::ResumeForwarding {
+                        slot: node_session.info.slot,
+                    },
+                );
+                if let Err(e) = self
+                    .send_to(PacketKind::Packet(control_packet), &socket_addr)
+                    .await
+                {
                     log::warn!("Can not send ResumeForwarding. {}", e);
                 }
             }

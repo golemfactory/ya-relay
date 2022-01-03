@@ -13,4 +13,6 @@ lazy_static::lazy_static! {
     pub static ref DEFAULT_NET_PORT: u16 = typed_from_env::<u16>("DEFAULT_NET_PORT", 7464);
     pub static ref SESSION_CLEANER_INTERVAL: Duration = Duration::new(typed_from_env::<u64>("SESSION_CLEANER_INTERVAL", 10), 0); // seconds
     pub static ref SESSION_TIMEOUT: i64 = typed_from_env::<i64>("SESSION_TIMEOUT", 60); // seconds
+    pub static ref FORWARDER_RATE_LIMIT: u32 = typed_from_env::<u32>("FORWARDER_RATE_LIMIT", 2048);
+    pub static ref FORWARDER_RESUME_INTERVAL: Duration = Duration::new(typed_from_env::<u64>("FORWARDER_RESUME_INTERVAL",1), 0); // seconds
 }

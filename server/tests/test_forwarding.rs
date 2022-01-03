@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-use ya_relay_client::{Client, ClientBuilder};
 use ya_relay_client::client::Forwarded;
+use ya_relay_client::{Client, ClientBuilder};
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 /// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.
