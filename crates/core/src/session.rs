@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
 use governor::clock::DefaultClock;
-use governor::state::InMemoryState;
+use governor::state::{InMemoryState, NotKeyed};
 use governor::RateLimiter;
 use rand::Rng;
 use std::convert::TryFrom;
@@ -30,6 +30,7 @@ pub struct NodeInfo {
     pub public_key: Vec<u8>,
     pub slot: u32,
 
+    /// Endpoints registered by Node.
     pub endpoints: Vec<Endpoint>,
 }
 
@@ -37,10 +38,11 @@ pub struct NodeInfo {
 pub struct NodeSession {
     pub info: NodeInfo,
 
+    /// Address from which Session was initialized
+    pub address: SocketAddr,
     pub session: SessionId,
     pub last_seen: DateTime<Utc>,
-    pub forwarding_limiter:
-        Arc<RateLimiter<governor::state::NotKeyed, InMemoryState, DefaultClock>>,
+    pub forwarding_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
 }
 
 impl TryFrom<Vec<u8>> for SessionId {

@@ -1,5 +1,9 @@
+use anyhow::anyhow;
+use std::convert::TryFrom;
 use std::iter::FromIterator;
 use std::mem::size_of;
+use std::net::{IpAddr, SocketAddr};
+use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 
@@ -307,6 +311,17 @@ where
     }
 }
 
+impl TryFrom<Endpoint> for SocketAddr {
+    type Error = anyhow::Error;
+
+    fn try_from(endpoint: Endpoint) -> anyhow::Result<Self> {
+        let ip = IpAddr::from_str(&endpoint.address)
+            .map_err(|e| anyhow!("Unable to parse IP address. Error: {}", e))?;
+
+        Ok(SocketAddr::new(ip, endpoint.port as u16))
+    }
+}
+
 macro_rules! impl_convert_kind {
     ($module:ident, $ident:ident) => {
         impl From<$crate::proto::$module::$ident> for $crate::proto::$module::Kind {
@@ -338,7 +353,6 @@ impl_convert_kind!(request, Neighbours);
 impl_convert_kind!(request, ReverseConnection);
 impl_convert_kind!(request, Ping);
 
-impl_convert_kind!(response, Challenge);
 impl_convert_kind!(response, Session);
 impl_convert_kind!(response, Register);
 impl_convert_kind!(response, Node);

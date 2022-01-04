@@ -342,6 +342,7 @@ mod tests {
                     challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
                     node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
                     public_key: vec![0x05, 0x0e, 0x0c],
+                    challenge_req: None,
                 },
             )
             .into(),
@@ -406,6 +407,7 @@ mod tests {
                         challenge_resp: vec![0u8; MAX_PARSE_MESSAGE_SIZE],
                         node_id: vec![],
                         public_key: vec![],
+                        challenge_req: None,
                     })),
                 })),
             }),

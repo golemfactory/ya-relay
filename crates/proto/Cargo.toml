@@ -16,6 +16,7 @@ codec = ["futures", "tokio", "tokio-util", "bytes", "derive_more", "thiserror"]
 prost = "0.6"
 rand = "0.8"
 
+anyhow = "1.0"
 bytes = { version = "0.5", optional = true }
 derive_more = { version = "0.99", optional = true }
 futures = { version = "0.3", optional = true }

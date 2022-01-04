@@ -1,4 +1,4 @@
-use ya_relay_core::session::SessionId;
+use crate::session::SessionId;
 
 use ya_client_model::NodeId;
 
@@ -96,6 +96,8 @@ pub enum InternalError {
     GettingSessionInfo(SessionId),
     #[error("Failed to initialize rate-limiter: {0}")]
     RateLimiterInit(String),
+    #[error("{0}")]
+    Generic(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]
