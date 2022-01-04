@@ -26,6 +26,7 @@ chrono = "0.4"
 dotenv = "0.15"
 env_logger = { version = "0.8", default-features = false }
 futures = "0.3"
+governor = "0.3.2"
 itertools = "0.10.1"
 log = "0.4"
 rand = { version = "0.8", features = ["std"] }

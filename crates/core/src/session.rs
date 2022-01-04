@@ -1,15 +1,19 @@
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
+use governor::clock::DefaultClock;
+use governor::state::{InMemoryState, NotKeyed};
+use governor::RateLimiter;
 use rand::Rng;
 use std::convert::TryFrom;
 use std::fmt;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use ya_client_model::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::SESSION_ID_SIZE;
 
-#[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq, Ord)]
 pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],
 }
@@ -38,6 +42,7 @@ pub struct NodeSession {
     pub address: SocketAddr,
     pub session: SessionId,
     pub last_seen: DateTime<Utc>,
+    pub forwarding_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
 }
 
 impl TryFrom<Vec<u8>> for SessionId {
