@@ -672,30 +672,41 @@ impl Server {
     }
 
     async fn check_resume_forwarding(&self) {
-        let mut server = self.state.write().await;
         let clock = DefaultClock::default();
-        let rs_fwd = server.resume_forwarding.clone();
-        let mut set_iter = rs_fwd.iter();
-        for elem in set_iter.by_ref() {
-            let (resume_at, session_id, socket_addr) = *elem;
-            let now = clock.now();
-            if resume_at > now {
-                break;
-            }
-            server.resume_forwarding.remove(elem);
-            if let Some(node_session) = server.nodes.get_by_session(session_id) {
-                let control_packet = proto::Packet::control(
-                    session_id.to_vec(),
-                    ya_relay_proto::proto::control::ResumeForwarding {
-                        slot: node_session.info.slot,
-                    },
-                );
-                if let Err(e) = self
-                    .send_to(PacketKind::Packet(control_packet), &socket_addr)
-                    .await
-                {
-                    log::warn!("Can not send ResumeForwarding. {}", e);
+        let mut to_resume = Vec::new();
+        {
+            let mut server = self.state.write().await;
+
+            // First iteration to release write lock as soon as possible
+            // FIXME: Use .drain_filter() on (resume_at <= now) when it becomes stable
+            for elem in server.resume_forwarding.iter() {
+                let (resume_at, session_id, socket_addr) = elem;
+                let now = clock.now();
+                if resume_at > &now {
+                    let elem = *elem;
+                    let mut split = server.resume_forwarding.split_off(&elem);
+                    std::mem::swap(&mut split, &mut server.resume_forwarding);
+                    break;
                 }
+                if let Some(node_session) = server.nodes.get_by_session(*session_id) {
+                    to_resume.push((node_session, *session_id, *socket_addr));
+                }
+            }
+        };
+
+        // Second iteration without locks
+        for (node_session, session_id, socket_addr) in to_resume {
+            let control_packet = proto::Packet::control(
+                session_id.to_vec(),
+                ya_relay_proto::proto::control::ResumeForwarding {
+                    slot: node_session.info.slot,
+                },
+            );
+            if let Err(e) = self
+                .send_to(PacketKind::Packet(control_packet), &socket_addr)
+                .await
+            {
+                log::warn!("Can not send ResumeForwarding. {}", e);
             }
         }
     }
