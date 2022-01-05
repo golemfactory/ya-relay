@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail};
+use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt, TryFutureExt};
@@ -51,6 +52,7 @@ pub struct SessionLayerState {
     nodes_addr: HashMap<SocketAddr, NodeId>,
 
     forward_unreliable: HashMap<NodeId, ForwardSender>,
+    forward_paused_till: Option<DateTime<Utc>>,
 
     p2p_sessions: HashMap<NodeId, Arc<Session>>,
     ingress_channel: Channel<Forwarded>,
@@ -70,6 +72,7 @@ impl SessionsLayer {
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
                 forward_unreliable: Default::default(),
+                forward_paused_till: Default::default(),
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
@@ -299,6 +302,9 @@ impl SessionsLayer {
         let node = self.registry.resolve_node(node_id).await?;
         let (sender, disconnected) = self.virtual_tcp.connect(node).await?;
 
+
+        //sender.override_send_with = self.get_next_fwd_payload()
+
         let myself = self.clone();
         tokio::task::spawn_local(async move {
             disconnected.await.ok();
@@ -329,6 +335,23 @@ impl SessionsLayer {
 
         tokio::task::spawn_local(self.clone().forward_unreliable_handler(session, node, rx));
         Ok(tx)
+    }
+
+    async fn get_next_fwd_payload<T>(&self, rx: &mut mpsc::Receiver<T>) -> Option<T> {
+        let raw_date = {
+            // dont lock the state longer then needed.
+            self.state.read().await.forward_paused_till
+        };
+        if let Some(date) = raw_date {
+            if let Ok(duration) = (date - Utc::now()).to_std() {
+                log::debug!("Receiver Paused!!! {:?}", duration);
+                tokio::time::delay_for(duration).await;
+                log::debug!("Receiver Continues...");
+            }
+            self.state.write().await.forward_paused_till = None;
+            log::debug!("reset date");
+        }
+        rx.next().await
     }
 
     async fn forward_unreliable_handler(
