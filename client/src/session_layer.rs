@@ -8,7 +8,6 @@ use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::stream::StreamExt;
 use tokio::sync::RwLock;
 
 use ya_client_model::NodeId;
@@ -593,6 +592,26 @@ impl Handler for SessionsLayer {
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
         log::debug!("Received control packet from {}: {:?}", from, control);
+
+        if let Some(kind) = control.kind {
+            match kind {
+                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Pause! {:?}", message);
+                        *self.state.read().await.forward_paused_till.write().await = Some(Utc::now() + chrono::Duration::seconds(5))
+                    }
+                    .boxed_local();
+                },
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Resume! {:?}", message);
+                        *self.state.write().await.forward_paused_till.write().await = None
+                    }
+                    .boxed_local();
+                },
+                _ => { log::trace!("Un-handled control packet: {:?}", kind)}
+            }
+        }
         Box::pin(futures::future::ready(()))
     }
 
