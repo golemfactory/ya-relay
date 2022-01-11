@@ -32,6 +32,7 @@ pub struct ClientConfig {
     pub bind_url: Url,
     pub srv_addr: SocketAddr,
     pub auto_connect: bool,
+    pub session_expiration: Duration,
 }
 
 pub struct ClientBuilder {
@@ -254,6 +255,7 @@ impl ClientBuilder {
             bind_url,
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
             auto_connect: self.auto_connect,
+            session_expiration: Duration::from_secs(25),
         });
 
         client.spawn().await?;

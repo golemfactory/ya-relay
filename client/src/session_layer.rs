@@ -24,6 +24,7 @@ use ya_relay_stack::Channel;
 
 use crate::client::{ClientConfig, ForwardId, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
+use crate::expire::track_sessions_expiration;
 use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::{Session, StartingSessions};
 use crate::virtual_layer::TcpLayer;
@@ -87,7 +88,10 @@ impl SessionsLayer {
         }
 
         self.virtual_tcp.spawn(self.config.node_id)?;
+
         tokio::task::spawn_local(dispatch(self.clone(), stream));
+        tokio::task::spawn_local(track_sessions_expiration(self.clone()));
+
         Ok(bind_addr)
     }
 
@@ -223,6 +227,15 @@ impl SessionsLayer {
             .ok_or_else(|| anyhow!("StartingSessions struct not initialized."))
     }
 
+    pub async fn sessions(&self) -> Vec<Arc<Session>> {
+        let state = self.state.read().await;
+        state
+            .sessions
+            .iter()
+            .map(|(_, session)| session.clone())
+            .collect()
+    }
+
     pub(crate) async fn add_session(
         &self,
         addr: SocketAddr,
@@ -257,6 +270,7 @@ impl SessionsLayer {
 
     async fn remove_node(&self, node_id: NodeId) {
         self.registry.remove_node(node_id).await.ok();
+        self.virtual_tcp.remove_node(node_id).await.ok();
 
         {
             let mut state = self.state.write().await;
@@ -269,6 +283,29 @@ impl SessionsLayer {
                 state.nodes_addr.remove(&session.remote);
             }
         }
+    }
+
+    pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
+        if let Some(node_id) = {
+            let mut state = self.state.write().await;
+
+            state.sessions.remove(&session.remote);
+            state.nodes_addr.remove(&session.remote)
+        } {
+            // We are closing p2p session with Node.
+            // TODO: If we will support forwarding through other Nodes, than
+            //       relay server, we must handle this here.
+            self.remove_node(node_id).await;
+        } else {
+            // We are removing relay server session and all Nodes that are using
+            // it to forward messages.
+            for node_id in self.registry.nodes_using_session(session.clone()).await {
+                self.remove_node(node_id).await;
+            }
+        }
+
+        session.close().await?;
+        Ok(())
     }
 
     pub async fn optimal_session(

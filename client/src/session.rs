@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use tokio::time::{Duration, Instant};
 
 use crate::dispatch::{Dispatched, Dispatcher};
 use crate::session_layer::SessionsLayer;
@@ -130,6 +130,29 @@ impl Session {
         )
         .await?;
 
+        Ok(())
+    }
+
+    /// Check if any packet was seen during expiration period.
+    /// If it wasn't, ping will be sent.
+    /// Function returns timestamp of last seen packet from remote Node,
+    /// including ping that can be sent.
+    pub async fn keep_alive(&self, expiration: Duration) -> Instant {
+        let last_seen = self.dispatcher.last_seen();
+
+        if last_seen + expiration < Instant::now() {
+            // Ignoring error, because in such a case, we should disconnect anyway.
+            self.ping().await.ok();
+        }
+
+        // Could be updated after ping.
+        self.dispatcher.last_seen()
+    }
+
+    /// Will send `Disconnect` message to other Node, to close end Session
+    /// more gracefully.  
+    pub async fn close(&self) -> anyhow::Result<()> {
+        // TODO: Send Disconnect message.
         Ok(())
     }
 }

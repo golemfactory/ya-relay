@@ -58,6 +58,18 @@ impl NodesRegistry {
         }
     }
 
+    pub async fn nodes_using_session(&self, session: Arc<Session>) -> Vec<NodeId> {
+        let state = self.state.read().await;
+        state
+            .nodes
+            .iter()
+            .filter_map(|(_, entry)| match entry.session.id == session.id {
+                true => Some(entry.id),
+                false => None,
+            })
+            .collect()
+    }
+
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {
         let state = self.state.read().await;
         state.resolve_node(node)

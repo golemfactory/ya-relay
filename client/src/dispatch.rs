@@ -115,6 +115,10 @@ impl Default for Dispatcher {
 }
 
 impl Dispatcher {
+    pub fn last_seen(&self) -> Instant {
+        self.seen.borrow_mut().clone()
+    }
+
     /// Creates a future to await a `T` (response) packet on
     pub fn response<'a, T: 'static>(
         &self,

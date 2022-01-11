@@ -1,0 +1,56 @@
+use std::sync::Arc;
+use tokio::time::Instant;
+
+use crate::session::Session;
+use crate::session_layer::SessionsLayer;
+
+pub async fn track_sessions_expiration(layer: SessionsLayer) {
+    let expiration = layer.config.session_expiration.clone();
+
+    loop {
+        let sessions = layer.sessions().await;
+        let now = Instant::now();
+
+        // Collect futures in vector and execute asynchronously, because pinging
+        // can last a few seconds especially in case of inactive sessions.
+        let ping_futures = sessions
+            .iter()
+            .map(|session| session.keep_alive(expiration.clone()))
+            .collect::<Vec<_>>();
+
+        let last_seen = futures::future::join_all(ping_futures).await;
+
+        // Collect indices of Sessions to close.
+        let expired_idx = last_seen
+            .iter()
+            .enumerate()
+            .filter_map(|(i, timestamp)| match *timestamp + expiration < now {
+                true => Some(i),
+                false => None,
+            })
+            .collect::<Vec<_>>();
+
+        tokio::task::spawn_local(close_sessions(layer.clone(), sessions, expired_idx));
+
+        let first_to_expiring = last_seen.iter().min().cloned().unwrap_or(now + expiration);
+        tokio::time::delay_until(first_to_expiring).await;
+    }
+}
+
+async fn close_sessions(layer: SessionsLayer, sessions: Vec<Arc<Session>>, expired: Vec<usize>) {
+    for idx in expired.into_iter() {
+        let session = sessions[idx].clone();
+        layer
+            .close_session(session.clone())
+            .await
+            .map_err(|e| {
+                log::warn!(
+                    "Error closing session {} ({}): {}",
+                    session.id,
+                    session.remote,
+                    e
+                )
+            })
+            .ok();
+    }
+}
