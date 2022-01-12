@@ -1,5 +1,4 @@
 use anyhow::anyhow;
-use bytes::BytesMut;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use std::net::SocketAddr;
@@ -9,9 +8,9 @@ use tokio::net::UdpSocket;
 use tokio_util::codec::{Decoder, Encoder};
 
 use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::{PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
 
-use crate::parse_udp_url;
+use crate::utils::parse_udp_url;
 
 pub type InStream = Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr)>>>;
 pub type OutStream = mpsc::Sender<(PacketKind, SocketAddr)>;

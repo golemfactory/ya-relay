@@ -1,8 +1,9 @@
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{Buf, BufMut};
 use derive_more::From;
 
 pub use crate::codec::error::*;
 use crate::proto::{Forward, Packet};
+pub use bytes::BytesMut;
 
 pub mod datagram;
 mod error;

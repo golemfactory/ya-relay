@@ -1,14 +1,22 @@
+use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::SeqCst;
+use std::time::Duration;
+
+use anyhow::Context;
+use futures::StreamExt;
 use itertools::Itertools;
+use tokio::sync::mpsc;
 
 use ya_client_model::NodeId;
-use ya_net_server::testing::server::{init_test_server, ServerWrapper};
-use ya_net_server::testing::{Client, ClientBuilder};
+use ya_relay_client::{client::Forwarded, Client, ClientBuilder};
+use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     let mut clients = vec![];
     for _ in 0..count {
         clients.push(
-            ClientBuilder::from_server(&wrapper.server)
+            ClientBuilder::from_url(wrapper.server.inner.url.clone())
                 .connect()
                 .build()
                 .await
@@ -23,8 +31,8 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 13).await;
 
-    let node_id = clients[0].node_id().await;
-    let session = clients[0].server_session().await?;
+    let node_id = clients[0].node_id();
+    let session = clients[0].sessions.server_session().await?;
 
     let ids = session
         .neighbours(5)
@@ -73,8 +81,8 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 3).await;
 
-    let node_id = clients[0].node_id().await;
-    let session = clients[0].server_session().await?;
+    let node_id = clients[0].node_id();
+    let session = clients[0].sessions.server_session().await?;
 
     let ids = session
         .neighbours(5)
@@ -90,5 +98,51 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
 
     // Node neighbourhood consists of all nodes beside requesting node.
     assert_eq!(ids.len(), 2);
+    Ok(())
+}
+
+#[serial_test::serial]
+async fn test_broadcast() -> anyhow::Result<()> {
+    const NEIGHBOURHOOD_SIZE: u32 = 8;
+    let wrapper = init_test_server().await.unwrap();
+    let mut clients = start_clients(&wrapper, NEIGHBOURHOOD_SIZE + 1).await;
+
+    fn spawn_receive(received: Rc<AtomicUsize>, rx: mpsc::UnboundedReceiver<Forwarded>) {
+        tokio::task::spawn_local({
+            let received = received.clone();
+            async move {
+                rx.for_each(|item| {
+                    let received = received.clone();
+                    async move {
+                        println!("received {:?}", item);
+                        received.clone().fetch_add(item.payload.len(), SeqCst);
+                    }
+                })
+                .await;
+            }
+        });
+    }
+    let mut received = vec![];
+    let broadcasting_client = clients.pop().unwrap();
+
+    for client in clients {
+        let counter = Rc::new(AtomicUsize::new(0));
+        received.push(counter.clone());
+        let rx = client
+            .forward_receiver()
+            .await
+            .context("no forward receiver")?;
+        spawn_receive(counter, rx);
+    }
+
+    let data = vec![1 as u8];
+    broadcasting_client
+        .broadcast(data, NEIGHBOURHOOD_SIZE)
+        .await?;
+    tokio::time::delay_for(Duration::from_millis(100)).await;
+
+    for receiver in received {
+        assert_eq!(receiver.load(SeqCst), 1);
+    }
     Ok(())
 }

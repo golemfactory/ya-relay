@@ -94,6 +94,10 @@ pub enum InternalError {
     BindingSocket(String),
     #[error("Node info for session [{0}] not found.")]
     GettingSessionInfo(SessionId),
+    #[error("Failed to initialize rate-limiter: {0}")]
+    RateLimiterInit(String),
+    #[error("{0}")]
+    Generic(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]

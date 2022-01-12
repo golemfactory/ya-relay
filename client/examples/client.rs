@@ -2,9 +2,9 @@ use env_logger;
 use structopt::{clap, StructOpt};
 
 use ya_client_model::NodeId;
-use ya_net_server::crypto::FallbackCryptoProvider;
-use ya_net_server::testing::key::{load_or_generate, Protected};
-use ya_net_server::testing::ClientBuilder;
+use ya_relay_client::ClientBuilder;
+use ya_relay_core::crypto::FallbackCryptoProvider;
+use ya_relay_core::key::{load_or_generate, Protected};
 
 #[derive(StructOpt)]
 #[structopt(about = "NET Client")]
@@ -69,17 +69,17 @@ async fn main() -> anyhow::Result<()> {
 
     match args.commands {
         Commands::Init(Init {}) => {
-            let session = client.server_session().await?;
+            let session = client.sessions.server_session().await?;
             let endpoints = session.register_endpoints(vec![]).await?;
 
             log::info!("Discovered public endpoints: {:?}", endpoints);
         }
         Commands::FindNode(opts) => {
-            let session = client.server_session().await?;
+            let session = client.sessions.server_session().await?;
             session.find_node(opts.node_id).await?;
         }
         Commands::Ping(_) => {
-            let session = client.server_session().await?;
+            let session = client.sessions.server_session().await?;
             session.ping().await?;
         }
     };
