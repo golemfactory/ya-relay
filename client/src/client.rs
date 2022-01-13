@@ -17,7 +17,7 @@ use ya_relay_core::error::InternalError;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_proto::proto::SlotId;
 
-use crate::session_layer::SessionsLayer;
+use crate::session_manager::SessionManager;
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
@@ -46,7 +46,7 @@ pub struct Client {
     config: Arc<ClientConfig>,
 
     state: Arc<RwLock<ClientState>>,
-    pub sessions: SessionsLayer,
+    pub sessions: SessionManager,
 }
 
 pub(crate) struct ClientState {
@@ -62,7 +62,7 @@ impl Client {
     fn new(config: ClientConfig) -> Self {
         let config = Arc::new(config);
 
-        let sessions = SessionsLayer::new(config.clone());
+        let sessions = SessionManager::new(config.clone());
         let state = Arc::new(RwLock::new(ClientState {
             public_addr: None,
             bind_addr: None,

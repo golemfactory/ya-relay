@@ -37,17 +37,17 @@ const PAUSE_FWD_DELAY: i64 = 5;
 /// of other peers. Other layers should use higher level abstractions
 /// like `NodeId` or `SlotId`.
 #[derive(Clone)]
-pub struct SessionsLayer {
+pub struct SessionManager {
     sink: Option<OutStream>,
     pub config: Arc<ClientConfig>,
 
     pub virtual_tcp: TcpLayer,
     pub registry: NodesRegistry,
 
-    state: Arc<RwLock<SessionLayerState>>,
+    state: Arc<RwLock<SessionManagerState>>,
 }
 
-pub struct SessionLayerState {
+pub struct SessionManagerState {
     sessions: HashMap<SocketAddr, Arc<Session>>,
     nodes_addr: HashMap<SocketAddr, NodeId>,
 
@@ -60,15 +60,15 @@ pub struct SessionLayerState {
     starting_sessions: Option<StartingSessions>,
 }
 
-impl SessionsLayer {
-    pub fn new(config: Arc<ClientConfig>) -> SessionsLayer {
+impl SessionManager {
+    pub fn new(config: Arc<ClientConfig>) -> SessionManager {
         let ingress = Channel::<Forwarded>::default();
-        SessionsLayer {
+        SessionManager {
             sink: None,
             config: config.clone(),
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
             registry: NodesRegistry::new(),
-            state: Arc::new(RwLock::new(SessionLayerState {
+            state: Arc::new(RwLock::new(SessionManagerState {
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
                 forward_unreliable: Default::default(),
@@ -561,7 +561,7 @@ impl SessionsLayer {
     }
 }
 
-impl Handler for SessionsLayer {
+impl Handler for SessionManager {
     fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>> {
         let handler = self.clone();
         async move {
@@ -700,7 +700,7 @@ impl Handler for SessionsLayer {
     }
 }
 
-impl SessionLayerState {
+impl SessionManagerState {
     /// External function should acquire lock.
     pub fn add_session(&mut self, addr: SocketAddr, session: Arc<Session>) {
         if let Some(mut s) = self.starting_sessions.clone() {

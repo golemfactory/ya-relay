@@ -2,7 +2,7 @@ pub mod client;
 mod dispatch;
 mod registry;
 mod session;
-mod session_layer;
+mod session_manager;
 pub mod testing;
 mod virtual_layer;
 
