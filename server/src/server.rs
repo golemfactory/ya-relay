@@ -672,6 +672,7 @@ impl Server {
     }
 
     async fn check_resume_forwarding(&self) {
+        log::trace!("Checking resume...");
         let clock = DefaultClock::default();
         let mut to_resume = Vec::new();
         {
@@ -696,6 +697,7 @@ impl Server {
 
         // Second iteration without locks
         for (node_session, session_id, socket_addr) in to_resume {
+            log::trace!("Resuming for node: {:?}", socket_addr);
             let control_packet = proto::Packet::control(
                 session_id.to_vec(),
                 ya_relay_proto::proto::control::ResumeForwarding {

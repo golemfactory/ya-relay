@@ -149,6 +149,7 @@ impl TcpLayer {
             log::trace!("Forwarding messages to {}", node.id);
 
             while let Some(payload) = myself.get_next_fwd_payload(&mut rx, paused.clone()).await {
+                log::trace!("Forwarding message to {}", node.id);
                 let _ = myself
                     .net
                     .send(payload, connection)
@@ -197,11 +198,12 @@ impl TcpLayer {
             if let Ok(duration) = (date - Utc::now()).to_std() {
                 log::debug!("Receiver Paused!!! {:?}", duration);
                 tokio::time::delay_for(duration).await;
-                log::debug!("Receiver Continues...");
+                log::trace!("Receiver Continues...");
             }
             (*forward_paused_till.write().await) = None;
             log::debug!("reset date");
         }
+        log::trace!("Waiting for data...");
         rx.next().await
     }
 

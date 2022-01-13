@@ -243,6 +243,9 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
         .build()
         .await?;
 
+    hack_make_ip_private(&wrapper, &client1).await;
+    hack_make_ip_private(&wrapper, &client2).await;
+
     let rx2 = client2
         .forward_receiver()
         .await
@@ -273,11 +276,11 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     let mut tx1 = client1.forward(client2.node_id()).await?;
     let big_payload = (0..255).collect::<Vec<u8>>();
     let iterations = (2048 / 256) + 1;
-    for i in 0..iterations {
+    for i in 0..10 {
         println!("Send 255. iter: {}", i);
         tx1.send(big_payload.clone()).await?;
     }
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::delay_for(Duration::from_millis(200)).await;
     let rec_cnt = received2.load(SeqCst);
     println!("Received counter: {}", rec_cnt);
     // It's hard to define exact value, as this test may catch
@@ -285,11 +288,11 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     // in a value slightly larger than limit (using limit from
     // two periods)
     let max_value = (2048 * 15) / 10;
-    assert!(rec_cnt <= max_value);
-    tokio::time::delay_for(Duration::from_secs(4)).await;
+    assert!(rec_cnt <= 2048);
+    tokio::time::delay_for(Duration::from_secs(10)).await;
     let rec_cnt = received2.load(SeqCst);
     println!("Received counter: {}", rec_cnt);
-    assert!(rec_cnt > max_value);
+    assert!(rec_cnt > 2048);
 
     Ok(())
 }
