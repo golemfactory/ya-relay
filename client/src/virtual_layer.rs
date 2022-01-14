@@ -171,10 +171,10 @@ impl TcpLayer {
             disconnect_tx.send(()).ok();
             rx.close();
 
-            log::trace!(
-                "[{}] forward: disconnected from server: {}",
-                id,
-                node.session.remote
+            log::debug!(
+                "Virtual Tcp: disconnected from relay: {}. Stopping forwarding to Node [{}].",
+                node.session.remote,
+                node.id,
             );
         });
 

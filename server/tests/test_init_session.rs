@@ -95,29 +95,6 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
     Ok(())
 }
 
-// TODO: Make this test work, when we will have implementation of Session restarts.
-// #[serial_test::serial]
-// async fn test_close_session() -> anyhow::Result<()> {
-//     let wrapper = init_test_server().await.unwrap();
-//     let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
-//         .connect()
-//         .build()
-//         .await
-//         .unwrap();
-//
-//     let node_id = client.node_id();
-//     let session = client.sessions.server_session().await?;
-//     session.find_node(node_id).await?;
-//
-//     let cloned_session = session.clone();
-//     session.close().await;
-//
-//     let result = cloned_session.find_node(node_id).await;
-//     assert!(result.is_err());
-//
-//     Ok(())
-// }
-
 #[serial_test::serial]
 #[ignore] // This functionality is not supported yet
 async fn test_restart_server() -> anyhow::Result<()> {

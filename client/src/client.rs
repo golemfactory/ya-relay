@@ -40,6 +40,7 @@ pub struct ClientBuilder {
     srv_url: Url,
     crypto: Option<Rc<dyn CryptoProvider>>,
     auto_connect: bool,
+    session_expiration: Option<Duration>,
 }
 
 #[derive(Clone)]
@@ -81,6 +82,9 @@ impl Client {
         self.config.node_id
     }
 
+    /// Real address on which Client is listening to incoming messages.
+    /// If you passed address like `0.0.0.0:0` to `ClientBuilder::listen()`, than this function will
+    /// return resolved version of this address.
     pub async fn bind_addr(&self) -> anyhow::Result<SocketAddr> {
         self.state
             .read()
@@ -210,6 +214,12 @@ impl Client {
         futures::future::join_all(broadcast_futures).await;
         Ok(())
     }
+
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        log::info!("Shutting down Hybrid NET client.");
+
+        self.sessions.shutdown().await
+    }
 }
 
 impl ClientBuilder {
@@ -219,6 +229,7 @@ impl ClientBuilder {
             srv_url: url,
             crypto: None,
             auto_connect: false,
+            session_expiration: None,
         }
     }
 
@@ -234,6 +245,11 @@ impl ClientBuilder {
 
     pub fn listen(mut self, url: Url) -> ClientBuilder {
         self.bind_url = Some(url);
+        self
+    }
+
+    pub fn expire_session_after(mut self, expiration: Duration) -> Self {
+        self.session_expiration = Some(expiration);
         self
     }
 
@@ -255,7 +271,7 @@ impl ClientBuilder {
             bind_url,
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
             auto_connect: self.auto_connect,
-            session_expiration: Duration::from_secs(25),
+            session_expiration: self.session_expiration.unwrap_or(Duration::from_secs(25)),
         });
 
         client.spawn().await?;

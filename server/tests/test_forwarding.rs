@@ -7,6 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use ya_relay_client::client::Forwarded;
+use ya_relay_client::testing::forwarding_utils::spawn_receive;
 use ya_relay_client::{Client, ClientBuilder};
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
@@ -20,26 +21,6 @@ async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
     // Server won't return any endpoints, so Client won't try to connect directly.
     info.info.endpoints = vec![];
     state.nodes.register(info)
-}
-
-fn spawn_receive<T: std::fmt::Debug + 'static>(
-    label: &'static str,
-    received: Rc<AtomicBool>,
-    rx: mpsc::UnboundedReceiver<T>,
-) {
-    tokio::task::spawn_local({
-        let received = received.clone();
-        async move {
-            rx.for_each(|item| {
-                let received = received.clone();
-                async move {
-                    println!("{} received {:?}", label, item);
-                    received.clone().store(true, SeqCst)
-                }
-            })
-            .await;
-        }
-    });
 }
 
 #[serial_test::serial]

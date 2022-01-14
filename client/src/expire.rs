@@ -8,6 +8,8 @@ pub async fn track_sessions_expiration(layer: SessionsLayer) {
     let expiration = layer.config.session_expiration.clone();
 
     loop {
+        log::trace!("Checking, if all sessions are alive. Removing not active sessions.");
+
         let sessions = layer.sessions().await;
         let now = Instant::now();
 
@@ -32,7 +34,12 @@ pub async fn track_sessions_expiration(layer: SessionsLayer) {
 
         tokio::task::spawn_local(close_sessions(layer.clone(), sessions, expired_idx));
 
-        let first_to_expiring = last_seen.iter().min().cloned().unwrap_or(now + expiration);
+        let first_to_expiring = last_seen.iter().min().cloned().unwrap_or(now) + expiration;
+
+        log::trace!(
+            "Next sessions cleanup: {:?}",
+            first_to_expiring.saturating_duration_since(Instant::now())
+        );
         tokio::time::delay_until(first_to_expiring).await;
     }
 }
@@ -40,6 +47,13 @@ pub async fn track_sessions_expiration(layer: SessionsLayer) {
 async fn close_sessions(layer: SessionsLayer, sessions: Vec<Arc<Session>>, expired: Vec<usize>) {
     for idx in expired.into_iter() {
         let session = sessions[idx].clone();
+
+        log::info!(
+            "Closing session {}({}) not responding to ping.",
+            session.id,
+            session.remote
+        );
+
         layer
             .close_session(session.clone())
             .await

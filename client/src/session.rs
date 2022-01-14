@@ -197,6 +197,12 @@ impl Session {
     }
 }
 
+impl Drop for Session {
+    fn drop(&mut self) {
+        log::trace!("Dropping Session {} ({}).", self.id, self.remote);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct StartingSessions {
     state: Arc<Mutex<StartingSessionsState>>,

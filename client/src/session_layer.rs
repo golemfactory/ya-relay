@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail};
 use futures::channel::mpsc;
-use futures::future::LocalBoxFuture;
+use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
@@ -57,6 +57,9 @@ pub struct SessionLayerState {
     ingress_channel: Channel<Forwarded>,
 
     starting_sessions: Option<StartingSessions>,
+
+    // Collection of background tasks that must be stopped on shutdown.
+    handles: Vec<AbortHandle>,
 }
 
 impl SessionsLayer {
@@ -74,6 +77,7 @@ impl SessionsLayer {
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
+                handles: vec![],
             })),
         }
     }
@@ -82,15 +86,23 @@ impl SessionsLayer {
         let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
 
         self.sink = Some(sink.clone());
-        {
-            self.state.write().await.starting_sessions =
-                Some(StartingSessions::new(self.clone(), sink));
-        }
 
         self.virtual_tcp.spawn(self.config.node_id)?;
 
-        tokio::task::spawn_local(dispatch(self.clone(), stream));
+        let (abort_dispatcher, abort_registration) = AbortHandle::new_pair();
+
+        tokio::task::spawn_local(Abortable::new(
+            dispatch(self.clone(), stream),
+            abort_registration,
+        ));
         tokio::task::spawn_local(track_sessions_expiration(self.clone()));
+
+        {
+            let mut state = self.state.write().await;
+
+            state.handles.push(abort_dispatcher);
+            state.starting_sessions = Some(StartingSessions::new(self.clone(), sink));
+        }
 
         Ok(bind_addr)
     }
@@ -174,7 +186,7 @@ impl SessionsLayer {
 
         let session = self.add_session(addr, session_id).await?;
 
-        log::info!("[{}] session established with address: {}", node_id, addr);
+        log::trace!("[{}] session established with address: {}", node_id, addr);
         Ok(session)
     }
 
@@ -190,12 +202,15 @@ impl SessionsLayer {
         );
 
         let session = self.init_session(addr, true).await?;
-        {
+        let session = {
             let mut state = self.state.write().await;
             state.nodes_addr.insert(addr, node_id);
 
-            Ok(state.p2p_sessions.entry(node_id).or_insert(session).clone())
-        }
+            state.p2p_sessions.entry(node_id).or_insert(session).clone()
+        };
+
+        log::info!("Established P2P session with node [{}] ({})", node_id, addr);
+        Ok(session)
     }
 
     async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<Arc<Session>> {
@@ -208,6 +223,8 @@ impl SessionsLayer {
             .await
             .sessions
             .insert(addr, session.clone());
+
+        log::info!("Established session with NET relay server ({})", addr);
         Ok(session)
     }
 
@@ -286,6 +303,8 @@ impl SessionsLayer {
     }
 
     pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
+        log::info!("Closing session {} ({})", session.id, session.remote);
+
         if let Some(node_id) = {
             let mut state = self.state.write().await;
 
@@ -482,6 +501,41 @@ impl SessionsLayer {
         //session.register_endpoints(vec![]).await?;
 
         Ok(session)
+    }
+
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        let abort_handles = {
+            let mut state = self.state.write().await;
+
+            state.starting_sessions = None;
+            state.handles.clone()
+        };
+
+        for abort_handle in abort_handles {
+            abort_handle.abort();
+        }
+
+        if let Some(mut out_stream) = self.sink.clone() {
+            if let Err(e) = out_stream.close().await {
+                log::warn!("Error closing socket (output stream). {}", e);
+            }
+            self.sink = None;
+        }
+
+        for session in self.sessions().await {
+            self.close_session(session.clone())
+                .await
+                .map_err(|e| {
+                    log::warn!(
+                        "Failed to close session {} ({}). {}",
+                        session.id,
+                        session.remote,
+                        e,
+                    )
+                })
+                .ok();
+        }
+        Ok(())
     }
 
     pub async fn dispatch_session<'a>(
