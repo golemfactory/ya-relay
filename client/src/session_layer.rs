@@ -1,4 +1,5 @@
 use anyhow::{anyhow, bail};
+use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt, TryFutureExt};
@@ -7,7 +8,6 @@ use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::stream::StreamExt;
 use tokio::sync::RwLock;
 
 use ya_client_model::NodeId;
@@ -30,6 +30,7 @@ use crate::virtual_layer::TcpLayer;
 
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const CHALLENGE_REQUEST_TIMEOUT: Duration = Duration::from_millis(8000);
+const PAUSE_FWD_DELAY: i64 = 5;
 
 /// Managing relay server and peer-to-peer sessions.
 /// This is the only layer, that should know real IP addresses and ports
@@ -51,6 +52,7 @@ pub struct SessionLayerState {
     nodes_addr: HashMap<SocketAddr, NodeId>,
 
     forward_unreliable: HashMap<NodeId, ForwardSender>,
+    forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     p2p_sessions: HashMap<NodeId, Arc<Session>>,
     ingress_channel: Channel<Forwarded>,
@@ -70,6 +72,7 @@ impl SessionsLayer {
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
                 forward_unreliable: Default::default(),
+                forward_paused_till: Arc::new(RwLock::new(Default::default())),
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
@@ -297,7 +300,8 @@ impl SessionsLayer {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
         let node = self.registry.resolve_node(node_id).await?;
-        let (sender, disconnected) = self.virtual_tcp.connect(node).await?;
+        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        let (sender, disconnected) = self.virtual_tcp.connect(node, paused_check).await?;
 
         let myself = self.clone();
         tokio::task::spawn_local(async move {
@@ -337,7 +341,12 @@ impl SessionsLayer {
         node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
-        while let Some(payload) = rx.next().await {
+        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        while let Some(payload) = self
+            .virtual_tcp
+            .get_next_fwd_payload(&mut rx, paused_check.clone())
+            .await
+        {
             log::trace!("Forwarding message (U) to {}", node.id);
 
             let forward = Forward::unreliable(session.id, node.slot, payload);
@@ -582,6 +591,29 @@ impl Handler for SessionsLayer {
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
         log::debug!("Received control packet from {}: {:?}", from, control);
+
+        if let Some(kind) = control.kind {
+            match kind {
+                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Pause! {:?}", message);
+                        *self.state.read().await.forward_paused_till.write().await =
+                            Some(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY))
+                    }
+                    .boxed_local();
+                }
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Resume! {:?}", message);
+                        *self.state.write().await.forward_paused_till.write().await = None
+                    }
+                    .boxed_local();
+                }
+                _ => {
+                    log::trace!("Un-handled control packet: {:?}", kind)
+                }
+            }
+        }
         Box::pin(futures::future::ready(()))
     }
 

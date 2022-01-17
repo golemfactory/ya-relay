@@ -1,4 +1,5 @@
 use anyhow::anyhow;
+use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::channel::oneshot;
 use futures::StreamExt;
@@ -131,6 +132,7 @@ impl TcpLayer {
     pub async fn connect(
         &self,
         node: NodeEntry,
+        paused_forwarding: Arc<RwLock<Option<DateTime<Utc>>>>,
     ) -> anyhow::Result<(ForwardSender, oneshot::Receiver<()>)> {
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
@@ -141,11 +143,13 @@ impl TcpLayer {
 
         let id = self.net_id();
         let myself = self.clone();
+        let paused = paused_forwarding.clone();
 
         tokio::task::spawn_local(async move {
             log::trace!("Forwarding messages to {}", node.id);
 
-            while let Some(payload) = rx.next().await {
+            while let Some(payload) = myself.get_next_fwd_payload(&mut rx, paused.clone()).await {
+                log::trace!("Forwarding message to {}", node.id);
                 let _ = myself
                     .net
                     .send(payload, connection)
@@ -179,6 +183,28 @@ impl TcpLayer {
         });
 
         Ok((tx, disconnect_rx))
+    }
+
+    pub async fn get_next_fwd_payload<T>(
+        &self,
+        rx: &mut mpsc::Receiver<T>,
+        forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
+    ) -> Option<T> {
+        let raw_date = {
+            // dont lock the state longer then needed.
+            *forward_paused_till.read().await
+        };
+        if let Some(date) = raw_date {
+            if let Ok(duration) = (date - Utc::now()).to_std() {
+                log::debug!("Receiver Paused!!! {:?}", duration);
+                tokio::time::delay_for(duration).await;
+                log::trace!("Receiver Continues...");
+            }
+            (*forward_paused_till.write().await) = None;
+            log::debug!("reset date");
+        }
+        log::trace!("Waiting for data...");
+        rx.next().await
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
