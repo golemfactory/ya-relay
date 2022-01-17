@@ -19,7 +19,10 @@ pub fn typed_from_env<T: std::str::FromStr + Copy>(env_key: &str, def_value: T) 
 }
 
 pub fn parse_node_id(id: &[u8]) -> Result<NodeId, BadRequest> {
-    if id.len() != NodeId::default().as_ref().len() {
+    let default_id = NodeId::default();
+    let default_id_bytes: &[u8] = default_id.as_ref();
+
+    if id.len() != default_id_bytes.len() {
         return Err(BadRequest::InvalidNodeId);
     }
     Ok(NodeId::from(id))
