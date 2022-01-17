@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
@@ -8,28 +9,25 @@ use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{self, timeout, Duration};
-use tokio_util::codec::{Decoder, Encoder};
+use tokio::time::{self};
 use url::Url;
 
-use crate::error::{
-    BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
-};
+use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
 use crate::state::NodesState;
 
 use ya_client_model::NodeId;
 
+use crate::config::Config;
+use crate::public_endpoints::EndpointsChecker;
 use ya_relay_core::challenge::prepare_challenge_response;
 use ya_relay_core::challenge::{self, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{Endpoint, NodeInfo, NodeSession, SessionId};
+use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_core::{
     FORWARDER_RATE_LIMIT, FORWARDER_RESUME_INTERVAL, SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT,
 };
-use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
@@ -51,6 +49,7 @@ pub struct ServerState {
 pub struct ServerImpl {
     pub socket: OutStream,
     pub url: Url,
+    pub ip_checker: EndpointsChecker,
 }
 
 impl Server {
@@ -206,58 +205,6 @@ impl Server {
         Ok(())
     }
 
-    async fn public_endpoints(
-        &self,
-        session_id: SessionId,
-        addr: &SocketAddr,
-    ) -> ServerResult<Vec<Endpoint>> {
-        // We need new socket to check, if Node's address is public.
-        // If we would use the same socket as always, we would be able to
-        // send packets even to addresses behind NAT.
-        let mut sock = UdpSocket::bind("0.0.0.0:0")
-            .await
-            .map_err(|e| InternalError::BindingSocket(e.to_string()))?;
-
-        let mut codec = Codec::default();
-        let mut buf = BytesMut::new();
-
-        // If we can ping `from` address it was public, if we don't get response
-        // it could be private.
-        let ping = proto::Packet::request(session_id.to_vec(), proto::request::Ping {}).into();
-
-        codec
-            .encode(ping, &mut buf)
-            .map_err(|_| InternalError::Encoding)?;
-
-        sock.send_to(&buf, &addr)
-            .await
-            .map_err(|_| InternalError::Send)?;
-
-        buf.resize(MAX_PACKET_SIZE as usize, 0);
-
-        let size = timeout(Duration::from_millis(300), sock.recv(&mut buf))
-            .await
-            .map_err(|_| Timeout::Ping)?
-            .map_err(|_| InternalError::Receiving)?;
-
-        buf.truncate(size);
-
-        match dispatch_response(
-            codec
-                .decode(&mut buf)
-                .map_err(|_| InternalError::Decoding)?
-                .ok_or(InternalError::Decoding)?,
-        ) {
-            Ok(proto::response::Kind::Pong(_)) => {}
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Pong".to_string()).into()),
-        };
-
-        Ok(vec![Endpoint {
-            protocol: proto::Protocol::Udp,
-            address: *addr,
-        }])
-    }
-
     async fn register_endpoints(
         &self,
         request_id: RequestId,
@@ -270,7 +217,11 @@ impl Server {
         //       to verify address, from which we received messages.
 
         let node_id = session.info.node_id;
-        let endpoints = self.public_endpoints(session_id, &from).await?;
+        let endpoints = self
+            .inner
+            .ip_checker
+            .public_endpoints(session_id, &from)
+            .await?;
 
         for endpoint in endpoints.iter() {
             log::info!(
@@ -724,16 +675,24 @@ impl Server {
             .await?)
     }
 
-    pub async fn bind_udp(addr: url::Url) -> anyhow::Result<Server> {
-        let (input, output, addr) = udp_bind(&addr).await?;
+    pub async fn bind_udp(config: Config) -> anyhow::Result<Server> {
+        let (input, output, addr) = udp_bind(&config.address).await?;
         let url = Url::parse(&format!("udp://{}:{}", addr.ip(), addr.port()))?;
 
-        Server::bind(url, input, output)
+        Server::bind(config, url, input, output).await
     }
 
-    pub fn bind(addr: url::Url, input: InStream, output: OutStream) -> anyhow::Result<Server> {
+    pub async fn bind(
+        config: Config,
+        addr: url::Url,
+        input: InStream,
+        output: OutStream,
+    ) -> anyhow::Result<Server> {
         let inner = Arc::new(ServerImpl {
             socket: output,
+            ip_checker: EndpointsChecker::spawn(config)
+                .await
+                .map_err(|e| anyhow!("Public endpoints checker initialization failed: {}", e))?,
             url: addr,
         });
 

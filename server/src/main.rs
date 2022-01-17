@@ -1,16 +1,9 @@
+use ya_relay_server::config::Config;
 use ya_relay_server::server::Server;
 
 use chrono::Local;
 use std::io::Write;
-use structopt::{clap, StructOpt};
-
-#[derive(StructOpt)]
-#[structopt(about = "NET Server")]
-#[structopt(global_setting = clap::AppSettings::ColoredHelp)]
-struct Options {
-    #[structopt(short = "a", env = "NET_ADDRESS")]
-    address: url::Url,
-}
+use structopt::StructOpt;
 
 #[actix_rt::main]
 async fn main() -> anyhow::Result<()> {
@@ -33,8 +26,8 @@ async fn main() -> anyhow::Result<()> {
         })
         .init();
 
-    let args = Options::from_args();
+    let args = Config::from_args();
 
-    let server = Server::bind_udp(args.address).await?;
+    let server = Server::bind_udp(args).await?;
     server.run().await
 }
