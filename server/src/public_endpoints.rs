@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 
 use crate::config::Config;
 use ya_relay_client::{dispatch, Dispatcher, Handler, Session};
-use ya_relay_core::error::{ServerResult, Timeout};
+use ya_relay_core::error::ServerResult;
 use ya_relay_core::session::{Endpoint, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_proto::proto;
@@ -80,14 +80,17 @@ impl EndpointsChecker {
         // We need separate socket to check, if Node's address is public.
         // If we would use the same socket as always, we would be able to
         // send packets even to addresses behind NAT.
-        session.ping().await.map_err(|_| Timeout::Ping)?;
+        let endpoints = match session.ping().await {
+            Ok(_) => vec![Endpoint {
+                protocol: proto::Protocol::Udp,
+                address: *addr,
+            }],
+            // Ping timed out. Node doesn't have public IP
+            Err(_) => vec![],
+        };
 
         self.remove_session(session).await;
-
-        Ok(vec![Endpoint {
-            protocol: proto::Protocol::Udp,
-            address: *addr,
-        }])
+        Ok(endpoints)
     }
 
     fn incorrect_packet(&self, packet_type: &str, from: SocketAddr) -> LocalBoxFuture<()> {
