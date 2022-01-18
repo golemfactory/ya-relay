@@ -26,7 +26,8 @@ use crate::client::{ClientConfig, ForwardId, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
 use crate::expire::track_sessions_expiration;
 use crate::registry::{NodeEntry, NodesRegistry};
-use crate::session::{Session, StartingSessions};
+use crate::session::Session;
+use crate::session_start::StartingSessions;
 use crate::virtual_layer::TcpLayer;
 
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
@@ -89,18 +90,23 @@ impl SessionsLayer {
 
         self.virtual_tcp.spawn(self.config.node_id)?;
 
-        let (abort_dispatcher, abort_registration) = AbortHandle::new_pair();
+        let (abort_dispatcher, abort_dispatcher_reg) = AbortHandle::new_pair();
+        let (abort_expiration, abort_expiration_reg) = AbortHandle::new_pair();
 
         tokio::task::spawn_local(Abortable::new(
             dispatch(self.clone(), stream),
-            abort_registration,
+            abort_dispatcher_reg,
         ));
-        tokio::task::spawn_local(track_sessions_expiration(self.clone()));
+        tokio::task::spawn_local(Abortable::new(
+            track_sessions_expiration(self.clone()),
+            abort_expiration_reg,
+        ));
 
         {
             let mut state = self.state.write().await;
 
             state.handles.push(abort_dispatcher);
+            state.handles.push(abort_expiration);
             state.starting_sessions = Some(StartingSessions::new(self.clone(), sink));
         }
 
@@ -506,6 +512,10 @@ impl SessionsLayer {
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         let abort_handles = {
             let mut state = self.state.write().await;
+
+            if let Some(starting) = state.starting_sessions.clone() {
+                starting.shutdown().await;
+            }
 
             state.starting_sessions = None;
             state.handles.clone()

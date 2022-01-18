@@ -4,6 +4,7 @@ mod expire;
 mod registry;
 mod session;
 mod session_layer;
+mod session_start;
 pub mod testing;
 mod virtual_layer;
 

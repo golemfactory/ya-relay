@@ -45,7 +45,7 @@ pub struct ClientBuilder {
 
 #[derive(Clone)]
 pub struct Client {
-    config: Arc<ClientConfig>,
+    pub config: Arc<ClientConfig>,
 
     state: Arc<RwLock<ClientState>>,
     pub sessions: SessionsLayer,

@@ -32,7 +32,7 @@ pub async fn track_sessions_expiration(layer: SessionsLayer) {
             })
             .collect::<Vec<_>>();
 
-        tokio::task::spawn_local(close_sessions(layer.clone(), sessions, expired_idx));
+        close_sessions(layer.clone(), sessions, expired_idx).await;
 
         let first_to_expiring = last_seen.iter().min().cloned().unwrap_or(now) + expiration;
 
@@ -49,7 +49,7 @@ async fn close_sessions(layer: SessionsLayer, sessions: Vec<Arc<Session>>, expir
         let session = sessions[idx].clone();
 
         log::info!(
-            "Closing session {}({}) not responding to ping.",
+            "Closing session {} ({}) not responding to ping.",
             session.id,
             session.remote
         );

@@ -20,8 +20,6 @@ async fn test_restarting_p2p_session() -> anyhow::Result<()> {
         .build()
         .await?;
 
-    let addr2 = client2.bind_addr().await?;
-
     let marker1 = spawn_receive_for_client(&client1, "Client1").await?;
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
@@ -33,15 +31,24 @@ async fn test_restarting_p2p_session() -> anyhow::Result<()> {
         .await
         .unwrap();
 
-    // Restart client.
+    println!("Shutting down Client2");
+
+    let addr2 = client2.bind_addr().await?;
+    let crypto = client2.config.crypto.clone();
+
     client2.shutdown().await.unwrap();
     drop(_keep2);
 
-    tokio::time::delay_for(Duration::from_secs(3)).await;
+    println!("Waiting for session cleanup.");
+
+    tokio::time::delay_for(Duration::from_secs(5)).await;
+
+    println!("Starting Client2");
 
     // Start client on the same port as previously.
     let client2 = ClientBuilder::from_url(wrapper.url())
         .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .crypto(crypto)
         .connect()
         .expire_session_after(Duration::from_secs(2))
         .build()

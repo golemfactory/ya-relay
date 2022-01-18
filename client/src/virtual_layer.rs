@@ -132,6 +132,12 @@ impl TcpLayer {
         &self,
         node: NodeEntry,
     ) -> anyhow::Result<(ForwardSender, oneshot::Receiver<()>)> {
+        log::debug!(
+            "[VirtualTcp] Connecting to node [{}] using session {}.",
+            node.id,
+            node.session.id
+        );
+
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
         let connection = self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?;
@@ -172,7 +178,7 @@ impl TcpLayer {
             rx.close();
 
             log::debug!(
-                "Virtual Tcp: disconnected from relay: {}. Stopping forwarding to Node [{}].",
+                "Virtual Tcp: disconnected from: {}. Stopping forwarding to Node [{}].",
                 node.session.remote,
                 node.id,
             );
