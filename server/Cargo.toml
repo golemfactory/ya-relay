@@ -18,6 +18,7 @@ path = "src/main.rs"
 ya-relay-stack = { path = "../crates/stack" }
 ya-relay-proto = { path = "../crates/proto" }
 ya-relay-core = { path = "../crates/core" }
+ya-relay-client = { path = "../client" }
 ya-client-model = "0.3"
 
 actix-rt = "1.1"
@@ -38,4 +39,3 @@ url = "2.1"
 
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test"}
-ya-relay-client = { path = "../client" }
