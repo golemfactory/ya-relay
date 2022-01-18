@@ -88,7 +88,7 @@ impl SessionsLayer {
 
         self.sink = Some(sink.clone());
 
-        self.virtual_tcp.spawn(self.config.node_id)?;
+        self.virtual_tcp.spawn(self.config.node_id).await?;
 
         let (abort_dispatcher, abort_dispatcher_reg) = AbortHandle::new_pair();
         let (abort_expiration, abort_expiration_reg) = AbortHandle::new_pair();
@@ -545,6 +545,8 @@ impl SessionsLayer {
                 })
                 .ok();
         }
+
+        self.virtual_tcp.shutdown().await;
         Ok(())
     }
 

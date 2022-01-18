@@ -9,6 +9,11 @@ use tokio::sync::mpsc;
 use crate::client::ForwardSender;
 use crate::Client;
 
+pub enum Mode {
+    Reliable,
+    Unreliable,
+}
+
 pub fn spawn_receive<T: std::fmt::Debug + 'static>(
     label: &'static str,
     received: Rc<AtomicBool>,
@@ -51,8 +56,16 @@ pub async fn check_forwarding(
     sender_client: &Client,
     receiver_client: &Client,
     received: Rc<AtomicBool>,
+    mode: Mode,
 ) -> anyhow::Result<ForwardSender> {
-    let mut tx = sender_client.forward(receiver_client.node_id()).await?;
+    let mut tx = match mode {
+        Mode::Reliable => sender_client.forward(receiver_client.node_id()).await?,
+        Mode::Unreliable => {
+            sender_client
+                .forward_unreliable(receiver_client.node_id())
+                .await?
+        }
+    };
 
     println!(
         "Sending forward packets to [{}].",

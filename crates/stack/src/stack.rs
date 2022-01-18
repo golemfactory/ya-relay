@@ -161,7 +161,11 @@ impl<'a> Stack<'a> {
         let mut ports = self.ports.borrow_mut();
 
         let endpoint = match protocol {
-            Protocol::Tcp => sockets.get::<TcpSocket>(handle).local_endpoint(),
+            Protocol::Tcp => {
+                let mut socket = sockets.get::<TcpSocket>(handle);
+                socket.close();
+                socket.local_endpoint()
+            }
             Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint(),
             _ => return,
         };

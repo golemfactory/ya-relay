@@ -127,7 +127,7 @@ impl Network {
             .insert(connection.into(), connection);
     }
 
-    fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
+    pub fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
         { self.connections.borrow_mut().remove(meta) }.map(|connection| {
             self.stack
                 .close(connection.meta.protocol, connection.handle);
