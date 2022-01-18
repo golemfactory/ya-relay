@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::dispatch::{Dispatched, Dispatcher};
-use crate::session_layer::SessionsLayer;
+use crate::session_manager::SessionManager;
 
 use ya_client_model::NodeId;
 use ya_relay_core::challenge::{self, prepare_challenge_response, CHALLENGE_DIFFICULTY};
@@ -178,7 +178,7 @@ impl Session {
 pub(crate) struct StartingSessions {
     state: Arc<Mutex<StartingSessionsState>>,
 
-    layer: SessionsLayer,
+    layer: SessionManager,
     sink: OutStream,
 }
 
@@ -187,13 +187,13 @@ struct StartingSessionsState {
     /// Initialization of session started by other peers.
     incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
     /// Temporary sessions stored during initialization period.
-    /// After session is established, new struct in SessionsLayer is created
+    /// After session is established, new struct in SessionManager is created
     /// and this one is removed.
     tmp_sessions: HashMap<SocketAddr, Arc<Session>>,
 }
 
 impl StartingSessions {
-    pub fn new(layer: SessionsLayer, sink: OutStream) -> StartingSessions {
+    pub fn new(layer: SessionManager, sink: OutStream) -> StartingSessions {
         StartingSessions {
             state: Arc::new(Mutex::new(StartingSessionsState::default())),
             sink,
