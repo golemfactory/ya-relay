@@ -248,9 +248,7 @@ impl StartingSessions {
         with: SocketAddr,
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
-        let node_id: NodeId = (&request.node_id)
-            .try_into()
-            .map_err(|e: &str| anyhow::anyhow!(e))?;
+        let node_id: NodeId = (&request.node_id).try_into()?;
         let session_id = SessionId::generate();
         let (sender, receiver) = mpsc::channel(1);
 

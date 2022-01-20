@@ -392,9 +392,7 @@ impl SessionManager {
             Err(_) => (self.server_session().await?, node.slot),
         };
 
-        let node_id = (&node.node_id)
-            .try_into()
-            .map_err(|e| anyhow!("Error parsing NodeId: {}", e))?;
+        let node_id = (&node.node_id).try_into()?;
         Ok(self.registry.add_node(node_id, session.clone(), slot).await)
     }
 
@@ -402,9 +400,7 @@ impl SessionManager {
         &self,
         packet: &proto::response::Node,
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id = (&packet.node_id)
-            .try_into()
-            .map_err(|e: &str| anyhow::anyhow!(e))?;
+        let node_id = (&packet.node_id).try_into()?;
         if packet.endpoints.is_empty() {
             bail!(
                 "Node [{}] has no public endpoints. Not establishing p2p session",
