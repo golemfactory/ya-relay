@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use url::Url;
 
-use ya_client_model::NodeId;
+use ya_relay_core::NodeId;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::utils::parse_udp_url;

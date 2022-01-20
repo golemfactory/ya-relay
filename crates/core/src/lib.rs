@@ -6,6 +6,8 @@ pub mod session;
 pub mod udp_stream;
 pub mod utils;
 
+pub use ya_client_model::NodeId;
+
 use std::time::Duration;
 use utils::typed_from_env;
 
