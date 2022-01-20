@@ -21,7 +21,7 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
 use ya_relay_stack::Channel;
 
-use crate::client::{ClientConfig, ForwardId, ForwardSender, Forwarded};
+use crate::client::{ClientConfig, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
 use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::{Session, StartingSessions};
@@ -273,22 +273,22 @@ impl SessionManager {
         }
     }
 
-    pub async fn optimal_session(
-        &self,
-        forward_id: impl Into<ForwardId> + Clone,
-    ) -> anyhow::Result<Arc<Session>> {
+    pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
         // Maybe we already have optimal session resolved.
-        if let Ok(node) = match forward_id.clone().into() {
-            ForwardId::NodeId(node_id) => self.registry.resolve_node(node_id).await,
-            ForwardId::SlotId(slot) => self.registry.resolve_slot(slot).await,
-        } {
+        if let Ok(node) = self.registry.resolve_node(node_id).await {
             return Ok(node.session);
         }
 
+        // get node info
+        let server_session = self.server_session().await?;
+        let node = server_session.find_node(node_id).await?;
+
         // Find node on server. p2p session will be established, if possible. Otherwise
         // communication will be forwarder through relay server.
-        let server = self.server_session().await?;
-        Ok(self.resolve(server, forward_id).await?.session)
+        Ok(self
+            .resolve(&node.node_id, &node.endpoints, node.slot)
+            .await?
+            .session)
     }
 
     pub async fn forward(
@@ -372,36 +372,33 @@ impl SessionManager {
 
     async fn resolve(
         &self,
-        session: Arc<Session>,
-        forward_id: impl Into<ForwardId>,
+        node_id: &Vec<u8>,
+        endpoints: &Vec<proto::Endpoint>,
+        slot: u32,
     ) -> anyhow::Result<NodeEntry> {
-        let node = match forward_id.into() {
-            ForwardId::NodeId(node_id) => session.find_node(node_id).await?,
-            ForwardId::SlotId(slot) => session.find_slot(slot).await?,
-        };
-
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
         let (session, slot) = match self
-            .try_direct_session(&node)
+            .try_direct_session(node_id, endpoints)
             .await
             .map_err(|e| log::info!("{}", e))
         {
             // If we send packets directly, slot will be always 0.
             Ok(session) => (session, 0),
-            Err(_) => (self.server_session().await?, node.slot),
+            Err(_) => (self.server_session().await?, slot),
         };
 
-        let node_id = (&node.node_id).try_into()?;
+        let node_id = (&node_id).try_into()?;
         Ok(self.registry.add_node(node_id, session.clone(), slot).await)
     }
 
     pub async fn try_direct_session(
         &self,
-        node: &proto::response::Node,
+        node_id: &Vec<u8>,
+        endpoints: &Vec<proto::Endpoint>,
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id = (&packet.node_id).try_into()?;
-        if node.endpoints.is_empty() {
+        let node_id = (&node_id).try_into()?;
+        if endpoints.is_empty() {
             // try reverse connection
             if true {
                 // me.has_public_address
@@ -426,15 +423,6 @@ impl SessionManager {
                     log::info!("no session yet, waiting...");
                     tokio::time::delay_for(tokio::time::Duration::from_secs(1)).await;
                 }
-                // // wait for session?
-                // while true {
-                //     let session = session.find_node(node_id).await?
-                //     // sleep 500
-                //     if timeout == reached { // 20 seconds
-                //         break
-                //     }
-                //     return Ok(session);
-                // }
             }
 
             bail!(
@@ -443,7 +431,7 @@ impl SessionManager {
             )
         }
 
-        for endpoint in node.endpoints.iter() {
+        for endpoint in endpoints.iter() {
             let addr = match endpoint.clone().try_into() {
                 Ok(addr) => addr,
                 Err(_) => continue,
@@ -628,18 +616,13 @@ impl Handler for SessionManager {
             match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
                     let myself = self.clone();
-                    let node_id = parse_node_id(message.node_id.as_ref()).unwrap();
                     tokio::task::spawn_local(async move {
                         log::trace!("Got ReverseConnection! {:?}", message);
-                        for endpoint in message.endpoints.iter() {
-                            let addr = match endpoint.clone().try_into() {
-                                Ok(addr) => addr,
-                                Err(_) => continue,
-                            };
-                            // TODO: Remove unwraps?
-                            let session = myself.init_p2p_session(addr, node_id).await.unwrap();
-                            myself.registry.add_node(node_id, session, 0).await;
-                        }
+                        // TODO: Remove unwrap?
+                        myself
+                            .resolve(&message.node_id, &message.endpoints, 0)
+                            .await
+                            .unwrap();
                         log::trace!("DONE ReverseConnection! {:?}", message);
                     });
                 }
@@ -729,7 +712,10 @@ impl Handler for SessionManager {
 
                         // Try to establish session in case we can't find Node.
                         let session = myself.server_session().await?;
-                        myself.resolve(session, forward.slot).await?
+                        let node = session.find_slot(forward.slot).await?;
+                        myself
+                            .resolve(&node.node_id, &node.endpoints, node.slot)
+                            .await?
                     }
                 }
             };
