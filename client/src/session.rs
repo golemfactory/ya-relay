@@ -131,6 +131,20 @@ impl Session {
 
         Ok(())
     }
+
+    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let packet = proto::request::ReverseConnection {
+            node_id: node_id.into_array().to_vec(),
+        };
+        self.request::<proto::response::ReverseConnection>(
+            packet.into(),
+            self.id.to_vec(),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+        .await?;
+
+        Ok(())
+    }
 }
 
 impl Session {

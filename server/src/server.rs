@@ -100,7 +100,9 @@ impl Server {
                             self.neighbours_request(request_id, id, from, params)
                                 .await?
                         }
-                        Kind::ReverseConnection(_) => {}
+                        Kind::ReverseConnection(params) => {
+                            self.reverse_request(request_id, id, from, params).await?
+                        }
                         Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
                     },
                     Some(proto::packet::Kind::Response(_)) => {
@@ -342,6 +344,78 @@ impl Server {
             from,
             session_id
         );
+        Ok(())
+    }
+
+    async fn reverse_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        params: proto::request::ReverseConnection,
+    ) -> ServerResult<()> {
+        // TODO:
+        // read node_id, store it
+        // update message with node_id from Sender
+        // send message there
+        let target_node_id = NodeId::from(params.node_id.as_ref());
+
+        let source_node_info = match self.state.read().await.nodes.get_by_session(session_id) {
+            None => return Err(Unauthorized::SessionNotFound(session_id.into()).into()),
+            Some(node_id) => node_id.info,
+        };
+
+        let target_session = {
+            match self.state.read().await.nodes.get_by_node_id(target_node_id) {
+                None => {
+                    return Err(InternalError::Generic(format!(
+                        "There is no session with node_id {}",
+                        target_node_id
+                    ))
+                    .into())
+                }
+                Some(session) => session,
+            }
+        };
+
+        let message_to_send = proto::Packet::control(
+            target_session.session.to_vec(),
+            proto::control::ReverseConnection {
+                node_id: source_node_info.node_id.into_array().to_vec(),
+                endpoints: source_node_info
+                    .endpoints
+                    .into_iter()
+                    .map(proto::Endpoint::from)
+                    .collect(),
+            },
+        );
+        self.send_to(message_to_send, &target_session.address)
+            .await
+            .map_err(|_| InternalError::Send)?;
+
+        let reponse = proto::Packet::response(
+            request_id,
+            session_id.to_vec(),
+            StatusCode::Ok,
+            proto::response::ReverseConnection {},
+        );
+
+        self.send_to(reponse, &from)
+            .await
+            .map_err(|_| InternalError::Send)?;
+
+        log::info!(
+            "ReverseConnection sent. source: {}, target: {}, request: {}",
+            &from,
+            &target_session.address,
+            &request_id,
+        );
+        log::debug!(
+            "source_session: {}, target_session: {}",
+            &session_id,
+            &target_session.session
+        );
+
         Ok(())
     }
 

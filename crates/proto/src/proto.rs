@@ -357,6 +357,7 @@ impl_convert_kind!(response, Session);
 impl_convert_kind!(response, Register);
 impl_convert_kind!(response, Node);
 impl_convert_kind!(response, Neighbours);
+impl_convert_kind!(response, ReverseConnection);
 impl_convert_kind!(response, Pong);
 
 impl_convert_kind!(control, ReverseConnection);

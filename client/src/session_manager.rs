@@ -398,17 +398,52 @@ impl SessionManager {
 
     pub async fn try_direct_session(
         &self,
-        packet: &proto::response::Node,
+        node: &proto::response::Node,
     ) -> anyhow::Result<Arc<Session>> {
         let node_id = (&packet.node_id).try_into()?;
-        if packet.endpoints.is_empty() {
+        if node.endpoints.is_empty() {
+            // try reverse connection
+            if true {
+                // me.has_public_address
+                // send reverse connection
+                //self.
+                log::trace!(
+                    "Request reverse connection. me={}, remote={}",
+                    self.config.node_id,
+                    node_id
+                );
+                {
+                    let server_session = self.server_session().await?;
+                    let response = server_session.reverse_connection(node_id).await?;
+                    log::info!("response: {:?}", response);
+                }
+
+                // wait for TMP session?
+                loop {
+                    if let Ok(node) = self.registry.resolve_node(node_id).await {
+                        return Ok(node.session);
+                    }
+                    log::info!("no session yet, waiting...");
+                    tokio::time::delay_for(tokio::time::Duration::from_secs(1)).await;
+                }
+                // // wait for session?
+                // while true {
+                //     let session = session.find_node(node_id).await?
+                //     // sleep 500
+                //     if timeout == reached { // 20 seconds
+                //         break
+                //     }
+                //     return Ok(session);
+                // }
+            }
+
             bail!(
                 "Node [{}] has no public endpoints. Not establishing p2p session",
                 node_id
             )
         }
 
-        for endpoint in packet.endpoints.iter() {
+        for endpoint in node.endpoints.iter() {
             let addr = match endpoint.clone().try_into() {
                 Ok(addr) => addr,
                 Err(_) => continue,
@@ -591,6 +626,23 @@ impl Handler for SessionManager {
 
         if let Some(kind) = control.kind {
             match kind {
+                ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
+                    let myself = self.clone();
+                    let node_id = parse_node_id(message.node_id.as_ref()).unwrap();
+                    tokio::task::spawn_local(async move {
+                        log::trace!("Got ReverseConnection! {:?}", message);
+                        for endpoint in message.endpoints.iter() {
+                            let addr = match endpoint.clone().try_into() {
+                                Ok(addr) => addr,
+                                Err(_) => continue,
+                            };
+                            // TODO: Remove unwraps?
+                            let session = myself.init_p2p_session(addr, node_id).await.unwrap();
+                            myself.registry.add_node(node_id, session, 0).await;
+                        }
+                        log::trace!("DONE ReverseConnection! {:?}", message);
+                    });
+                }
                 ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
                     return async move {
                         log::trace!("Got Pause! {:?}", message);

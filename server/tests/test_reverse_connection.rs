@@ -1,5 +1,18 @@
+mod helpers;
 
+use anyhow::Context;
+use futures::{SinkExt, StreamExt};
+use std::rc::Rc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::SeqCst;
+use std::time::Duration;
+use tokio::sync::mpsc;
 
+use ya_relay_client::client::Forwarded;
+use ya_relay_client::ClientBuilder;
+use ya_relay_server::testing::server::init_test_server;
+
+use helpers::hack_make_ip_private;
 
 #[serial_test::serial]
 async fn test_reverse_connection() -> anyhow::Result<()> {
@@ -14,7 +27,19 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
         .build()
         .await?;
 
+    println!(
+        "Client 1: {} - {:?}",
+        client1.node_id(),
+        client1.public_addr().await.unwrap()
+    );
+    println!(
+        "Client 2: {} - {:?}",
+        client2.node_id(),
+        client2.public_addr().await.unwrap()
+    );
     hack_make_ip_private(&wrapper, &client2).await;
+
+    //wrapper.reverse_connection(client2.node_id());
 
     let rx2 = client2
         .forward_receiver()
