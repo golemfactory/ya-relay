@@ -48,6 +48,10 @@ pub struct SessionManager {
 }
 
 pub struct SessionManagerState {
+    /// If address is None after registering endpoints on Server, that means
+    /// we don't have public IP.
+    public_addr: Option<SocketAddr>,
+
     sessions: HashMap<SocketAddr, Arc<Session>>,
     nodes_addr: HashMap<SocketAddr, NodeId>,
 
@@ -69,6 +73,7 @@ impl SessionManager {
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
             registry: NodesRegistry::new(),
             state: Arc::new(RwLock::new(SessionManagerState {
+                public_addr: None,
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
                 forward_unreliable: Default::default(),
@@ -92,6 +97,14 @@ impl SessionManager {
         self.virtual_tcp.spawn(self.config.node_id)?;
         tokio::task::spawn_local(dispatch(self.clone(), stream));
         Ok(bind_addr)
+    }
+
+    pub async fn get_public_addr(&self) -> Option<SocketAddr> {
+        self.state.read().await.public_addr
+    }
+
+    pub async fn set_public_addr(&self, addr: SocketAddr) {
+        self.state.write().await.public_addr = Some(addr);
     }
 
     async fn init_session(
@@ -407,10 +420,7 @@ impl SessionManager {
         let node_id = node_id.try_into()?;
         if endpoints.is_empty() {
             // try reverse connection
-            if true {
-                // me.has_public_address
-                // send reverse connection
-                //self.
+            if self.get_public_addr().await.is_some() {
                 log::trace!(
                     "Request reverse connection. me={}, remote={}",
                     self.config.node_id,

@@ -50,11 +50,7 @@ pub struct Client {
 }
 
 pub(crate) struct ClientState {
-    /// If address is None after registering endpoints on Server, that means
-    /// we don't have public IP.
-    public_addr: Option<SocketAddr>,
     bind_addr: Option<SocketAddr>,
-
     neighbours: Option<Neighbourhood>,
 }
 
@@ -64,7 +60,6 @@ impl Client {
 
         let sessions = SessionManager::new(config.clone());
         let state = Arc::new(RwLock::new(ClientState {
-            public_addr: None,
             bind_addr: None,
             neighbours: None,
         }));
@@ -89,7 +84,7 @@ impl Client {
     }
 
     pub async fn public_addr(&self) -> Option<SocketAddr> {
-        self.state.read().await.public_addr
+        self.sessions.get_public_addr().await
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
@@ -111,12 +106,11 @@ impl Client {
             let endpoints = session.register_endpoints(vec![]).await?;
 
             // If there is any (correct) endpoint on the list, that means we have public IP.
-            match endpoints
+            if let Some(addr) = endpoints
                 .into_iter()
                 .find_map(|endpoint| endpoint.try_into().ok())
             {
-                Some(addr) => self.state.write().await.public_addr = Some(addr),
-                None => self.state.write().await.public_addr = None,
+                self.sessions.set_public_addr(addr).await;
             }
         }
 
