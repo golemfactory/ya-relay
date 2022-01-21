@@ -101,7 +101,7 @@ impl StartingSessions {
         let (sender, receiver) = mpsc::channel(1);
 
         log::info!(
-            "Node {} ({}) tries to establish p2p session.",
+            "Node [{}] ({}) tries to establish p2p session.",
             node_id,
             with
         );

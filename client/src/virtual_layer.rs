@@ -6,6 +6,7 @@ use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 
@@ -186,6 +187,7 @@ impl TcpLayer {
             }
 
             myself.net.close_connection(&connection.meta);
+            myself.net.poll();
 
             // Cleanup all internal info about Node.
             myself
@@ -231,9 +233,9 @@ impl TcpLayer {
 
     pub async fn shutdown(&self) {
         let mut state = self.state.write().await;
-        for handle in &state.handles {
-            handle.abort();
-        }
+        // for handle in &state.handles {
+        //     handle.abort();
+        // }
 
         for (_, mut sender) in state.forward_senders.drain() {
             sender.close().await.ok();

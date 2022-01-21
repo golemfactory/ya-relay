@@ -694,7 +694,7 @@ impl Handler for SessionsLayer {
         request: proto::Request,
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
-        log::debug!("Received request packet from {}: {:?}", from, request);
+        log::trace!("Received request packet from {}: {:?}", from, request);
 
         let (request_id, kind) = match request {
             proto::Request {

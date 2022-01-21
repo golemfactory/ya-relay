@@ -8,7 +8,7 @@ use ya_relay_client::ClientBuilder;
 use ya_relay_server::testing::server::init_test_server;
 
 #[serial_test::serial]
-async fn test_restarting_p2p_session() -> anyhow::Result<()> {
+async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
@@ -44,7 +44,7 @@ async fn test_restarting_p2p_session() -> anyhow::Result<()> {
     println!("Waiting for session cleanup.");
 
     // Wait expiration timeout + ping timeout + 1s margin
-    tokio::time::delay_for(Duration::from_secs(6)).await;
+    tokio::time::delay_for(Duration::from_secs(15)).await;
 
     println!("Starting Client2");
 
@@ -59,11 +59,11 @@ async fn test_restarting_p2p_session() -> anyhow::Result<()> {
 
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
-    let _keep = check_forwarding(&client2, &client1, marker1.clone(), Mode::Reliable)
+    let _keep = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
         .await
         .unwrap();
 
-    let _keep = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
+    let _keep = check_forwarding(&client2, &client1, marker1.clone(), Mode::Reliable)
         .await
         .unwrap();
 

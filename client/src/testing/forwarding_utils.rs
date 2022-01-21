@@ -40,6 +40,8 @@ pub async fn spawn_receive_for_client(
     client: &Client,
     label: &'static str,
 ) -> anyhow::Result<Rc<AtomicBool>> {
+    println!("{}: [{}]", label, client.node_id());
+
     let received = Rc::new(AtomicBool::new(false));
     let rx = client
         .forward_receiver()
