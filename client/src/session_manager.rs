@@ -6,6 +6,7 @@ use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
+use std::ops::Add;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
@@ -253,6 +254,12 @@ impl SessionManager {
 
             state.add_session(addr, session.clone());
             state.nodes_addr.insert(addr, node_id);
+            log::trace!(
+                "[{}] Saved node session {} {}",
+                self.config.node_id,
+                node_id,
+                addr
+            )
         }
         Ok(session)
     }
@@ -412,16 +419,23 @@ impl SessionManager {
                 {
                     let server_session = self.server_session().await?;
                     let response = server_session.reverse_connection(node_id).await?;
-                    log::info!("response: {:?}", response);
+                    log::trace!("response: {:?}", response);
                 }
 
-                // wait for TMP session?
+                let deadline = Utc::now().add(chrono::Duration::seconds(5));
+
+                // TODO: wait for TMP session?
                 loop {
                     if let Ok(node) = self.registry.resolve_node(node_id).await {
+                        log::trace!("Got session with node.");
                         return Ok(node.session);
                     }
-                    log::info!("no session yet, waiting...");
-                    tokio::time::delay_for(tokio::time::Duration::from_secs(1)).await;
+                    if deadline <= Utc::now() {
+                        log::debug!("Direct session timed out");
+                        break;
+                    }
+                    log::trace!("no session yet, waiting...");
+                    tokio::time::delay_for(tokio::time::Duration::from_millis(100)).await;
                 }
             }
 
@@ -618,6 +632,11 @@ impl Handler for SessionManager {
                     let myself = self.clone();
                     tokio::task::spawn_local(async move {
                         log::trace!("Got ReverseConnection! {:?}", message);
+
+                        if message.endpoints.is_empty() {
+                            log::warn!("Got ReverseConnection with no endpoints to connect to.");
+                            return;
+                        }
                         // TODO: Remove unwrap?
                         myself
                             .resolve(&message.node_id, &message.endpoints, 0)

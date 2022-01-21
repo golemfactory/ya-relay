@@ -365,6 +365,10 @@ impl Server {
             Some(node_id) => node_id.info,
         };
 
+        if source_node_info.endpoints.is_empty() {
+            return Err(BadRequest::NoPublicEndpoints.into());
+        }
+
         let target_session = {
             match self.state.read().await.nodes.get_by_node_id(target_node_id) {
                 None => {
