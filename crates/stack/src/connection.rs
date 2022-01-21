@@ -5,9 +5,11 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
+use smoltcp::iface::SocketHandle;
 use smoltcp::socket::*;
 use smoltcp::wire::IpEndpoint;
 
+use crate::interface::CaptureInterface;
 use crate::socket::{SocketDesc, SocketEndpoint};
 use crate::{Error, Protocol, Result};
 
@@ -101,15 +103,12 @@ impl TryFrom<SocketDesc> for ConnectionMeta {
 /// TCP connection future
 pub struct Connect<'a> {
     pub connection: Connection,
-    sockets: Rc<RefCell<SocketSet<'a>>>,
+    iface: Rc<RefCell<CaptureInterface<'a>>>,
 }
 
 impl<'a> Connect<'a> {
-    pub fn new(connection: Connection, sockets: Rc<RefCell<SocketSet<'a>>>) -> Self {
-        Self {
-            connection,
-            sockets,
-        }
+    pub fn new(connection: Connection, iface: Rc<RefCell<CaptureInterface<'a>>>) -> Self {
+        Self { connection, iface }
     }
 }
 
@@ -117,14 +116,14 @@ impl<'a> Future for Connect<'a> {
     type Output = Result<Connection>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let sockets_rfc = self.sockets.clone();
-        let mut sockets = sockets_rfc.borrow_mut();
-        // TODO: we need to loop because `.get()` panics when connection was dropped
-        //let mut socket = sockets.get::<TcpSocket>(self.connection.handle);
-        let mut socket = match sockets
-            .iter_mut()
-            .find(|s| s.handle() == self.connection.handle)
-            .map(TcpSocket::downcast)
+        let iface_rfc = self.iface.clone();
+        let mut iface = iface_rfc.borrow_mut();
+        // TODO: we need to loop because `.get_socket()` panics when connection was dropped
+        //let mut socket = interface.get_socket(self.connection.handle);
+        let socket = match iface
+            .sockets_mut()
+            .find(|(handle, _socket)| handle == &self.connection.handle)
+            .map(|(_, socket)| TcpSocket::downcast(socket))
             .flatten()
         {
             Some(s) => s,
@@ -147,7 +146,7 @@ pub struct Send<'a> {
     data: Vec<u8>,
     offset: usize,
     connection: Connection,
-    sockets: Rc<RefCell<SocketSet<'a>>>,
+    iface: Rc<RefCell<CaptureInterface<'a>>>,
     sent: Box<dyn Fn()>,
 }
 
@@ -155,14 +154,14 @@ impl<'a> Send<'a> {
     pub fn new<F: Fn() + 'static>(
         data: Vec<u8>,
         connection: Connection,
-        sockets: Rc<RefCell<SocketSet<'a>>>,
+        iface: Rc<RefCell<CaptureInterface<'a>>>,
         sent: F,
     ) -> Self {
         Self {
             data,
             offset: 0,
             connection,
-            sockets,
+            iface,
             sent: Box::new(sent),
         }
     }
@@ -173,14 +172,14 @@ impl<'a> Future for Send<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let result = {
-            let sockets_rfc = self.sockets.clone();
+            let iface_rfc = self.iface.clone();
+            let mut iface = iface_rfc.borrow_mut();
             let conn = &self.connection;
 
             match conn.meta.protocol {
                 Protocol::Tcp => {
                     let result = {
-                        let mut sockets = sockets_rfc.borrow_mut();
-                        let mut socket = sockets.get::<TcpSocket>(conn.handle);
+                        let socket = iface.get_socket::<TcpSocket>(conn.handle);
                         socket.register_send_waker(cx.waker());
                         socket.send_slice(&self.data[self.offset..])
                     };
@@ -201,18 +200,15 @@ impl<'a> Future for Send<'a> {
                     };
                 }
                 Protocol::Udp => {
-                    let mut sockets = sockets_rfc.borrow_mut();
-                    let mut socket = sockets.get::<UdpSocket>(conn.handle);
+                    let socket = iface.get_socket::<UdpSocket>(conn.handle);
                     socket.send_slice(&self.data, conn.meta.remote)
                 }
                 Protocol::Icmp => {
-                    let mut sockets = sockets_rfc.borrow_mut();
-                    let mut socket = sockets.get::<IcmpSocket>(conn.handle);
+                    let socket = iface.get_socket::<IcmpSocket>(conn.handle);
                     socket.send_slice(&self.data, conn.meta.remote.addr)
                 }
                 _ => {
-                    let mut sockets = sockets_rfc.borrow_mut();
-                    let mut socket = sockets.get::<RawSocket>(conn.handle);
+                    let socket = iface.get_socket::<RawSocket>(conn.handle);
                     socket.send_slice(&self.data)
                 }
             }

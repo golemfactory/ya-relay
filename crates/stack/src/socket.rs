@@ -91,6 +91,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Udp(_) => Protocol::Udp,
             Self::Icmp(_) => Protocol::Icmp,
             Self::Raw(_) => Protocol::Ethernet,
+            Self::Dhcpv4(_) => Protocol::None,
         }
     }
 
@@ -123,6 +124,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Udp(s) => !s.is_open(),
             Self::Icmp(s) => !s.is_open(),
             Self::Raw(_) => false,
+            Self::Dhcpv4(_) => false,
         }
     }
 
@@ -132,6 +134,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Udp(s) => s.can_recv(),
             Self::Icmp(s) => s.can_recv(),
             Self::Raw(s) => s.can_recv(),
+            Self::Dhcpv4(_) => false,
         }
     }
 
@@ -149,6 +152,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Raw(raw) => raw
                 .recv()
                 .map(|bytes| (IpEndpoint::default(), bytes.to_vec())),
+            Self::Dhcpv4(_) => Err(smoltcp::Error::Exhausted),
         };
 
         match result {
@@ -164,6 +168,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Udp(s) => s.can_send(),
             Self::Icmp(s) => s.can_send(),
             Self::Raw(s) => s.can_send(),
+            Self::Dhcpv4(_) => false,
         }
     }
 
@@ -173,6 +178,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Udp(s) => s.payload_send_capacity(),
             Self::Icmp(s) => s.payload_send_capacity(),
             Self::Raw(s) => s.payload_send_capacity(),
+            Self::Dhcpv4(_) => 0,
         }
     }
 

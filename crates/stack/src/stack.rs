@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use smoltcp::iface::Route;
+use smoltcp::iface::{Route, SocketHandle};
 use smoltcp::socket::*;
 use smoltcp::time::Instant;
 use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
@@ -16,28 +16,23 @@ use crate::{Error, Result};
 #[derive(Clone)]
 pub struct Stack<'a> {
     iface: Rc<RefCell<CaptureInterface<'a>>>,
-    sockets: Rc<RefCell<SocketSet<'a>>>,
     ports: Rc<RefCell<port::Allocator>>,
 }
 
 impl<'a> Stack<'a> {
     pub fn new(net_ip: IpCidr, net_route: Route) -> Self {
-        let sockets = SocketSet::new(Vec::with_capacity(8));
         let mut iface = default_iface();
         add_iface_route(&mut iface, net_ip, net_route);
 
         Self {
             iface: Rc::new(RefCell::new(iface)),
-            sockets: Rc::new(RefCell::new(sockets)),
             ports: Default::default(),
         }
     }
 
     pub fn with(iface: CaptureInterface<'a>) -> Self {
-        let sockets = SocketSet::new(Vec::with_capacity(8));
         Self {
             iface: Rc::new(RefCell::new(iface)),
-            sockets: Rc::new(RefCell::new(sockets)),
             ports: Default::default(),
         }
     }
@@ -62,10 +57,6 @@ impl<'a> Stack<'a> {
     pub(crate) fn iface(&self) -> Rc<RefCell<CaptureInterface<'a>>> {
         self.iface.clone()
     }
-
-    pub(crate) fn sockets(&self) -> Rc<RefCell<SocketSet<'a>>> {
-        self.sockets.clone()
-    }
 }
 
 impl<'a> Stack<'a> {
@@ -75,13 +66,13 @@ impl<'a> Stack<'a> {
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
-        let mut sockets = self.sockets.borrow_mut();
+        let mut interface = self.iface.borrow_mut();
         let handle = match protocol {
             Protocol::Tcp => {
                 if let SocketEndpoint::Ip(ep) = endpoint {
                     let mut socket = tcp_socket();
                     socket.listen(ep).map_err(|e| Error::Other(e.to_string()))?;
-                    sockets.add(socket)
+                    interface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
@@ -90,7 +81,7 @@ impl<'a> Stack<'a> {
                 if let SocketEndpoint::Ip(ep) = endpoint {
                     let mut socket = udp_socket();
                     socket.bind(ep).map_err(|e| Error::Other(e.to_string()))?;
-                    sockets.add(socket)
+                    interface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
@@ -99,7 +90,7 @@ impl<'a> Stack<'a> {
                 if let SocketEndpoint::Icmp(e) = endpoint {
                     let mut socket = icmp_socket();
                     socket.bind(e).map_err(|e| Error::Other(e.to_string()))?;
-                    sockets.add(socket)
+                    interface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an ICMP endpoint".to_string()));
                 }
@@ -117,7 +108,7 @@ impl<'a> Stack<'a> {
                 };
 
                 let socket = raw_socket(ip_version, map_protocol(protocol)?);
-                sockets.add(socket)
+                interface.add_socket(socket)
             }
         };
         Ok(handle)
@@ -126,21 +117,21 @@ impl<'a> Stack<'a> {
     pub fn connect(&self, remote: IpEndpoint) -> Result<Connect<'a>> {
         let ip = self.address()?.address();
 
-        let mut sockets = self.sockets.borrow_mut();
+        let mut interface = self.iface.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
         let protocol = Protocol::Tcp;
-        let handle = sockets.add(tcp_socket());
+        let handle = interface.add_socket(tcp_socket());
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
 
         log::trace!("connecting to {} ({})", remote, protocol);
 
         if let Err(e) = {
-            let mut socket = sockets.get::<TcpSocket>(handle);
-            socket.connect(remote, local)
+            let (socket, ctx) = interface.get_socket_and_context::<TcpSocket>(handle);
+            socket.connect(ctx, remote, local)
         } {
-            sockets.remove(handle);
+            interface.remove_socket(handle);
             ports.free(Protocol::Tcp, port);
             return Err(Error::ConnectionError(e.to_string()));
         }
@@ -152,21 +143,21 @@ impl<'a> Stack<'a> {
         };
         Ok(Connect::new(
             Connection { handle, meta },
-            self.sockets.clone(),
+            self.iface.clone(),
         ))
     }
 
     pub fn close(&self, protocol: Protocol, handle: SocketHandle) {
-        let mut sockets = self.sockets.borrow_mut();
+        let mut interface = self.iface.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
         let endpoint = match protocol {
             Protocol::Tcp => {
-                let mut socket = sockets.get::<TcpSocket>(handle);
+                let socket = interface.get_socket::<TcpSocket>(handle);
                 socket.close();
                 socket.local_endpoint()
             }
-            Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint(),
+            Protocol::Udp => interface.get_socket::<UdpSocket>(handle).endpoint(),
             _ => return,
         };
 
@@ -181,7 +172,7 @@ impl<'a> Stack<'a> {
         meta: Connection,
         f: F,
     ) -> Send<'a> {
-        Send::new(data.into(), meta, self.sockets.clone(), f)
+        Send::new(data.into(), meta, self.iface.clone(), f)
     }
 
     pub fn receive<B: Into<Vec<u8>>>(&self, data: B) {
@@ -191,9 +182,8 @@ impl<'a> Stack<'a> {
 
     pub fn poll(&self) -> Result<()> {
         let mut iface = self.iface.borrow_mut();
-        let mut sockets = self.sockets.borrow_mut();
         iface
-            .poll(&mut (*sockets), Instant::now())
+            .poll(Instant::now())
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }

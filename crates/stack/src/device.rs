@@ -1,4 +1,5 @@
 use smoltcp::phy;
+use smoltcp::phy::Medium;
 use smoltcp::time;
 use std::collections::VecDeque;
 
@@ -45,6 +46,7 @@ impl<'a> phy::Device<'a> for CaptureDevice {
     fn capabilities(&self) -> phy::DeviceCapabilities {
         let mut caps = phy::DeviceCapabilities::default();
         caps.max_transmission_unit = MTU;
+        caps.medium = Medium::Ethernet;
         caps
     }
 }

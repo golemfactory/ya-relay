@@ -1,12 +1,12 @@
+use managed::{ManagedMap, ManagedSlice};
 use std::collections::BTreeMap;
 
-use managed::{ManagedMap, ManagedSlice};
-use smoltcp::iface::{EthernetInterface, EthernetInterfaceBuilder, NeighborCache, Route, Routes};
-use smoltcp::wire::{EthernetAddress, IpCidr};
+use smoltcp::iface::{Interface, InterfaceBuilder, NeighborCache, Route, Routes};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr};
 
 use crate::device::CaptureDevice;
 
-pub type CaptureInterface<'a> = EthernetInterface<'a, CaptureDevice>;
+pub type CaptureInterface<'a> = Interface<'a, CaptureDevice>;
 
 /// Creates a default network interface
 pub fn default_iface<'a>() -> CaptureInterface<'a> {
@@ -15,14 +15,14 @@ pub fn default_iface<'a>() -> CaptureInterface<'a> {
     let addrs = Vec::new();
 
     let ethernet_addr = loop {
-        let addr = EthernetAddress(rand::random());
+        let addr = HardwareAddress::Ethernet(EthernetAddress(rand::random()));
         if addr.is_unicast() {
             break addr;
         }
     };
 
-    EthernetInterfaceBuilder::new(CaptureDevice::default())
-        .ethernet_addr(ethernet_addr)
+    InterfaceBuilder::new(CaptureDevice::default(), vec![])
+        .hardware_addr(ethernet_addr)
         .neighbor_cache(neighbor_cache)
         .ip_addrs(addrs)
         .routes(routes)

@@ -6,7 +6,6 @@ use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 
@@ -449,7 +448,6 @@ fn default_network(key: PublicKey) -> Network {
         address[0], address[1], address[2], address[3]
     );
 
-    log::debug!("[{}] Ethernet address: {}", name, iface.ethernet_addr());
     log::debug!("[{}] IP address: {}", name, ipv6_addr);
 
     add_iface_address(&mut iface, ipv6_cidr);

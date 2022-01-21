@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::ops::{DerefMut, Mul};
+use std::ops::Mul;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt};
-use smoltcp::socket::{Socket, SocketHandle};
+use smoltcp::iface::SocketHandle;
 use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
@@ -212,15 +212,12 @@ impl Network {
         let mut processed = false;
         let mut received = 0;
 
-        let socket_rfc = self.stack.sockets();
-        let mut sockets = socket_rfc.borrow_mut();
+        let iface_rfc = self.stack.iface();
+        let mut iface = iface_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
 
-        for mut socket_ref in (*sockets).iter_mut() {
-            let socket: &mut Socket = socket_ref.deref_mut();
-            let handle = socket.handle();
-
+        for (handle, socket) in iface.sockets_mut() {
             if socket.is_closed() {
                 let protocol = socket.protocol();
                 let desc = SocketDesc {
@@ -277,7 +274,7 @@ impl Network {
 
         remove.into_iter().for_each(|(key, handle)| {
             self.close_connection(&key);
-            sockets.remove(handle);
+            iface.remove_socket(handle);
         });
 
         if !events.is_empty() {
