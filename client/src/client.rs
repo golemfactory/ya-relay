@@ -49,10 +49,10 @@ pub struct Client {
     pub sessions: SessionManager,
 }
 
-pub(crate) struct ClientState {
+pub struct ClientState {
     /// If address is None after registering endpoints on Server, that means
     /// we don't have public IP.
-    public_addr: Option<SocketAddr>,
+    pub public_addr: Option<SocketAddr>,
     bind_addr: Option<SocketAddr>,
 
     neighbours: Option<Neighbourhood>,
@@ -62,12 +62,12 @@ impl Client {
     fn new(config: ClientConfig) -> Self {
         let config = Arc::new(config);
 
-        let sessions = SessionManager::new(config.clone());
         let state = Arc::new(RwLock::new(ClientState {
             public_addr: None,
             bind_addr: None,
             neighbours: None,
         }));
+        let sessions = SessionManager::new(config.clone(), state.clone());
 
         Self {
             config,
