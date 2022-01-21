@@ -358,10 +358,12 @@ impl Server {
         // read node_id, store it
         // update message with node_id from Sender
         // send message there
-        let target_node_id = NodeId::from(params.node_id.as_ref());
+        let target_node_id = (&params.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
 
         let source_node_info = match self.state.read().await.nodes.get_by_session(session_id) {
-            None => return Err(Unauthorized::SessionNotFound(session_id.into()).into()),
+            None => return Err(Unauthorized::SessionNotFound(session_id).into()),
             Some(node_id) => node_id.info,
         };
 

@@ -384,8 +384,8 @@ impl SessionManager {
 
     async fn resolve(
         &self,
-        node_id: &Vec<u8>,
-        endpoints: &Vec<proto::Endpoint>,
+        node_id: &[u8],
+        endpoints: &[proto::Endpoint],
         slot: u32,
     ) -> anyhow::Result<NodeEntry> {
         // If node has public IP, we can establish direct session with him
@@ -400,16 +400,16 @@ impl SessionManager {
             Err(_) => (self.server_session().await?, slot),
         };
 
-        let node_id = (&node_id).try_into()?;
+        let node_id = node_id.try_into()?;
         Ok(self.registry.add_node(node_id, session.clone(), slot).await)
     }
 
     pub async fn try_direct_session(
         &self,
-        node_id: &Vec<u8>,
-        endpoints: &Vec<proto::Endpoint>,
+        node_id: &[u8],
+        endpoints: &[proto::Endpoint],
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id = (&node_id).try_into()?;
+        let node_id = node_id.try_into()?;
         if endpoints.is_empty() {
             // try reverse connection
             if { self.client_state.read().await.public_addr }.is_some() {
