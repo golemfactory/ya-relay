@@ -22,7 +22,7 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
 use ya_relay_stack::Channel;
 
-use crate::client::{ClientConfig, ClientState, ForwardSender, Forwarded};
+use crate::client::{ClientConfig, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
 use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::{Session, StartingSessions};
@@ -38,7 +38,6 @@ const PAUSE_FWD_DELAY: i64 = 5;
 /// like `NodeId` or `SlotId`.
 #[derive(Clone)]
 pub struct SessionManager {
-    client_state: Arc<RwLock<ClientState>>,
     sink: Option<OutStream>,
     pub config: Arc<ClientConfig>,
 
@@ -62,13 +61,9 @@ pub struct SessionManagerState {
 }
 
 impl SessionManager {
-    pub fn new(
-        config: Arc<ClientConfig>,
-        client_state: Arc<RwLock<ClientState>>,
-    ) -> SessionManager {
+    pub fn new(config: Arc<ClientConfig>) -> SessionManager {
         let ingress = Channel::<Forwarded>::default();
         SessionManager {
-            client_state,
             sink: None,
             config: config.clone(),
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
@@ -412,8 +407,11 @@ impl SessionManager {
         let node_id = node_id.try_into()?;
         if endpoints.is_empty() {
             // try reverse connection
-            if { self.client_state.read().await.public_addr }.is_some() {
-                log::debug!(
+            if true {
+                // me.has_public_address
+                // send reverse connection
+                //self.
+                log::trace!(
                     "Request reverse connection. me={}, remote={}",
                     self.config.node_id,
                     node_id
