@@ -6,7 +6,7 @@ use std::ops::Sub;
 use crate::error::{InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::{NodeSession, SessionId};
 
-use ya_client_model::NodeId;
+use ya_relay_core::NodeId;
 
 pub struct NodesState {
     /// Constant time access using slot id optimized for forwarding.
@@ -181,7 +181,7 @@ pub fn hamming_distance(id1: NodeId, id2: NodeId) -> u32 {
 mod tests {
     use crate::state::hamming_distance;
     use std::str::FromStr;
-    use ya_client_model::NodeId;
+    use ya_relay_core::NodeId;
 
     #[test]
     fn test_hamming() {

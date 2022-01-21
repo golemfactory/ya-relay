@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use ya_client_model::NodeId;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto::SlotId;
 
 use crate::session::Session;

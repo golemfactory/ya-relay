@@ -10,13 +10,12 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use ya_client_model::NodeId;
 use ya_relay_core::challenge::{self, prepare_challenge_request, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::CryptoProvider;
 use ya_relay_core::error::Error;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
@@ -393,17 +392,15 @@ impl SessionManager {
             Err(_) => (self.server_session().await?, node.slot),
         };
 
-        Ok(self
-            .registry
-            .add_node(parse_node_id(&node.node_id)?, session.clone(), slot)
-            .await)
+        let node_id = (&node.node_id).try_into()?;
+        Ok(self.registry.add_node(node_id, session.clone(), slot).await)
     }
 
     pub async fn try_direct_session(
         &self,
         packet: &proto::response::Node,
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id = parse_node_id(&packet.node_id)?;
+        let node_id = (&packet.node_id).try_into()?;
         if packet.endpoints.is_empty() {
             bail!(
                 "Node [{}] has no public endpoints. Not establishing p2p session",

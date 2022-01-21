@@ -29,7 +29,12 @@ sha3 = "0.9"
 thiserror = "1.0"
 tokio = { version = "0.2", features = ["tcp", "udp", "net", "sync", "macros", "rt-core", "stream", "time"] }
 tokio-util = { version = "0.3", features = ["codec"] }
-ya-client-model = "0.3"
+# DEVELOPMENT
+ya-client-model = { git = "https://github.com/golemfactory/ya-client.git", rev = "0b6a9a5b24cd1d858fb483f616e0e4df00842955"}
+# DEBUG LOCAL
+# ya-client-model = { path = "../../../ya-client/model" }
+# RELEASED
+# ya-client-model = "0.3"
 url = "2.1"
 uuid = { version = "0.8", features = ["v4"] }
 

@@ -8,9 +8,8 @@ use std::net::Ipv6Addr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use ya_client_model::NodeId;
 use ya_relay_core::crypto::PublicKey;
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface};
@@ -56,7 +55,7 @@ struct TcpLayerState {
 
 impl VirtNode {
     pub fn try_new(id: &[u8], session: Arc<Session>, session_slot: SlotId) -> anyhow::Result<Self> {
-        let id = parse_node_id(id)?;
+        let id = id.into();
         let ip = IpAddress::from(to_ipv6(&id));
         let endpoint = (ip, TCP_BIND_PORT).into();
 

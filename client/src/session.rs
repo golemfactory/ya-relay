@@ -10,12 +10,11 @@ use std::time::Duration;
 use crate::dispatch::{Dispatched, Dispatcher};
 use crate::session_manager::SessionManager;
 
-use ya_client_model::NodeId;
 use ya_relay_core::challenge::{self, prepare_challenge_response, CHALLENGE_DIFFICULTY};
 use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};
 use ya_relay_proto::{codec, proto};
 
@@ -249,7 +248,7 @@ impl StartingSessions {
         with: SocketAddr,
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
-        let node_id = parse_node_id(&request.node_id)?;
+        let node_id: NodeId = (&request.node_id).try_into()?;
         let session_id = SessionId::generate();
         let (sender, receiver) = mpsc::channel(1);
 
@@ -330,7 +329,9 @@ impl StartingSessions {
         request: proto::request::Session,
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> ServerResult<()> {
-        let node_id = parse_node_id(&request.node_id)?;
+        let node_id = (&request.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
 
         let (packet, raw_challenge) = prepare_challenge_response();
         let challenge = proto::Packet::response(

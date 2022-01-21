@@ -10,13 +10,11 @@ use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{self};
+use tokio::time;
 use url::Url;
 
 use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
 use crate::state::NodesState;
-
-use ya_client_model::NodeId;
 
 use crate::config::Config;
 use crate::public_endpoints::EndpointsChecker;
@@ -289,10 +287,9 @@ impl Server {
         from: SocketAddr,
         params: proto::request::Node,
     ) -> ServerResult<()> {
-        if params.node_id.len() != 20 {
-            return Err(BadRequest::InvalidNodeId.into());
-        }
-        let node_id = NodeId::from(&params.node_id[..]);
+        let node_id = (&params.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
 
         log::debug!("{} requested Node [{}] info.", from, node_id);
 
@@ -496,11 +493,10 @@ impl Server {
                     return Err(Unauthorized::InvalidChallenge.into());
                 }
 
-                if session.node_id.len() != 20 {
-                    return Err(BadRequest::InvalidNodeId.into());
-                }
+                let node_id = (&session.node_id)
+                    .try_into()
+                    .map_err(|_| BadRequest::InvalidNodeId)?;
 
-                let node_id = NodeId::from(&session.node_id[..]);
                 let info = NodeInfo {
                     node_id,
                     public_key: session.public_key,
