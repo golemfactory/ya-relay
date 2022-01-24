@@ -15,7 +15,7 @@ use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::utils::parse_node_id;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
-use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface};
+use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface, to_mac};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
@@ -187,7 +187,6 @@ impl TcpLayer {
             }
 
             myself.net.close_connection(&connection.meta);
-            myself.net.poll();
 
             // Cleanup all internal info about Node.
             myself
@@ -442,7 +441,7 @@ fn default_network(key: PublicKey) -> Network {
     let address = key.address();
     let ipv6_addr = to_ipv6(address);
     let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
-    let mut iface = default_iface();
+    let mut iface = default_iface(to_mac(&address[..6]));
 
     let name = format!(
         "{:02x}{:02x}{:02x}{:02x}",

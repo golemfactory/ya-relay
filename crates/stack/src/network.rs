@@ -568,7 +568,7 @@ mod tests {
     use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
     use tokio::task::spawn_local;
 
-    use crate::interface::{add_iface_address, add_iface_route, default_iface};
+    use crate::interface::{add_iface_address, add_iface_route, default_iface, ip_to_mac};
     use crate::{Connection, IngressEvent, Network, Protocol, Stack};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -581,7 +581,7 @@ mod tests {
             _ => panic!("unspecified address"),
         };
 
-        let mut iface = default_iface();
+        let mut iface = default_iface(ip_to_mac(ip));
         add_iface_address(&mut iface, ipv4_cidr);
         add_iface_route(&mut iface, ipv4_cidr, route);
         Network::new(ip.to_string(), Stack::with(iface))
