@@ -354,23 +354,17 @@ impl Server {
         from: SocketAddr,
         params: proto::request::ReverseConnection,
     ) -> ServerResult<()> {
-        // TODO:
-        // read node_id, store it
-        // update message with node_id from Sender
-        // send message there
-        let target_node_id = (&params.node_id)
-            .try_into()
-            .map_err(|_| BadRequest::InvalidNodeId)?;
-
         let source_node_info = match self.state.read().await.nodes.get_by_session(session_id) {
             None => return Err(Unauthorized::SessionNotFound(session_id).into()),
             Some(node_id) => node_id.info,
         };
-
         if source_node_info.endpoints.is_empty() {
             return Err(BadRequest::NoPublicEndpoints.into());
         }
 
+        let target_node_id = (&params.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
         let target_session = {
             match self.state.read().await.nodes.get_by_node_id(target_node_id) {
                 None => {
