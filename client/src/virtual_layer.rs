@@ -4,6 +4,7 @@ use futures::channel::oneshot;
 use futures::future::{AbortHandle, Abortable};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -14,6 +15,7 @@ use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::utils::parse_node_id;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
+use ya_relay_stack::connection::ConnectionMeta;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface, to_mac};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
@@ -55,6 +57,7 @@ struct TcpLayerState {
     ips: HashMap<NodeId, Box<[u8]>>,
 
     forward_senders: HashMap<NodeId, ForwardSender>,
+    connections: HashMap<NodeId, ConnectionMeta>,
 
     // Collection of background tasks that must be stopped on shutdown.
     handles: Vec<AbortHandle>,
@@ -85,6 +88,7 @@ impl TcpLayer {
                 nodes: Default::default(),
                 ips: Default::default(),
                 forward_senders: Default::default(),
+                connections: Default::default(),
                 handles: vec![],
             })),
         }
@@ -135,6 +139,13 @@ impl TcpLayer {
 
         if let Some(mut sender) = state.forward_senders.remove(&node_id) {
             sender.close().await.ok();
+        }
+
+        if let Some(meta) = state.connections.remove(&node_id) {
+            self.net.drop_connection(&meta);
+            self.net.poll();
+        } else {
+            log::trace!("[VirtualTcp] Error removing node: no connection");
         }
 
         Ok(())
@@ -280,10 +291,10 @@ impl TcpLayer {
 
     async fn ingress_router(self, ingress_rx: UnboundedReceiver<IngressEvent>) {
         ingress_rx
-            .for_each(move |event| {
+            .for_each(move |mut event| {
                 let myself = self.clone();
                 async move {
-                    let (desc, payload) = match event {
+                    let (desc, payload) = match &mut event {
                         IngressEvent::InboundConnection { desc } => {
                             log::trace!(
                                 "[{}] ingress router: new connection from {:?} to {:?} ",
@@ -291,7 +302,8 @@ impl TcpLayer {
                                 desc.remote,
                                 desc.local,
                             );
-                            return;
+
+                            (*desc, Vec::new())
                         }
                         IngressEvent::Disconnected { desc } => {
                             log::trace!(
@@ -301,9 +313,12 @@ impl TcpLayer {
                                 desc.remote,
                                 desc.local,
                             );
-                            return;
+
+                            (*desc, Vec::new())
                         }
-                        IngressEvent::Packet { desc, payload, .. } => (desc, payload),
+                        IngressEvent::Packet { desc, payload, .. } => {
+                            (*desc, std::mem::replace(payload, Vec::new()))
+                        }
                     };
 
                     if desc.protocol != Protocol::Tcp {
@@ -342,20 +357,36 @@ impl TcpLayer {
                                 payload,
                             };
 
-                            let payload_len = payload.payload.len();
+                            match event {
+                                IngressEvent::InboundConnection { desc } => {
+                                    match desc.try_into() {
+                                        Ok(meta) => {
+                                            let mut state = myself.state.write().await;
+                                            state.connections.insert(node_id, meta);
+                                        }
+                                        Err(_) => {
+                                            log::warn!("[{}] ingress router: unable to convert socket data to connection meta", myself.net_id())                                            ;
+                                        }
+                                    };
 
-                            if tx.send(payload).is_err() {
-                                log::trace!(
-                                    "[{}] ingress router: ingress handler closed for node {}",
-                                    myself.net_id(),
-                                    node_id
-                                );
-                            } else {
-                                log::trace!(
-                                    "[{}] ingress router: forwarded {} B",
-                                    myself.net_id(),
-                                    payload_len
-                                );
+                                }
+                                IngressEvent::Packet { .. } => {
+                                    let payload_len = payload.payload.len();
+                                    if tx.send(payload).is_err() {
+                                        log::trace!(
+                                            "[{}] ingress router: ingress handler closed for node {}",
+                                            myself.net_id(),
+                                            node_id
+                                        );
+                                    } else {
+                                        log::trace!(
+                                            "[{}] ingress router: forwarded {} B",
+                                            myself.net_id(),
+                                            payload_len
+                                        );
+                                    }
+                                }
+                                _ => {}
                             }
                         }
                         _ => log::trace!(

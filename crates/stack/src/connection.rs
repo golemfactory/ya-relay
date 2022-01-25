@@ -172,8 +172,7 @@ impl<'a> Future for Send<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let result = {
-            let iface_rfc = self.iface.clone();
-            let mut iface = iface_rfc.borrow_mut();
+            let mut iface = self.iface.borrow_mut();
             let conn = &self.connection;
 
             match conn.meta.protocol {
@@ -184,6 +183,7 @@ impl<'a> Future for Send<'a> {
                         socket.send_slice(&self.data[self.offset..])
                     };
 
+                    drop(iface);
                     (*self.sent)();
 
                     return match result {

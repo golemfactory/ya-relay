@@ -135,6 +135,17 @@ impl Network {
         })
     }
 
+    pub fn drop_connection(&self, meta: &ConnectionMeta) {
+        if let Some(conn) = self.close_connection(meta) {
+            log::trace!("Drop connection: connection closed: {:?}", conn);
+            let iface_rfc = self.stack.iface();
+            let mut iface = iface_rfc.borrow_mut();
+            iface.remove_socket(conn.handle);
+        } else {
+            log::trace!("Drop connection: no connection: {:?}", meta);
+        }
+    }
+
     /// Inject send data into the stack
     #[inline(always)]
     pub fn send(
