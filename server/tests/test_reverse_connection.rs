@@ -21,21 +21,22 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
         .connect()
         .build()
         .await?;
-    let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
-        .build()
-        .await?;
-
     println!(
         "Client 1: {} - {:?}",
         client1.node_id(),
         client1.public_addr().await.unwrap()
     );
+
+    let client2 = ClientBuilder::from_url(wrapper.url())
+        .connect()
+        .build()
+        .await?;
     println!(
         "Client 2: {} - {:?}",
         client2.node_id(),
         client2.public_addr().await.unwrap()
     );
+
     hack_make_ip_private(&wrapper, &client2).await;
     println!("Setup completed");
 
@@ -47,10 +48,14 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
         .context("no forward receiver")?;
     let received2 = Rc::new(AtomicBool::new(false));
     spawn_receive(">> 2", received2.clone(), rx2);
+
     println!("Forwarding: unreliable");
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
+    println!("forwarder setup");
+
     tx1.send(vec![1u8]).await?;
     println!("message send");
+
     tokio::time::delay_for(Duration::from_millis(100)).await;
     assert!(received2.load(SeqCst));
     println!("message confirmed");
@@ -63,11 +68,14 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
         .context("no forward receiver")?;
     let received1 = Rc::new(AtomicBool::new(false));
     spawn_receive(">> 1", received1.clone(), rx1);
+
     println!("Forwarding: unreliable");
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
     println!("forwarder setup");
+
     tx2.send(vec![2u8]).await?;
     println!("message send");
+
     tokio::time::delay_for(Duration::from_millis(100)).await;
     assert!(received1.load(SeqCst));
     println!("message confirmed");
@@ -83,23 +91,26 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
         .connect()
         .build()
         .await?;
-    let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
-        .build()
-        .await?;
-
     println!(
         "Client 1: {} - {:?}",
         client1.node_id(),
         client1.public_addr().await.unwrap()
     );
+
+    let client2 = ClientBuilder::from_url(wrapper.url())
+        .connect()
+        .build()
+        .await?;
     println!(
         "Client 2: {} - {:?}",
         client2.node_id(),
         client2.public_addr().await.unwrap()
     );
+
+    // TODO: make hack better, also let client know they are private
     hack_make_ip_private(&wrapper, &client1).await;
     hack_make_ip_private(&wrapper, &client2).await;
+
     println!("Setup completed");
 
     // pub => priv
@@ -110,12 +121,15 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
         .context("no forward receiver")?;
     let received2 = Rc::new(AtomicBool::new(false));
     spawn_receive(">> 2", received2.clone(), rx2);
+
     println!("Forwarding: unreliable");
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
     println!("forwarder setup");
+
     tx1.send(vec![1u8]).await?;
     println!("message send");
-    tokio::time::delay_for(Duration::from_millis(5000)).await;
+
+    tokio::time::delay_for(Duration::from_millis(100)).await;
     assert!(received2.load(SeqCst));
     println!("message confirmed");
 
@@ -127,12 +141,17 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
         .context("no forward receiver")?;
     let received1 = Rc::new(AtomicBool::new(false));
     spawn_receive(">> 1", received1.clone(), rx1);
+
     println!("Forwarding: unreliable");
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
+    println!("forwarder setup");
+
     tx2.send(vec![2u8]).await?;
     println!("message send");
-    tokio::time::delay_for(Duration::from_millis(5000)).await;
+    tokio::time::delay_for(Duration::from_millis(100)).await;
+
     assert!(received1.load(SeqCst));
     println!("message confirmed");
+
     Ok(())
 }

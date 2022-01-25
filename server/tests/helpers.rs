@@ -15,7 +15,9 @@ pub async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
 
     // Server won't return any endpoints, so Client won't try to connect directly.
     info.info.endpoints = vec![];
-    state.nodes.register(info)
+    state.nodes.register(info);
+
+    client.sessions.set_public_addr(None).await;
 }
 
 #[allow(dead_code)] // Only used in tests

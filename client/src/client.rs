@@ -110,7 +110,7 @@ impl Client {
                 .into_iter()
                 .find_map(|endpoint| endpoint.try_into().ok())
             {
-                self.sessions.set_public_addr(addr).await;
+                self.sessions.set_public_addr(Some(addr)).await;
             }
         }
 

@@ -31,8 +31,9 @@ use crate::virtual_layer::TcpLayer;
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const CHALLENGE_REQUEST_TIMEOUT: Duration = Duration::from_millis(8000);
 const PAUSE_FWD_DELAY: i64 = 5;
+const REVERSE_CONNECTION_TMP_TIMEOUT: u64 = 3;
+const REVERSE_CONNECTION_REAL_TIMEOUT: i64 = 13;
 
-/// Managing relay server and peer-to-peer sessions.
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
 /// like `NodeId` or `SlotId`.
@@ -103,8 +104,8 @@ impl SessionManager {
         self.state.read().await.public_addr
     }
 
-    pub async fn set_public_addr(&self, addr: SocketAddr) {
-        self.state.write().await.public_addr = Some(addr);
+    pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
+        self.state.write().await.public_addr = addr;
     }
 
     async fn init_session(
@@ -417,36 +418,11 @@ impl SessionManager {
         node_id: &[u8],
         endpoints: &[proto::Endpoint],
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id = node_id.try_into()?;
+        let node_id: NodeId = node_id.try_into()?;
         if endpoints.is_empty() {
             // try reverse connection
             if self.get_public_addr().await.is_some() {
-                log::trace!(
-                    "Request reverse connection. me={}, remote={}",
-                    self.config.node_id,
-                    node_id
-                );
-                {
-                    let server_session = self.server_session().await?;
-                    let response = server_session.reverse_connection(node_id).await?;
-                    log::trace!("response: {:?}", response);
-                }
-
-                let deadline = Utc::now().add(chrono::Duration::seconds(5));
-
-                // TODO: wait for TMP session?
-                loop {
-                    if let Ok(node) = self.registry.resolve_node(node_id).await {
-                        log::trace!("Got session with node.");
-                        return Ok(node.session);
-                    }
-                    if deadline <= Utc::now() {
-                        log::debug!("Direct session timed out");
-                        break;
-                    }
-                    log::trace!("no session yet, waiting...");
-                    tokio::time::delay_for(tokio::time::Duration::from_millis(100)).await;
-                }
+                return self.try_reverse_connection(node_id).await;
             }
 
             bail!(
@@ -476,6 +452,53 @@ impl SessionManager {
 
         bail!(
             "All attempts to establish direct session with node: {} failed",
+            node_id
+        )
+    }
+
+    async fn try_reverse_connection(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
+        log::trace!(
+            "Request reverse connection. me={}, remote={}",
+            self.config.node_id,
+            node_id
+        );
+        {
+            let starting_session = { self.state.read().await.starting_sessions.clone() }.unwrap();
+            let wait_for_tmp = starting_session.register_waiting_for_node(node_id);
+            {
+                let server_session = self.server_session().await?;
+                let response = match server_session.reverse_connection(node_id).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        starting_session.unregister_waiting_for_node(&node_id);
+                        return Err(e);
+                    }
+                };
+                log::trace!("response: {:?}", response);
+            }
+
+            tokio::time::timeout(
+                Duration::from_secs(REVERSE_CONNECTION_TMP_TIMEOUT),
+                wait_for_tmp,
+            )
+            .await??;
+        }
+
+        let deadline = Utc::now().add(chrono::Duration::seconds(REVERSE_CONNECTION_REAL_TIMEOUT));
+        loop {
+            if let Ok(node) = self.registry.resolve_node(node_id).await {
+                log::trace!("Got session with node.");
+                return Ok(node.session);
+            }
+            if deadline <= Utc::now() {
+                log::debug!("Direct session timed out");
+                break;
+            }
+            log::trace!("no session yet, waiting...");
+            tokio::time::delay_for(tokio::time::Duration::from_millis(100)).await;
+        }
+        bail!(
+            "Not able to setup ReverseConnection within timeout with node {}",
             node_id
         )
     }
