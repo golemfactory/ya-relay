@@ -46,7 +46,7 @@ pub struct VirtNode {
 /// and handles virtual connections.
 #[derive(Clone)]
 pub struct TcpLayer {
-    net: Network,
+    pub net: Network,
     state: Arc<RwLock<TcpLayerState>>,
 }
 
@@ -142,7 +142,7 @@ impl TcpLayer {
         }
 
         if let Some(meta) = state.connections.remove(&node_id) {
-            self.net.drop_connection(&meta);
+            self.net.close_connection(&meta);
             self.net.poll();
         } else {
             log::trace!("[VirtualTcp] Error removing node: no connection");

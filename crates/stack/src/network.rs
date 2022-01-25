@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::iface::SocketHandle;
+use smoltcp::socket::Socket;
 use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
@@ -17,7 +18,7 @@ use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
-use crate::socket::{SocketDesc, SocketExt};
+use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
 use crate::stack::Stack;
 use crate::{Error, Result};
 
@@ -135,17 +136,6 @@ impl Network {
         })
     }
 
-    pub fn drop_connection(&self, meta: &ConnectionMeta) {
-        if let Some(conn) = self.close_connection(meta) {
-            log::trace!("Drop connection: connection closed: {:?}", conn);
-            let iface_rfc = self.stack.iface();
-            let mut iface = iface_rfc.borrow_mut();
-            iface.remove_socket(conn.handle);
-        } else {
-            log::trace!("Drop connection: no connection: {:?}", meta);
-        }
-    }
-
     /// Inject send data into the stack
     #[inline(always)]
     pub fn send(
@@ -227,6 +217,7 @@ impl Network {
         let mut iface = iface_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
+        let mut rebind = None;
 
         for (handle, socket) in iface.sockets_mut() {
             if socket.is_closed() {
@@ -271,6 +262,13 @@ impl Network {
                         if !self.is_connected(&meta) {
                             self.add_connection(Connection { handle, meta });
                             events.push(IngressEvent::InboundConnection { desc });
+
+                            if let (Protocol::Tcp, SocketEndpoint::Ip(ep)) =
+                                (desc.protocol, desc.local)
+                            {
+                                rebind = Some((Protocol::Tcp, ep));
+                                self.bindings.borrow_mut().remove(&handle);
+                            }
                         }
                     }
                 }
@@ -280,6 +278,10 @@ impl Network {
                 received += 1;
                 let no = COUNTER.fetch_add(1, Ordering::Relaxed);
                 events.push(IngressEvent::Packet { desc, payload, no });
+
+                if rebind.is_some() {
+                    break;
+                }
             }
         }
 
@@ -287,6 +289,13 @@ impl Network {
             self.close_connection(&key);
             iface.remove_socket(handle);
         });
+
+        drop(iface);
+        if let Some((p, ep)) = rebind {
+            if let Err(e) = self.bind(p, ep) {
+                log::trace!("{}: ingress: cannot re-bind {} {}: {}", self.name, p, ep, e);
+            }
+        }
 
         if !events.is_empty() {
             let ingress_tx = self.ingress.tx.clone();
