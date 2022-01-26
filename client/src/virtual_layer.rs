@@ -46,7 +46,7 @@ pub struct VirtNode {
 /// and handles virtual connections.
 #[derive(Clone)]
 pub struct TcpLayer {
-    pub net: Network,
+    net: Network,
     state: Arc<RwLock<TcpLayerState>>,
 }
 

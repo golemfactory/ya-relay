@@ -9,7 +9,6 @@ use std::time::{Duration, Instant};
 use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::iface::SocketHandle;
-use smoltcp::socket::Socket;
 use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
