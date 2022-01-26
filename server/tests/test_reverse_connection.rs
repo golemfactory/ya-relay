@@ -107,7 +107,6 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
         client2.public_addr().await.unwrap()
     );
 
-    // TODO: make hack better, also let client know they are private
     hack_make_ip_private(&wrapper, &client1).await;
     hack_make_ip_private(&wrapper, &client2).await;
 

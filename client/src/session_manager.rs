@@ -457,24 +457,25 @@ impl SessionManager {
     }
 
     async fn try_reverse_connection(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
-        log::trace!(
+        log::debug!(
             "Request reverse connection. me={}, remote={}",
             self.config.node_id,
             node_id
         );
         {
-            let starting_session = { self.state.read().await.starting_sessions.clone() }.unwrap();
+            let starting_session = { self.state.read().await.starting_sessions.clone() }
+                .ok_or(anyhow!("Starting sessions not loaded yet"))?;
             let wait_for_tmp = starting_session.register_waiting_for_node(node_id);
             {
                 let server_session = self.server_session().await?;
-                let response = match server_session.reverse_connection(node_id).await {
+                match server_session.reverse_connection(node_id).await {
                     Ok(s) => s,
                     Err(e) => {
                         starting_session.unregister_waiting_for_node(&node_id);
                         return Err(e);
                     }
                 };
-                log::trace!("response: {:?}", response);
+                log::trace!("ReverseConnection - Requested with node {}", &node_id);
             }
 
             tokio::time::timeout(
@@ -487,14 +488,17 @@ impl SessionManager {
         let deadline = Utc::now().add(chrono::Duration::seconds(REVERSE_CONNECTION_REAL_TIMEOUT));
         loop {
             if let Ok(node) = self.registry.resolve_node(node_id).await {
-                log::trace!("Got session with node.");
+                log::debug!("ReverseConnection - Got session with node. {}", &node_id);
                 return Ok(node.session);
             }
             if deadline <= Utc::now() {
-                log::debug!("Direct session timed out");
+                log::debug!("ReverseConnection - Direct session timed out. {}", &node_id);
                 break;
             }
-            log::trace!("no session yet, waiting...");
+            log::trace!(
+                "ReverseConnection - no session yet, waiting... {}",
+                &node_id
+            );
             tokio::time::delay_for(tokio::time::Duration::from_millis(100)).await;
         }
         bail!(
@@ -664,17 +668,26 @@ impl Handler for SessionManager {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
                     let myself = self.clone();
                     tokio::task::spawn_local(async move {
-                        log::trace!("Got ReverseConnection! {:?}", message);
+                        log::info!(
+                            "Got ReverseConnection message. node={:?}, endpoints={:?}",
+                            message.node_id,
+                            message.endpoints
+                        );
 
                         if message.endpoints.is_empty() {
                             log::warn!("Got ReverseConnection with no endpoints to connect to.");
                             return;
                         }
-                        // TODO: Remove unwrap?
-                        myself
+                        if let Err(e) = myself
                             .resolve(&message.node_id, &message.endpoints, 0)
                             .await
-                            .unwrap();
+                        {
+                            log::warn!(
+                                "Failed to resolve reverse connection. node_id={:?} error={}",
+                                message.node_id,
+                                e
+                            )
+                        };
                         log::trace!("DONE ReverseConnection! {:?}", message);
                     });
                 }

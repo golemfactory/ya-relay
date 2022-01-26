@@ -354,7 +354,7 @@ impl Server {
         from: SocketAddr,
         params: proto::request::ReverseConnection,
     ) -> ServerResult<()> {
-        let source_node_info = match self.state.read().await.nodes.get_by_session(session_id) {
+        let source_node_info = match { self.state.read().await }.nodes.get_by_session(session_id) {
             None => return Err(Unauthorized::SessionNotFound(session_id).into()),
             Some(node_id) => node_id.info,
         };
@@ -366,7 +366,10 @@ impl Server {
             .try_into()
             .map_err(|_| BadRequest::InvalidNodeId)?;
         let target_session = {
-            match self.state.read().await.nodes.get_by_node_id(target_node_id) {
+            match { self.state.read().await }
+                .nodes
+                .get_by_node_id(target_node_id)
+            {
                 None => {
                     return Err(InternalError::Generic(format!(
                         "There is no session with node_id {}",
