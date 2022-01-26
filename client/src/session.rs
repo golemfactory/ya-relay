@@ -1,4 +1,4 @@
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use futures::future::LocalBoxFuture;
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
@@ -131,6 +131,20 @@ impl Session {
 
         Ok(())
     }
+
+    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let packet = proto::request::ReverseConnection {
+            node_id: node_id.into_array().to_vec(),
+        };
+        self.request::<proto::response::ReverseConnection>(
+            packet.into(),
+            self.id.to_vec(),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+        .await?;
+
+        Ok(())
+    }
 }
 
 impl Session {
@@ -189,6 +203,7 @@ struct StartingSessionsState {
     /// After session is established, new struct in SessionManager is created
     /// and this one is removed.
     tmp_sessions: HashMap<SocketAddr, Arc<Session>>,
+    tmp_node_ids: HashMap<NodeId, oneshot::Sender<()>>,
 }
 
 impl StartingSessions {
@@ -266,6 +281,10 @@ impl StartingSessions {
                 .entry(session_id)
                 .or_insert(sender);
         }
+        if let Some(sender) = { self.state.lock().unwrap().tmp_node_ids.remove(&node_id) } {
+            // Try to fire the event, ignore failures
+            let _ = sender.send(());
+        }
 
         // TODO: Add timeout for session initialization.
         tokio::task::spawn_local(async move {
@@ -289,6 +308,20 @@ impl StartingSessions {
             }
         });
         Ok(())
+    }
+
+    pub fn register_waiting_for_node(&self, node_id: NodeId) -> oneshot::Receiver<()> {
+        let (connect_tx, connect_rx) = oneshot::channel();
+        self.state
+            .lock()
+            .unwrap()
+            .tmp_node_ids
+            .insert(node_id, connect_tx);
+        connect_rx
+    }
+
+    pub fn unregister_waiting_for_node(&self, node_id: &NodeId) {
+        self.state.lock().unwrap().tmp_node_ids.remove(node_id);
     }
 
     async fn existing_session(

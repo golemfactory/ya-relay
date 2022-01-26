@@ -144,6 +144,7 @@ message Response {
         Register register = 20;
         Node node = 30;
         Neighbours neighbours = 40;
+        ReverseConnection reverse_connection = 60;
         Pong pong = 80;
     }
 

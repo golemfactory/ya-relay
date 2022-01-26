@@ -1,3 +1,5 @@
+mod helpers;
+
 use anyhow::Context;
 use futures::{SinkExt, StreamExt};
 use std::rc::Rc;
@@ -7,40 +9,10 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 use ya_relay_client::client::Forwarded;
-use ya_relay_client::{Client, ClientBuilder};
-use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
+use ya_relay_client::ClientBuilder;
+use ya_relay_server::testing::server::init_test_server;
 
-/// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.
-async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
-    let mut state = wrapper.server.state.write().await;
-
-    let mut info = state.nodes.get_by_node_id(client.node_id()).unwrap();
-    state.nodes.remove_session(info.info.slot);
-
-    // Server won't return any endpoints, so Client won't try to connect directly.
-    info.info.endpoints = vec![];
-    state.nodes.register(info)
-}
-
-fn spawn_receive<T: std::fmt::Debug + 'static>(
-    label: &'static str,
-    received: Rc<AtomicBool>,
-    rx: mpsc::UnboundedReceiver<T>,
-) {
-    tokio::task::spawn_local({
-        let received = received.clone();
-        async move {
-            rx.for_each(|item| {
-                let received = received.clone();
-                async move {
-                    println!("{} received {:?}", label, item);
-                    received.clone().store(true, SeqCst)
-                }
-            })
-            .await;
-        }
-    });
-}
+use helpers::{hack_make_ip_private, spawn_receive};
 
 #[serial_test::serial]
 async fn test_forward_unreliable() -> anyhow::Result<()> {
@@ -252,7 +224,7 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
         .context("no forward receiver")?;
     let received2 = Rc::new(AtomicUsize::new(0));
 
-    fn spawn_receive(
+    fn spawn_receive_counted(
         label: &'static str,
         received: Rc<AtomicUsize>,
         rx: mpsc::UnboundedReceiver<Forwarded>,
@@ -271,7 +243,7 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
             }
         });
     }
-    spawn_receive(">> 2", received2.clone(), rx2);
+    spawn_receive_counted(">> 2", received2.clone(), rx2);
 
     let mut tx1 = client1.forward(client2.node_id()).await?;
     let big_payload = (0..255).collect::<Vec<u8>>();

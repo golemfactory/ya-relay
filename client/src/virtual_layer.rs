@@ -1,7 +1,6 @@
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
-use futures::channel::mpsc;
-use futures::channel::oneshot;
+use futures::channel::{mpsc, oneshot};
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
