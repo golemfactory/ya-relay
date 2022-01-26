@@ -17,7 +17,7 @@ use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
-use crate::socket::{SocketDesc, SocketExt};
+use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
 use crate::stack::Stack;
 use crate::{Error, Result};
 
@@ -216,6 +216,7 @@ impl Network {
         let mut sockets = socket_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
+        let mut rebind = None;
 
         for mut socket_ref in (*sockets).iter_mut() {
             let socket: &mut Socket = socket_ref.deref_mut();
@@ -263,6 +264,13 @@ impl Network {
                         if !self.is_connected(&meta) {
                             self.add_connection(Connection { handle, meta });
                             events.push(IngressEvent::InboundConnection { desc });
+
+                            if let (Protocol::Tcp, SocketEndpoint::Ip(ep)) =
+                                (desc.protocol, desc.local)
+                            {
+                                rebind = Some((Protocol::Tcp, ep));
+                                self.bindings.borrow_mut().remove(&handle);
+                            }
                         }
                     }
                 }
@@ -272,6 +280,10 @@ impl Network {
                 received += 1;
                 let no = COUNTER.fetch_add(1, Ordering::Relaxed);
                 events.push(IngressEvent::Packet { desc, payload, no });
+
+                if rebind.is_some() {
+                    break;
+                }
             }
         }
 
@@ -279,6 +291,13 @@ impl Network {
             self.close_connection(&key);
             sockets.remove(handle);
         });
+
+        drop(sockets);
+        if let Some((p, ep)) = rebind {
+            if let Err(e) = self.bind(p, ep) {
+                log::trace!("{}: ingress: cannot re-bind {} {}: {}", self.name, p, ep, e);
+            }
+        }
 
         if !events.is_empty() {
             let ingress_tx = self.ingress.tx.clone();

@@ -6,7 +6,6 @@ use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 
