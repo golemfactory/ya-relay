@@ -1,7 +1,6 @@
 use anyhow::anyhow;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
-use futures::future::{AbortHandle, Abortable};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
@@ -55,9 +54,6 @@ struct TcpLayerState {
     ips: HashMap<NodeId, Box<[u8]>>,
 
     forward_senders: HashMap<NodeId, ForwardSender>,
-
-    // Collection of background tasks that must be stopped on shutdown.
-    handles: Vec<AbortHandle>,
 }
 
 impl VirtNode {
@@ -85,7 +81,6 @@ impl TcpLayer {
                 nodes: Default::default(),
                 ips: Default::default(),
                 forward_senders: Default::default(),
-                handles: vec![],
             })),
         }
     }
@@ -231,9 +226,6 @@ impl TcpLayer {
 
     pub async fn shutdown(&self) {
         let mut state = self.state.write().await;
-        // for handle in &state.handles {
-        //     handle.abort();
-        // }
 
         for (_, mut sender) in state.forward_senders.drain() {
             sender.close().await.ok();
@@ -246,17 +238,8 @@ impl TcpLayer {
             .ingress_receiver()
             .ok_or_else(|| anyhow::anyhow!("Ingress traffic router already spawned"))?;
 
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-
-        tokio::task::spawn_local(Abortable::new(
-            self.clone().ingress_router(ingress_rx),
-            abort_registration,
-        ));
-
-        {
-            self.state.write().await.handles.push(abort_handle);
-            Ok(())
-        }
+        tokio::task::spawn_local(self.clone().ingress_router(ingress_rx));
+        Ok(())
     }
 
     async fn spawn_egress_router(&self) -> anyhow::Result<()> {
@@ -265,17 +248,8 @@ impl TcpLayer {
             .egress_receiver()
             .ok_or_else(|| anyhow::anyhow!("Egress traffic router already spawned"))?;
 
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-
-        tokio::task::spawn_local(Abortable::new(
-            self.clone().egress_router(egress_rx),
-            abort_registration,
-        ));
-
-        {
-            self.state.write().await.handles.push(abort_handle);
-            Ok(())
-        }
+        tokio::task::spawn_local(self.clone().egress_router(egress_rx));
+        Ok(())
     }
 
     async fn ingress_router(self, ingress_rx: UnboundedReceiver<IngressEvent>) {

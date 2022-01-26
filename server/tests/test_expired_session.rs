@@ -44,7 +44,41 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     println!("Waiting for session cleanup.");
 
     // Wait expiration timeout + ping timeout + 1s margin
-    tokio::time::delay_for(Duration::from_secs(15)).await;
+    tokio::time::delay_for(Duration::from_secs(6)).await;
+
+    println!("Starting Client2");
+
+    // Start client on the same port as previously.
+    let mut client2 = ClientBuilder::from_url(wrapper.url())
+        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .crypto(crypto)
+        .connect()
+        .expire_session_after(Duration::from_secs(2))
+        .build()
+        .await?;
+
+    let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
+
+    let _keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
+        .await
+        .unwrap();
+
+    let _keep2 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Reliable)
+        .await
+        .unwrap();
+
+    println!("Shutting down Client2");
+
+    let addr2 = client2.bind_addr().await?;
+    let crypto = client2.config.crypto.clone();
+
+    client2.shutdown().await.unwrap();
+    drop(_keep2);
+
+    println!("Waiting for session cleanup.");
+
+    // Wait expiration timeout + ping timeout + 1s margin
+    tokio::time::delay_for(Duration::from_secs(6)).await;
 
     println!("Starting Client2");
 
@@ -59,11 +93,10 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
 
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
-    let _keep = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
+    let _keep2 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Reliable)
         .await
         .unwrap();
-
-    let _keep = check_forwarding(&client2, &client1, marker1.clone(), Mode::Reliable)
+    let _keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
         .await
         .unwrap();
 
