@@ -2,9 +2,9 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use crate::session::Session;
-use crate::session_layer::SessionsLayer;
+use crate::session_manager::SessionManager;
 
-pub async fn track_sessions_expiration(layer: SessionsLayer) {
+pub async fn track_sessions_expiration(layer: SessionManager) {
     let expiration = layer.config.session_expiration.clone();
 
     loop {
@@ -44,7 +44,7 @@ pub async fn track_sessions_expiration(layer: SessionsLayer) {
     }
 }
 
-async fn close_sessions(layer: SessionsLayer, sessions: Vec<Arc<Session>>, expired: Vec<usize>) {
+async fn close_sessions(layer: SessionManager, sessions: Vec<Arc<Session>>, expired: Vec<usize>) {
     for idx in expired.into_iter() {
         let session = sessions[idx].clone();
 

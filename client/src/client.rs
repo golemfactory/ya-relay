@@ -11,13 +11,13 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use url::Url;
 
-use ya_client_model::NodeId;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::utils::parse_udp_url;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto::SlotId;
 
-use crate::session_layer::SessionsLayer;
+use crate::session_manager::SessionManager;
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
@@ -48,15 +48,11 @@ pub struct Client {
     pub config: Arc<ClientConfig>,
 
     state: Arc<RwLock<ClientState>>,
-    pub sessions: SessionsLayer,
+    pub sessions: SessionManager,
 }
 
 pub(crate) struct ClientState {
-    /// If address is None after registering endpoints on Server, that means
-    /// we don't have public IP.
-    public_addr: Option<SocketAddr>,
     bind_addr: Option<SocketAddr>,
-
     neighbours: Option<Neighbourhood>,
 }
 
@@ -64,9 +60,8 @@ impl Client {
     fn new(config: ClientConfig) -> Self {
         let config = Arc::new(config);
 
-        let sessions = SessionsLayer::new(config.clone());
+        let sessions = SessionManager::new(config.clone());
         let state = Arc::new(RwLock::new(ClientState {
-            public_addr: None,
             bind_addr: None,
             neighbours: None,
         }));
@@ -94,7 +89,7 @@ impl Client {
     }
 
     pub async fn public_addr(&self) -> Option<SocketAddr> {
-        self.state.read().await.public_addr
+        self.sessions.get_public_addr().await
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
@@ -116,12 +111,11 @@ impl Client {
             let endpoints = session.register_endpoints(vec![]).await?;
 
             // If there is any (correct) endpoint on the list, that means we have public IP.
-            match endpoints
+            if let Some(addr) = endpoints
                 .into_iter()
                 .find_map(|endpoint| endpoint.try_into().ok())
             {
-                Some(addr) => self.state.write().await.public_addr = Some(addr),
-                None => self.state.write().await.public_addr = None,
+                self.sessions.set_public_addr(Some(addr)).await;
             }
         }
 

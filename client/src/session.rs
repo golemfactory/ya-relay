@@ -7,9 +7,9 @@ use tokio::time::{Duration, Instant};
 
 use crate::dispatch::{Dispatched, Dispatcher};
 
-use ya_client_model::NodeId;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};
 use ya_relay_proto::{codec, proto};
 
@@ -118,6 +118,20 @@ impl Session {
     pub async fn ping(&self) -> anyhow::Result<()> {
         let packet = proto::request::Ping {};
         self.request::<proto::response::Pong>(
+            packet.into(),
+            self.id.to_vec(),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let packet = proto::request::ReverseConnection {
+            node_id: node_id.into_array().to_vec(),
+        };
+        self.request::<proto::response::ReverseConnection>(
             packet.into(),
             self.id.to_vec(),
             DEFAULT_REQUEST_TIMEOUT,

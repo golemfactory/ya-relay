@@ -5,24 +5,25 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
+use tokio::sync::oneshot;
 
 use ya_relay_core::challenge::{self, prepare_challenge_response, CHALLENGE_DIFFICULTY};
 use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
 
 use crate::dispatch::Dispatcher;
 use crate::session::Session;
-use crate::session_layer::SessionsLayer;
+use crate::session_manager::SessionManager;
 
 #[derive(Clone)]
 pub(crate) struct StartingSessions {
     state: Arc<Mutex<StartingSessionsState>>,
 
-    layer: SessionsLayer,
+    layer: SessionManager,
     sink: OutStream,
 }
 
@@ -31,16 +32,17 @@ struct StartingSessionsState {
     /// Initialization of session started by other peers.
     incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
     /// Temporary sessions stored during initialization period.
-    /// After session is established, new struct in SessionsLayer is created
+    /// After session is established, new struct in SessionManager is created
     /// and this one is removed.
     tmp_sessions: HashMap<SocketAddr, Arc<Session>>,
+    tmp_node_ids: HashMap<NodeId, oneshot::Sender<()>>,
 
     /// Collection of background tasks that must be stopped on shutdown.
     handles: Vec<AbortHandle>,
 }
 
 impl StartingSessions {
-    pub fn new(layer: SessionsLayer, sink: OutStream) -> StartingSessions {
+    pub fn new(layer: SessionManager, sink: OutStream) -> StartingSessions {
         StartingSessions {
             state: Arc::new(Mutex::new(StartingSessionsState::default())),
             sink,
@@ -96,7 +98,7 @@ impl StartingSessions {
         with: SocketAddr,
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
-        let node_id = parse_node_id(&request.node_id)?;
+        let node_id = NodeId::try_from(&request.node_id)?;
         let session_id = SessionId::generate();
         let (sender, receiver) = mpsc::channel(1);
 
@@ -141,6 +143,11 @@ impl StartingSessions {
             state.handles.push(abort_handle);
         }
 
+        if let Some(sender) = { myself.state.lock().unwrap().tmp_node_ids.remove(&node_id) } {
+            // Try to fire the event, ignore failures
+            let _ = sender.send(());
+        }
+
         tokio::task::spawn_local(init_future);
         Ok(())
     }
@@ -183,7 +190,7 @@ impl StartingSessions {
         request: proto::request::Session,
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> ServerResult<()> {
-        let node_id = parse_node_id(&request.node_id)?;
+        let node_id = NodeId::try_from(&request.node_id).map_err(|_| BadRequest::InvalidNodeId)?;
 
         let (packet, raw_challenge) = prepare_challenge_response();
         let challenge = proto::Packet::response(
@@ -263,6 +270,20 @@ impl StartingSessions {
         }
 
         Ok(())
+    }
+
+    pub fn register_waiting_for_node(&self, node_id: NodeId) -> oneshot::Receiver<()> {
+        let (connect_tx, connect_rx) = oneshot::channel();
+        self.state
+            .lock()
+            .unwrap()
+            .tmp_node_ids
+            .insert(node_id, connect_tx);
+        connect_rx
+    }
+
+    pub fn unregister_waiting_for_node(&self, node_id: &NodeId) {
+        self.state.lock().unwrap().tmp_node_ids.remove(node_id);
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {

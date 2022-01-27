@@ -39,6 +39,8 @@ pub enum BadRequest {
     NoSessionId,
     #[error("Invalid NodeId.")]
     InvalidNodeId,
+    #[error("No Public Endpoints.")]
+    NoPublicEndpoints,
     #[error("Invalid packet type for session [{0}]. Expected: {1}")]
     InvalidPacket(SessionId, String),
     #[error("Failed to decode packet.")]

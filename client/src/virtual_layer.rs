@@ -1,6 +1,6 @@
 use anyhow::anyhow;
-use futures::channel::mpsc;
-use futures::channel::oneshot;
+use chrono::{DateTime, Utc};
+use futures::channel::{mpsc, oneshot};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
@@ -8,9 +8,8 @@ use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 
-use ya_client_model::NodeId;
 use ya_relay_core::crypto::PublicKey;
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface, to_mac};
@@ -58,7 +57,7 @@ struct TcpLayerState {
 
 impl VirtNode {
     pub fn try_new(id: &[u8], session: Arc<Session>, session_slot: SlotId) -> anyhow::Result<Self> {
-        let id = parse_node_id(id)?;
+        let id = id.into();
         let ip = IpAddress::from(to_ipv6(&id));
         let endpoint = (ip, TCP_BIND_PORT).into();
 
@@ -141,6 +140,7 @@ impl TcpLayer {
     pub async fn connect(
         &self,
         node: NodeEntry,
+        paused_forwarding: Arc<RwLock<Option<DateTime<Utc>>>>,
     ) -> anyhow::Result<(ForwardSender, oneshot::Receiver<()>)> {
         log::debug!(
             "[VirtualTcp] Connecting to node [{}] using session {}.",
@@ -157,6 +157,7 @@ impl TcpLayer {
 
         let id = self.net_id();
         let myself = self.clone();
+        let paused = paused_forwarding.clone();
 
         // We keep sender only to drop it on disconnection.
         self.register_sender(node.id, tx.clone()).await;
@@ -164,7 +165,8 @@ impl TcpLayer {
         tokio::task::spawn_local(async move {
             log::trace!("Forwarding messages to {}", node.id);
 
-            while let Some(payload) = rx.next().await {
+            while let Some(payload) = myself.get_next_fwd_payload(&mut rx, paused.clone()).await {
+                log::trace!("Forwarding message to {}", node.id);
                 let _ = myself
                     .net
                     .send(payload, connection)
@@ -208,6 +210,28 @@ impl TcpLayer {
             .await
             .forward_senders
             .insert(node_id, sender);
+    }
+
+    pub async fn get_next_fwd_payload<T>(
+        &self,
+        rx: &mut mpsc::Receiver<T>,
+        forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
+    ) -> Option<T> {
+        let raw_date = {
+            // dont lock the state longer then needed.
+            *forward_paused_till.read().await
+        };
+        if let Some(date) = raw_date {
+            if let Ok(duration) = (date - Utc::now()).to_std() {
+                log::debug!("Receiver Paused!!! {:?}", duration);
+                tokio::time::delay_for(duration).await;
+                log::trace!("Receiver Continues...");
+            }
+            (*forward_paused_till.write().await) = None;
+            log::debug!("reset date");
+        }
+        log::trace!("Waiting for data...");
+        rx.next().await
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
