@@ -116,7 +116,7 @@ impl Default for Dispatcher {
 
 impl Dispatcher {
     pub fn last_seen(&self) -> Instant {
-        self.seen.borrow_mut().clone()
+        *self.seen.borrow_mut()
     }
 
     /// Creates a future to await a `T` (response) packet on

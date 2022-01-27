@@ -526,7 +526,7 @@ impl SessionManager {
         );
         {
             let starting_session = { self.state.read().await.starting_sessions.clone() }
-                .ok_or(anyhow!("Starting sessions not loaded yet"))?;
+                .ok_or_else(|| anyhow!("Starting sessions not loaded yet"))?;
             let wait_for_tmp = starting_session.register_waiting_for_node(node_id);
             {
                 let server_session = self.server_session().await?;

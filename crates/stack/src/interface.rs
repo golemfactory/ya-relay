@@ -50,13 +50,13 @@ pub fn add_iface_route(iface: &mut CaptureInterface, net_ip: IpCidr, route: Rout
 
 pub fn to_mac(mac: &[u8]) -> EthernetAddress {
     let mut ethernet = if mac.len() == 6 {
-        EthernetAddress::from_bytes(&mac)
+        EthernetAddress::from_bytes(mac)
     } else {
         EthernetAddress::from_bytes(&rand::random::<[u8; 6]>())
     };
 
     if !ethernet.is_unicast() {
-        ethernet.0[0] = ethernet.0[0] & !0x01;
+        ethernet.0[0] = !0x01;
     }
 
     ethernet

@@ -1,10 +1,8 @@
 use std::convert::{TryFrom, TryInto};
-use std::time::Duration;
 
 use ya_relay_client::testing::Session;
 use ya_relay_client::ClientBuilder;
 use ya_relay_core::session::SessionId;
-use ya_relay_core::{SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT};
 use ya_relay_proto::proto;
 use ya_relay_server::testing::server::init_test_server;
 
@@ -91,32 +89,5 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
 
     assert_eq!(node1_id, (&node1_info.node_id).try_into().unwrap());
     assert_eq!(node2_id, (&node2_info.node_id).try_into().unwrap());
-    Ok(())
-}
-
-#[serial_test::serial]
-#[ignore] // This functionality is not supported yet
-async fn test_restart_server() -> anyhow::Result<()> {
-    let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
-        .connect()
-        .build()
-        .await
-        .unwrap();
-    let node_id = client.node_id();
-    let _session = client.sessions.server_session().await?;
-
-    // Abort server
-    drop(wrapper);
-
-    tokio::time::delay_for(
-        Duration::from_secs(*SESSION_TIMEOUT as u64) + *SESSION_CLEANER_INTERVAL,
-    )
-    .await;
-
-    let session = client.sessions.server_session().await?;
-    let result = session.find_node(node_id).await;
-    log::error!("Result: {:?}", result);
-    assert!(result.is_ok());
     Ok(())
 }

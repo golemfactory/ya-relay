@@ -5,7 +5,7 @@ use crate::session::Session;
 use crate::session_manager::SessionManager;
 
 pub async fn track_sessions_expiration(layer: SessionManager) {
-    let expiration = layer.config.session_expiration.clone();
+    let expiration = layer.config.session_expiration;
 
     loop {
         log::trace!("Checking, if all sessions are alive. Removing not active sessions.");
@@ -17,7 +17,7 @@ pub async fn track_sessions_expiration(layer: SessionManager) {
         // can last a few seconds especially in case of inactive sessions.
         let ping_futures = sessions
             .iter()
-            .map(|session| session.keep_alive(expiration.clone()))
+            .map(|session| session.keep_alive(expiration))
             .collect::<Vec<_>>();
 
         let last_seen = futures::future::join_all(ping_futures).await;

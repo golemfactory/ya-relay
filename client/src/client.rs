@@ -265,7 +265,9 @@ impl ClientBuilder {
             bind_url,
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
             auto_connect: self.auto_connect,
-            session_expiration: self.session_expiration.unwrap_or(Duration::from_secs(25)),
+            session_expiration: self
+                .session_expiration
+                .unwrap_or_else(|| Duration::from_secs(25)),
         });
 
         client.spawn().await?;

@@ -196,3 +196,47 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+#[serial_test::serial]
+async fn test_restart_server() -> anyhow::Result<()> {
+    let wrapper = init_test_server().await.unwrap();
+
+    let client1 = ClientBuilder::from_url(wrapper.url())
+        .connect()
+        .expire_session_after(Duration::from_secs(2))
+        .build()
+        .await?;
+    let client2 = ClientBuilder::from_url(wrapper.url())
+        .connect()
+        .expire_session_after(Duration::from_secs(2))
+        .build()
+        .await?;
+
+    let marker1 = spawn_receive_for_client(&client1, "Client1").await?;
+    let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
+
+    let keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Unreliable)
+        .await
+        .unwrap();
+
+    let keep2 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Unreliable)
+        .await
+        .unwrap();
+
+    // Abort server
+    drop(wrapper);
+    drop(keep1);
+    drop(keep2);
+
+    tokio::time::delay_for(Duration::from_secs(6)).await;
+
+    let _keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Unreliable)
+        .await
+        .unwrap();
+
+    let _keep2 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Unreliable)
+        .await
+        .unwrap();
+
+    Ok(())
+}
