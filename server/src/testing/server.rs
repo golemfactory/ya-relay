@@ -41,6 +41,8 @@ pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
         ip_checker_port: 0,
         session_cleaner_interval: Duration::from_secs(60),
         session_timeout: 10,
+        forwarder_rate_limit: 2048,
+        forwarder_resume_interval: Duration::from_secs(1),
     })
     .await?;
 

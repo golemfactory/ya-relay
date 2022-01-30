@@ -13,16 +13,15 @@ use tokio::sync::RwLock;
 use tokio::time;
 use url::Url;
 
+use crate::config::Config;
 use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
-use crate::config::Config;
-use crate::public_endpoints::EndpointsChecker;
 use ya_relay_core::challenge::prepare_challenge_response;
 use ya_relay_core::challenge::{self, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
-use ya_relay_core::{FORWARDER_RATE_LIMIT, FORWARDER_RESUME_INTERVAL};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
@@ -618,10 +617,10 @@ impl Server {
                     session: session_id,
                     last_seen: Utc::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
-                        NonZeroU32::new(*FORWARDER_RATE_LIMIT).ok_or_else(|| {
+                        NonZeroU32::new(self.config.forwarder_rate_limit).ok_or_else(|| {
                             InternalError::RateLimiterInit(format!(
                                 "Invalid non zero value: {}",
-                                *FORWARDER_RATE_LIMIT
+                                self.config.forwarder_rate_limit
                             ))
                         })?,
                     ))),
@@ -719,7 +718,7 @@ impl Server {
     }
 
     async fn forward_resumer(&self) {
-        let mut interval = time::interval(*FORWARDER_RESUME_INTERVAL);
+        let mut interval = time::interval(self.config.forwarder_resume_interval);
         loop {
             interval.tick().await;
             self.check_resume_forwarding().await;

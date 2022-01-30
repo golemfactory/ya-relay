@@ -22,7 +22,6 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     }];
 
     let session = client.sessions.server_session().await.unwrap();
-    let result_endpoints = session.register_endpoints(vec![]).await.unwrap();
     let node_info = session.find_node(node_id).await.unwrap();
 
     // TODO: More checks, after everything will be implemented.
@@ -30,10 +29,6 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     assert_ne!(node_info.slot, u32::MAX);
     assert_eq!(node_info.endpoints.len(), 1);
     assert_eq!(node_info.endpoints[0], endpoints[0]);
-
-    // Check server response.
-    assert_eq!(result_endpoints.len(), 1);
-    assert_eq!(result_endpoints[0], endpoints[0]);
 
     Ok(())
 }
