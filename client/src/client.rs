@@ -2,7 +2,7 @@ use anyhow::{anyhow, bail};
 use derive_more::From;
 use futures::channel::mpsc;
 use futures::{Future, FutureExt, SinkExt, TryFutureExt};
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
@@ -107,16 +107,7 @@ impl Client {
         }
 
         if self.config.auto_connect {
-            let session = self.sessions.server_session().await?;
-            let endpoints = session.register_endpoints(vec![]).await?;
-
-            // If there is any (correct) endpoint on the list, that means we have public IP.
-            if let Some(addr) = endpoints
-                .into_iter()
-                .find_map(|endpoint| endpoint.try_into().ok())
-            {
-                self.sessions.set_public_addr(Some(addr)).await;
-            }
+            self.sessions.server_session().await?;
         }
 
         log::debug!("[{}] started", self.node_id());
@@ -124,7 +115,11 @@ impl Client {
     }
 
     pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        log::trace!("Forward reliable {} to {}", self.config.node_id, node_id);
+        log::trace!(
+            "Forward reliable from [{}] to [{}]",
+            self.config.node_id,
+            node_id
+        );
 
         // Establish session here, if it didn't existed.
         let session = self.sessions.optimal_session(node_id).await?;
@@ -132,7 +127,11 @@ impl Client {
     }
 
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        log::trace!("Forward unreliable {} to {}", self.config.node_id, node_id);
+        log::trace!(
+            "Forward unreliable from [{}] to [{}]",
+            self.config.node_id,
+            node_id
+        );
 
         // Establish session here, if it didn't existed.
         let session = self.sessions.optimal_session(node_id).await?;
@@ -150,6 +149,8 @@ impl Client {
                 return Ok(neighbours.nodes);
             }
         }
+
+        log::debug!("Asking NET relay Server for neighborhood ({}).", count);
 
         let nodes = self
             .sessions
@@ -185,7 +186,7 @@ impl Client {
                 let node_id = *node_id;
 
                 async move {
-                    log::trace!("Broadcasting message to {}", node_id);
+                    log::trace!("Broadcasting message to [{}]", node_id);
 
                     match self.forward_unreliable(node_id).await {
                         Ok(mut forward) => {

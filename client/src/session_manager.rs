@@ -219,7 +219,7 @@ impl SessionManager {
         node_id: NodeId,
     ) -> anyhow::Result<Arc<Session>> {
         log::info!(
-            "Initializing p2p session with Node: {}, address: {}",
+            "Initializing p2p session with Node: [{}], address: {}",
             node_id,
             addr
         );
@@ -315,6 +315,11 @@ impl SessionManager {
     }
 
     async fn remove_node(&self, node_id: NodeId) {
+        log::trace!(
+            "Removing Node [{}] information. Stopping communication..",
+            node_id
+        );
+
         self.registry.remove_node(node_id).await.ok();
         self.virtual_tcp.remove_node(node_id).await.ok();
 
@@ -429,7 +434,11 @@ impl SessionManager {
             .get_next_fwd_payload(&mut rx, paused_check.clone())
             .await
         {
-            log::trace!("Forwarding message (U) to {}", node.id);
+            log::trace!(
+                "Forwarding message (U) to {} through {}",
+                node.id,
+                session.remote
+            );
 
             let forward = Forward::unreliable(session.id, node.slot, payload);
             if let Err(error) = session.send(forward).await {
@@ -472,6 +481,10 @@ impl SessionManager {
         };
 
         let node_id = node_id.try_into()?;
+        if slot != 0 {
+            log::info!("Using NET relay Server to forward packets to [{}]", node_id);
+        }
+
         Ok(self.registry.add_node(node_id, session.clone(), slot).await)
     }
 
@@ -482,7 +495,8 @@ impl SessionManager {
     ) -> anyhow::Result<Arc<Session>> {
         let node_id: NodeId = node_id.try_into()?;
         if endpoints.is_empty() {
-            // try reverse connection
+            // We are trying to connect to Node without public IP. Trying to send
+            // ReverseConnection message, so Node will try to connect to us.
             if self.get_public_addr().await.is_some() {
                 return self.try_reverse_connection(node_id).await;
             }
@@ -513,7 +527,7 @@ impl SessionManager {
         }
 
         bail!(
-            "All attempts to establish direct session with node: {} failed",
+            "All attempts to establish direct session with node [{}] failed",
             node_id
         )
     }
@@ -582,9 +596,15 @@ impl SessionManager {
         }
 
         let session = self.init_server_session(self.config.srv_addr).await?;
+        let endpoints = session.register_endpoints(vec![]).await?;
 
-        // TODO: We should register endpoints here.
-        //session.register_endpoints(vec![]).await?;
+        // If there is any (correct) endpoint on the list, that means we have public IP.
+        if let Some(addr) = endpoints
+            .into_iter()
+            .find_map(|endpoint| endpoint.try_into().ok())
+        {
+            self.set_public_addr(Some(addr)).await;
+        }
 
         Ok(session)
     }
@@ -806,6 +826,19 @@ impl Handler for SessionManager {
                     return async move {
                         log::trace!("Got Resume! {:?}", message);
                         *self.state.write().await.forward_paused_till.write().await = None
+                    }
+                    .boxed_local();
+                }
+                ya_relay_proto::proto::control::Kind::Disconnected(message) => {
+                    return async move {
+                        log::trace!("Got Disconnected! {:?}", message);
+                        if let Ok(node) = self.registry.resolve_slot(message.slot).await {
+                            log::info!(
+                                "Node [{}] disconnected from Relay. Stopping forwarding..",
+                                node.id
+                            );
+                            self.remove_node(node.id).await;
+                        }
                     }
                     .boxed_local();
                 }

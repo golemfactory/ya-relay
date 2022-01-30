@@ -187,6 +187,7 @@ message Control {
         PauseForwarding pause_forwarding = 20;
         ResumeForwarding resume_forwarding = 21;
         StopForwarding stop_forwarding = 22;
+        Disconnected disconnected = 23;
     }
 
     /* Connect to another node */
@@ -206,6 +207,11 @@ message Control {
     message StopForwarding {
         uint32 slot = 1;
         StatusCode code = 3;
+    }
+
+    /* Node disconnected. Receiver of this message should stop forwarding */
+    message Disconnected {
+        uint32 slot = 1;
     }
 }
 
