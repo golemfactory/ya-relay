@@ -148,6 +148,7 @@ pub struct Send<'a> {
     offset: usize,
     connection: Connection,
     sockets: Rc<RefCell<SocketSet<'a>>>,
+    /// Send completion callback; there may as well have been no data sent
     sent: Box<dyn Fn()>,
 }
 

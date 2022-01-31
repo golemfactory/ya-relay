@@ -13,18 +13,15 @@ use tokio::sync::RwLock;
 use tokio::time;
 use url::Url;
 
+use crate::config::Config;
 use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
-use crate::config::Config;
-use crate::public_endpoints::EndpointsChecker;
 use ya_relay_core::challenge::prepare_challenge_response;
 use ya_relay_core::challenge::{self, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
-use ya_relay_core::{
-    FORWARDER_RATE_LIMIT, FORWARDER_RESUME_INTERVAL, SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT,
-};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
@@ -34,6 +31,7 @@ use ya_relay_proto::proto::{RequestId, StatusCode};
 pub struct Server {
     pub state: Arc<RwLock<ServerState>>,
     pub inner: Arc<ServerImpl>,
+    pub config: Arc<Config>,
 }
 
 pub struct ServerState {
@@ -143,10 +141,38 @@ impl Server {
                 .get_by_session(session_id)
                 .ok_or(Unauthorized::SessionNotFound(session_id))?;
 
-            let dest_node = server
+            let dest_node = match server
                 .nodes
                 .get_by_slot(slot)
-                .ok_or(NotFound::NodeBySlot(slot))?;
+                .ok_or(NotFound::NodeBySlot(slot))
+            {
+                Ok(dest_node) => dest_node,
+                Err(e) => {
+                    // Node probably won't notice, that his packets aren't reaching destination
+                    // before TCP connection timeouts. It gets worse in case of unreliable forwarding.
+                    // This is due to the fact, that client has no reason to get Node info again.
+                    // That's why we must notify him.
+                    //
+                    // We could send Disconnected message, when we discover, that Node stopped responding
+                    // to ping, but we would have to spam all Nodes in the network in this case. It is better
+                    // to notify only interested Nodes, that means Nodes forwarding something.
+                    let control_packet = proto::Packet::control(
+                        session_id.to_vec(),
+                        ya_relay_proto::proto::control::Disconnected { slot },
+                    );
+                    self.send_to(PacketKind::Packet(control_packet), &from)
+                        .await
+                        .map_err(|_| InternalError::Send)?;
+
+                    log::trace!(
+                        "Sent Disconnected [slot={}] message to Node: {}.",
+                        slot,
+                        src_node.info.node_id
+                    );
+
+                    return Err(e.into());
+                }
+            };
             (src_node, dest_node)
         };
         if let Err(e) = src_node
@@ -156,7 +182,7 @@ impl Server {
             log::trace!("Rate limiting: {:?}", e);
             match e {
                 NegativeMultiDecision::InsufficientCapacity(cells) => {
-                    // the query was invalid as the rate limite parameters can never accomodate the
+                    // the query was invalid as the rate limit parameters can never accommodate the
                     // number of cells queried for.
                     log::warn!(
                         "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
@@ -195,7 +221,11 @@ impl Server {
         packet.slot = src_node.info.slot;
         packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
-        log::debug!("Sending forward packet to {}", dest_node.address);
+        log::debug!(
+            "Sending forward packet from [{}] to [{}]",
+            src_node.info.node_id,
+            dest_node.info.node_id
+        );
 
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
             .await
@@ -587,10 +617,10 @@ impl Server {
                     session: session_id,
                     last_seen: Utc::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
-                        NonZeroU32::new(*FORWARDER_RATE_LIMIT).ok_or_else(|| {
+                        NonZeroU32::new(self.config.forwarder_rate_limit).ok_or_else(|| {
                             InternalError::RateLimiterInit(format!(
                                 "Invalid non zero value: {}",
-                                *FORWARDER_RATE_LIMIT
+                                self.config.forwarder_rate_limit
                             ))
                         })?,
                     ))),
@@ -671,9 +701,9 @@ impl Server {
     async fn session_cleaner(&self) {
         log::debug!(
             "Starting session cleaner at interval {}s",
-            (*SESSION_CLEANER_INTERVAL).as_secs()
+            (self.config.session_cleaner_interval).as_secs()
         );
-        let mut interval = time::interval(*SESSION_CLEANER_INTERVAL);
+        let mut interval = time::interval(self.config.session_cleaner_interval);
         loop {
             interval.tick().await;
             let s = self.clone();
@@ -684,11 +714,11 @@ impl Server {
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(*SESSION_TIMEOUT);
+        server.nodes.check_timeouts(self.config.session_timeout);
     }
 
     async fn forward_resumer(&self) {
-        let mut interval = time::interval(*FORWARDER_RESUME_INTERVAL);
+        let mut interval = time::interval(self.config.forwarder_resume_interval);
         loop {
             interval.tick().await;
             self.check_resume_forwarding().await;
@@ -761,9 +791,10 @@ impl Server {
         input: InStream,
         output: OutStream,
     ) -> anyhow::Result<Server> {
+        let config = Arc::new(config);
         let inner = Arc::new(ServerImpl {
             socket: output,
-            ip_checker: EndpointsChecker::spawn(config)
+            ip_checker: EndpointsChecker::spawn(config.clone())
                 .await
                 .map_err(|e| anyhow!("Public endpoints checker initialization failed: {}", e))?,
             url: addr,
@@ -776,7 +807,11 @@ impl Server {
             resume_forwarding: BTreeSet::new(),
         }));
 
-        Ok(Server { state, inner })
+        Ok(Server {
+            state,
+            inner,
+            config,
+        })
     }
 
     pub async fn run(self) -> anyhow::Result<()> {

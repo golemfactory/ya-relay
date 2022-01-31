@@ -1,8 +1,3 @@
-use futures::StreamExt;
-use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
-use tokio::sync::mpsc::UnboundedReceiver;
-
 use ya_relay_client::Client;
 use ya_relay_server::testing::server::ServerWrapper;
 
@@ -18,25 +13,4 @@ pub async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
     state.nodes.register(info);
 
     client.sessions.set_public_addr(None).await;
-}
-
-#[allow(dead_code)] // Only used in tests
-pub fn spawn_receive<T: std::fmt::Debug + 'static>(
-    label: &'static str,
-    received: Rc<AtomicBool>,
-    rx: UnboundedReceiver<T>,
-) {
-    tokio::task::spawn_local({
-        let received = received.clone();
-        async move {
-            rx.for_each(|item| {
-                let received = received.clone();
-                async move {
-                    println!("{} received {:?}", label, item);
-                    received.clone().store(true, SeqCst)
-                }
-            })
-            .await;
-        }
-    });
 }

@@ -2,27 +2,20 @@ use std::collections::BTreeMap;
 
 use managed::{ManagedMap, ManagedSlice};
 use smoltcp::iface::{EthernetInterface, EthernetInterfaceBuilder, NeighborCache, Route, Routes};
-use smoltcp::wire::{EthernetAddress, IpCidr};
+use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr};
 
 use crate::device::CaptureDevice;
 
 pub type CaptureInterface<'a> = EthernetInterface<'a, CaptureDevice>;
 
 /// Creates a default network interface
-pub fn default_iface<'a>() -> CaptureInterface<'a> {
+pub fn default_iface<'a>(mac: EthernetAddress) -> CaptureInterface<'a> {
     let neighbor_cache = NeighborCache::new(BTreeMap::new());
     let routes = Routes::new(BTreeMap::new());
     let addrs = Vec::new();
 
-    let ethernet_addr = loop {
-        let addr = EthernetAddress(rand::random());
-        if addr.is_unicast() {
-            break addr;
-        }
-    };
-
     EthernetInterfaceBuilder::new(CaptureDevice::default())
-        .ethernet_addr(ethernet_addr)
+        .ethernet_addr(mac)
         .neighbor_cache(neighbor_cache)
         .ip_addrs(addrs)
         .routes(routes)
@@ -53,4 +46,26 @@ pub fn add_iface_route(iface: &mut CaptureInterface, net_ip: IpCidr, route: Rout
             *routes = map.into();
         }
     });
+}
+
+pub fn to_mac(mac: &[u8]) -> EthernetAddress {
+    let mut ethernet = if mac.len() == 6 {
+        EthernetAddress::from_bytes(mac)
+    } else {
+        EthernetAddress::from_bytes(&rand::random::<[u8; 6]>())
+    };
+
+    if !ethernet.is_unicast() {
+        ethernet.0[0] = !0x01;
+    }
+
+    ethernet
+}
+
+pub fn ip_to_mac(ip: IpAddress) -> EthernetAddress {
+    match ip {
+        IpAddress::Ipv4(ip) => to_mac(ip.as_bytes()),
+        IpAddress::Ipv6(ip) => to_mac(ip.as_bytes()),
+        _ => to_mac(&rand::random::<[u8; 6]>()),
+    }
 }

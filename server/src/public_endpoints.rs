@@ -26,7 +26,7 @@ pub struct EndpointsCheckerState {
 }
 
 impl EndpointsChecker {
-    pub async fn spawn(config: Config) -> anyhow::Result<EndpointsChecker> {
+    pub async fn spawn(config: Arc<Config>) -> anyhow::Result<EndpointsChecker> {
         // Spawn new socket only for discovering IPs on the same address, but different port.
         let mut address = config.address.clone();
         address

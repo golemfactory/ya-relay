@@ -1,10 +1,8 @@
 use std::convert::{TryFrom, TryInto};
-use std::time::Duration;
 
 use ya_relay_client::testing::Session;
 use ya_relay_client::ClientBuilder;
 use ya_relay_core::session::SessionId;
-use ya_relay_core::{SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT};
 use ya_relay_proto::proto;
 use ya_relay_server::testing::server::init_test_server;
 
@@ -24,7 +22,6 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     }];
 
     let session = client.sessions.server_session().await.unwrap();
-    let result_endpoints = session.register_endpoints(vec![]).await.unwrap();
     let node_info = session.find_node(node_id).await.unwrap();
 
     // TODO: More checks, after everything will be implemented.
@@ -32,10 +29,6 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     assert_ne!(node_info.slot, u32::MAX);
     assert_eq!(node_info.endpoints.len(), 1);
     assert_eq!(node_info.endpoints[0], endpoints[0]);
-
-    // Check server response.
-    assert_eq!(result_endpoints.len(), 1);
-    assert_eq!(result_endpoints[0], endpoints[0]);
 
     Ok(())
 }
@@ -91,55 +84,5 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
 
     assert_eq!(node1_id, (&node1_info.node_id).try_into().unwrap());
     assert_eq!(node2_id, (&node2_info.node_id).try_into().unwrap());
-    Ok(())
-}
-
-// TODO: Make this test work, when we will have implementation of Session restarts.
-// #[serial_test::serial]
-// async fn test_close_session() -> anyhow::Result<()> {
-//     let wrapper = init_test_server().await.unwrap();
-//     let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
-//         .connect()
-//         .build()
-//         .await
-//         .unwrap();
-//
-//     let node_id = client.node_id();
-//     let session = client.sessions.server_session().await?;
-//     session.find_node(node_id).await?;
-//
-//     let cloned_session = session.clone();
-//     session.close().await;
-//
-//     let result = cloned_session.find_node(node_id).await;
-//     assert!(result.is_err());
-//
-//     Ok(())
-// }
-
-#[serial_test::serial]
-#[ignore] // This functionality is not supported yet
-async fn test_restart_server() -> anyhow::Result<()> {
-    let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
-        .connect()
-        .build()
-        .await
-        .unwrap();
-    let node_id = client.node_id();
-    let _session = client.sessions.server_session().await?;
-
-    // Abort server
-    drop(wrapper);
-
-    tokio::time::delay_for(
-        Duration::from_secs(*SESSION_TIMEOUT as u64) + *SESSION_CLEANER_INTERVAL,
-    )
-    .await;
-
-    let session = client.sessions.server_session().await?;
-    let result = session.find_node(node_id).await;
-    log::error!("Result: {:?}", result);
-    assert!(result.is_ok());
     Ok(())
 }

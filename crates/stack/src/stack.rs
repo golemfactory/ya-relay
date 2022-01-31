@@ -23,7 +23,7 @@ pub struct Stack<'a> {
 impl<'a> Stack<'a> {
     pub fn new(net_ip: IpCidr, net_route: Route) -> Self {
         let sockets = SocketSet::new(Vec::with_capacity(8));
-        let mut iface = default_iface();
+        let mut iface = default_iface(ip_to_mac(net_ip.address()));
         add_iface_route(&mut iface, net_ip, net_route);
 
         Self {
@@ -161,7 +161,11 @@ impl<'a> Stack<'a> {
         let mut ports = self.ports.borrow_mut();
 
         let endpoint = match protocol {
-            Protocol::Tcp => sockets.get::<TcpSocket>(handle).local_endpoint(),
+            Protocol::Tcp => {
+                let mut socket = sockets.get::<TcpSocket>(handle);
+                socket.close();
+                socket.local_endpoint()
+            }
             Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint(),
             _ => return,
         };

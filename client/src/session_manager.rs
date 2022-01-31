@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail};
 use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
-use futures::future::LocalBoxFuture;
+use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
@@ -24,8 +24,10 @@ use ya_relay_stack::Channel;
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
+use crate::expire::track_sessions_expiration;
 use crate::registry::{NodeEntry, NodesRegistry};
-use crate::session::{Session, StartingSessions};
+use crate::session::Session;
+use crate::session_start::StartingSessions;
 use crate::virtual_layer::TcpLayer;
 
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
@@ -63,6 +65,9 @@ pub struct SessionManagerState {
     ingress_channel: Channel<Forwarded>,
 
     starting_sessions: Option<StartingSessions>,
+
+    // Collection of background tasks that must be stopped on shutdown.
+    handles: Vec<AbortHandle>,
 }
 
 impl SessionManager {
@@ -82,6 +87,7 @@ impl SessionManager {
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
+                handles: vec![],
             })),
         }
     }
@@ -90,13 +96,29 @@ impl SessionManager {
         let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
 
         self.sink = Some(sink.clone());
+
+        self.virtual_tcp.spawn(self.config.node_id).await?;
+
+        let (abort_dispatcher, abort_dispatcher_reg) = AbortHandle::new_pair();
+        let (abort_expiration, abort_expiration_reg) = AbortHandle::new_pair();
+
+        tokio::task::spawn_local(Abortable::new(
+            dispatch(self.clone(), stream),
+            abort_dispatcher_reg,
+        ));
+        tokio::task::spawn_local(Abortable::new(
+            track_sessions_expiration(self.clone()),
+            abort_expiration_reg,
+        ));
+
         {
-            self.state.write().await.starting_sessions =
-                Some(StartingSessions::new(self.clone(), sink));
+            let mut state = self.state.write().await;
+
+            state.handles.push(abort_dispatcher);
+            state.handles.push(abort_expiration);
+            state.starting_sessions = Some(StartingSessions::new(self.clone(), sink));
         }
 
-        self.virtual_tcp.spawn(self.config.node_id)?;
-        tokio::task::spawn_local(dispatch(self.clone(), stream));
         Ok(bind_addr)
     }
 
@@ -187,7 +209,7 @@ impl SessionManager {
 
         let session = self.add_session(addr, session_id).await?;
 
-        log::info!("[{}] session established with address: {}", node_id, addr);
+        log::trace!("[{}] session established with address: {}", node_id, addr);
         Ok(session)
     }
 
@@ -197,18 +219,21 @@ impl SessionManager {
         node_id: NodeId,
     ) -> anyhow::Result<Arc<Session>> {
         log::info!(
-            "Initializing p2p session with Node: {}, address: {}",
+            "Initializing p2p session with Node: [{}], address: {}",
             node_id,
             addr
         );
 
         let session = self.init_session(addr, true).await?;
-        {
+        let session = {
             let mut state = self.state.write().await;
             state.nodes_addr.insert(addr, node_id);
 
-            Ok(state.p2p_sessions.entry(node_id).or_insert(session).clone())
-        }
+            state.p2p_sessions.entry(node_id).or_insert(session).clone()
+        };
+
+        log::info!("Established P2P session with node [{}] ({})", node_id, addr);
+        Ok(session)
     }
 
     async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<Arc<Session>> {
@@ -221,6 +246,8 @@ impl SessionManager {
             .await
             .sessions
             .insert(addr, session.clone());
+
+        log::info!("Established session with NET relay server ({})", addr);
         Ok(session)
     }
 
@@ -238,6 +265,15 @@ impl SessionManager {
             .clone()
             .map(|mut starting_sessions| starting_sessions.temporary_session(addr))
             .ok_or_else(|| anyhow!("StartingSessions struct not initialized."))
+    }
+
+    pub async fn sessions(&self) -> Vec<Arc<Session>> {
+        let state = self.state.read().await;
+        state
+            .sessions
+            .iter()
+            .map(|(_, session)| session.clone())
+            .collect()
     }
 
     pub(crate) async fn add_session(
@@ -279,7 +315,13 @@ impl SessionManager {
     }
 
     async fn remove_node(&self, node_id: NodeId) {
+        log::trace!(
+            "Removing Node [{}] information. Stopping communication..",
+            node_id
+        );
+
         self.registry.remove_node(node_id).await.ok();
+        self.virtual_tcp.remove_node(node_id).await.ok();
 
         {
             let mut state = self.state.write().await;
@@ -292,6 +334,31 @@ impl SessionManager {
                 state.nodes_addr.remove(&session.remote);
             }
         }
+    }
+
+    pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
+        log::info!("Closing session {} ({})", session.id, session.remote);
+
+        if let Some(node_id) = {
+            let mut state = self.state.write().await;
+
+            state.sessions.remove(&session.remote);
+            state.nodes_addr.remove(&session.remote)
+        } {
+            // We are closing p2p session with Node.
+            // TODO: If we will support forwarding through other Nodes, than
+            //       relay server, we must handle this here.
+            self.remove_node(node_id).await;
+        } else {
+            // We are removing relay server session and all Nodes that are using
+            // it to forward messages.
+            for node_id in self.registry.nodes_using_session(session.clone()).await {
+                self.remove_node(node_id).await;
+            }
+        }
+
+        session.close().await?;
+        Ok(())
     }
 
     pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
@@ -367,7 +434,11 @@ impl SessionManager {
             .get_next_fwd_payload(&mut rx, paused_check.clone())
             .await
         {
-            log::trace!("Forwarding message (U) to {}", node.id);
+            log::trace!(
+                "Forwarding message (U) to {} through {}",
+                node.id,
+                session.remote
+            );
 
             let forward = Forward::unreliable(session.id, node.slot, payload);
             if let Err(error) = session.send(forward).await {
@@ -410,6 +481,10 @@ impl SessionManager {
         };
 
         let node_id = node_id.try_into()?;
+        if slot != 0 {
+            log::info!("Using NET relay Server to forward packets to [{}]", node_id);
+        }
+
         Ok(self.registry.add_node(node_id, session.clone(), slot).await)
     }
 
@@ -420,7 +495,8 @@ impl SessionManager {
     ) -> anyhow::Result<Arc<Session>> {
         let node_id: NodeId = node_id.try_into()?;
         if endpoints.is_empty() {
-            // try reverse connection
+            // We are trying to connect to Node without public IP. Trying to send
+            // ReverseConnection message, so Node will try to connect to us.
             if self.get_public_addr().await.is_some() {
                 return self.try_reverse_connection(node_id).await;
             }
@@ -451,7 +527,7 @@ impl SessionManager {
         }
 
         bail!(
-            "All attempts to establish direct session with node: {} failed",
+            "All attempts to establish direct session with node [{}] failed",
             node_id
         )
     }
@@ -464,7 +540,7 @@ impl SessionManager {
         );
         {
             let starting_session = { self.state.read().await.starting_sessions.clone() }
-                .ok_or(anyhow!("Starting sessions not loaded yet"))?;
+                .ok_or_else(|| anyhow!("Starting sessions not loaded yet"))?;
             let wait_for_tmp = starting_session.register_waiting_for_node(node_id);
             {
                 let server_session = self.server_session().await?;
@@ -520,11 +596,58 @@ impl SessionManager {
         }
 
         let session = self.init_server_session(self.config.srv_addr).await?;
+        let endpoints = session.register_endpoints(vec![]).await?;
 
-        // TODO: We should register endpoints here.
-        //session.register_endpoints(vec![]).await?;
+        // If there is any (correct) endpoint on the list, that means we have public IP.
+        if let Some(addr) = endpoints
+            .into_iter()
+            .find_map(|endpoint| endpoint.try_into().ok())
+        {
+            self.set_public_addr(Some(addr)).await;
+        }
 
         Ok(session)
+    }
+
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        let abort_handles = {
+            let mut state = self.state.write().await;
+
+            if let Some(starting) = state.starting_sessions.clone() {
+                starting.shutdown().await;
+            }
+
+            state.starting_sessions = None;
+            state.handles.clone()
+        };
+
+        for abort_handle in abort_handles {
+            abort_handle.abort();
+        }
+
+        if let Some(mut out_stream) = self.sink.clone() {
+            if let Err(e) = out_stream.close().await {
+                log::warn!("Error closing socket (output stream). {}", e);
+            }
+            self.sink = None;
+        }
+
+        for session in self.sessions().await {
+            self.close_session(session.clone())
+                .await
+                .map_err(|e| {
+                    log::warn!(
+                        "Failed to close session {} ({}). {}",
+                        session.id,
+                        session.remote,
+                        e,
+                    )
+                })
+                .ok();
+        }
+
+        self.virtual_tcp.shutdown().await;
+        Ok(())
     }
 
     pub async fn dispatch_session<'a>(
@@ -706,6 +829,19 @@ impl Handler for SessionManager {
                     }
                     .boxed_local();
                 }
+                ya_relay_proto::proto::control::Kind::Disconnected(message) => {
+                    return async move {
+                        log::trace!("Got Disconnected! {:?}", message);
+                        if let Ok(node) = self.registry.resolve_slot(message.slot).await {
+                            log::info!(
+                                "Node [{}] disconnected from Relay. Stopping forwarding..",
+                                node.id
+                            );
+                            self.remove_node(node.id).await;
+                        }
+                    }
+                    .boxed_local();
+                }
                 _ => {
                     log::trace!("Un-handled control packet: {:?}", kind)
                 }
@@ -720,7 +856,7 @@ impl Handler for SessionManager {
         request: proto::Request,
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
-        log::debug!("Received request packet from {}: {:?}", from, request);
+        log::trace!("Received request packet from {}: {:?}", from, request);
 
         let (request_id, kind) = match request {
             proto::Request {
