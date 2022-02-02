@@ -72,6 +72,7 @@ impl<'a> Stack<'a> {
                 if let SocketEndpoint::Ip(ep) = endpoint {
                     let mut socket = tcp_socket();
                     socket.listen(ep).map_err(|e| Error::Other(e.to_string()))?;
+                    socket.set_defaults();
                     interface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));

@@ -21,7 +21,7 @@ use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
 use crate::stack::Stack;
 use crate::{Error, Result};
 
-const MAX_TCP_PAYLOAD_SIZE: usize = 64000;
+const MAX_TCP_PAYLOAD_SIZE: usize = 65535 - 32 - 20;
 
 #[derive(Clone, Debug)]
 pub enum IngressEvent {
@@ -219,14 +219,15 @@ impl Network {
         let mut rebind = None;
 
         for (handle, socket) in iface.sockets_mut() {
+            let protocol = socket.protocol();
+            let local = socket.local_endpoint();
+
             if socket.is_closed() {
-                let protocol = socket.protocol();
                 let desc = SocketDesc {
                     protocol,
-                    local: socket.local_endpoint(),
+                    local,
                     remote: socket.remote_endpoint(),
                 };
-
                 if let Ok(key) = desc.try_into() {
                     remove.push((key, handle));
                     events.push(IngressEvent::Disconnected { desc });
@@ -248,8 +249,6 @@ impl Network {
                     }
                 };
 
-                let local = socket.local_endpoint();
-                let protocol = socket.protocol();
                 let desc = SocketDesc {
                     protocol,
                     local,
@@ -300,7 +299,10 @@ impl Network {
             let ingress_tx = self.ingress.tx.clone();
             for event in events {
                 if ingress_tx.send(event).is_err() {
-                    log::trace!("{}: cannot receive packets: channel closed", *self.name);
+                    log::trace!(
+                        "{}: ingress channel closed, unable to receive packets",
+                        *self.name
+                    );
                     break;
                 }
             }
@@ -366,7 +368,10 @@ impl Network {
             let egress_tx = self.egress.tx.clone();
             for event in events {
                 if egress_tx.send(event).is_err() {
-                    log::trace!("{}: cannot send packets: channel closed", *self.name);
+                    log::trace!(
+                        "{}: egress channel closed, unable to send packets",
+                        *self.name
+                    );
                     break;
                 }
             }
@@ -607,7 +612,7 @@ mod tests {
         mut tx: S,
         total: usize,
         chunk_size: usize,
-    ) -> oneshot::Receiver<anyhow::Result<Vec<u8>>>
+    ) -> oneshot::Receiver<anyhow::Result<(S, Vec<u8>)>>
     where
         S: Sink<Vec<u8>, Error = E> + Unpin + 'static,
         E: Into<anyhow::Error>,
@@ -633,23 +638,20 @@ mod tests {
                 }
             }
 
-            let _ = tx.close().await;
-
-            println!("produced {} B", sent);
+            println!("Produced {} B", sent);
             match err {
                 Some(e) => dtx.send(Err(e.into())),
-                None => dtx.send(Ok(digest.result().to_vec())),
+                None => dtx.send(Ok((tx, digest.result().to_vec()))),
             }
         });
 
         drx
     }
 
-    fn consume_data<S, A>(mut rx: S, total: usize) -> oneshot::Receiver<anyhow::Result<Vec<u8>>>
-    where
-        S: Stream<Item = A> + Unpin + 'static,
-        A: AsRef<[u8]>,
-    {
+    fn consume_data(
+        mut rx: mpsc::Receiver<Vec<u8>>,
+        total: usize,
+    ) -> oneshot::Receiver<anyhow::Result<Vec<u8>>> {
         let (dtx, drx) = oneshot::channel();
 
         spawn_local(async move {
@@ -657,7 +659,7 @@ mod tests {
             let mut read: usize = 0;
 
             while let Some(vec) = rx.next().await {
-                let len = vec.as_ref().len();
+                let len = vec.len();
 
                 read += len;
                 digest.input(&vec);
@@ -667,7 +669,7 @@ mod tests {
                 }
             }
 
-            println!("consumed {} B", read);
+            println!("Consumed all {} B", read);
             let _ = dtx.send(Ok(digest.result().to_vec()));
         });
 
@@ -794,10 +796,15 @@ mod tests {
         let produce2 = produce_data(tx, total, chunk_size);
         net_send(rx, net2.clone(), conn2);
 
-        let produced1 = produce1.await??;
-        let produced2 = produce2.await??;
-        let consumed1 = consume1.await??;
-        let consumed2 = consume2.await??;
+        let (f1, f2, f3, f4) = futures::future::join4(produce1, produce2, consume1, consume2).await;
+
+        let (mut ptx1, produced1) = f1??;
+        let (mut ptx2, produced2) = f2??;
+        let consumed1 = f3??;
+        let consumed2 = f4??;
+
+        let _ = ptx1.close().await;
+        let _ = ptx2.close().await;
 
         assert_eq!(hex::encode(produced1), hex::encode(consumed2));
         assert_eq!(hex::encode(produced2), hex::encode(consumed1));

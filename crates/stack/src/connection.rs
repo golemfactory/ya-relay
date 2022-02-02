@@ -10,7 +10,7 @@ use smoltcp::socket::*;
 use smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
-use crate::socket::{SocketDesc, SocketEndpoint};
+use crate::socket::{SocketDesc, SocketEndpoint, TcpSocketExt};
 use crate::{Error, Protocol, Result};
 
 /// Virtual connection teardown reason
@@ -133,6 +133,7 @@ impl<'a> Future for Connect<'a> {
         if !socket.is_open() {
             Poll::Ready(Err(Error::SocketClosed))
         } else if socket.can_send() {
+            socket.set_defaults();
             Poll::Ready(Ok(self.connection))
         } else {
             socket.register_send_waker(cx.waker());
@@ -147,6 +148,7 @@ pub struct Send<'a> {
     offset: usize,
     connection: Connection,
     iface: Rc<RefCell<CaptureInterface<'a>>>,
+    /// Send completion callback; there may as well have been no data sent
     sent: Box<dyn Fn()>,
 }
 
@@ -201,14 +203,17 @@ impl<'a> Future for Send<'a> {
                 }
                 Protocol::Udp => {
                     let socket = iface.get_socket::<UdpSocket>(conn.handle);
+                    socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data, conn.meta.remote)
                 }
                 Protocol::Icmp => {
                     let socket = iface.get_socket::<IcmpSocket>(conn.handle);
+                    socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data, conn.meta.remote.addr)
                 }
                 _ => {
                     let socket = iface.get_socket::<RawSocket>(conn.handle);
+                    socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data)
                 }
             }

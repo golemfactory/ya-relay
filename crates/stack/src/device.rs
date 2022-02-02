@@ -3,7 +3,7 @@ use smoltcp::phy::Medium;
 use smoltcp::time;
 use std::collections::VecDeque;
 
-const MTU: usize = 256000;
+pub const MTU: usize = 65535 - 8 - 40;
 
 /// Network device capable of injecting and extracting packets
 #[derive(Clone, Default)]
@@ -78,9 +78,7 @@ impl<'a> phy::TxToken for TxToken<'a> {
         let mut buffer = vec![0; len];
         buffer.resize(len, 0);
         let result = f(&mut buffer);
-        if result.is_ok() {
-            self.queue.push_back(buffer);
-        }
+        self.queue.push_back(buffer);
         result
     }
 }
