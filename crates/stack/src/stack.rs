@@ -1,7 +1,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use smoltcp::iface::{Route, SocketHandle};
+use smoltcp::iface::SocketHandle;
 use smoltcp::socket::*;
 use smoltcp::time::Instant;
 use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
@@ -20,23 +20,14 @@ pub struct Stack<'a> {
 }
 
 impl<'a> Stack<'a> {
-    pub fn new(net_ip: IpCidr, net_route: Route) -> Self {
-        let mut iface = default_iface(ip_to_mac(net_ip.address()));
-        add_iface_route(&mut iface, net_ip, net_route);
-
+    pub fn new(iface: CaptureInterface<'a>) -> Self {
         Self {
             iface: Rc::new(RefCell::new(iface)),
             ports: Default::default(),
         }
     }
 
-    pub fn with(iface: CaptureInterface<'a>) -> Self {
-        Self {
-            iface: Rc::new(RefCell::new(iface)),
-            ports: Default::default(),
-        }
-    }
-
+    #[inline]
     pub fn addresses(&self) -> Vec<IpCidr> {
         self.iface.borrow().ip_addrs().to_vec()
     }
@@ -54,6 +45,7 @@ impl<'a> Stack<'a> {
         add_iface_address(&mut (*iface), address);
     }
 
+    #[inline]
     pub(crate) fn iface(&self) -> Rc<RefCell<CaptureInterface<'a>>> {
         self.iface.clone()
     }
@@ -66,14 +58,14 @@ impl<'a> Stack<'a> {
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
-        let mut interface = self.iface.borrow_mut();
+        let mut iface = self.iface.borrow_mut();
         let handle = match protocol {
             Protocol::Tcp => {
                 if let SocketEndpoint::Ip(ep) = endpoint {
                     let mut socket = tcp_socket();
                     socket.listen(ep).map_err(|e| Error::Other(e.to_string()))?;
                     socket.set_defaults();
-                    interface.add_socket(socket)
+                    iface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
@@ -82,7 +74,7 @@ impl<'a> Stack<'a> {
                 if let SocketEndpoint::Ip(ep) = endpoint {
                     let mut socket = udp_socket();
                     socket.bind(ep).map_err(|e| Error::Other(e.to_string()))?;
-                    interface.add_socket(socket)
+                    iface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
@@ -91,7 +83,7 @@ impl<'a> Stack<'a> {
                 if let SocketEndpoint::Icmp(e) = endpoint {
                     let mut socket = icmp_socket();
                     socket.bind(e).map_err(|e| Error::Other(e.to_string()))?;
-                    interface.add_socket(socket)
+                    iface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an ICMP endpoint".to_string()));
                 }
@@ -109,7 +101,7 @@ impl<'a> Stack<'a> {
                 };
 
                 let socket = raw_socket(ip_version, map_protocol(protocol)?);
-                interface.add_socket(socket)
+                iface.add_socket(socket)
             }
         };
         Ok(handle)
@@ -118,23 +110,26 @@ impl<'a> Stack<'a> {
     pub fn connect(&self, remote: IpEndpoint) -> Result<Connect<'a>> {
         let ip = self.address()?.address();
 
-        let mut interface = self.iface.borrow_mut();
+        let mut iface = self.iface.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
         let protocol = Protocol::Tcp;
-        let handle = interface.add_socket(tcp_socket());
+        let handle = iface.add_socket(tcp_socket());
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
 
         log::trace!("connecting to {} ({})", remote, protocol);
 
-        if let Err(e) = {
-            let (socket, ctx) = interface.get_socket_and_context::<TcpSocket>(handle);
-            socket.connect(ctx, remote, local)
+        match {
+            let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
+            socket.connect(ctx, remote, local).map(|_| socket)
         } {
-            interface.remove_socket(handle);
-            ports.free(Protocol::Tcp, port);
-            return Err(Error::ConnectionError(e.to_string()));
+            Ok(socket) => socket.set_defaults(),
+            Err(e) => {
+                iface.remove_socket(handle);
+                ports.free(Protocol::Tcp, port);
+                return Err(Error::ConnectionError(e.to_string()));
+            }
         }
 
         let meta = ConnectionMeta {
@@ -149,16 +144,16 @@ impl<'a> Stack<'a> {
     }
 
     pub fn close(&self, protocol: Protocol, handle: SocketHandle) {
-        let mut interface = self.iface.borrow_mut();
+        let mut iface = self.iface.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
         let endpoint = match protocol {
             Protocol::Tcp => {
-                let socket = interface.get_socket::<TcpSocket>(handle);
+                let socket = iface.get_socket::<TcpSocket>(handle);
                 socket.close();
                 socket.local_endpoint()
             }
-            Protocol::Udp => interface.get_socket::<UdpSocket>(handle).endpoint(),
+            Protocol::Udp => iface.get_socket::<UdpSocket>(handle).endpoint(),
             _ => return,
         };
 

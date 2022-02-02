@@ -2,7 +2,7 @@ use derive_more::From;
 use smoltcp::socket::*;
 use smoltcp::storage::PacketMetadata;
 use smoltcp::time::Duration;
-use smoltcp::wire::{IpEndpoint, IpProtocol, IpVersion};
+use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::{Protocol, MAX_FRAME_SIZE};
 
@@ -66,6 +66,13 @@ impl From<Option<IpEndpoint>> for SocketEndpoint {
 impl From<u16> for SocketEndpoint {
     fn from(ident: u16) -> Self {
         Self::Icmp(IcmpEndpoint::Ident(ident))
+    }
+}
+
+impl<T: Into<IpAddress>> From<(T, u16)> for SocketEndpoint {
+    fn from((t, port): (T, u16)) -> Self {
+        let endpoint: IpEndpoint = (t, port).into();
+        Self::from(endpoint)
     }
 }
 

@@ -10,7 +10,7 @@ use smoltcp::socket::*;
 use smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
-use crate::socket::{SocketDesc, SocketEndpoint, TcpSocketExt};
+use crate::socket::{SocketDesc, SocketEndpoint};
 use crate::{Error, Protocol, Result};
 
 /// Virtual connection teardown reason
@@ -133,7 +133,6 @@ impl<'a> Future for Connect<'a> {
         if !socket.is_open() {
             Poll::Ready(Err(Error::SocketClosed))
         } else if socket.can_send() {
-            socket.set_defaults();
             Poll::Ready(Ok(self.connection))
         } else {
             socket.register_send_waker(cx.waker());
