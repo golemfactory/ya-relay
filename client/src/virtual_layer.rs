@@ -1,21 +1,17 @@
 use anyhow::anyhow;
-use futures::channel::mpsc;
-use futures::channel::oneshot;
-use futures::future::{AbortHandle, Abortable};
+use chrono::{DateTime, Utc};
+use futures::channel::{mpsc, oneshot};
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
-use std::convert::TryInto;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
 
-use ya_client_model::NodeId;
 use ya_relay_core::crypto::PublicKey;
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
-use ya_relay_stack::connection::ConnectionMeta;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface, to_mac};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
@@ -57,15 +53,11 @@ struct TcpLayerState {
     ips: HashMap<NodeId, Box<[u8]>>,
 
     forward_senders: HashMap<NodeId, ForwardSender>,
-    connections: HashMap<NodeId, ConnectionMeta>,
-
-    // Collection of background tasks that must be stopped on shutdown.
-    handles: Vec<AbortHandle>,
 }
 
 impl VirtNode {
     pub fn try_new(id: &[u8], session: Arc<Session>, session_slot: SlotId) -> anyhow::Result<Self> {
-        let id = parse_node_id(id)?;
+        let id = id.into();
         let ip = IpAddress::from(to_ipv6(&id));
         let endpoint = (ip, TCP_BIND_PORT).into();
 
@@ -88,8 +80,6 @@ impl TcpLayer {
                 nodes: Default::default(),
                 ips: Default::default(),
                 forward_senders: Default::default(),
-                connections: Default::default(),
-                handles: vec![],
             })),
         }
     }
@@ -141,13 +131,6 @@ impl TcpLayer {
             sender.close().await.ok();
         }
 
-        if let Some(meta) = state.connections.remove(&node_id) {
-            self.net.close_connection(&meta);
-            self.net.poll();
-        } else {
-            log::trace!("[VirtualTcp] Error removing node: no connection");
-        }
-
         Ok(())
     }
 
@@ -157,6 +140,7 @@ impl TcpLayer {
     pub async fn connect(
         &self,
         node: NodeEntry,
+        paused_forwarding: Arc<RwLock<Option<DateTime<Utc>>>>,
     ) -> anyhow::Result<(ForwardSender, oneshot::Receiver<()>)> {
         log::debug!(
             "[VirtualTcp] Connecting to node [{}] using session {}.",
@@ -173,6 +157,7 @@ impl TcpLayer {
 
         let id = self.net_id();
         let myself = self.clone();
+        let paused = paused_forwarding.clone();
 
         // We keep sender only to drop it on disconnection.
         self.register_sender(node.id, tx.clone()).await;
@@ -180,7 +165,8 @@ impl TcpLayer {
         tokio::task::spawn_local(async move {
             log::trace!("Forwarding messages to {}", node.id);
 
-            while let Some(payload) = rx.next().await {
+            while let Some(payload) = myself.get_next_fwd_payload(&mut rx, paused.clone()).await {
+                log::trace!("Forwarding message to {}", node.id);
                 let _ = myself
                     .net
                     .send(payload, connection)
@@ -226,6 +212,28 @@ impl TcpLayer {
             .insert(node_id, sender);
     }
 
+    pub async fn get_next_fwd_payload<T>(
+        &self,
+        rx: &mut mpsc::Receiver<T>,
+        forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
+    ) -> Option<T> {
+        let raw_date = {
+            // dont lock the state longer then needed.
+            *forward_paused_till.read().await
+        };
+        if let Some(date) = raw_date {
+            if let Ok(duration) = (date - Utc::now()).to_std() {
+                log::debug!("Receiver Paused!!! {:?}", duration);
+                tokio::time::delay_for(duration).await;
+                log::trace!("Receiver Continues...");
+            }
+            (*forward_paused_till.write().await) = None;
+            log::debug!("reset date");
+        }
+        log::trace!("Waiting for data...");
+        rx.next().await
+    }
+
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
         if self.resolve_node(node.id).await.is_err() {
             log::debug!(
@@ -242,9 +250,6 @@ impl TcpLayer {
 
     pub async fn shutdown(&self) {
         let mut state = self.state.write().await;
-        // for handle in &state.handles {
-        //     handle.abort();
-        // }
 
         for (_, mut sender) in state.forward_senders.drain() {
             sender.close().await.ok();
@@ -257,17 +262,8 @@ impl TcpLayer {
             .ingress_receiver()
             .ok_or_else(|| anyhow::anyhow!("Ingress traffic router already spawned"))?;
 
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-
-        tokio::task::spawn_local(Abortable::new(
-            self.clone().ingress_router(ingress_rx),
-            abort_registration,
-        ));
-
-        {
-            self.state.write().await.handles.push(abort_handle);
-            Ok(())
-        }
+        tokio::task::spawn_local(self.clone().ingress_router(ingress_rx));
+        Ok(())
     }
 
     async fn spawn_egress_router(&self) -> anyhow::Result<()> {
@@ -276,25 +272,16 @@ impl TcpLayer {
             .egress_receiver()
             .ok_or_else(|| anyhow::anyhow!("Egress traffic router already spawned"))?;
 
-        let (abort_handle, abort_registration) = AbortHandle::new_pair();
-
-        tokio::task::spawn_local(Abortable::new(
-            self.clone().egress_router(egress_rx),
-            abort_registration,
-        ));
-
-        {
-            self.state.write().await.handles.push(abort_handle);
-            Ok(())
-        }
+        tokio::task::spawn_local(self.clone().egress_router(egress_rx));
+        Ok(())
     }
 
     async fn ingress_router(self, ingress_rx: UnboundedReceiver<IngressEvent>) {
         ingress_rx
-            .for_each(move |mut event| {
+            .for_each(move |event| {
                 let myself = self.clone();
                 async move {
-                    let (desc, payload) = match &mut event {
+                    let (desc, payload) = match event {
                         IngressEvent::InboundConnection { desc } => {
                             log::trace!(
                                 "[{}] ingress router: new connection from {:?} to {:?} ",
@@ -302,8 +289,7 @@ impl TcpLayer {
                                 desc.remote,
                                 desc.local,
                             );
-
-                            (*desc, Vec::new())
+                            return;
                         }
                         IngressEvent::Disconnected { desc } => {
                             log::trace!(
@@ -313,12 +299,9 @@ impl TcpLayer {
                                 desc.remote,
                                 desc.local,
                             );
-
-                            (*desc, Vec::new())
+                            return;
                         }
-                        IngressEvent::Packet { desc, payload, .. } => {
-                            (*desc, std::mem::replace(payload, Vec::new()))
-                        }
+                        IngressEvent::Packet { desc, payload, .. } => (desc, payload),
                     };
 
                     if desc.protocol != Protocol::Tcp {
@@ -357,36 +340,20 @@ impl TcpLayer {
                                 payload,
                             };
 
-                            match event {
-                                IngressEvent::InboundConnection { desc } => {
-                                    match desc.try_into() {
-                                        Ok(meta) => {
-                                            let mut state = myself.state.write().await;
-                                            state.connections.insert(node_id, meta);
-                                        }
-                                        Err(_) => {
-                                            log::warn!("[{}] ingress router: unable to convert socket data to connection meta", myself.net_id())                                            ;
-                                        }
-                                    };
+                            let payload_len = payload.payload.len();
 
-                                }
-                                IngressEvent::Packet { .. } => {
-                                    let payload_len = payload.payload.len();
-                                    if tx.send(payload).is_err() {
-                                        log::trace!(
-                                            "[{}] ingress router: ingress handler closed for node {}",
-                                            myself.net_id(),
-                                            node_id
-                                        );
-                                    } else {
-                                        log::trace!(
-                                            "[{}] ingress router: forwarded {} B",
-                                            myself.net_id(),
-                                            payload_len
-                                        );
-                                    }
-                                }
-                                _ => {}
+                            if tx.send(payload).is_err() {
+                                log::trace!(
+                                    "[{}] ingress router: ingress handler closed for node {}",
+                                    myself.net_id(),
+                                    node_id
+                                );
+                            } else {
+                                log::trace!(
+                                    "[{}] ingress router: forwarded {} B",
+                                    myself.net_id(),
+                                    payload_len
+                                );
                             }
                         }
                         _ => log::trace!(
@@ -478,6 +445,7 @@ fn default_network(key: PublicKey) -> Network {
         address[0], address[1], address[2], address[3]
     );
 
+    log::debug!("[{}] Hardware address: {}", name, iface.hardware_addr());
     log::debug!("[{}] IP address: {}", name, ipv6_addr);
 
     add_iface_address(&mut iface, ipv6_cidr);

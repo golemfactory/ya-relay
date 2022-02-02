@@ -1,11 +1,8 @@
-use std::convert::TryFrom;
-use std::time::Duration;
+use std::convert::{TryFrom, TryInto};
 
-use ya_client_model::NodeId;
 use ya_relay_client::testing::Session;
 use ya_relay_client::ClientBuilder;
 use ya_relay_core::session::SessionId;
-use ya_relay_core::{SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT};
 use ya_relay_proto::proto;
 use ya_relay_server::testing::server::init_test_server;
 
@@ -25,18 +22,13 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     }];
 
     let session = client.sessions.server_session().await.unwrap();
-    let result_endpoints = session.register_endpoints(vec![]).await.unwrap();
     let node_info = session.find_node(node_id).await.unwrap();
 
     // TODO: More checks, after everything will be implemented.
-    assert_eq!(node_id, NodeId::from(&node_info.node_id[..]));
+    assert_eq!(node_id, (&node_info.node_id).try_into().unwrap());
     assert_ne!(node_info.slot, u32::MAX);
     assert_eq!(node_info.endpoints.len(), 1);
     assert_eq!(node_info.endpoints[0], endpoints[0]);
-
-    // Check server response.
-    assert_eq!(result_endpoints.len(), 1);
-    assert_eq!(result_endpoints[0], endpoints[0]);
 
     Ok(())
 }
@@ -90,34 +82,7 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
     let node2_info = session1.find_node(node2_id).await.unwrap();
     let node1_info = session2.find_node(node1_id).await.unwrap();
 
-    assert_eq!(node1_id, NodeId::from(&node1_info.node_id[..]));
-    assert_eq!(node2_id, NodeId::from(&node2_info.node_id[..]));
-    Ok(())
-}
-
-#[serial_test::serial]
-#[ignore] // This functionality is not supported yet
-async fn test_restart_server() -> anyhow::Result<()> {
-    let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
-        .connect()
-        .build()
-        .await
-        .unwrap();
-    let node_id = client.node_id();
-    let _session = client.sessions.server_session().await?;
-
-    // Abort server
-    drop(wrapper);
-
-    tokio::time::delay_for(
-        Duration::from_secs(*SESSION_TIMEOUT as u64) + *SESSION_CLEANER_INTERVAL,
-    )
-    .await;
-
-    let session = client.sessions.server_session().await?;
-    let result = session.find_node(node_id).await;
-    log::error!("Result: {:?}", result);
-    assert!(result.is_ok());
+    assert_eq!(node1_id, (&node1_info.node_id).try_into().unwrap());
+    assert_eq!(node2_id, (&node2_info.node_id).try_into().unwrap());
     Ok(())
 }

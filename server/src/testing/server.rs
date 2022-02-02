@@ -1,7 +1,9 @@
+use crate::config::Config;
 use chrono::Local;
 use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
 use std::io::Write;
+use std::time::Duration;
 use url::Url;
 
 use crate::server::Server;
@@ -34,7 +36,15 @@ pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
         })
         .try_init();
 
-    let server = Server::bind_udp(Url::parse("udp://127.0.0.1:0")?).await?;
+    let server = Server::bind_udp(Config {
+        address: Url::parse("udp://127.0.0.1:0")?,
+        ip_checker_port: 0,
+        session_cleaner_interval: Duration::from_secs(60),
+        session_timeout: 10,
+        forwarder_rate_limit: 2048,
+        forwarder_resume_interval: Duration::from_secs(1),
+    })
+    .await?;
 
     let (abort_handle, abort_registration) = AbortHandle::new_pair();
 

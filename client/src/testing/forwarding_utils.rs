@@ -22,7 +22,7 @@ pub fn spawn_receive<T: std::fmt::Debug + 'static>(
     println!("Spawning {} receiver", label);
 
     tokio::task::spawn_local({
-        let received = received.clone();
+        let received = received;
         async move {
             rx.for_each(|item| {
                 let received = received.clone();

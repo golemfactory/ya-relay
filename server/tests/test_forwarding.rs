@@ -1,3 +1,5 @@
+mod helpers;
+
 use anyhow::Context;
 use futures::{SinkExt, StreamExt};
 use std::rc::Rc;
@@ -8,20 +10,10 @@ use tokio::sync::mpsc;
 
 use ya_relay_client::client::Forwarded;
 use ya_relay_client::testing::forwarding_utils::spawn_receive;
-use ya_relay_client::{Client, ClientBuilder};
-use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
+use ya_relay_client::ClientBuilder;
+use ya_relay_server::testing::server::init_test_server;
 
-/// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.
-async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
-    let mut state = wrapper.server.state.write().await;
-
-    let mut info = state.nodes.get_by_node_id(client.node_id()).unwrap();
-    state.nodes.remove_session(info.info.slot);
-
-    // Server won't return any endpoints, so Client won't try to connect directly.
-    info.info.endpoints = vec![];
-    state.nodes.register(info)
-}
+use helpers::hack_make_ip_private;
 
 #[serial_test::serial]
 async fn test_forward_unreliable() -> anyhow::Result<()> {
@@ -224,13 +216,16 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
         .build()
         .await?;
 
+    hack_make_ip_private(&wrapper, &client1).await;
+    hack_make_ip_private(&wrapper, &client2).await;
+
     let rx2 = client2
         .forward_receiver()
         .await
         .context("no forward receiver")?;
     let received2 = Rc::new(AtomicUsize::new(0));
 
-    fn spawn_receive(
+    fn spawn_receive_counted(
         label: &'static str,
         received: Rc<AtomicUsize>,
         rx: mpsc::UnboundedReceiver<Forwarded>,
@@ -249,24 +244,32 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
             }
         });
     }
-    spawn_receive(">> 2", received2.clone(), rx2);
+    spawn_receive_counted(">> 2", received2.clone(), rx2);
 
     let mut tx1 = client1.forward(client2.node_id()).await?;
     let big_payload = (0..255).collect::<Vec<u8>>();
     let iterations = (2048 / 256) + 1;
+    let mut send_cnt = 0;
     for i in 0..iterations {
         println!("Send 255. iter: {}", i);
         tx1.send(big_payload.clone()).await?;
+        send_cnt += big_payload.len();
     }
     tokio::time::delay_for(Duration::from_millis(100)).await;
     let rec_cnt = received2.load(SeqCst);
-    println!("Received counter: {}", rec_cnt);
+    println!("Send counter: {}, Received counter: {}", send_cnt, rec_cnt);
+    let _pausd_receive_count = rec_cnt;
+    tokio::time::delay_for(Duration::from_secs(10)).await;
+    let rec_cnt = received2.load(SeqCst);
+    println!("Send counter: {}, Received counter: {}", send_cnt, rec_cnt);
     // It's hard to define exact value, as this test may catch
     // rate-limiter bucket from previous period, thus resulting
     // in a value slightly larger than limit (using limit from
     // two periods)
     let max_value = (2048 * 15) / 10;
     assert!(rec_cnt <= max_value);
+    // TODO: Fix flaky test not forwarding all send packets
+    // assert!(rec_cnt == send_cnt);
 
     Ok(())
 }

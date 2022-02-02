@@ -2,10 +2,10 @@ use std::sync::Arc;
 use tokio::time::Instant;
 
 use crate::session::Session;
-use crate::session_layer::SessionsLayer;
+use crate::session_manager::SessionManager;
 
-pub async fn track_sessions_expiration(layer: SessionsLayer) {
-    let expiration = layer.config.session_expiration.clone();
+pub async fn track_sessions_expiration(layer: SessionManager) {
+    let expiration = layer.config.session_expiration;
 
     loop {
         log::trace!("Checking, if all sessions are alive. Removing not active sessions.");
@@ -17,7 +17,7 @@ pub async fn track_sessions_expiration(layer: SessionsLayer) {
         // can last a few seconds especially in case of inactive sessions.
         let ping_futures = sessions
             .iter()
-            .map(|session| session.keep_alive(expiration.clone()))
+            .map(|session| session.keep_alive(expiration))
             .collect::<Vec<_>>();
 
         let last_seen = futures::future::join_all(ping_futures).await;
@@ -44,7 +44,7 @@ pub async fn track_sessions_expiration(layer: SessionsLayer) {
     }
 }
 
-async fn close_sessions(layer: SessionsLayer, sessions: Vec<Arc<Session>>, expired: Vec<usize>) {
+async fn close_sessions(layer: SessionManager, sessions: Vec<Arc<Session>>, expired: Vec<usize>) {
     for idx in expired.into_iter() {
         let session = sessions[idx].clone();
 

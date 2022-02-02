@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
@@ -8,28 +9,20 @@ use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{self, timeout, Duration};
-use tokio_util::codec::{Decoder, Encoder};
+use tokio::time;
 use url::Url;
 
-use crate::error::{
-    BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
-};
+use crate::config::Config;
+use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
-
-use ya_client_model::NodeId;
 
 use ya_relay_core::challenge::prepare_challenge_response;
 use ya_relay_core::challenge::{self, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{Endpoint, NodeInfo, NodeSession, SessionId};
+use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
-use ya_relay_core::{
-    FORWARDER_RATE_LIMIT, FORWARDER_RESUME_INTERVAL, SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT,
-};
-use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
@@ -38,6 +31,7 @@ use ya_relay_proto::proto::{RequestId, StatusCode};
 pub struct Server {
     pub state: Arc<RwLock<ServerState>>,
     pub inner: Arc<ServerImpl>,
+    pub config: Arc<Config>,
 }
 
 pub struct ServerState {
@@ -51,6 +45,7 @@ pub struct ServerState {
 pub struct ServerImpl {
     pub socket: OutStream,
     pub url: Url,
+    pub ip_checker: EndpointsChecker,
 }
 
 impl Server {
@@ -103,7 +98,9 @@ impl Server {
                             self.neighbours_request(request_id, id, from, params)
                                 .await?
                         }
-                        Kind::ReverseConnection(_) => {}
+                        Kind::ReverseConnection(params) => {
+                            self.reverse_request(request_id, id, from, params).await?
+                        }
                         Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
                     },
                     Some(proto::packet::Kind::Response(_)) => {
@@ -144,10 +141,38 @@ impl Server {
                 .get_by_session(session_id)
                 .ok_or(Unauthorized::SessionNotFound(session_id))?;
 
-            let dest_node = server
+            let dest_node = match server
                 .nodes
                 .get_by_slot(slot)
-                .ok_or(NotFound::NodeBySlot(slot))?;
+                .ok_or(NotFound::NodeBySlot(slot))
+            {
+                Ok(dest_node) => dest_node,
+                Err(e) => {
+                    // Node probably won't notice, that his packets aren't reaching destination
+                    // before TCP connection timeouts. It gets worse in case of unreliable forwarding.
+                    // This is due to the fact, that client has no reason to get Node info again.
+                    // That's why we must notify him.
+                    //
+                    // We could send Disconnected message, when we discover, that Node stopped responding
+                    // to ping, but we would have to spam all Nodes in the network in this case. It is better
+                    // to notify only interested Nodes, that means Nodes forwarding something.
+                    let control_packet = proto::Packet::control(
+                        session_id.to_vec(),
+                        ya_relay_proto::proto::control::Disconnected { slot },
+                    );
+                    self.send_to(PacketKind::Packet(control_packet), &from)
+                        .await
+                        .map_err(|_| InternalError::Send)?;
+
+                    log::trace!(
+                        "Sent Disconnected [slot={}] message to Node: {}.",
+                        slot,
+                        src_node.info.node_id
+                    );
+
+                    return Err(e.into());
+                }
+            };
             (src_node, dest_node)
         };
         if let Err(e) = src_node
@@ -157,7 +182,7 @@ impl Server {
             log::trace!("Rate limiting: {:?}", e);
             match e {
                 NegativeMultiDecision::InsufficientCapacity(cells) => {
-                    // the query was invalid as the rate limite parameters can never accomodate the
+                    // the query was invalid as the rate limit parameters can never accommodate the
                     // number of cells queried for.
                     log::warn!(
                         "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
@@ -196,7 +221,11 @@ impl Server {
         packet.slot = src_node.info.slot;
         packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
-        log::debug!("Sending forward packet to {}", dest_node.address);
+        log::debug!(
+            "Sending forward packet from [{}] to [{}]",
+            src_node.info.node_id,
+            dest_node.info.node_id
+        );
 
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
             .await
@@ -204,58 +233,6 @@ impl Server {
 
         // TODO: We should update `last_seen` timestamp of `src_node`.
         Ok(())
-    }
-
-    async fn public_endpoints(
-        &self,
-        session_id: SessionId,
-        addr: &SocketAddr,
-    ) -> ServerResult<Vec<Endpoint>> {
-        // We need new socket to check, if Node's address is public.
-        // If we would use the same socket as always, we would be able to
-        // send packets even to addresses behind NAT.
-        let mut sock = UdpSocket::bind("0.0.0.0:0")
-            .await
-            .map_err(|e| InternalError::BindingSocket(e.to_string()))?;
-
-        let mut codec = Codec::default();
-        let mut buf = BytesMut::new();
-
-        // If we can ping `from` address it was public, if we don't get response
-        // it could be private.
-        let ping = proto::Packet::request(session_id.to_vec(), proto::request::Ping {}).into();
-
-        codec
-            .encode(ping, &mut buf)
-            .map_err(|_| InternalError::Encoding)?;
-
-        sock.send_to(&buf, &addr)
-            .await
-            .map_err(|_| InternalError::Send)?;
-
-        buf.resize(MAX_PACKET_SIZE as usize, 0);
-
-        let size = timeout(Duration::from_millis(300), sock.recv(&mut buf))
-            .await
-            .map_err(|_| Timeout::Ping)?
-            .map_err(|_| InternalError::Receiving)?;
-
-        buf.truncate(size);
-
-        match dispatch_response(
-            codec
-                .decode(&mut buf)
-                .map_err(|_| InternalError::Decoding)?
-                .ok_or(InternalError::Decoding)?,
-        ) {
-            Ok(proto::response::Kind::Pong(_)) => {}
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Pong".to_string()).into()),
-        };
-
-        Ok(vec![Endpoint {
-            protocol: proto::Protocol::Udp,
-            address: *addr,
-        }])
     }
 
     async fn register_endpoints(
@@ -270,7 +247,11 @@ impl Server {
         //       to verify address, from which we received messages.
 
         let node_id = session.info.node_id;
-        let endpoints = self.public_endpoints(session_id, &from).await?;
+        let endpoints = self
+            .inner
+            .ip_checker
+            .public_endpoints(session_id, &from)
+            .await?;
 
         for endpoint in endpoints.iter() {
             log::info!(
@@ -338,10 +319,9 @@ impl Server {
         from: SocketAddr,
         params: proto::request::Node,
     ) -> ServerResult<()> {
-        if params.node_id.len() != 20 {
-            return Err(BadRequest::InvalidNodeId.into());
-        }
-        let node_id = NodeId::from(&params.node_id[..]);
+        let node_id = (&params.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
 
         log::debug!("{} requested Node [{}] info.", from, node_id);
 
@@ -394,6 +374,81 @@ impl Server {
             from,
             session_id
         );
+        Ok(())
+    }
+
+    async fn reverse_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        params: proto::request::ReverseConnection,
+    ) -> ServerResult<()> {
+        let source_node_info = match { self.state.read().await }.nodes.get_by_session(session_id) {
+            None => return Err(Unauthorized::SessionNotFound(session_id).into()),
+            Some(node_id) => node_id.info,
+        };
+        if source_node_info.endpoints.is_empty() {
+            return Err(BadRequest::NoPublicEndpoints.into());
+        }
+
+        let target_node_id = (&params.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
+        let target_session = {
+            match { self.state.read().await }
+                .nodes
+                .get_by_node_id(target_node_id)
+            {
+                None => {
+                    return Err(InternalError::Generic(format!(
+                        "There is no session with node_id {}",
+                        target_node_id
+                    ))
+                    .into())
+                }
+                Some(session) => session,
+            }
+        };
+
+        let message_to_send = proto::Packet::control(
+            target_session.session.to_vec(),
+            proto::control::ReverseConnection {
+                node_id: source_node_info.node_id.into_array().to_vec(),
+                endpoints: source_node_info
+                    .endpoints
+                    .into_iter()
+                    .map(proto::Endpoint::from)
+                    .collect(),
+            },
+        );
+        self.send_to(message_to_send, &target_session.address)
+            .await
+            .map_err(|_| InternalError::Send)?;
+
+        let reponse = proto::Packet::response(
+            request_id,
+            session_id.to_vec(),
+            StatusCode::Ok,
+            proto::response::ReverseConnection {},
+        );
+
+        self.send_to(reponse, &from)
+            .await
+            .map_err(|_| InternalError::Send)?;
+
+        log::info!(
+            "ReverseConnection sent. source: {}, target: {}, request: {}",
+            &from,
+            &target_session.address,
+            &request_id,
+        );
+        log::debug!(
+            "source_session: {}, target_session: {}",
+            &session_id,
+            &target_session.session
+        );
+
         Ok(())
     }
 
@@ -545,11 +600,10 @@ impl Server {
                     return Err(Unauthorized::InvalidChallenge.into());
                 }
 
-                if session.node_id.len() != 20 {
-                    return Err(BadRequest::InvalidNodeId.into());
-                }
+                let node_id = (&session.node_id)
+                    .try_into()
+                    .map_err(|_| BadRequest::InvalidNodeId)?;
 
-                let node_id = NodeId::from(&session.node_id[..]);
                 let info = NodeInfo {
                     node_id,
                     public_key: session.public_key,
@@ -563,10 +617,10 @@ impl Server {
                     session: session_id,
                     last_seen: Utc::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
-                        NonZeroU32::new(*FORWARDER_RATE_LIMIT).ok_or_else(|| {
+                        NonZeroU32::new(self.config.forwarder_rate_limit).ok_or_else(|| {
                             InternalError::RateLimiterInit(format!(
                                 "Invalid non zero value: {}",
-                                *FORWARDER_RATE_LIMIT
+                                self.config.forwarder_rate_limit
                             ))
                         })?,
                     ))),
@@ -647,9 +701,9 @@ impl Server {
     async fn session_cleaner(&self) {
         log::debug!(
             "Starting session cleaner at interval {}s",
-            (*SESSION_CLEANER_INTERVAL).as_secs()
+            (self.config.session_cleaner_interval).as_secs()
         );
-        let mut interval = time::interval(*SESSION_CLEANER_INTERVAL);
+        let mut interval = time::interval(self.config.session_cleaner_interval);
         loop {
             interval.tick().await;
             let s = self.clone();
@@ -660,11 +714,11 @@ impl Server {
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(*SESSION_TIMEOUT);
+        server.nodes.check_timeouts(self.config.session_timeout);
     }
 
     async fn forward_resumer(&self) {
-        let mut interval = time::interval(*FORWARDER_RESUME_INTERVAL);
+        let mut interval = time::interval(self.config.forwarder_resume_interval);
         loop {
             interval.tick().await;
             self.check_resume_forwarding().await;
@@ -724,16 +778,25 @@ impl Server {
             .await?)
     }
 
-    pub async fn bind_udp(addr: url::Url) -> anyhow::Result<Server> {
-        let (input, output, addr) = udp_bind(&addr).await?;
+    pub async fn bind_udp(config: Config) -> anyhow::Result<Server> {
+        let (input, output, addr) = udp_bind(&config.address).await?;
         let url = Url::parse(&format!("udp://{}:{}", addr.ip(), addr.port()))?;
 
-        Server::bind(url, input, output)
+        Server::bind(config, url, input, output).await
     }
 
-    pub fn bind(addr: url::Url, input: InStream, output: OutStream) -> anyhow::Result<Server> {
+    pub async fn bind(
+        config: Config,
+        addr: url::Url,
+        input: InStream,
+        output: OutStream,
+    ) -> anyhow::Result<Server> {
+        let config = Arc::new(config);
         let inner = Arc::new(ServerImpl {
             socket: output,
+            ip_checker: EndpointsChecker::spawn(config.clone())
+                .await
+                .map_err(|e| anyhow!("Public endpoints checker initialization failed: {}", e))?,
             url: addr,
         });
 
@@ -744,7 +807,11 @@ impl Server {
             resume_forwarding: BTreeSet::new(),
         }));
 
-        Ok(Server { state, inner })
+        Ok(Server {
+            state,
+            inner,
+            config,
+        })
     }
 
     pub async fn run(self) -> anyhow::Result<()> {

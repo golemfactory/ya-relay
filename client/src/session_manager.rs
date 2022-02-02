@@ -1,28 +1,28 @@
 use anyhow::{anyhow, bail};
+use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
+use std::ops::Add;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::stream::StreamExt;
 use tokio::sync::RwLock;
 
-use ya_client_model::NodeId;
 use ya_relay_core::challenge::{self, prepare_challenge_request, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::CryptoProvider;
 use ya_relay_core::error::Error;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
 use ya_relay_stack::Channel;
 
-use crate::client::{ClientConfig, ForwardId, ForwardSender, Forwarded};
+use crate::client::{ClientConfig, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
 use crate::expire::track_sessions_expiration;
 use crate::registry::{NodeEntry, NodesRegistry};
@@ -32,27 +32,34 @@ use crate::virtual_layer::TcpLayer;
 
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const CHALLENGE_REQUEST_TIMEOUT: Duration = Duration::from_millis(8000);
+const PAUSE_FWD_DELAY: i64 = 5;
+const REVERSE_CONNECTION_TMP_TIMEOUT: u64 = 3;
+const REVERSE_CONNECTION_REAL_TIMEOUT: i64 = 13;
 
-/// Managing relay server and peer-to-peer sessions.
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
 /// like `NodeId` or `SlotId`.
 #[derive(Clone)]
-pub struct SessionsLayer {
+pub struct SessionManager {
     sink: Option<OutStream>,
     pub config: Arc<ClientConfig>,
 
     pub virtual_tcp: TcpLayer,
     pub registry: NodesRegistry,
 
-    state: Arc<RwLock<SessionLayerState>>,
+    state: Arc<RwLock<SessionManagerState>>,
 }
 
-pub struct SessionLayerState {
+pub struct SessionManagerState {
+    /// If address is None after registering endpoints on Server, that means
+    /// we don't have public IP.
+    public_addr: Option<SocketAddr>,
+
     sessions: HashMap<SocketAddr, Arc<Session>>,
     nodes_addr: HashMap<SocketAddr, NodeId>,
 
     forward_unreliable: HashMap<NodeId, ForwardSender>,
+    forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     p2p_sessions: HashMap<NodeId, Arc<Session>>,
     ingress_channel: Channel<Forwarded>,
@@ -63,18 +70,20 @@ pub struct SessionLayerState {
     handles: Vec<AbortHandle>,
 }
 
-impl SessionsLayer {
-    pub fn new(config: Arc<ClientConfig>) -> SessionsLayer {
+impl SessionManager {
+    pub fn new(config: Arc<ClientConfig>) -> SessionManager {
         let ingress = Channel::<Forwarded>::default();
-        SessionsLayer {
+        SessionManager {
             sink: None,
             config: config.clone(),
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
             registry: NodesRegistry::new(),
-            state: Arc::new(RwLock::new(SessionLayerState {
+            state: Arc::new(RwLock::new(SessionManagerState {
+                public_addr: None,
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
                 forward_unreliable: Default::default(),
+                forward_paused_till: Arc::new(RwLock::new(Default::default())),
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
@@ -111,6 +120,14 @@ impl SessionsLayer {
         }
 
         Ok(bind_addr)
+    }
+
+    pub async fn get_public_addr(&self) -> Option<SocketAddr> {
+        self.state.read().await.public_addr
+    }
+
+    pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
+        self.state.write().await.public_addr = addr;
     }
 
     async fn init_session(
@@ -202,7 +219,7 @@ impl SessionsLayer {
         node_id: NodeId,
     ) -> anyhow::Result<Arc<Session>> {
         log::info!(
-            "Initializing p2p session with Node: {}, address: {}",
+            "Initializing p2p session with Node: [{}], address: {}",
             node_id,
             addr
         );
@@ -287,11 +304,22 @@ impl SessionsLayer {
 
             state.add_session(addr, session.clone());
             state.nodes_addr.insert(addr, node_id);
+            log::trace!(
+                "[{}] Saved node session {} {}",
+                self.config.node_id,
+                node_id,
+                addr
+            )
         }
         Ok(session)
     }
 
     async fn remove_node(&self, node_id: NodeId) {
+        log::trace!(
+            "Removing Node [{}] information. Stopping communication..",
+            node_id
+        );
+
         self.registry.remove_node(node_id).await.ok();
         self.virtual_tcp.remove_node(node_id).await.ok();
 
@@ -333,22 +361,22 @@ impl SessionsLayer {
         Ok(())
     }
 
-    pub async fn optimal_session(
-        &self,
-        forward_id: impl Into<ForwardId> + Clone,
-    ) -> anyhow::Result<Arc<Session>> {
+    pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
         // Maybe we already have optimal session resolved.
-        if let Ok(node) = match forward_id.clone().into() {
-            ForwardId::NodeId(node_id) => self.registry.resolve_node(node_id).await,
-            ForwardId::SlotId(slot) => self.registry.resolve_slot(slot).await,
-        } {
+        if let Ok(node) = self.registry.resolve_node(node_id).await {
             return Ok(node.session);
         }
 
+        // get node info
+        let server_session = self.server_session().await?;
+        let node = server_session.find_node(node_id).await?;
+
         // Find node on server. p2p session will be established, if possible. Otherwise
         // communication will be forwarder through relay server.
-        let server = self.server_session().await?;
-        Ok(self.resolve(server, forward_id).await?.session)
+        Ok(self
+            .resolve(&node.node_id, &node.endpoints, node.slot)
+            .await?
+            .session)
     }
 
     pub async fn forward(
@@ -359,7 +387,8 @@ impl SessionsLayer {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
         let node = self.registry.resolve_node(node_id).await?;
-        let (sender, disconnected) = self.virtual_tcp.connect(node).await?;
+        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        let (sender, disconnected) = self.virtual_tcp.connect(node, paused_check).await?;
 
         let myself = self.clone();
         tokio::task::spawn_local(async move {
@@ -399,8 +428,17 @@ impl SessionsLayer {
         node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
-        while let Some(payload) = rx.next().await {
-            log::trace!("Forwarding message (U) to {}", node.id);
+        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        while let Some(payload) = self
+            .virtual_tcp
+            .get_next_fwd_payload(&mut rx, paused_check.clone())
+            .await
+        {
+            log::trace!(
+                "Forwarding message (U) to {} through {}",
+                node.id,
+                session.remote
+            );
 
             let forward = Forward::unreliable(session.id, node.slot, payload);
             if let Err(error) = session.send(forward).await {
@@ -426,45 +464,50 @@ impl SessionsLayer {
 
     async fn resolve(
         &self,
-        session: Arc<Session>,
-        forward_id: impl Into<ForwardId>,
+        node_id: &[u8],
+        endpoints: &[proto::Endpoint],
+        slot: u32,
     ) -> anyhow::Result<NodeEntry> {
-        let node = match forward_id.into() {
-            ForwardId::NodeId(node_id) => session.find_node(node_id).await?,
-            ForwardId::SlotId(slot) => session.find_slot(slot).await?,
-        };
-
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
         let (session, slot) = match self
-            .try_direct_session(&node)
+            .try_direct_session(node_id, endpoints)
             .await
             .map_err(|e| log::info!("{}", e))
         {
             // If we send packets directly, slot will be always 0.
             Ok(session) => (session, 0),
-            Err(_) => (self.server_session().await?, node.slot),
+            Err(_) => (self.server_session().await?, slot),
         };
 
-        Ok(self
-            .registry
-            .add_node(parse_node_id(&node.node_id)?, session.clone(), slot)
-            .await)
+        let node_id = node_id.try_into()?;
+        if slot != 0 {
+            log::info!("Using NET relay Server to forward packets to [{}]", node_id);
+        }
+
+        Ok(self.registry.add_node(node_id, session.clone(), slot).await)
     }
 
     pub async fn try_direct_session(
         &self,
-        packet: &proto::response::Node,
+        node_id: &[u8],
+        endpoints: &[proto::Endpoint],
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id = parse_node_id(&packet.node_id)?;
-        if packet.endpoints.is_empty() {
+        let node_id: NodeId = node_id.try_into()?;
+        if endpoints.is_empty() {
+            // We are trying to connect to Node without public IP. Trying to send
+            // ReverseConnection message, so Node will try to connect to us.
+            if self.get_public_addr().await.is_some() {
+                return self.try_reverse_connection(node_id).await;
+            }
+
             bail!(
                 "Node [{}] has no public endpoints. Not establishing p2p session",
                 node_id
             )
         }
 
-        for endpoint in packet.endpoints.iter() {
+        for endpoint in endpoints.iter() {
             let addr = match endpoint.clone().try_into() {
                 Ok(addr) => addr,
                 Err(_) => continue,
@@ -484,7 +527,58 @@ impl SessionsLayer {
         }
 
         bail!(
-            "All attempts to establish direct session with node: {} failed",
+            "All attempts to establish direct session with node [{}] failed",
+            node_id
+        )
+    }
+
+    async fn try_reverse_connection(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
+        log::debug!(
+            "Request reverse connection. me={}, remote={}",
+            self.config.node_id,
+            node_id
+        );
+        {
+            let starting_session = { self.state.read().await.starting_sessions.clone() }
+                .ok_or_else(|| anyhow!("Starting sessions not loaded yet"))?;
+            let wait_for_tmp = starting_session.register_waiting_for_node(node_id);
+            {
+                let server_session = self.server_session().await?;
+                match server_session.reverse_connection(node_id).await {
+                    Ok(s) => s,
+                    Err(e) => {
+                        starting_session.unregister_waiting_for_node(&node_id);
+                        return Err(e);
+                    }
+                };
+                log::trace!("ReverseConnection - Requested with node {}", &node_id);
+            }
+
+            tokio::time::timeout(
+                Duration::from_secs(REVERSE_CONNECTION_TMP_TIMEOUT),
+                wait_for_tmp,
+            )
+            .await??;
+        }
+
+        let deadline = Utc::now().add(chrono::Duration::seconds(REVERSE_CONNECTION_REAL_TIMEOUT));
+        loop {
+            if let Ok(node) = self.registry.resolve_node(node_id).await {
+                log::debug!("ReverseConnection - Got session with node. {}", &node_id);
+                return Ok(node.session);
+            }
+            if deadline <= Utc::now() {
+                log::debug!("ReverseConnection - Direct session timed out. {}", &node_id);
+                break;
+            }
+            log::trace!(
+                "ReverseConnection - no session yet, waiting... {}",
+                &node_id
+            );
+            tokio::time::delay_for(tokio::time::Duration::from_millis(100)).await;
+        }
+        bail!(
+            "Not able to setup ReverseConnection within timeout with node {}",
             node_id
         )
     }
@@ -502,9 +596,15 @@ impl SessionsLayer {
         }
 
         let session = self.init_server_session(self.config.srv_addr).await?;
+        let endpoints = session.register_endpoints(vec![]).await?;
 
-        // TODO: We should register endpoints here.
-        //session.register_endpoints(vec![]).await?;
+        // If there is any (correct) endpoint on the list, that means we have public IP.
+        if let Some(addr) = endpoints
+            .into_iter()
+            .find_map(|endpoint| endpoint.try_into().ok())
+        {
+            self.set_public_addr(Some(addr)).await;
+        }
 
         Ok(session)
     }
@@ -655,7 +755,7 @@ impl SessionsLayer {
     }
 }
 
-impl Handler for SessionsLayer {
+impl Handler for SessionManager {
     fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>> {
         let handler = self.clone();
         async move {
@@ -685,6 +785,68 @@ impl Handler for SessionsLayer {
         from: SocketAddr,
     ) -> LocalBoxFuture<()> {
         log::debug!("Received control packet from {}: {:?}", from, control);
+
+        if let Some(kind) = control.kind {
+            match kind {
+                ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
+                    let myself = self.clone();
+                    tokio::task::spawn_local(async move {
+                        log::info!(
+                            "Got ReverseConnection message. node={:?}, endpoints={:?}",
+                            message.node_id,
+                            message.endpoints
+                        );
+
+                        if message.endpoints.is_empty() {
+                            log::warn!("Got ReverseConnection with no endpoints to connect to.");
+                            return;
+                        }
+                        if let Err(e) = myself
+                            .resolve(&message.node_id, &message.endpoints, 0)
+                            .await
+                        {
+                            log::warn!(
+                                "Failed to resolve reverse connection. node_id={:?} error={}",
+                                message.node_id,
+                                e
+                            )
+                        };
+                        log::trace!("DONE ReverseConnection! {:?}", message);
+                    });
+                }
+                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Pause! {:?}", message);
+                        *self.state.read().await.forward_paused_till.write().await =
+                            Some(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY))
+                    }
+                    .boxed_local();
+                }
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => {
+                    return async move {
+                        log::trace!("Got Resume! {:?}", message);
+                        *self.state.write().await.forward_paused_till.write().await = None
+                    }
+                    .boxed_local();
+                }
+                ya_relay_proto::proto::control::Kind::Disconnected(message) => {
+                    return async move {
+                        log::trace!("Got Disconnected! {:?}", message);
+                        if let Ok(node) = self.registry.resolve_slot(message.slot).await {
+                            log::info!(
+                                "Node [{}] disconnected from Relay. Stopping forwarding..",
+                                node.id
+                            );
+                            self.remove_node(node.id).await;
+                        }
+                    }
+                    .boxed_local();
+                }
+                _ => {
+                    log::trace!("Un-handled control packet: {:?}", kind)
+                }
+            }
+        }
         Box::pin(futures::future::ready(()))
     }
 
@@ -751,7 +913,10 @@ impl Handler for SessionsLayer {
 
                         // Try to establish session in case we can't find Node.
                         let session = myself.server_session().await?;
-                        myself.resolve(session, forward.slot).await?
+                        let node = session.find_slot(forward.slot).await?;
+                        myself
+                            .resolve(&node.node_id, &node.endpoints, node.slot)
+                            .await?
                     }
                 }
             };
@@ -771,7 +936,7 @@ impl Handler for SessionsLayer {
     }
 }
 
-impl SessionLayerState {
+impl SessionManagerState {
     /// External function should acquire lock.
     pub fn add_session(&mut self, addr: SocketAddr, session: Arc<Session>) {
         if let Some(mut s) = self.starting_sessions.clone() {
