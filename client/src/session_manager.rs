@@ -482,7 +482,11 @@ impl SessionManager {
 
         let node_id = node_id.try_into()?;
         if slot != 0 {
-            log::info!("Using NET relay Server to forward packets to [{}]", node_id);
+            log::info!(
+                "Using Server to forward packets to [{}](slot {})",
+                node_id,
+                slot
+            );
         }
 
         Ok(self.registry.add_node(node_id, session.clone(), slot).await)
