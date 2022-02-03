@@ -76,7 +76,7 @@ impl Server {
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
 
-                let node = match self.state.read().await.nodes.get_by_session(id) {
+                let node = match { self.state.read().await.nodes.get_by_session(id) } {
                     None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
                 };
