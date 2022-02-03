@@ -37,8 +37,5 @@ tokio = { version = "0.2", features = ["tcp", "udp", "net", "sync", "macros", "r
 tokio-util = { version = "0.3", features = ["codec"] }
 url = "2.1"
 
-#Fix older version, 117 is broken?
-libc = "=0.2.116"
-
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test"}
