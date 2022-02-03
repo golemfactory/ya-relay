@@ -40,7 +40,8 @@ pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
         address: Url::parse("udp://127.0.0.1:0")?,
         ip_checker_port: 0,
         session_cleaner_interval: Duration::from_secs(60),
-        session_timeout: 10,
+        session_timeout: chrono::Duration::seconds(10),
+        session_purge_timeout: chrono::Duration::seconds(600),
         forwarder_rate_limit: 2048,
         forwarder_resume_interval: Duration::from_secs(1),
     })
