@@ -54,8 +54,10 @@ impl Server {
         if !session_id.is_empty() {
             let id = SessionId::try_from(session_id.clone())
                 .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+            log::trace!("Locking state WRITE in dispatch()");
             let mut server = self.state.write().await;
             let _ = server.nodes.update_seen(id);
+            log::trace!("Release state WRITE in dispatch()");
         }
 
         match packet {
@@ -74,7 +76,12 @@ impl Server {
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
 
-                let node = match { self.state.read().await.nodes.get_by_session(id) } {
+                let node = match {
+                    log::trace!("Locking state READ in dispatch()::PacketKind::Packet");
+                    let r = self.state.read().await.nodes.get_by_session(id);
+                    log::trace!("Release state READ in dispatch()::PacketKind::Packet");
+                    r
+                } {
                     None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
                 };
@@ -129,6 +136,7 @@ impl Server {
         let slot = packet.slot;
 
         let (src_node, dest_node) = {
+            log::trace!("Locking state READ in forward()");
             let server = self.state.read().await;
 
             // Authorization: Sending Node must have established session.
@@ -173,6 +181,7 @@ impl Server {
                     return Err(e.into());
                 }
             };
+            log::trace!("Release state READ in forward()");
             (src_node, dest_node)
         };
 
@@ -198,12 +207,14 @@ impl Server {
                         retry_at
                     );
                     {
+                        log::trace!("Locking state WRITE in forward()::BatchNonConforming");
                         let mut server = self.state.write().await;
                         server.resume_forwarding.insert((
                             retry_at.earliest_possible(),
                             session_id,
                             from,
                         ));
+                        log::trace!("Releasing state WRITE in forward()::BatchNonConforming");
                     }
                     let control_packet = proto::Packet::control(
                         session_id.to_vec(),
@@ -325,10 +336,13 @@ impl Server {
         log::debug!("{} requested Node [{}] info.", from, node_id);
 
         let node_info = {
-            match self.state.read().await.nodes.get_by_node_id(node_id) {
+            log::trace!("Locking state READ in node_request()");
+            let r = match self.state.read().await.nodes.get_by_node_id(node_id) {
                 None => return Err(NotFound::Node(node_id).into()),
                 Some(session) => session,
-            }
+            };
+            log::trace!("Release state READ in node_request()");
+            r
         };
 
         self.node_response(request_id, session_id, from, node_info, params.public_key)
@@ -343,11 +357,15 @@ impl Server {
         params: proto::request::Neighbours,
     ) -> ServerResult<()> {
         let nodes = {
-            self.state
+            log::trace!("Locking state READ in neighbours_request()");
+            let r = self
+                .state
                 .read()
                 .await
                 .nodes
-                .neighbours(session_id, params.count)?
+                .neighbours(session_id, params.count)?;
+            log::trace!("Releasing state READ in neighbours_request()");
+            r
         };
 
         let nodes = nodes
@@ -386,7 +404,15 @@ impl Server {
         from: SocketAddr,
         params: proto::request::ReverseConnection,
     ) -> ServerResult<()> {
-        let source_node_info = match { self.state.read().await }.nodes.get_by_session(session_id) {
+        let source_node_info = match {
+            log::trace!("Locking state READ in reverse_request()");
+            let r = self.state.read().await;
+            log::trace!("Releasing state READ in reverse_request()");
+            r
+        }
+        .nodes
+        .get_by_session(session_id)
+        {
             None => return Err(Unauthorized::SessionNotFound(session_id).into()),
             Some(node_id) => node_id.info,
         };
@@ -398,9 +424,14 @@ impl Server {
             .try_into()
             .map_err(|_| BadRequest::InvalidNodeId)?;
         let target_session = {
-            match { self.state.read().await }
-                .nodes
-                .get_by_node_id(target_node_id)
+            match {
+                log::trace!("Locking state READ in reverse_request()::target_session");
+                let r = self.state.read().await;
+                log::trace!("Releasing state READ in reverse_request()::target_session");
+                r
+            }
+            .nodes
+            .get_by_node_id(target_node_id)
             {
                 None => {
                     return Err(InternalError::Generic(format!(
@@ -462,13 +493,16 @@ impl Server {
         params: proto::request::Slot,
     ) -> ServerResult<()> {
         let node_info = {
-            match self.state.read().await.nodes.get_by_slot(params.slot) {
+            log::trace!("Locking state READ in slot_request()");
+            let r = match self.state.read().await.nodes.get_by_slot(params.slot) {
                 None => {
                     log::error!("Node by slot {} not found.", params.slot);
                     return Err(NotFound::NodeBySlot(params.slot).into());
                 }
                 Some(session) => session,
-            }
+            };
+            log::trace!("Releasing state READ in slot_request()");
+            r
         };
 
         self.node_response(request_id, session_id, from, node_info, params.public_key)
@@ -510,12 +544,14 @@ impl Server {
         log::info!("Initializing new session: {}", session_id);
 
         {
+            log::trace!("Locking state WRITE in new_session()");
             self.state
                 .write()
                 .await
                 .starting_session
                 .entry(session_id)
                 .or_insert(sender);
+            log::trace!("Releasing state WRITE in new_session()");
         }
 
         // TODO: Add timeout for session initialization.
@@ -545,7 +581,12 @@ impl Server {
         packet: Option<proto::packet::Kind>,
     ) -> ServerResult<()> {
         let mut sender = {
-            match { self.state.read().await.starting_session.get(&id).cloned() } {
+            match {
+                log::trace!("Locking state READ in establish_session()");
+                let r = self.state.read().await.starting_session.get(&id).cloned();
+                log::trace!("Release state READ in establish_session()");
+                r
+            } {
                 Some(sender) => sender.clone(),
                 None => return Err(Unauthorized::SessionNotFound(id).into()),
             }
@@ -671,8 +712,10 @@ impl Server {
                     self.cleanup_initialization(&session_id).await;
 
                     {
+                        log::trace!("Locking state WRITE in init_session()");
                         let mut server = self.state.write().await;
                         server.nodes.register(node);
+                        log::trace!("Releasing state WRITE in init_session()");
                     }
 
                     log::info!(
@@ -697,7 +740,9 @@ impl Server {
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
+        log::trace!("Locking state WRITE in cleanup_initialization()");
         self.state.write().await.starting_session.remove(session_id);
+        log::trace!("Releasing state WRITE in cleanup_initialization()");
     }
 
     async fn session_cleaner(&self) {
@@ -715,11 +760,13 @@ impl Server {
     }
 
     async fn check_session_timeouts(&self) {
+        log::trace!("Locking state WRITE in check_session_timeouts()");
         let mut server = self.state.write().await;
         server.nodes.check_timeouts(
             self.config.session_timeout,
             self.config.session_purge_timeout,
         );
+        log::trace!("Releasing state WRITE in check_session_timeouts()");
     }
 
     async fn forward_resumer(&self) {
@@ -734,6 +781,7 @@ impl Server {
         let clock = DefaultClock::default();
         let mut to_resume = Vec::new();
         {
+            log::trace!("Locking state WRITE in check_resume_forwarding()");
             let mut server = self.state.write().await;
 
             // First iteration to release write lock as soon as possible
@@ -751,6 +799,7 @@ impl Server {
                     to_resume.push((node_session, *session_id, *socket_addr));
                 }
             }
+            log::trace!("Releasing state WRITE in check_resume_forwarding()");
         };
 
         // Second iteration without locks
@@ -824,12 +873,16 @@ impl Server {
         let server_session_cleaner = self.clone();
         let server_forward_resumer = self.clone();
         let mut input = {
-            self.state
+            log::trace!("Locking state WRITE in run()");
+            let r = self
+                .state
                 .write()
                 .await
                 .recv_socket
                 .take()
-                .ok_or_else(|| anyhow::anyhow!("Server already running."))?
+                .ok_or_else(|| anyhow::anyhow!("Server already running."))?;
+            log::trace!("Releasing state WRITE in run()");
+            r
         };
         tokio::task::spawn_local(async move { server_session_cleaner.session_cleaner().await });
         tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
