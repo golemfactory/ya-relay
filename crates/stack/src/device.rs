@@ -1,17 +1,32 @@
 use smoltcp::phy;
+use smoltcp::phy::Medium;
 use smoltcp::time;
 use std::collections::VecDeque;
 
-const MTU: usize = 256000;
+pub const MTU: usize = 65535 - 8 - 40;
 
 /// Network device capable of injecting and extracting packets
 #[derive(Clone, Default)]
 pub struct CaptureDevice {
     tx_queue: VecDeque<Vec<u8>>,
     rx_queue: VecDeque<Vec<u8>>,
+    medium: Medium,
 }
 
 impl CaptureDevice {
+    pub fn tun() -> Self {
+        Self {
+            tx_queue: Default::default(),
+            rx_queue: Default::default(),
+            medium: Medium::Ip,
+        }
+    }
+
+    #[inline]
+    pub fn is_tun(&self) -> bool {
+        self.medium == Medium::Ip
+    }
+
     pub fn phy_rx(&mut self, data: Vec<u8>) {
         self.rx_queue.push_back(data);
     }
@@ -45,6 +60,7 @@ impl<'a> phy::Device<'a> for CaptureDevice {
     fn capabilities(&self) -> phy::DeviceCapabilities {
         let mut caps = phy::DeviceCapabilities::default();
         caps.max_transmission_unit = MTU;
+        caps.medium = self.medium;
         caps
     }
 }
@@ -76,9 +92,7 @@ impl<'a> phy::TxToken for TxToken<'a> {
         let mut buffer = vec![0; len];
         buffer.resize(len, 0);
         let result = f(&mut buffer);
-        if result.is_ok() {
-            self.queue.push_back(buffer);
-        }
+        self.queue.push_back(buffer);
         result
     }
 }

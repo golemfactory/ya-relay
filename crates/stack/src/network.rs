@@ -1,14 +1,14 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::ops::{DerefMut, Mul};
+use std::ops::Mul;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt};
-use smoltcp::socket::{Socket, SocketHandle};
+use smoltcp::iface::SocketHandle;
 use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
@@ -21,28 +21,10 @@ use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
 use crate::stack::Stack;
 use crate::{Error, Result};
 
-const MAX_TCP_PAYLOAD_SIZE: usize = 64000;
+pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
+pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
 
-#[derive(Clone, Debug)]
-pub enum IngressEvent {
-    Packet {
-        desc: SocketDesc,
-        payload: Vec<u8>,
-        no: usize,
-    },
-    InboundConnection {
-        desc: SocketDesc,
-    },
-    Disconnected {
-        desc: SocketDesc,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub struct EgressEvent {
-    pub remote: Box<[u8]>,
-    pub payload: Box<[u8]>,
-}
+const MAX_TCP_PAYLOAD_SIZE: usize = 65535 - 32 - 20;
 
 #[derive(Clone)]
 pub struct Network {
@@ -58,9 +40,9 @@ pub struct Network {
 
 impl Network {
     /// Creates a new Network instance
-    pub fn new(name: String, stack: Stack<'static>) -> Self {
+    pub fn new(name: impl ToString, stack: Stack<'static>) -> Self {
         let network = Self {
-            name: Rc::new(name),
+            name: Rc::new(name.to_string()),
             stack,
             sender: Default::default(),
             poller: Default::default(),
@@ -75,10 +57,14 @@ impl Network {
     }
 
     /// Listen on a local endpoint
-    pub fn bind(&self, protocol: Protocol, endpoint: impl Into<IpEndpoint>) -> Result<()> {
-        let handle = self.stack.bind(protocol, endpoint.into())?;
+    pub fn bind(
+        &self,
+        protocol: Protocol,
+        endpoint: impl Into<SocketEndpoint>,
+    ) -> Result<SocketHandle> {
+        let handle = self.stack.bind(protocol, endpoint)?;
         self.bindings.borrow_mut().insert(handle);
-        Ok(())
+        Ok(handle)
     }
 
     #[inline(always)]
@@ -196,13 +182,13 @@ impl Network {
 
     /// Take the ingress traffic receive channel
     #[inline(always)]
-    pub fn ingress_receiver(&self) -> Option<mpsc::UnboundedReceiver<IngressEvent>> {
+    pub fn ingress_receiver(&self) -> Option<IngressReceiver> {
         self.ingress.receiver()
     }
 
     /// Take the egress traffic receive channel
     #[inline(always)]
-    pub fn egress_receiver(&self) -> Option<mpsc::UnboundedReceiver<EgressEvent>> {
+    pub fn egress_receiver(&self) -> Option<EgressReceiver> {
         self.egress.receiver()
     }
 
@@ -212,24 +198,22 @@ impl Network {
         let mut processed = false;
         let mut received = 0;
 
-        let socket_rfc = self.stack.sockets();
-        let mut sockets = socket_rfc.borrow_mut();
+        let iface_rfc = self.stack.iface();
+        let mut iface = iface_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
         let mut rebind = None;
 
-        for mut socket_ref in (*sockets).iter_mut() {
-            let socket: &mut Socket = socket_ref.deref_mut();
-            let handle = socket.handle();
+        for (handle, socket) in iface.sockets_mut() {
+            let protocol = socket.protocol();
+            let local = socket.local_endpoint();
 
             if socket.is_closed() {
-                let protocol = socket.protocol();
                 let desc = SocketDesc {
                     protocol,
-                    local: socket.local_endpoint(),
+                    local,
                     remote: socket.remote_endpoint(),
                 };
-
                 if let Ok(key) = desc.try_into() {
                     remove.push((key, handle));
                     events.push(IngressEvent::Disconnected { desc });
@@ -251,8 +235,6 @@ impl Network {
                     }
                 };
 
-                let local = socket.local_endpoint();
-                let protocol = socket.protocol();
                 let desc = SocketDesc {
                     protocol,
                     local,
@@ -289,10 +271,10 @@ impl Network {
 
         remove.into_iter().for_each(|(key, handle)| {
             self.close_connection(&key);
-            sockets.remove(handle);
+            iface.remove_socket(handle);
         });
 
-        drop(sockets);
+        drop(iface);
         if let Some((p, ep)) = rebind {
             if let Err(e) = self.bind(p, ep) {
                 log::trace!("{}: ingress: cannot re-bind {} {}: {}", self.name, p, ep, e);
@@ -303,7 +285,10 @@ impl Network {
             let ingress_tx = self.ingress.tx.clone();
             for event in events {
                 if ingress_tx.send(event).is_err() {
-                    log::trace!("{}: cannot receive packets: channel closed", *self.name);
+                    log::trace!(
+                        "{}: ingress channel closed, unable to receive packets",
+                        *self.name
+                    );
                     break;
                 }
             }
@@ -319,62 +304,89 @@ impl Network {
         let iface_rfc = self.stack.iface();
         let mut iface = iface_rfc.borrow_mut();
         let device = iface.device_mut();
-        let mut events = Vec::new();
+        let is_tun = device.is_tun();
 
         while let Some(data) = device.next_phy_tx() {
             processed = true;
 
-            let len = data.len();
-            let frame = match EtherFrame::try_from(data) {
-                Ok(frame) => frame,
-                Err(err) => {
-                    log::trace!("{}: egress Ethernet frame error: {}", *self.name, err);
-                    continue;
+            match {
+                if is_tun {
+                    EgressEvent::from_ip_packet(data)
+                } else {
+                    EgressEvent::from_eth_frame(data)
                 }
-            };
+            } {
+                Ok(event) => {
+                    sent += 1;
 
-            let remote = match &frame {
-                EtherFrame::Ip(_) => {
-                    let packet = IpPacket::packet(frame.payload());
-                    let dst_address = packet.dst_address();
-                    log::trace!(
-                        "{}: egress {} B IP packet to {:02x?}",
-                        *self.name,
-                        len,
-                        dst_address
-                    );
-                    dst_address.to_vec()
+                    if self.egress.tx.send(event).is_err() {
+                        log::trace!(
+                            "{}: egress channel closed, unable to send packets",
+                            *self.name
+                        );
+                        break;
+                    }
                 }
-                EtherFrame::Arp(_) => {
-                    let packet = ArpPacket::packet(frame.payload());
-                    let dst_address = packet.get_field(ArpField::TPA);
-                    log::trace!(
-                        "{}: egress {} B ARP packet to {:02x?}",
-                        *self.name,
-                        len,
-                        dst_address
-                    );
-                    dst_address.to_vec()
-                }
-            };
-
-            sent += 1;
-            events.push(EgressEvent {
-                remote: remote.into(),
-                payload: frame.into(),
-            });
-        }
-
-        if !events.is_empty() {
-            let egress_tx = self.egress.tx.clone();
-            for event in events {
-                if egress_tx.send(event).is_err() {
-                    log::trace!("{}: cannot send packets: channel closed", *self.name);
-                    break;
-                }
+                Err(err) => log::trace!("{}: egress packet error: {}", *self.name, err),
             }
         }
+
         (processed, sent)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum IngressEvent {
+    /// New connection to a bound endpoint
+    InboundConnection { desc: SocketDesc },
+    /// Disconnection from a bound endpoint
+    Disconnected { desc: SocketDesc },
+    /// Bound endpoint packet
+    Packet {
+        desc: SocketDesc,
+        payload: Vec<u8>,
+        no: usize,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct EgressEvent {
+    pub remote: Box<[u8]>,
+    pub payload: Box<[u8]>,
+}
+
+impl EgressEvent {
+    #[inline(always)]
+    pub fn from_eth_frame(data: Vec<u8>) -> Result<Self> {
+        let frame = EtherFrame::try_from(data)?;
+        let remote = match &frame {
+            EtherFrame::Ip(_) => {
+                let packet = IpPacket::packet(frame.payload());
+                packet.dst_address().into()
+            }
+            EtherFrame::Arp(_) => {
+                let packet = ArpPacket::packet(frame.payload());
+                packet.get_field(ArpField::TPA).into()
+            }
+        };
+
+        Ok(EgressEvent {
+            remote,
+            payload: frame.into(),
+        })
+    }
+
+    #[inline(always)]
+    pub fn from_ip_packet(data: Vec<u8>) -> Result<Self> {
+        let remote = {
+            IpPacket::peek(&data)?;
+            IpPacket::packet(&data).dst_address().into()
+        };
+
+        Ok(EgressEvent {
+            remote,
+            payload: data.into_boxed_slice(),
+        })
     }
 }
 
@@ -384,7 +396,7 @@ struct StackSender {
 }
 
 impl StackSender {
-    pub fn send(&self, data: Vec<u8>, conn: Connection) -> Result<ProcessedFuture> {
+    pub fn send<'a>(&self, data: Vec<u8>, conn: Connection) -> Result<ProcessedFuture<'a>> {
         let mut sender = {
             let inner = self.inner.borrow();
             inner.queue.sender()
@@ -584,33 +596,39 @@ mod tests {
     use futures::{Sink, SinkExt, Stream, StreamExt};
     use sha3::Digest;
     use smoltcp::iface::Route;
+    use smoltcp::phy::Medium;
     use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
     use tokio::task::spawn_local;
 
-    use crate::interface::{add_iface_address, add_iface_route, default_iface, ip_to_mac};
+    use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
     use crate::{Connection, IngressEvent, Network, Protocol, Stack};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-    fn new_network(ip: IpAddress) -> Network {
-        let ipv4_cidr = IpCidr::new(ip.into(), 16);
+    fn new_network(medium: Medium, ip: IpAddress) -> Network {
+        let cidr = IpCidr::new(ip.into(), 16);
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
             IpAddress::Ipv6(ipv6) => Route::new_ipv6_gateway(ipv6),
             _ => panic!("unspecified address"),
         };
 
-        let mut iface = default_iface(ip_to_mac(ip));
-        add_iface_address(&mut iface, ipv4_cidr);
-        add_iface_route(&mut iface, ipv4_cidr, route);
-        Network::new(ip.to_string(), Stack::with(iface))
+        let mut iface = match medium {
+            Medium::Ethernet => tap_iface(ip_to_mac(ip)),
+            Medium::Ip => tun_iface(),
+            _ => panic!("unsupported medium: {:?}", medium),
+        };
+
+        add_iface_address(&mut iface, cidr);
+        add_iface_route(&mut iface, cidr, route);
+        Network::new(format!("[{:?}] {}", medium, ip), Stack::new(iface))
     }
 
     fn produce_data<S, E>(
         mut tx: S,
         total: usize,
         chunk_size: usize,
-    ) -> oneshot::Receiver<anyhow::Result<Vec<u8>>>
+    ) -> oneshot::Receiver<anyhow::Result<(S, Vec<u8>)>>
     where
         S: Sink<Vec<u8>, Error = E> + Unpin + 'static,
         E: Into<anyhow::Error>,
@@ -636,23 +654,20 @@ mod tests {
                 }
             }
 
-            let _ = tx.close().await;
-
-            println!("produced {} B", sent);
+            println!("Produced {} B", sent);
             match err {
                 Some(e) => dtx.send(Err(e.into())),
-                None => dtx.send(Ok(digest.result().to_vec())),
+                None => dtx.send(Ok((tx, digest.result().to_vec()))),
             }
         });
 
         drx
     }
 
-    fn consume_data<S, A>(mut rx: S, total: usize) -> oneshot::Receiver<anyhow::Result<Vec<u8>>>
-    where
-        S: Stream<Item = A> + Unpin + 'static,
-        A: AsRef<[u8]>,
-    {
+    fn consume_data(
+        mut rx: mpsc::Receiver<Vec<u8>>,
+        total: usize,
+    ) -> oneshot::Receiver<anyhow::Result<Vec<u8>>> {
         let (dtx, drx) = oneshot::channel();
 
         spawn_local(async move {
@@ -660,7 +675,7 @@ mod tests {
             let mut read: usize = 0;
 
             while let Some(vec) = rx.next().await {
-                let len = vec.as_ref().len();
+                let len = vec.len();
 
                 read += len;
                 digest.input(&vec);
@@ -670,7 +685,7 @@ mod tests {
                 }
             }
 
-            println!("consumed {} B", read);
+            println!("Consumed {} B", read);
             let _ = dtx.send(Ok(digest.result().to_vec()));
         });
 
@@ -740,14 +755,14 @@ mod tests {
     }
 
     /// Generate, send and receive data across 2 network instances
-    async fn net_exchange(total: usize, chunk_size: usize) -> anyhow::Result<()> {
+    async fn net_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
         println!(">> exchanging {} B in {} B chunks", total, chunk_size);
 
         let ip1 = Ipv4Address::new(10, 0, 0, 1);
         let ip2 = Ipv4Address::new(10, 0, 0, 2);
 
-        let net1 = new_network(ip1.into());
-        let net2 = new_network(ip2.into());
+        let net1 = new_network(medium, ip1.into());
+        let net2 = new_network(medium, ip2.into());
 
         net1.spawn_local();
         net2.spawn_local();
@@ -797,10 +812,15 @@ mod tests {
         let produce2 = produce_data(tx, total, chunk_size);
         net_send(rx, net2.clone(), conn2);
 
-        let produced1 = produce1.await??;
-        let produced2 = produce2.await??;
-        let consumed1 = consume1.await??;
-        let consumed2 = consume2.await??;
+        let (f1, f2, f3, f4) = futures::future::join4(produce1, produce2, consume1, consume2).await;
+
+        let (mut ptx1, produced1) = f1??;
+        let (mut ptx2, produced2) = f2??;
+        let consumed1 = f3??;
+        let consumed2 = f4??;
+
+        let _ = ptx1.close().await;
+        let _ = ptx2.close().await;
 
         assert_eq!(hex::encode(produced1), hex::encode(consumed2));
         assert_eq!(hex::encode(produced2), hex::encode(consumed1));
@@ -808,33 +828,42 @@ mod tests {
         Ok(())
     }
 
-    async fn spawn_exchange(total: usize, chunk_size: usize) -> anyhow::Result<()> {
+    async fn spawn_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
         tokio::task::LocalSet::new()
             .run_until(tokio::time::timeout(
                 EXCHANGE_TIMEOUT,
-                net_exchange(total, chunk_size),
+                net_exchange(medium, total, chunk_size),
             ))
             .await?
     }
 
-    #[tokio::test]
-    async fn exchange() -> anyhow::Result<()> {
-        spawn_exchange(1024, 1).await?;
-        spawn_exchange(1024, 4).await?;
-        spawn_exchange(1024, 7).await?;
-        spawn_exchange(10240, 16).await?;
-        spawn_exchange(1024000, 383).await?;
-        spawn_exchange(1024000, 384).await?;
-        spawn_exchange(1024000, 4096).await?;
-        spawn_exchange(1024000, 40960).await?;
+    async fn spawn_exchange_scenarios(medium: Medium) -> anyhow::Result<()> {
+        spawn_exchange(medium, 1024, 1).await?;
+        spawn_exchange(medium, 1024, 4).await?;
+        spawn_exchange(medium, 1024, 7).await?;
+        spawn_exchange(medium, 10240, 16).await?;
+        spawn_exchange(medium, 1024000, 383).await?;
+        spawn_exchange(medium, 1024000, 384).await?;
+        spawn_exchange(medium, 1024000, 4096).await?;
+        spawn_exchange(medium, 1024000, 40960).await?;
 
         #[cfg(not(debug_assertions))]
         {
-            spawn_exchange(10240000, 40960).await?;
-            spawn_exchange(10240000, 131070).await?;
-            spawn_exchange(10240000, 1024000).await?;
+            spawn_exchange(medium, 10240000, 40960).await?;
+            spawn_exchange(medium, 10240000, 131070).await?;
+            spawn_exchange(medium, 10240000, 1024000).await?;
         }
 
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn tap_exchange() -> anyhow::Result<()> {
+        spawn_exchange_scenarios(Medium::Ethernet).await
+    }
+
+    #[tokio::test]
+    async fn tun_exchange() -> anyhow::Result<()> {
+        spawn_exchange_scenarios(Medium::Ip).await
     }
 }

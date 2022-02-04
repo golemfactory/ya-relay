@@ -26,6 +26,7 @@ pub enum Protocol {
     Smp = 121,
     Sctp = 132,
     Ethernet = 143,
+    None,
 }
 
 impl std::fmt::Display for Protocol {

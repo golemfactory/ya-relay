@@ -12,7 +12,7 @@ use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
-use ya_relay_stack::interface::{add_iface_address, add_iface_route, default_iface, to_mac};
+use ya_relay_stack::interface::{add_iface_address, add_iface_route, tun_iface};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
@@ -438,14 +438,13 @@ fn default_network(key: PublicKey) -> Network {
     let address = key.address();
     let ipv6_addr = to_ipv6(address);
     let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
-    let mut iface = default_iface(to_mac(&address[..6]));
+    let mut iface = tun_iface();
 
     let name = format!(
         "{:02x}{:02x}{:02x}{:02x}",
         address[0], address[1], address[2], address[3]
     );
 
-    log::debug!("[{}] Ethernet address: {}", name, iface.ethernet_addr());
     log::debug!("[{}] IP address: {}", name, ipv6_addr);
 
     add_iface_address(&mut iface, ipv6_cidr);
@@ -455,5 +454,5 @@ fn default_network(key: PublicKey) -> Network {
         Route::new_ipv6_gateway(ipv6_addr.into()),
     );
 
-    Network::new(name, Stack::with(iface))
+    Network::new(name, Stack::new(iface))
 }
