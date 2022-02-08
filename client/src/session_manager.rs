@@ -27,7 +27,7 @@ use crate::dispatch::{dispatch, Dispatcher, Handler};
 use crate::expire::track_sessions_expiration;
 use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::Session;
-use crate::session_start::StartingSessions;
+use crate::session_start::{SessionInitialization, StartingSessions};
 use crate::virtual_layer::TcpLayer;
 
 const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
@@ -139,7 +139,19 @@ impl SessionManager {
 
         log::debug!("[{}] initializing session with {}", node_id, addr);
 
-        let tmp_session = self.temporary_session(addr).await?;
+        let tmp_session = match self.temporary_session(addr).await? {
+            SessionInitialization::Started(tmp) => tmp,
+            SessionInitialization::Finished => {
+                return Ok(self
+                    .state
+                    .read()
+                    .await
+                    .sessions
+                    .get(&addr)
+                    .cloned()
+                    .ok_or(anyhow!("No session despite finished initialization."))?)
+            }
+        };
 
         let (request, raw_challenge) = prepare_challenge_request();
         let request = match challenge {
@@ -257,14 +269,12 @@ impl SessionManager {
             .ok_or_else(|| anyhow!("Network sink not initialized"))
     }
 
-    async fn temporary_session(&self, addr: SocketAddr) -> anyhow::Result<Arc<Session>> {
-        self.state
-            .write()
-            .await
-            .starting_sessions
-            .clone()
-            .map(|mut starting_sessions| starting_sessions.temporary_session(addr))
-            .ok_or_else(|| anyhow!("StartingSessions struct not initialized."))
+    async fn temporary_session(&self, addr: SocketAddr) -> anyhow::Result<SessionInitialization> {
+        if let Some(mut starting_sessions) = self.state.write().await.starting_sessions.clone() {
+            Ok(starting_sessions.temporary_session(addr).await)
+        } else {
+            bail!("StartingSessions struct not initialized.")
+        }
     }
 
     pub async fn sessions(&self) -> Vec<Arc<Session>> {

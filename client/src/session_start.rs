@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use tokio::sync::{broadcast, oneshot};
 
 use ya_relay_core::challenge::{self, prepare_challenge_response, CHALLENGE_DIFFICULTY};
 use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
@@ -34,11 +34,21 @@ struct StartingSessionsState {
     /// Temporary sessions stored during initialization period.
     /// After session is established, new struct in SessionManager is created
     /// and this one is removed.
-    tmp_sessions: HashMap<SocketAddr, Arc<Session>>,
+    tmp_sessions: HashMap<SocketAddr, TmpSession>,
     tmp_node_ids: HashMap<NodeId, oneshot::Sender<()>>,
 
     /// Collection of background tasks that must be stopped on shutdown.
     handles: Vec<AbortHandle>,
+}
+
+struct TmpSession {
+    pub session: Arc<Session>,
+    pub notify: broadcast::Sender<()>,
+}
+
+pub enum SessionInitialization {
+    Started(Arc<Session>),
+    Finished,
 }
 
 impl StartingSessions {
@@ -50,18 +60,39 @@ impl StartingSessions {
         }
     }
 
-    pub fn temporary_session(&mut self, addr: SocketAddr) -> Arc<Session> {
-        let session = Session::new(addr, SessionId::generate(), self.sink.clone());
-        self.state
-            .lock()
-            .unwrap()
-            .tmp_sessions
-            .insert(addr, session.clone());
-        session
+    /// Creates temporary session used only during initialization.
+    /// Only one session will be created for one target Node address.
+    /// If temporary session was already created, this function will wait for initialization finish.
+    pub async fn temporary_session(&mut self, addr: SocketAddr) -> SessionInitialization {
+        {
+            let mut state = self.state.lock().unwrap();
+
+            match state.tmp_sessions.get(&addr) {
+                None => {
+                    let session = Session::new(addr, SessionId::generate(), self.sink.clone());
+                    let (notify_tx, _) = broadcast::channel(1);
+
+                    state.tmp_sessions.insert(
+                        addr,
+                        TmpSession {
+                            session: session.clone(),
+                            notify: notify_tx,
+                        },
+                    );
+                    SessionInitialization::Started(session)
+                }
+                Some(entry) => {
+                    entry.notify.subscribe().next().await;
+                    SessionInitialization::Finished
+                }
+            }
+        }
     }
 
     pub fn remove_temporary_session(&mut self, addr: &SocketAddr) {
-        self.state.lock().unwrap().tmp_sessions.remove(addr);
+        if let Some(entry) = self.state.lock().unwrap().tmp_sessions.remove(addr) {
+            entry.notify.send(()).ok();
+        }
     }
 
     pub fn dispatcher(&self, addr: SocketAddr) -> Option<Dispatcher> {
@@ -70,7 +101,7 @@ impl StartingSessions {
             .unwrap()
             .tmp_sessions
             .get(&addr)
-            .map(|session| session.dispatcher.clone())
+            .map(|tmp| tmp.session.dispatcher.clone())
     }
 
     pub async fn dispatch_session(
@@ -192,6 +223,11 @@ impl StartingSessions {
     ) -> ServerResult<()> {
         let node_id = NodeId::try_from(&request.node_id).map_err(|_| BadRequest::InvalidNodeId)?;
 
+        let tmp_session = match self.temporary_session(with).await {
+            SessionInitialization::Started(tmp) => tmp,
+            SessionInitialization::Finished => return Ok(()),
+        };
+
         let (packet, raw_challenge) = prepare_challenge_response();
         let challenge = proto::Packet::response(
             request_id,
@@ -199,8 +235,6 @@ impl StartingSessions {
             proto::StatusCode::Ok,
             packet,
         );
-
-        let tmp_session = self.temporary_session(with);
 
         tmp_session
             .send(challenge)
@@ -294,8 +328,8 @@ impl StartingSessions {
             state
                 .tmp_sessions
                 .iter()
-                .find_map(|(_, session)| match session.id == *session_id {
-                    true => Some(session.remote),
+                .find_map(|(_, tmp)| match tmp.session.id == *session_id {
+                    true => Some(tmp.session.remote),
                     false => None,
                 });
 
