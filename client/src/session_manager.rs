@@ -483,7 +483,7 @@ impl SessionManager {
         let node_id = node_id.try_into()?;
         if slot != 0 {
             log::info!(
-                "Using Server to forward packets to [{}](slot {})",
+                "Using relay Server to forward packets to [{}](slot {})",
                 node_id,
                 slot
             );
@@ -521,7 +521,7 @@ impl SessionManager {
                 Ok(session) => return Ok(session),
                 Err(e) => {
                     log::debug!(
-                        "Failed to establish p2p session with node {}, address: {}. Error: {}",
+                        "Failed to establish p2p session with node [{}], address: {}. Error: {}",
                         node_id,
                         addr,
                         e

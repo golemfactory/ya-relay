@@ -203,10 +203,19 @@ impl Client {
 
         let server = self.sessions.server_session().await?;
         for neighbor in lost_neighbors {
+            log::debug!(
+                "Neighborhood changed. Checking state of Node [{}] on relay Server.",
+                neighbor
+            );
+
             // If we can't find node on relay, most probably it lost connection.
             // We remove this Node, otherwise we will have problems to connect to it later,
             // because we will have outdated entry in our registry.
             if server.find_node(neighbor).await.is_err() {
+                log::info!(
+                    "Node [{}], which was earlier in our neighborhood, disconnected.",
+                    neighbor
+                );
                 self.sessions.remove_node(neighbor).await;
             }
         }

@@ -840,7 +840,11 @@ impl Server {
                 Err(e) => e,
             };
 
-            log::error!("Packet dispatch failed. {}", error);
+            log::error!(
+                "Packet dispatch failed (request={:?}). {}",
+                request_id,
+                error
+            );
             if let Some(request_id) = request_id {
                 server
                     .error_response(request_id, session_id, &addr, error)
