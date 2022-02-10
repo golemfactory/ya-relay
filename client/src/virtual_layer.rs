@@ -163,10 +163,10 @@ impl TcpLayer {
         self.register_sender(node.id, tx.clone()).await;
 
         tokio::task::spawn_local(async move {
-            log::trace!("Forwarding messages to {}", node.id);
+            log::trace!("Forwarding messages to [{}]", node.id);
 
             while let Some(payload) = myself.get_next_fwd_payload(&mut rx, paused.clone()).await {
-                log::trace!("Forwarding message to {}", node.id);
+                log::trace!("Forwarding message to [{}]", node.id);
                 let _ = myself
                     .net
                     .send(payload, connection)
@@ -188,7 +188,7 @@ impl TcpLayer {
             myself
                 .remove_node(node.id)
                 .await
-                .map_err(|e| log::warn!("TcpLayer - error removing node {}: {}", node.id, e))
+                .map_err(|e| log::warn!("TcpLayer - error removing node [{}]: {}", node.id, e))
                 .ok();
 
             disconnect_tx.send(()).ok();

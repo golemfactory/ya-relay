@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail};
 use derive_more::From;
 use futures::channel::mpsc;
 use futures::{Future, FutureExt, SinkExt, TryFutureExt};
+use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -163,15 +164,63 @@ impl Client {
             .filter_map(|n| NodeId::try_from(n.node_id.as_slice()).ok())
             .collect::<Vec<_>>();
 
-        {
+        let prev_neighborhood = {
             let mut state = self.state.write().await;
             state.neighbours.replace(Neighbourhood {
                 updated: Instant::now(),
                 nodes: nodes.clone(),
-            });
+            })
+        };
+
+        // Compare neighborhood, to see which Nodes could have disappeared.
+        if let Some(prev_neighbors) = prev_neighborhood {
+            tokio::task::spawn_local(
+                self.clone()
+                    .check_nodes_connection(prev_neighbors, nodes.clone())
+                    .map_err(|e| log::debug!("Checking disappeared neighbors failed. {}", e)),
+            );
         }
 
         Ok(nodes)
+    }
+
+    async fn check_nodes_connection(
+        self,
+        prev_neighbors: Neighbourhood,
+        new_neighbors: Vec<NodeId>,
+    ) -> anyhow::Result<()> {
+        let prev_neighbors: HashSet<_> = prev_neighbors.nodes.into_iter().collect();
+        let new_neighbors: HashSet<_> = new_neighbors.into_iter().collect();
+
+        let lost_neighbors = prev_neighbors
+            .difference(&new_neighbors)
+            .cloned()
+            .collect::<Vec<NodeId>>();
+
+        if lost_neighbors.is_empty() {
+            return Ok(());
+        }
+
+        let server = self.sessions.server_session().await?;
+        for neighbor in lost_neighbors {
+            log::debug!(
+                "Neighborhood changed. Checking state of Node [{}] on relay Server.",
+                neighbor
+            );
+
+            // If we can't find node on relay, most probably it lost connection.
+            // We remove this Node, otherwise we will have problems to connect to it later,
+            // because we will have outdated entry in our registry.
+            if server.find_node(neighbor).await.is_err() {
+                log::info!(
+                    "Node [{}], which was earlier in our neighborhood, disconnected.",
+                    neighbor
+                );
+                self.sessions.remove_node(neighbor).await;
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {

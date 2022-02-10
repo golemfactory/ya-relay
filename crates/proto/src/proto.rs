@@ -284,7 +284,9 @@ impl Packet {
             kind: Some(packet::Kind::Response(Response {
                 request_id,
                 code: code.into(),
-                kind: None,
+                // Probably we should send here packet response type matching request that we got.
+                // We send at least anything, because client doesn't handle errors with None here.
+                kind: Some(response::Kind::Pong(response::Pong {})),
             })),
         }
     }

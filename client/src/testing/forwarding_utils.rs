@@ -60,6 +60,9 @@ pub async fn check_forwarding(
     received: Rc<AtomicBool>,
     mode: Mode,
 ) -> anyhow::Result<ForwardSender> {
+    // Clear receiver before usage.
+    received.store(false, SeqCst);
+
     let mut tx = match mode {
         Mode::Reliable => sender_client.forward(receiver_client.node_id()).await?,
         Mode::Unreliable => {
@@ -85,4 +88,31 @@ pub async fn check_forwarding(
     // Clear receiver for further usage.
     received.store(false, SeqCst);
     Ok(tx)
+}
+
+pub async fn check_broadcast(
+    sender_client: &Client,
+    receiver_client: &Client,
+    received: Rc<AtomicBool>,
+    nodes_count: u32,
+) -> anyhow::Result<()> {
+    // Clear receiver before usage.
+    received.store(false, SeqCst);
+
+    println!(
+        "Sending forward packets to [{}].",
+        receiver_client.node_id()
+    );
+
+    sender_client.broadcast(vec![1u8], nodes_count).await?;
+
+    tokio::time::delay_for(Duration::from_millis(100)).await;
+
+    if !received.load(SeqCst) {
+        bail!("Data not received.")
+    }
+
+    // Clear receiver for further usage.
+    received.store(false, SeqCst);
+    Ok(())
 }

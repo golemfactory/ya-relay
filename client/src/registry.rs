@@ -53,7 +53,11 @@ impl NodesRegistry {
         {
             let mut state = self.state.write().await;
             state.nodes.insert(node_id, node.clone());
-            state.slots.insert(slot, node_id);
+
+            // Slot 0 is special number for p2p session.
+            if slot != 0 {
+                state.slots.insert(slot, node_id);
+            }
             node
         }
     }

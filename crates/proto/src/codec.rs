@@ -27,14 +27,17 @@ impl PacketKind {
     pub fn request_id(&self) -> Option<u64> {
         use crate::proto;
 
-        if let PacketKind::Packet(proto::Packet {
-            kind: Some(proto::packet::Kind::Response(proto::Response { request_id, .. })),
-            ..
-        }) = self
-        {
-            return Some(*request_id);
+        match self {
+            PacketKind::Packet(proto::Packet {
+                kind: Some(proto::packet::Kind::Response(proto::Response { request_id, .. })),
+                ..
+            }) => Some(*request_id),
+            PacketKind::Packet(proto::Packet {
+                kind: Some(proto::packet::Kind::Request(proto::Request { request_id, .. })),
+                ..
+            }) => Some(*request_id),
+            _ => None,
         }
-        None
     }
 
     pub fn session_id(&self) -> Vec<u8> {

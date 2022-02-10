@@ -62,15 +62,13 @@ impl Server {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
                 if session_id.is_empty() {
-                    match kind {
+                    return match kind {
                         Some(proto::packet::Kind::Request(proto::Request {
                             request_id,
                             kind: Some(proto::request::Kind::Session(_)),
-                        })) => {
-                            return self.clone().new_session(request_id, from).await;
-                        }
-                        _ => return Err(BadRequest::NoSessionId.into()),
-                    }
+                        })) => self.clone().new_session(request_id, from).await,
+                        _ => Err(BadRequest::NoSessionId.into()),
+                    };
                 }
 
                 let id = SessionId::try_from(session_id.clone())
@@ -175,6 +173,7 @@ impl Server {
             };
             (src_node, dest_node)
         };
+
         if let Err(e) = src_node
             .forwarding_limiter
             .check_n(NonZeroU32::new(packet.payload.len().try_into().unwrap_or(u32::MAX)).unwrap())
@@ -230,8 +229,6 @@ impl Server {
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
             .await
             .map_err(|_| InternalError::Send)?;
-
-        // TODO: We should update `last_seen` timestamp of `src_node`.
         Ok(())
     }
 
@@ -354,7 +351,8 @@ impl Server {
         let nodes = nodes
             .into_iter()
             .map(|node_info| to_node_response(node_info, params.public_key))
-            .collect();
+            .collect::<Vec<_>>();
+        let return_count = nodes.len();
 
         self.send_to(
             proto::Packet::response(
@@ -369,8 +367,10 @@ impl Server {
         .map_err(|_| InternalError::Send)?;
 
         log::info!(
-            "Neighborhood sent to (request: {}): {}, session: {}",
+            "Neighborhood ({} node(s)) sent to (request: {}, count: {}): {}, session: {}",
+            return_count,
             request_id,
+            params.count,
             from,
             session_id
         );
@@ -714,7 +714,10 @@ impl Server {
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(self.config.session_timeout);
+        server.nodes.check_timeouts(
+            self.config.session_timeout,
+            self.config.session_purge_timeout,
+        );
     }
 
     async fn forward_resumer(&self) {
@@ -837,7 +840,11 @@ impl Server {
                 Err(e) => e,
             };
 
-            log::error!("Packet dispatch failed. {}", error);
+            log::error!(
+                "Packet dispatch failed (request={:?}). {}",
+                request_id,
+                error
+            );
             if let Some(request_id) = request_id {
                 server
                     .error_response(request_id, session_id, &addr, error)

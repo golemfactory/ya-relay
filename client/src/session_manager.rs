@@ -305,7 +305,7 @@ impl SessionManager {
             state.add_session(addr, session.clone());
             state.nodes_addr.insert(addr, node_id);
             log::trace!(
-                "[{}] Saved node session {} {}",
+                "[{}] Saved node session [{}] {}",
                 self.config.node_id,
                 node_id,
                 addr
@@ -314,7 +314,7 @@ impl SessionManager {
         Ok(session)
     }
 
-    async fn remove_node(&self, node_id: NodeId) {
+    pub async fn remove_node(&self, node_id: NodeId) {
         log::trace!(
             "Removing Node [{}] information. Stopping communication..",
             node_id
@@ -483,7 +483,7 @@ impl SessionManager {
         let node_id = node_id.try_into()?;
         if slot != 0 {
             log::info!(
-                "Using Server to forward packets to [{}](slot {})",
+                "Using relay Server to forward packets to [{}](slot {})",
                 node_id,
                 slot
             );
@@ -521,7 +521,7 @@ impl SessionManager {
                 Ok(session) => return Ok(session),
                 Err(e) => {
                     log::debug!(
-                        "Failed to establish p2p session with node {}, address: {}. Error: {}",
+                        "Failed to establish p2p session with node [{}], address: {}. Error: {}",
                         node_id,
                         addr,
                         e
