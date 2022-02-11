@@ -156,7 +156,9 @@ impl Server {
                     // to notify only interested Nodes, that means Nodes forwarding something.
                     let control_packet = proto::Packet::control(
                         session_id.to_vec(),
-                        ya_relay_proto::proto::control::Disconnected { slot },
+                        ya_relay_proto::proto::control::Disconnected {
+                            by: Some(proto::control::disconnected::By::Slot(slot)),
+                        },
                     );
                     self.send_to(PacketKind::Packet(control_packet), &from)
                         .await
