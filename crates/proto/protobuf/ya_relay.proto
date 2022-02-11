@@ -211,7 +211,12 @@ message Control {
 
     /* Node disconnected. Receiver of this message should stop forwarding */
     message Disconnected {
-        uint32 slot = 1;
+        oneof by {
+            uint32 slot = 1;
+            bytes node_id = 2;
+            bytes session_id = 3;
+        }
+
     }
 }
 

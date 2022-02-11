@@ -19,6 +19,7 @@ use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
+use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
 use ya_relay_stack::Channel;
 
@@ -274,6 +275,11 @@ impl SessionManager {
             .iter()
             .map(|(_, session)| session.clone())
             .collect()
+    }
+
+    pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<Session>> {
+        let state = self.state.read().await;
+        state.sessions.get(&addr).cloned()
     }
 
     pub(crate) async fn add_session(
@@ -708,6 +714,13 @@ impl SessionManager {
         }
     }
 
+    async fn send_disconnect(&self, session_id: SessionId, addr: SocketAddr) -> anyhow::Result<()> {
+        // Don't use temporary session, because we don't want to initialize session
+        // with this address, nor receive the response.
+        let session = Session::new(addr, session_id, self.out_stream()?);
+        session.disconnect().await
+    }
+
     pub(crate) async fn error_response(
         &self,
         req_id: u64,
@@ -837,10 +850,29 @@ impl Handler for SessionManager {
                     }
                     .boxed_local();
                 }
-                ya_relay_proto::proto::control::Kind::Disconnected(message) => {
+                ya_relay_proto::proto::control::Kind::Disconnected(
+                    proto::control::Disconnected { by: Some(by) },
+                ) => {
                     return async move {
-                        log::trace!("Got Disconnected! {:?}", message);
-                        if let Ok(node) = self.registry.resolve_slot(message.slot).await {
+                        log::trace!("Got Disconnected! {:?}", by);
+
+                        if let Ok(node) = match by {
+                            By::Slot(id) => self.registry.resolve_slot(id).await,
+                            By::NodeId(id) if NodeId::try_from(&id).is_ok() => {
+                                self.registry
+                                    .resolve_node(NodeId::try_from(&id).unwrap())
+                                    .await
+                            }
+                            // We will disconnect session responsible for sending message. Doesn't matter
+                            // what id was sent.
+                            By::SessionId(_session) => {
+                                if let Some(session) = self.find_session(from).await {
+                                    self.close_session(session).await.ok();
+                                }
+                                return;
+                            }
+                            _ => return,
+                        } {
                             log::info!(
                                 "Node [{}] disconnected from Relay. Stopping forwarding..",
                                 node.id
@@ -903,10 +935,10 @@ impl Handler for SessionManager {
                         // In this case we can't establish session, because we don't have
                         // neither NodeId nor SlotId.
                         log::warn!(
-                            "Forward packet from unknown address: {}. Can't resolve.",
+                            "Forward packet from unknown address: {}. Can't resolve. Sending Disconnected message.",
                             from
                         );
-                        return Ok(());
+                        return myself.send_disconnect(SessionId::from(forward.session_id), from).await;
                     }
                 }
             } else {

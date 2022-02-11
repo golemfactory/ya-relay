@@ -329,3 +329,78 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+// In case of fast restart of Node, second Node will think, that session still exist.
+// This causes problems, because one Node is sending packets and second is dropping them.
+// If any Nodes gets Forward packet from unknown session, it should send disconnect message.
+// This way second Node can establish new session.
+#[serial_test::serial]
+async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
+    let mut config = test_default_config();
+    config.session_cleaner_interval = Duration::from_secs(1);
+    config.session_timeout = chrono::Duration::seconds(15);
+
+    let wrapper = init_test_server_with_config(config).await?;
+
+    let client1 = ClientBuilder::from_url(wrapper.url())
+        .connect()
+        .expire_session_after(Duration::from_secs(15))
+        .build()
+        .await?;
+    let mut client2 = ClientBuilder::from_url(wrapper.url())
+        .connect()
+        .expire_session_after(Duration::from_secs(15))
+        .build()
+        .await?;
+
+    let marker1 = spawn_receive_for_client(&client1, "Client1").await?;
+    let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
+
+    let _keep1 = check_broadcast(&client1, &client2, marker2.clone(), 2)
+        .await
+        .unwrap();
+
+    let _keep2 = check_broadcast(&client2, &client1, marker1.clone(), 2)
+        .await
+        .unwrap();
+
+    println!("Shutting down Client2");
+
+    let addr2 = client2.bind_addr().await?;
+    let crypto = client2.config.crypto.clone();
+
+    client2.shutdown().await.unwrap();
+    drop(_keep2);
+
+    println!("Waiting for session cleanup on Client1.");
+
+    tokio::time::delay_for(Duration::from_secs(2)).await;
+
+    println!("Restarting Client2");
+
+    // Start client on the same port as previously.
+    let client2 = ClientBuilder::from_url(wrapper.url())
+        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .crypto(crypto.clone())
+        .connect()
+        .expire_session_after(Duration::from_secs(2))
+        .build()
+        .await?;
+
+    let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
+
+    println!("Client1 will send forward packet and will receive Disconnected message.");
+    client1.broadcast(vec![0x1], 2).await.unwrap();
+    tokio::time::delay_for(Duration::from_secs(2)).await;
+
+    // Client1 should be able to connect to Client2 again.
+    let _keep2 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Unreliable)
+        .await
+        .unwrap();
+
+    let _keep1 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Unreliable)
+        .await
+        .unwrap();
+
+    Ok(())
+}
