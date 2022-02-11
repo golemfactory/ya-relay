@@ -168,14 +168,13 @@ impl Session {
                 )),
             },
         );
-        session.send(control_packet).await
+        self.send(control_packet).await
     }
 
     /// Will send `Disconnect` message to other Node, to close end Session
     /// more gracefully.  
     pub async fn close(&self) -> anyhow::Result<()> {
-        // TODO: Send Disconnect message.
-        Ok(())
+        self.disconnect().await
     }
 }
 
