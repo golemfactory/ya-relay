@@ -157,6 +157,20 @@ impl Session {
         self.dispatcher.last_seen()
     }
 
+    pub async fn disconnect(&self) -> anyhow::Result<()> {
+        // Don't use temporary session, because we don't want to initialize session
+        // with this address, nor receive the response.
+        let control_packet = proto::Packet::control(
+            self.id.to_vec(),
+            ya_relay_proto::proto::control::Disconnected {
+                by: Some(proto::control::disconnected::By::SessionId(
+                    self.id.to_vec(),
+                )),
+            },
+        );
+        session.send(control_packet).await
+    }
+
     /// Will send `Disconnect` message to other Node, to close end Session
     /// more gracefully.  
     pub async fn close(&self) -> anyhow::Result<()> {
