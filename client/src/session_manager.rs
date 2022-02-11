@@ -718,15 +718,7 @@ impl SessionManager {
         // Don't use temporary session, because we don't want to initialize session
         // with this address, nor receive the response.
         let session = Session::new(addr, session_id, self.out_stream()?);
-        let control_packet = proto::Packet::control(
-            session.id.to_vec(),
-            ya_relay_proto::proto::control::Disconnected {
-                by: Some(proto::control::disconnected::By::SessionId(
-                    session.id.to_vec(),
-                )),
-            },
-        );
-        session.send(control_packet).await
+        session.disconnect().await
     }
 
     pub(crate) async fn error_response(
