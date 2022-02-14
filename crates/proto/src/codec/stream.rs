@@ -64,7 +64,6 @@ where
                 dst.reserve(buf.len());
                 dst.extend(buf.into_iter())
             }
-            PacketKind::Empty => {}
         }
         Pin::new(&mut self.sink)
             .start_send(dst.freeze())
@@ -329,7 +328,6 @@ mod tests {
                     PacketKind::Forward(f) => f.payload.extend(bytes),
                     _ => panic!("Misplaced `Forward` continuation"),
                 },
-                PacketKind::Empty => collected.push(PacketKind::Empty),
             }
         }
         collected
