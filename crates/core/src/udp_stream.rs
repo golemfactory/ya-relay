@@ -9,7 +9,6 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
-use ya_relay_proto::proto::Packet;
 
 use crate::utils::parse_udp_url;
 

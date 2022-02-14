@@ -329,6 +329,7 @@ mod tests {
                     PacketKind::Forward(f) => f.payload.extend(bytes),
                     _ => panic!("Misplaced `Forward` continuation"),
                 },
+                PacketKind::Empty => collected.push(PacketKind::Empty),
             }
         }
         collected
