@@ -21,6 +21,7 @@ pub enum PacketKind {
     Forward(Forward),
     /// Bytes to forward, continuation (stream only)
     ForwardCtd(BytesMut),
+    Empty,
 }
 
 impl PacketKind {
@@ -45,6 +46,7 @@ impl PacketKind {
             PacketKind::Packet(Packet { session_id, .. }) => session_id.clone(),
             PacketKind::Forward(Forward { session_id, .. }) => session_id.to_vec(),
             PacketKind::ForwardCtd(_) => vec![],
+            PacketKind::Empty => vec![],
         }
     }
 }

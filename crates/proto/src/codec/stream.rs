@@ -64,6 +64,7 @@ where
                 dst.reserve(buf.len());
                 dst.extend(buf.into_iter())
             }
+            PacketKind::Empty => {}
         }
         Pin::new(&mut self.sink)
             .start_send(dst.freeze())

@@ -33,6 +33,7 @@ impl Encoder<PacketKind> for Codec {
                 fwd.encode(dst);
             }
             PacketKind::ForwardCtd(_) => return Err(EncodeError::PacketNotSupported.into()),
+            PacketKind::Empty => {}
         }
         Ok(())
     }

@@ -119,6 +119,7 @@ impl Server {
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
+            PacketKind::Empty => {}
         };
 
         Ok(())

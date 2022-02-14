@@ -9,6 +9,7 @@ use tokio_util::codec::{Decoder, Encoder};
 
 use ya_relay_proto::codec::datagram::Codec;
 use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::proto::Packet;
 
 use crate::utils::parse_udp_url;
 
@@ -54,6 +55,13 @@ pub fn udp_stream(socket: RecvHalf) -> impl Stream<Item = (PacketKind, SocketAdd
             Ok(item) => Some((item, socket)),
             Err(e) => {
                 log::warn!("Failed to receive packet. {}", e);
+                let mut buf = BytesMut::new();
+
+                buf.resize(MAX_PACKET_SIZE as usize, 0);
+
+                if let Ok((_, addr)) = socket.recv_from(&mut buf).await {
+                    return Some((((PacketKind::Empty), addr), socket));
+                }
                 None
             }
         }
