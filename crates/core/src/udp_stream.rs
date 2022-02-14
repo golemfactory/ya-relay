@@ -50,11 +50,14 @@ pub async fn receive_packet(socket: &mut RecvHalf) -> anyhow::Result<(PacketKind
 
 pub fn udp_stream(socket: RecvHalf) -> impl Stream<Item = (PacketKind, SocketAddr)> {
     stream::unfold(socket, |mut socket| async {
-        match receive_packet(&mut socket).await {
-            Ok(item) => Some((item, socket)),
-            Err(e) => {
-                log::warn!("Failed to receive packet. {}", e);
-                None
+        //looping till Some is returned to avoid server shuttdown (as None triggers server shutdown)
+        loop {
+            match receive_packet(&mut socket).await {
+                Ok(item) => return Some((item, socket)),
+                Err(e) => {
+                    log::warn!("Failed to receive packet. {}", e);
+                    continue;
+                }
             }
         }
     })
