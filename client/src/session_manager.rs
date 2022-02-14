@@ -770,6 +770,10 @@ impl SessionManager {
         // Note: computing starts here, not after awaiting.
         challenge::solve_blocking(request.challenge, request.difficulty, crypto)
     }
+
+    pub async fn has_p2p_connection(self, node_id: NodeId) -> bool {
+        self.state.read().await.p2p_sessions.get(&node_id).is_some()
+    }
 }
 
 impl Handler for SessionManager {
