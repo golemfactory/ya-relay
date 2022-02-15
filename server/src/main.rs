@@ -5,7 +5,7 @@ use chrono::Local;
 use std::io::Write;
 use structopt::StructOpt;
 
-#[actix_rt::main]
+#[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(
@@ -28,6 +28,14 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Config::from_args();
 
-    let server = Server::bind_udp(args).await?;
-    server.run().await
+    let local = tokio::task::LocalSet::new();
+
+    // Run the local task set.
+    local
+        .run_until(async move {
+            let server = Server::bind_udp(args).await?;
+            server.run().await
+        })
+        .await?;
+    Ok(())
 }
