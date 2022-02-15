@@ -1,10 +1,11 @@
+use futures::future::join_all;
 use std::convert::{TryFrom, TryInto};
 
 use ya_relay_client::testing::Session;
 use ya_relay_client::ClientBuilder;
 use ya_relay_core::session::SessionId;
 use ya_relay_proto::proto;
-use ya_relay_server::testing::server::init_test_server;
+use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 #[serial_test::serial]
 async fn test_query_self_node_info() -> anyhow::Result<()> {
@@ -85,4 +86,59 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
     assert_eq!(node1_id, (&node1_info.node_id).try_into().unwrap());
     assert_eq!(node2_id, (&node2_info.node_id).try_into().unwrap());
     Ok(())
+}
+
+#[serial_test::serial]
+async fn test_multiple_register_same_time() -> anyhow::Result<()> {
+    let wrapper = init_test_server().await.unwrap();
+    let mut clients = vec![
+        build_client_start_session(&wrapper, 1),
+        build_client_start_session(&wrapper, 2),
+        build_client_start_session(&wrapper, 3),
+        build_client_start_session(&wrapper, 4),
+        build_client_start_session(&wrapper, 5),
+        build_client_start_session(&wrapper, 6),
+        build_client_start_session(&wrapper, 7),
+        build_client_start_session(&wrapper, 8),
+        build_client_start_session(&wrapper, 9),
+        build_client_start_session(&wrapper, 10),
+        build_client_start_session(&wrapper, 11),
+        build_client_start_session(&wrapper, 12),
+        build_client_start_session(&wrapper, 13),
+        build_client_start_session(&wrapper, 14),
+        build_client_start_session(&wrapper, 15),
+        build_client_start_session(&wrapper, 16),
+        build_client_start_session(&wrapper, 17),
+        build_client_start_session(&wrapper, 18),
+        build_client_start_session(&wrapper, 19),
+        build_client_start_session(&wrapper, 20),
+    ];
+
+    let _results = join_all(clients).await;
+    //
+    // let node1_id = client1.node_id();
+    // let node2_id = client2.node_id();
+    //
+    // let session1 = client1.sessions.server_session().await?;
+    // let session2 = client2.sessions.server_session().await?;
+    //
+    // let node2_info = session1.find_node(node2_id).await.unwrap();
+    // let node1_info = session2.find_node(node1_id).await.unwrap();
+    //
+    // assert_eq!(node1_id, (&node1_info.node_id).try_into().unwrap());
+    // assert_eq!(node2_id, (&node2_info.node_id).try_into().unwrap());
+    Ok(())
+}
+
+async fn build_client_start_session(wrapper: &ServerWrapper, index: usize) {
+    log::info!("Starting client {}", index);
+    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
+        .connect()
+        .build()
+        .await
+        .unwrap();
+    log::info!("Client connected {}", index);
+
+    client.sessions.server_session().await.unwrap();
+    log::info!("Session established {}", index);
 }
