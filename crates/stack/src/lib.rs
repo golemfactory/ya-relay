@@ -4,6 +4,7 @@ mod error;
 pub mod interface;
 mod network;
 pub mod packet;
+mod patch_smoltcp;
 mod port;
 mod protocol;
 mod queue;
