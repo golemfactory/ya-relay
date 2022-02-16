@@ -24,6 +24,8 @@ use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
+use ya_relay_proto::proto::control::disconnected::By;
+use ya_relay_proto::proto::control::Disconnected;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
 
@@ -108,8 +110,8 @@ impl Server {
                             node.info.node_id,
                         );
                     }
-                    Some(proto::packet::Kind::Control(_control)) => {
-                        log::info!("Control packet from: {}", from);
+                    Some(proto::packet::Kind::Control(packet)) => {
+                        self.control(id, packet, from).await?
                     }
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
@@ -231,6 +233,47 @@ impl Server {
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
             .await
             .map_err(|_| InternalError::Send)?;
+        Ok(())
+    }
+
+    async fn control(
+        &self,
+        session: SessionId,
+        packet: proto::Control,
+        from: SocketAddr,
+    ) -> ServerResult<()> {
+        log::debug!("Control packet from: {}. Packet: {:?}", from, packet);
+
+        if let proto::Control {
+            kind: Some(proto::control::Kind::Disconnected(Disconnected { by: Some(by) })),
+        } = packet
+        {
+            let mut server = self.state.write().await;
+            match by {
+                By::SessionId(_id) => match server.nodes.get_by_session(session) {
+                    None => return Err(Unauthorized::SessionNotFound(session).into()),
+                    Some(node) => {
+                        log::info!(
+                            "Received Disconnected message from Node [{}]({}).",
+                            node.info.node_id,
+                            from
+                        );
+                        server.nodes.remove_session(node.info.slot)
+                    }
+                },
+                // Allowing only closing sessions. Otherwise we could close someone's else session.
+                By::Slot(_) => {
+                    return Err(
+                        BadRequest::InvalidParam("Slot. Only Session allowed".into()).into(),
+                    )
+                }
+                By::NodeId(_) => {
+                    return Err(
+                        BadRequest::InvalidParam("NodeId. Only Session allowed".into()).into(),
+                    )
+                }
+            };
+        }
         Ok(())
     }
 
