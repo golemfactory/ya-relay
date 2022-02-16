@@ -331,13 +331,15 @@ impl SessionManager {
 
         {
             let mut state = self.state.write().await;
-
-            if let Some(mut tx) = state.forward_unreliable.remove(&node_id) {
-                tx.close().await.ok();
-            }
+            let tx = state.forward_unreliable.remove(&node_id);
 
             if let Some(session) = state.p2p_sessions.remove(&node_id) {
                 state.nodes_addr.remove(&session.remote);
+            }
+
+            drop(state);
+            if let Some(mut tx) = tx {
+                tx.close().await.ok();
             }
         }
     }
@@ -594,14 +596,14 @@ impl SessionManager {
     }
 
     pub async fn server_session(&self) -> anyhow::Result<Arc<Session>> {
-        if let Some(session) = self
-            .state
-            .read()
-            .await
-            .sessions
-            .get(&self.config.srv_addr)
-            .cloned()
-        {
+        if let Some(session) = {
+            self.state
+                .read()
+                .await
+                .sessions
+                .get(&self.config.srv_addr)
+                .cloned()
+        } {
             return Ok(session);
         }
 
@@ -620,17 +622,16 @@ impl SessionManager {
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
-        let abort_handles = {
+        let (starting, abort_handles) = {
             let mut state = self.state.write().await;
-
-            if let Some(starting) = state.starting_sessions.clone() {
-                starting.shutdown().await;
-            }
-
-            state.starting_sessions = None;
-            state.handles.clone()
+            let starting = state.starting_sessions.take();
+            let handles = std::mem::take(&mut state.handles);
+            (starting, handles)
         };
 
+        if let Some(starting) = starting {
+            starting.shutdown().await;
+        }
         for abort_handle in abort_handles {
             abort_handle.abort();
         }
@@ -838,15 +839,24 @@ impl Handler for SessionManager {
                 ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
                     return async move {
                         log::trace!("Got Pause! {:?}", message);
-                        *self.state.read().await.forward_paused_till.write().await =
-                            Some(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY))
+                        let lock = {
+                            let state = self.state.read().await;
+                            state.forward_paused_till.clone()
+                        };
+                        lock.write()
+                            .await
+                            .replace(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY));
                     }
                     .boxed_local();
                 }
                 ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => {
                     return async move {
                         log::trace!("Got Resume! {:?}", message);
-                        *self.state.write().await.forward_paused_till.write().await = None
+                        let lock = {
+                            let state = self.state.read().await;
+                            state.forward_paused_till.clone()
+                        };
+                        lock.write().await.take();
                     }
                     .boxed_local();
                 }

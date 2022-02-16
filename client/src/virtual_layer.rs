@@ -122,12 +122,14 @@ impl TcpLayer {
 
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
+        let sender = state.forward_senders.remove(&node_id);
 
         if let Some(ip) = state.ips.remove(&node_id) {
             state.nodes.remove(&ip);
         }
 
-        if let Some(mut sender) = state.forward_senders.remove(&node_id) {
+        drop(state);
+        if let Some(mut sender) = sender {
             sender.close().await.ok();
         }
 
@@ -249,9 +251,12 @@ impl TcpLayer {
     }
 
     pub async fn shutdown(&self) {
-        let mut state = self.state.write().await;
+        let senders = {
+            let mut state = self.state.write().await;
+            std::mem::take(&mut state.forward_senders)
+        };
 
-        for (_, mut sender) in state.forward_senders.drain() {
+        for (_, mut sender) in senders {
             sender.close().await.ok();
         }
     }
