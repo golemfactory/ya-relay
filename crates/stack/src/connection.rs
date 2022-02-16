@@ -10,6 +10,7 @@ use smoltcp::socket::*;
 use smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
+use crate::patch_smoltcp::GetSocketSafe;
 use crate::socket::{SocketDesc, SocketEndpoint};
 use crate::{Error, Protocol, Result};
 
@@ -118,16 +119,10 @@ impl<'a> Future for Connect<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let iface_rfc = self.iface.clone();
         let mut iface = iface_rfc.borrow_mut();
-        // TODO: we need to loop because `.get_socket()` panics when connection was dropped
-        //let mut socket = interface.get_socket(self.connection.handle);
-        let socket = match iface
-            .sockets_mut()
-            .find(|(handle, _socket)| handle == &self.connection.handle)
-            .map(|(_, socket)| TcpSocket::downcast(socket))
-            .flatten()
-        {
-            Some(s) => s,
-            None => return Poll::Ready(Err(Error::SocketClosed)),
+
+        let socket = match iface.get_socket_safe::<TcpSocket>(self.connection.handle) {
+            Ok(s) => s,
+            Err(_) => return Poll::Ready(Err(Error::SocketClosed)),
         };
 
         if !socket.is_open() {
@@ -179,7 +174,10 @@ impl<'a> Future for Send<'a> {
             match conn.meta.protocol {
                 Protocol::Tcp => {
                     let result = {
-                        let socket = iface.get_socket::<TcpSocket>(conn.handle);
+                        let socket = match iface.get_socket_safe::<TcpSocket>(conn.handle) {
+                            Ok(socket) => socket,
+                            Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                        };
                         socket.register_send_waker(cx.waker());
                         socket.send_slice(&self.data[self.offset..])
                     };
@@ -201,17 +199,26 @@ impl<'a> Future for Send<'a> {
                     };
                 }
                 Protocol::Udp => {
-                    let socket = iface.get_socket::<UdpSocket>(conn.handle);
+                    let socket = match iface.get_socket_safe::<UdpSocket>(conn.handle) {
+                        Ok(socket) => socket,
+                        Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                    };
                     socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data, conn.meta.remote)
                 }
                 Protocol::Icmp => {
-                    let socket = iface.get_socket::<IcmpSocket>(conn.handle);
+                    let socket = match iface.get_socket_safe::<IcmpSocket>(conn.handle) {
+                        Ok(socket) => socket,
+                        Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                    };
                     socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data, conn.meta.remote.addr)
                 }
                 _ => {
-                    let socket = iface.get_socket::<RawSocket>(conn.handle);
+                    let socket = match iface.get_socket_safe::<RawSocket>(conn.handle) {
+                        Ok(socket) => socket,
+                        Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                    };
                     socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data)
                 }
