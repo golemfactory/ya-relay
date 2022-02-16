@@ -242,7 +242,7 @@ impl Server {
         packet: proto::Control,
         from: SocketAddr,
     ) -> ServerResult<()> {
-        log::info!("Control packet from: {}", from);
+        log::debug!("Control packet from: {}. Packet: {:?}", from, packet);
 
         if let proto::Control {
             kind: Some(proto::control::Kind::Disconnected(Disconnected { by: Some(by) })),
@@ -252,7 +252,14 @@ impl Server {
             match by {
                 By::SessionId(_id) => match server.nodes.get_by_session(session) {
                     None => return Err(Unauthorized::SessionNotFound(session).into()),
-                    Some(node) => server.nodes.remove_session(node.info.slot),
+                    Some(node) => {
+                        log::info!(
+                            "Received Disconnected message from Node [{}]({}).",
+                            node.info.node_id,
+                            from
+                        );
+                        server.nodes.remove_session(node.info.slot)
+                    }
                 },
                 // Allowing only closing sessions. Otherwise we could close someone's else session.
                 By::Slot(_) => {
