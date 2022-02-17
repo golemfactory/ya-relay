@@ -170,6 +170,8 @@ impl Server {
                             by: Some(proto::control::disconnected::By::Slot(slot)),
                         },
                     );
+
+                    drop(server);
                     self.send_to(PacketKind::Packet(control_packet), &from)
                         .await
                         .map_err(|_| InternalError::Send)?;
