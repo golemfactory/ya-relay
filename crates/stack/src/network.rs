@@ -34,6 +34,7 @@ pub struct Network {
     poller: StackPoller,
     bindings: Rc<RefCell<HashSet<SocketHandle>>>,
     connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
+    handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
     ingress: Channel<IngressEvent>,
     egress: Channel<EgressEvent>,
 }
@@ -48,6 +49,7 @@ impl Network {
             poller: Default::default(),
             bindings: Default::default(),
             connections: Default::default(),
+            handles: Default::default(),
             ingress: Default::default(),
             egress: Default::default(),
         };
@@ -88,15 +90,15 @@ impl Network {
         self.poll();
 
         let connections = self.connections.clone();
+        let handles = self.handles.clone();
+
         async move {
             let connection = match tokio::time::timeout(timeout, connect).await {
                 Ok(Ok(conn)) => conn,
                 Ok(Err(error)) => return Err(error),
                 _ => return Err(Error::ConnectionTimeout),
             };
-            connections
-                .borrow_mut()
-                .insert(connection.into(), connection);
+            Self::add_connection_to(connection, &connections, &handles);
             Ok(connection)
         }
         .boxed_local()
@@ -107,18 +109,32 @@ impl Network {
         self.connections.borrow().contains_key(meta)
     }
 
+    #[inline(always)]
     fn add_connection(&self, connection: Connection) {
-        self.connections
-            .borrow_mut()
-            .insert(connection.into(), connection);
+        Self::add_connection_to(connection, &self.connections, &self.handles);
+    }
+
+    fn add_connection_to(
+        connection: Connection,
+        connections: &Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
+        handles: &Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
+    ) {
+        let handle = connection.handle;
+        let meta = connection.into();
+        connections.borrow_mut().insert(meta, connection);
+        handles.borrow_mut().insert(handle, meta);
     }
 
     pub fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
         { self.connections.borrow_mut().remove(meta) }.map(|connection| {
-            self.stack
-                .close(connection.meta.protocol, connection.handle);
+            self.stack.close(&connection.meta, connection.handle);
             connection
         })
+    }
+
+    fn remove_connection(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+        self.stack.remove(meta, handle);
+        self.connections.borrow_mut().remove(meta);
     }
 
     /// Inject send data into the stack
@@ -205,19 +221,25 @@ impl Network {
         let mut rebind = None;
 
         for (handle, socket) in iface.sockets_mut() {
-            let protocol = socket.protocol();
-            let local = socket.local_endpoint();
+            let mut desc = SocketDesc {
+                protocol: socket.protocol(),
+                local: socket.local_endpoint(),
+                remote: socket.remote_endpoint(),
+            };
 
             if socket.is_closed() {
-                let desc = SocketDesc {
-                    protocol,
-                    local,
-                    remote: socket.remote_endpoint(),
+                match { self.handles.borrow().get(&handle).cloned() } {
+                    Some(meta) => {
+                        remove.push((meta, handle));
+                    }
+                    None => {
+                        if let Ok(meta) = desc.try_into() {
+                            log::trace!("{}: removing unregistered socket {:?}", *self.name, desc);
+                            remove.push((meta, handle));
+                            events.push(IngressEvent::Disconnected { desc });
+                        }
+                    }
                 };
-                if let Ok(key) = desc.try_into() {
-                    remove.push((key, handle));
-                    events.push(IngressEvent::Disconnected { desc });
-                }
                 continue;
             }
 
@@ -235,11 +257,7 @@ impl Network {
                     }
                 };
 
-                let desc = SocketDesc {
-                    protocol,
-                    local,
-                    remote: remote.into(),
-                };
+                desc.remote = remote.into();
 
                 if self.is_bound(&handle) {
                     if let Ok(meta) = desc.try_into() {
@@ -269,12 +287,11 @@ impl Network {
             }
         }
 
-        remove.into_iter().for_each(|(key, handle)| {
-            self.close_connection(&key);
-            iface.remove_socket(handle);
+        drop(iface);
+        remove.into_iter().for_each(|(meta, handle)| {
+            self.remove_connection(&meta, handle);
         });
 
-        drop(iface);
         if let Some((p, ep)) = rebind {
             if let Err(e) = self.bind(p, ep) {
                 log::trace!("{}: ingress: cannot re-bind {} {}: {}", self.name, p, ep, e);
