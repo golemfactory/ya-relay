@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
-use futures::channel::{mpsc, oneshot};
-use futures::{SinkExt, StreamExt};
+use futures::channel::mpsc;
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
 use std::sync::Arc;
@@ -16,10 +16,10 @@ use ya_relay_stack::interface::{add_iface_address, add_iface_route, tun_iface};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
-use ya_relay_stack::{Channel, EgressEvent, IngressEvent, Network, Protocol, Stack};
+use ya_relay_stack::{Channel, Connection, EgressEvent, IngressEvent, Network, Protocol, Stack};
 
 use crate::client::ClientConfig;
-use crate::client::{ForwardSender, Forwarded};
+use crate::client::Forwarded;
 use crate::registry::NodeEntry;
 use crate::session::Session;
 use crate::ForwardReceiver;
@@ -42,7 +42,7 @@ pub struct VirtNode {
 /// and handles virtual connections.
 #[derive(Clone)]
 pub struct TcpLayer {
-    net: Network,
+    pub net: Network,
     state: Arc<RwLock<TcpLayerState>>,
 }
 
@@ -51,8 +51,6 @@ struct TcpLayerState {
 
     nodes: HashMap<Box<[u8]>, VirtNode>,
     ips: HashMap<NodeId, Box<[u8]>>,
-
-    forward_senders: HashMap<NodeId, ForwardSender>,
 }
 
 impl VirtNode {
@@ -79,7 +77,6 @@ impl TcpLayer {
                 ingress,
                 nodes: Default::default(),
                 ips: Default::default(),
-                forward_senders: Default::default(),
             })),
         }
     }
@@ -122,28 +119,14 @@ impl TcpLayer {
 
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
         let mut state = self.state.write().await;
-        let sender = state.forward_senders.remove(&node_id);
-
         if let Some(ip) = state.ips.remove(&node_id) {
             state.nodes.remove(&ip);
         }
-
-        drop(state);
-        if let Some(mut sender) = sender {
-            sender.close().await.ok();
-        }
-
         Ok(())
     }
 
-    /// Connects to other Node and returns `Sink` for sending data
-    /// and channel that will notify us, when connection will be broken.
-    /// Drop `Sink` to close the TCP connection.
-    pub async fn connect(
-        &self,
-        node: NodeEntry,
-        paused_forwarding: Arc<RwLock<Option<DateTime<Utc>>>>,
-    ) -> anyhow::Result<(ForwardSender, oneshot::Receiver<()>)> {
+    /// Connects to other Node and returns `Connection` for sending data.
+    pub async fn connect(&self, node: NodeEntry) -> anyhow::Result<Connection> {
         log::debug!(
             "[VirtualTcp] Connecting to node [{}] using session {}.",
             node.id,
@@ -152,66 +135,7 @@ impl TcpLayer {
 
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
-        let connection = self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?;
-
-        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(1);
-        let (disconnect_tx, disconnect_rx) = oneshot::channel();
-
-        let id = self.net_id();
-        let myself = self.clone();
-        let paused = paused_forwarding.clone();
-
-        // We keep sender only to drop it on disconnection.
-        self.register_sender(node.id, tx.clone()).await;
-
-        tokio::task::spawn_local(async move {
-            log::trace!("Forwarding messages to [{}]", node.id);
-
-            while let Some(payload) = myself.get_next_fwd_payload(&mut rx, paused.clone()).await {
-                log::trace!("Forwarding message to [{}]", node.id);
-                let _ = myself
-                    .net
-                    .send(payload, connection)
-                    .unwrap_or_else(|e| Box::pin(futures::future::err(e)))
-                    .await
-                    .map_err(|e| {
-                        log::warn!(
-                            "[{}] unable to forward via {}: {}",
-                            id,
-                            node.session.remote,
-                            e
-                        )
-                    });
-            }
-
-            myself.net.close_connection(&connection.meta);
-
-            // Cleanup all internal info about Node.
-            myself
-                .remove_node(node.id)
-                .await
-                .map_err(|e| log::warn!("TcpLayer - error removing node [{}]: {}", node.id, e))
-                .ok();
-
-            disconnect_tx.send(()).ok();
-            rx.close();
-
-            log::debug!(
-                "[VirtualTcp]: disconnected from: {}. Stopping forwarding to Node [{}].",
-                node.session.remote,
-                node.id,
-            );
-        });
-
-        Ok((tx, disconnect_rx))
-    }
-
-    async fn register_sender(&self, node_id: NodeId, sender: ForwardSender) {
-        self.state
-            .write()
-            .await
-            .forward_senders
-            .insert(node_id, sender);
+        Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
     }
 
     pub async fn get_next_fwd_payload<T>(
@@ -251,14 +175,7 @@ impl TcpLayer {
     }
 
     pub async fn shutdown(&self) {
-        let senders = {
-            let mut state = self.state.write().await;
-            std::mem::take(&mut state.forward_senders)
-        };
-
-        for (_, mut sender) in senders {
-            sender.close().await.ok();
-        }
+        // empty
     }
 
     async fn spawn_ingress_router(&self) -> anyhow::Result<()> {

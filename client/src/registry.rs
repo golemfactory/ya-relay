@@ -14,6 +14,7 @@ pub struct NodeEntry {
     /// Data will be forwarder (or send directly) through this Session.
     /// To change Session, we need to replace whole NodeEntry.
     pub session: Arc<Session>,
+    pub virtual_conn_lock: Arc<RwLock<()>>,
     pub slot: SlotId,
 }
 
@@ -47,6 +48,7 @@ impl NodesRegistry {
         let node = NodeEntry {
             id: node_id,
             session,
+            virtual_conn_lock: Arc::new(RwLock::new(())),
             slot,
         };
 
