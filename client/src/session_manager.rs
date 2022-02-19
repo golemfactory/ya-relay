@@ -487,13 +487,7 @@ impl SessionManager {
                 session.id
             );
 
-            if let Err(err) = self
-                .virtual_tcp
-                .net
-                .send(payload, connection)
-                .unwrap_or_else(|e| Box::pin(futures::future::err(e)))
-                .await
-            {
+            if let Err(err) = self.virtual_tcp.send(payload, connection).await {
                 log::trace!(
                     "[{}] forward to {} through {} (session id: {}) failed: {}",
                     self.config.node_id,
@@ -506,7 +500,7 @@ impl SessionManager {
             }
         }
 
-        self.virtual_tcp.net.close_connection(&connection.meta);
+        self.virtual_tcp.close_connection(&connection.meta);
         self.remove_node(node.id).await;
         rx.close();
 

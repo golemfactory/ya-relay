@@ -12,6 +12,7 @@ use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
+use ya_relay_stack::connection::ConnectionMeta;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, tun_iface};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
@@ -42,7 +43,7 @@ pub struct VirtNode {
 /// and handles virtual connections.
 #[derive(Clone)]
 pub struct TcpLayer {
-    pub net: Network,
+    net: Network,
     state: Arc<RwLock<TcpLayerState>>,
 }
 
@@ -138,6 +139,11 @@ impl TcpLayer {
         Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
     }
 
+    #[inline(always)]
+    pub fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
+        self.net.close_connection(meta)
+    }
+
     pub async fn get_next_fwd_payload<T>(
         &self,
         rx: &mut mpsc::Receiver<T>,
@@ -158,6 +164,15 @@ impl TcpLayer {
         }
         log::trace!("Waiting for data...");
         rx.next().await
+    }
+
+    #[inline(always)]
+    pub async fn send(
+        &self,
+        data: impl Into<Vec<u8>>,
+        connection: Connection,
+    ) -> anyhow::Result<()> {
+        Ok(self.net.send(data, connection)?.await?)
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
