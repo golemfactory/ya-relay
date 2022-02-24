@@ -416,9 +416,6 @@ impl SessionManager {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
         let node = self.registry.resolve_node(node_id).await?;
-        let conn_lock = node.virtual_conn_lock.clone();
-        let conn_guard = conn_lock.write().await;
-
         let (conn, tx, rx) = {
             match {
                 let state = self.state.read().await;
@@ -438,8 +435,6 @@ impl SessionManager {
         };
 
         tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
-
-        drop(conn_guard);
         Ok(tx)
     }
 
@@ -500,7 +495,6 @@ impl SessionManager {
             }
         }
 
-        self.virtual_tcp.close_connection(&connection.meta);
         self.remove_node(node.id).await;
         rx.close();
 
@@ -563,7 +557,7 @@ impl SessionManager {
     ) -> anyhow::Result<NodeEntry> {
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
-        let (session, slot) = match self
+        let (session, resolved_slot) = match self
             .try_direct_session(node_id, endpoints)
             .await
             .map_err(|e| log::info!("{}", e))
@@ -574,15 +568,21 @@ impl SessionManager {
         };
 
         let node_id = node_id.try_into()?;
-        if slot != 0 {
+        if resolved_slot != 0 {
             log::info!(
                 "Using relay Server to forward packets to [{}](slot {})",
                 node_id,
-                slot
+                resolved_slot
             );
         }
 
-        Ok(self.registry.add_node(node_id, session.clone(), slot).await)
+        let node = self
+            .registry
+            .add_node(node_id, session, resolved_slot)
+            .await;
+        self.registry.add_slot_for_node(node_id, slot).await;
+
+        Ok(node)
     }
 
     pub async fn try_direct_session(

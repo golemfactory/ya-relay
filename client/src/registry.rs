@@ -14,7 +14,6 @@ pub struct NodeEntry {
     /// Data will be forwarder (or send directly) through this Session.
     /// To change Session, we need to replace whole NodeEntry.
     pub session: Arc<Session>,
-    pub virtual_conn_lock: Arc<RwLock<()>>,
     pub slot: SlotId,
 }
 
@@ -48,7 +47,6 @@ impl NodesRegistry {
         let node = NodeEntry {
             id: node_id,
             session,
-            virtual_conn_lock: Arc::new(RwLock::new(())),
             slot,
         };
 
@@ -61,6 +59,13 @@ impl NodesRegistry {
                 state.slots.insert(slot, node_id);
             }
             node
+        }
+    }
+
+    pub async fn add_slot_for_node(&self, node_id: NodeId, slot: SlotId) {
+        if slot != 0 {
+            let mut state = self.state.write().await;
+            state.slots.insert(slot, node_id);
         }
     }
 

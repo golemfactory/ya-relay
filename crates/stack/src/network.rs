@@ -24,7 +24,7 @@ use crate::{Error, Result};
 pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
 
-const MAX_TCP_PAYLOAD_SIZE: usize = 65535 - 32 - 20;
+const MAX_TCP_PAYLOAD_SIZE: usize = 9216 - 20 - 30;
 
 #[derive(Clone)]
 pub struct Network {
