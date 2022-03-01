@@ -62,6 +62,13 @@ impl NodesRegistry {
         }
     }
 
+    pub async fn add_slot_for_node(&self, node_id: NodeId, slot: SlotId) {
+        if slot != 0 {
+            let mut state = self.state.write().await;
+            state.slots.insert(slot, node_id);
+        }
+    }
+
     pub async fn nodes_using_session(&self, session: Arc<Session>) -> Vec<NodeId> {
         let state = self.state.read().await;
         state

@@ -143,23 +143,39 @@ impl<'a> Stack<'a> {
         ))
     }
 
-    pub fn close(&self, protocol: Protocol, handle: SocketHandle) {
+    pub fn close(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+        let mut iface = self.iface.borrow_mut();
+        let mut sockets = iface.sockets_mut();
+
+        if let Some((_, socket)) = sockets.find(|(h, _)| h == &handle) {
+            log::trace!(
+                "closing connection: {}:{}:{}",
+                meta.protocol,
+                meta.local,
+                meta.remote,
+            );
+            socket.close();
+        }
+    }
+
+    pub fn remove(&self, meta: &ConnectionMeta, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
-        let endpoint = match protocol {
-            Protocol::Tcp => {
-                let socket = iface.get_socket::<TcpSocket>(handle);
-                socket.close();
-                socket.local_endpoint()
-            }
-            Protocol::Udp => iface.get_socket::<UdpSocket>(handle).endpoint(),
-            _ => return,
-        };
+        if let Some(handle) = {
+            let mut sockets = iface.sockets();
+            sockets.find(|(h, _)| h == &handle).map(|(h, _)| h)
+        } {
+            log::trace!(
+                "removing connection: {}:{}:{}",
+                meta.protocol,
+                meta.local,
+                meta.remote,
+            );
 
-        log::trace!("disconnecting {} ({})", endpoint, protocol);
-
-        ports.free(protocol, endpoint.port);
+            iface.remove_socket(handle);
+            ports.free(meta.protocol, meta.local.port);
+        }
     }
 
     pub fn send<B: Into<Vec<u8>>, F: Fn() + 'static>(

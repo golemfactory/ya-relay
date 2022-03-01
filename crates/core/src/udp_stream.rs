@@ -75,11 +75,9 @@ pub fn udp_sink(mut socket: SendHalf) -> anyhow::Result<mpsc::Sender<(PacketKind
             buf.clear();
 
             if let Err(e) = codec.encode(packet, &mut buf) {
-                log::warn!("Error encoding packet. {}", e);
-            } else {
-                // Error can happen only, if IP version of socket doesn't match,
-                // So we can ignore it.
-                socket.send_to(&buf, &target).await.ok();
+                log::warn!("Error encoding packet: {}", e);
+            } else if let Err(e) = socket.send_to(&buf, &target).await {
+                log::warn!("Error sending packet: {}", e);
             }
         }
     });
