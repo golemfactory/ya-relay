@@ -117,11 +117,8 @@ fn peek_tag(buf: &[u8]) -> Result<Option<u32>, DecodeError> {
 // See prost::encoding::decode_varint_slice
 #[inline]
 pub(crate) fn peek_size(buf: &[u8]) -> Result<(usize, usize), DecodeError> {
-    let mut b: u8;
-    let mut part0: u32;
-
-    b = *buf.get(0).ok_or(DecodeError::PrefixTooShort)?;
-    part0 = u32::from(b);
+    let mut b: u8 = *buf.get(0).ok_or(DecodeError::PrefixTooShort)?;
+    let mut part0: u32 = u32::from(b);
     if b < 0x80 {
         return Ok((part0 as usize, 1));
     };
