@@ -656,6 +656,7 @@ impl Server {
                     public_key: session.public_key,
                     slot: u32::MAX,
                     endpoints: vec![],
+                    supported_encryptions: vec![],
                 };
 
                 let node = NodeSession {
@@ -962,5 +963,6 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
             .collect(),
         seen_ts: node_info.last_seen.timestamp() as u32,
         slot: node_info.info.slot,
+        supported_encryptions: node_info.info.supported_encryptions,
     }
 }

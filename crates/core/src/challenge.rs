@@ -164,6 +164,7 @@ pub fn prepare_challenge_request() -> (proto::request::Session, [u8; CHALLENGE_S
         public_key: vec![],
         challenge_req: Some(challenge),
         challenge_resp: vec![],
+        supported_encryptions: vec![],
     };
     (request, raw_challenge)
 }
@@ -174,6 +175,7 @@ pub fn prepare_challenge_response() -> (proto::response::Session, [u8; CHALLENGE
         public_key: vec![],
         challenge_req: Some(challenge),
         challenge_resp: vec![],
+        chosen_encryption: vec![],
     };
     (response, raw_challenge)
 }
