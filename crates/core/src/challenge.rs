@@ -175,7 +175,7 @@ pub fn prepare_challenge_response() -> (proto::response::Session, [u8; CHALLENGE
         public_key: vec![],
         challenge_req: Some(challenge),
         challenge_resp: vec![],
-        chosen_encryption: vec![],
+        chosen_encryption: "".to_string(),
     };
     (response, raw_challenge)
 }

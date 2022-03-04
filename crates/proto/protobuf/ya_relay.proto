@@ -99,7 +99,7 @@ message Request {
         bytes public_key = 3;
         ChallengeRequest challenge_req = 4;
         bytes challenge_resp = 5;
-        repeated bytes supported_encryptions = 6;
+        repeated string supported_encryptions = 6;
     }
 
     message Register {
@@ -154,7 +154,7 @@ message Response {
         bytes public_key = 3;
         ChallengeRequest challenge_req = 4;
         bytes challenge_resp = 5;
-        bytes chosen_encryption = 6;
+        string chosen_encryption = 6;
     }
 
     /* Registered endpoints */
@@ -170,7 +170,7 @@ message Response {
         repeated Endpoint endpoints = 4;
         uint32 seen_ts = 5;
         uint32 slot = 6;
-        repeated bytes supported_encryptions = 7;
+        repeated string supported_encryptions = 7;
     }
 
     /* Neighbourhood */
