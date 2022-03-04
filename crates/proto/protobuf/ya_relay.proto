@@ -55,7 +55,8 @@ message Packet {
     message Forward {
         bytes session_id = 1;
         uint32 slot = 2; // either sender or receiver slot id
-        bytes payload = 3;
+        uint16 flags = 3;
+        bytes payload = 4;
     }
 */
 
@@ -154,7 +155,7 @@ message Response {
         bytes public_key = 3;
         ChallengeRequest challenge_req = 4;
         bytes challenge_resp = 5;
-        string chosen_encryption = 6;
+        repeated string supported_encryptions = 6;
     }
 
     /* Registered endpoints */

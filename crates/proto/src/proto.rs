@@ -19,6 +19,7 @@ pub const FORWARD_TAG: u32 = 1;
 pub const SESSION_ID_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 1;
 pub const UNRELIABLE_FLAG: u16 = 0x01;
+pub const ENCRYPTED_FLAG: u16 = 0x02;
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
