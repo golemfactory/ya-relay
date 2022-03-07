@@ -160,8 +160,7 @@ impl NodesState {
         self.slots
             .get(slot as usize)
             .cloned()
-            .map(|entry| entry.active())
-            .flatten()
+            .and_then(|entry| entry.active())
     }
 
     pub fn get_by_session(&self, id: SessionId) -> Option<NodeSession> {
@@ -171,8 +170,7 @@ impl NodesState {
                 .slots
                 .get(slot as usize)
                 .cloned()
-                .map(|entry| entry.active())
-                .flatten(),
+                .and_then(|entry| entry.active()),
         }
     }
 
@@ -183,8 +181,7 @@ impl NodesState {
                 .slots
                 .get(slot as usize)
                 .cloned()
-                .map(|entry| entry.active())
-                .flatten(),
+                .and_then(|entry| entry.active()),
         }
     }
 

@@ -878,8 +878,7 @@ impl Handler for SessionManager {
                     state
                         .starting_sessions
                         .clone()
-                        .map(|entity| entity.dispatcher(from))
-                        .flatten()
+                        .and_then(|entity| entity.dispatcher(from))
                 })
         }
         .boxed_local()
