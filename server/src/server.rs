@@ -881,23 +881,27 @@ impl Server {
         tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
         while let Some((packet, addr)) = input.next().await {
-            let request_id = PacketKind::request_id(&packet);
-            let session_id = PacketKind::session_id(&packet);
-            let error = match server.dispatch(addr, packet).await {
-                Ok(_) => continue,
-                Err(e) => e,
-            };
+            let server = server.clone();
 
-            log::error!(
-                "Packet dispatch failed (request={:?}). {}",
-                request_id,
-                error
-            );
-            if let Some(request_id) = request_id {
-                server
-                    .error_response(request_id, session_id, &addr, error)
-                    .await;
-            }
+            tokio::task::spawn_local(async move {
+                let request_id = PacketKind::request_id(&packet);
+                let session_id = PacketKind::session_id(&packet);
+                let error = match server.dispatch(addr, packet).await {
+                    Ok(_) => return,
+                    Err(e) => e,
+                };
+
+                log::error!(
+                    "Packet dispatch failed (request={:?}). {}",
+                    request_id,
+                    error
+                );
+                if let Some(request_id) = request_id {
+                    server
+                        .error_response(request_id, session_id, &addr, error)
+                        .await;
+                }
+            });
         }
 
         log::info!("Server stopped.");
