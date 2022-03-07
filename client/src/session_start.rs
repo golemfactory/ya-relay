@@ -244,6 +244,7 @@ impl StartingSessions {
                     .map_err(|e| InternalError::Generic(e.to_string()))?,
                 challenge_req: None,
                 public_key: self.layer.config.public_key().await?.bytes().to_vec(),
+                supported_encryptions: vec![],
             };
 
             tmp_session

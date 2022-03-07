@@ -178,6 +178,7 @@ impl SessionManager {
             challenge_req: None,
             node_id: node_id.into_array().to_vec(),
             public_key: public_key.bytes().to_vec(),
+            supported_encryptions: vec![],
         };
         let response = tmp_session
             .request::<proto::response::Session>(
