@@ -23,7 +23,7 @@ where
     while let Some((packet, from)) = stream.next().await {
         let handler = handler.clone();
         tokio::task::spawn_local(async move {
-            if let Some(dispatcher) = handler.dispatcher(from.clone()).await {
+            if let Some(dispatcher) = handler.dispatcher(from).await {
                 dispatcher.update_seen();
             }
 
