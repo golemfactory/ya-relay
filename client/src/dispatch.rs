@@ -17,30 +17,37 @@ type ResponseSender = Sender<Dispatched<proto::response::Kind>>;
 /// Signals receipt of a response packet
 pub async fn dispatch<H, S>(handler: H, mut stream: S)
 where
-    H: Handler,
+    H: Handler + Clone + 'static,
     S: Stream<Item = (codec::PacketKind, SocketAddr)> + Unpin,
 {
     while let Some((packet, from)) = stream.next().await {
-        match packet {
-            codec::PacketKind::Packet(proto::Packet {
-                session_id,
-                kind: Some(kind),
-            }) => match kind {
-                proto::packet::Kind::Control(control) => {
-                    handler.on_control(session_id, control, from).await;
-                }
-                proto::packet::Kind::Request(request) => {
-                    handler.on_request(session_id, request, from).await;
-                }
-                proto::packet::Kind::Response(response) => {
-                    dispatch_response(session_id, response, from, &handler).await;
-                }
-            },
-            codec::PacketKind::Forward(forward) => {
-                handler.on_forward(forward, from).await;
+        let handler = handler.clone();
+        tokio::task::spawn_local(async move {
+            if let Some(dispatcher) = handler.dispatcher(from.clone()).await {
+                dispatcher.update_seen();
             }
-            _ => log::warn!("Unable to dispatch packet from {}: not supported", from),
-        }
+
+            match packet {
+                codec::PacketKind::Packet(proto::Packet {
+                    session_id,
+                    kind: Some(kind),
+                }) => match kind {
+                    proto::packet::Kind::Control(control) => {
+                        handler.on_control(session_id, control, from).await;
+                    }
+                    proto::packet::Kind::Request(request) => {
+                        handler.on_request(session_id, request, from).await;
+                    }
+                    proto::packet::Kind::Response(response) => {
+                        dispatch_response(session_id, response, from, &handler).await;
+                    }
+                },
+                codec::PacketKind::Forward(forward) => {
+                    handler.on_forward(forward, from).await;
+                }
+                _ => log::warn!("Unable to dispatch packet from {}: not supported", from),
+            }
+        });
     }
     log::info!("Client stopped");
 }
@@ -115,6 +122,10 @@ impl Default for Dispatcher {
 }
 
 impl Dispatcher {
+    pub fn update_seen(&self) {
+        *self.seen.borrow_mut() = Instant::now();
+    }
+
     pub fn last_seen(&self) -> Instant {
         *self.seen.borrow_mut()
     }
@@ -172,8 +183,6 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
-        *self.seen.borrow_mut() = Instant::now();
-
         match { self.responses.borrow_mut().remove(&request_id) } {
             Some(sender) => {
                 if sender
