@@ -226,10 +226,11 @@ impl Server {
         packet.slot = src_node.info.slot;
         packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
-        log::debug!(
-            "Sending forward packet from [{}] to [{}]",
+        log::trace!(
+            "Sending forward packet from [{}] to [{}] ({} B)",
             src_node.info.node_id,
-            dest_node.info.node_id
+            dest_node.info.node_id,
+            packet.payload.len(),
         );
 
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
@@ -352,7 +353,6 @@ impl Server {
         .map_err(|_| InternalError::Send)?;
 
         log::trace!("Responding to ping from: {}", from);
-
         Ok(())
     }
 
