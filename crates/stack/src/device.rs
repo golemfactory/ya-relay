@@ -3,7 +3,7 @@ use smoltcp::phy::Medium;
 use smoltcp::time;
 use std::collections::VecDeque;
 
-pub const MTU: usize = 9216 - 23;
+pub const MTU: usize = 1300;
 
 /// Network device capable of injecting and extracting packets
 #[derive(Clone, Default)]
