@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::iface::SocketHandle;
-use smoltcp::wire::IpEndpoint;
+use smoltcp::wire::{IpAddress, IpEndpoint};
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
 
@@ -91,6 +91,25 @@ impl Network {
 
         let connections = self.connections.clone();
         let handles = self.handles.clone();
+
+        // Return existing connection, if other side already established it.
+        if let Some((_, connection)) =
+            connections
+                .borrow()
+                .iter()
+                .find(|(meta, _)| match (meta.remote.addr, remote.addr) {
+                    (IpAddress::Ipv4(addr), IpAddress::Ipv4(ref_addr)) => addr == ref_addr,
+                    (IpAddress::Ipv6(addr), IpAddress::Ipv6(ref_addr)) => addr == ref_addr,
+                    _ => false,
+                })
+        {
+            log::debug!(
+                "{}: Using existing connection with remote: {}",
+                *self.name,
+                remote
+            );
+            return futures::future::ok(connection.clone()).boxed_local();
+        }
 
         async move {
             let connection = match tokio::time::timeout(timeout, connect).await {
