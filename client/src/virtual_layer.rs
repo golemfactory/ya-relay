@@ -71,7 +71,7 @@ impl VirtNode {
 
 impl TcpLayer {
     pub fn new(config: Arc<ClientConfig>, ingress: Channel<Forwarded>) -> TcpLayer {
-        let net = default_network(config.node_pub_key.clone());
+        let net = default_network(config.node_pub_key.clone(), config.max_transmission_unit);
         TcpLayer {
             net,
             state: Arc::new(RwLock::new(TcpLayerState {
@@ -371,11 +371,11 @@ fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
     Ipv6Addr::from(ipv6_bytes)
 }
 
-fn default_network(key: PublicKey) -> Network {
+fn default_network(key: PublicKey, mtu: usize) -> Network {
     let address = key.address();
     let ipv6_addr = to_ipv6(address);
     let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
-    let mut iface = tun_iface();
+    let mut iface = tun_iface(mtu);
 
     let name = format!(
         "{:02x}{:02x}{:02x}{:02x}",

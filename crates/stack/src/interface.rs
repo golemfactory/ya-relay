@@ -20,18 +20,18 @@ pub fn iface_builder<'a>(device: CaptureDevice) -> InterfaceBuilder<'a, CaptureD
 }
 
 /// Creates a default TAP (Ethernet) network interface
-pub fn tap_iface<'a>(mac: HardwareAddress) -> CaptureInterface<'a> {
+pub fn tap_iface<'a>(mac: HardwareAddress, mtu: usize) -> CaptureInterface<'a> {
     let neighbor_cache = NeighborCache::new(BTreeMap::new());
 
-    iface_builder(CaptureDevice::default())
+    iface_builder(CaptureDevice::tap(mtu))
         .neighbor_cache(neighbor_cache)
         .hardware_addr(mac)
         .finalize()
 }
 
 /// Creates a default TUN (IP) network interface
-pub fn tun_iface<'a>() -> CaptureInterface<'a> {
-    iface_builder(CaptureDevice::tun()).finalize()
+pub fn tun_iface<'a>(mtu: usize) -> CaptureInterface<'a> {
+    iface_builder(CaptureDevice::tun(mtu)).finalize()
 }
 
 /// Assigns a new interface IP address

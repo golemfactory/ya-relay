@@ -16,6 +16,7 @@ use crate::codec::DecodeError;
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 
 pub const FORWARD_TAG: u32 = 1;
+pub const MAX_TAG_SIZE: usize = 5;
 pub const SESSION_ID_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 1;
 pub const UNRELIABLE_FLAG: u16 = 0x01;

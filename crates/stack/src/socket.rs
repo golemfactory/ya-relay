@@ -4,16 +4,13 @@ use smoltcp::storage::PacketMetadata;
 use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 
-use crate::{Protocol, MAX_FRAME_SIZE};
+use crate::Protocol;
 
-pub const TCP_NAGLE_ENABLED: bool = false;
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
-const TCP_TIMEOUT: Duration = Duration::from_secs(240);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(75);
+const TCP_TIMEOUT: Duration = Duration::from_secs(120);
+const TCP_KEEP_ALIVE: Duration = Duration::from_secs(30);
 const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
-
-const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
-const RX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
+const TCP_NAGLE_ENABLED: bool = false;
 
 /// Socket quintuplet
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -218,38 +215,38 @@ impl<'a> TcpSocketExt for TcpSocket<'a> {
     }
 }
 
-pub fn tcp_socket<'a>() -> TcpSocket<'a> {
-    let rx_buf = TcpSocketBuffer::new(vec![0; RX_BUFFER_SIZE]);
-    let tx_buf = TcpSocketBuffer::new(vec![0; TCP_TX_BUFFER_SIZE]);
+pub fn tcp_socket<'a>(mtu: usize) -> TcpSocket<'a> {
+    let rx_buf = TcpSocketBuffer::new(vec![0; mtu * 4]);
+    let tx_buf = TcpSocketBuffer::new(vec![0; mtu * 4]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
     socket.set_defaults();
     socket
 }
 
-pub fn udp_socket<'a>() -> UdpSocket<'a> {
-    let rx_buf = UdpSocketBuffer::new(meta_storage(), payload_storage());
-    let tx_buf = UdpSocketBuffer::new(meta_storage(), payload_storage());
+pub fn udp_socket<'a>(mtu: usize) -> UdpSocket<'a> {
+    let rx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
+    let tx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
     UdpSocket::new(rx_buf, tx_buf)
 }
 
-pub fn icmp_socket<'a>() -> IcmpSocket<'a> {
-    let rx_buf = IcmpSocketBuffer::new(meta_storage(), payload_storage());
-    let tx_buf = IcmpSocketBuffer::new(meta_storage(), payload_storage());
+pub fn icmp_socket<'a>(mtu: usize) -> IcmpSocket<'a> {
+    let rx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
+    let tx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
     IcmpSocket::new(rx_buf, tx_buf)
 }
 
-pub fn raw_socket<'a>(ip_version: IpVersion, ip_protocol: IpProtocol) -> RawSocket<'a> {
-    let rx_buf = RawSocketBuffer::new(meta_storage(), payload_storage());
-    let tx_buf = RawSocketBuffer::new(meta_storage(), payload_storage());
+pub fn raw_socket<'a>(ip_version: IpVersion, ip_protocol: IpProtocol, mtu: usize) -> RawSocket<'a> {
+    let rx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
+    let tx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
     RawSocket::new(ip_version, ip_protocol, rx_buf, tx_buf)
 }
 
 #[inline]
-fn meta_storage<H: Clone>() -> Vec<PacketMetadata<H>> {
-    vec![PacketMetadata::EMPTY; RX_BUFFER_SIZE]
+fn meta_storage<H: Clone>(size: usize) -> Vec<PacketMetadata<H>> {
+    vec![PacketMetadata::EMPTY; size]
 }
 
 #[inline]
-fn payload_storage<T: Default + Clone>() -> Vec<T> {
-    vec![Default::default(); RX_BUFFER_SIZE]
+fn payload_storage<T: Default + Clone>(size: usize) -> Vec<T> {
+    vec![Default::default(); size]
 }

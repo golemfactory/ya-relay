@@ -9,12 +9,16 @@ use std::time::{Duration, Instant};
 use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::iface::SocketHandle;
+use smoltcp::phy::Device;
 use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
 
 use crate::connection::{Connection, ConnectionMeta};
-use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
+use crate::packet::{
+    ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket, ETHERNET_HDR_SIZE, IP6_HDR_SIZE,
+    TCP_HDR_SIZE,
+};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
 use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
@@ -23,8 +27,6 @@ use crate::{Error, Result};
 
 pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
-
-const MAX_TCP_PAYLOAD_SIZE: usize = 1300 - 20 - 30;
 
 #[derive(Clone)]
 pub struct Network {
@@ -157,13 +159,26 @@ impl Network {
         let net = self.clone();
         let stack = self.stack.clone();
 
+        let (mtu, is_tun) = {
+            let iface_rfc = stack.iface();
+            let iface = iface_rfc.borrow();
+            let mtu = iface.device().capabilities().max_transmission_unit;
+            let is_tun = iface.device().is_tun();
+            (mtu, is_tun)
+        };
+
+        let mut chunk_size = mtu - IP6_HDR_SIZE - TCP_HDR_SIZE;
+        if !is_tun {
+            chunk_size -= ETHERNET_HDR_SIZE;
+        }
+
         self.poller.clone().spawn();
         self.sender.spawn_local(move |vec, conn| {
             let net = net.clone();
             let stack = stack.clone();
 
             async move {
-                for chunk in vec.chunks(MAX_TCP_PAYLOAD_SIZE) {
+                for chunk in vec.chunks(chunk_size) {
                     let net = net.clone();
                     stack.send(chunk.to_vec(), conn, move || net.poll()).await?;
                 }
@@ -622,7 +637,7 @@ mod tests {
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-    fn new_network(medium: Medium, ip: IpAddress) -> Network {
+    fn new_network(medium: Medium, ip: IpAddress, mtu: usize) -> Network {
         let cidr = IpCidr::new(ip.into(), 16);
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
@@ -631,8 +646,8 @@ mod tests {
         };
 
         let mut iface = match medium {
-            Medium::Ethernet => tap_iface(ip_to_mac(ip)),
-            Medium::Ip => tun_iface(),
+            Medium::Ethernet => tap_iface(ip_to_mac(ip), mtu),
+            Medium::Ip => tun_iface(mtu),
             _ => panic!("unsupported medium: {:?}", medium),
         };
 
@@ -773,13 +788,15 @@ mod tests {
 
     /// Generate, send and receive data across 2 network instances
     async fn net_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
+        const MTU: usize = 65535;
+
         println!(">> exchanging {} B in {} B chunks", total, chunk_size);
 
         let ip1 = Ipv4Address::new(10, 0, 0, 1);
         let ip2 = Ipv4Address::new(10, 0, 0, 2);
 
-        let net1 = new_network(medium, ip1.into());
-        let net2 = new_network(medium, ip2.into());
+        let net1 = new_network(medium, ip1.into(), MTU);
+        let net2 = new_network(medium, ip2.into(), MTU);
 
         net1.spawn_local();
         net2.spawn_local();

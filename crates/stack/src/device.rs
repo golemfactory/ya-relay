@@ -3,22 +3,31 @@ use smoltcp::phy::Medium;
 use smoltcp::time;
 use std::collections::VecDeque;
 
-pub const MTU: usize = 1300;
-
 /// Network device capable of injecting and extracting packets
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct CaptureDevice {
     tx_queue: VecDeque<Vec<u8>>,
     rx_queue: VecDeque<Vec<u8>>,
     medium: Medium,
+    max_transmission_unit: usize,
 }
 
 impl CaptureDevice {
-    pub fn tun() -> Self {
+    pub fn tap(mtu: usize) -> Self {
+        Self {
+            tx_queue: Default::default(),
+            rx_queue: Default::default(),
+            medium: Medium::Ethernet,
+            max_transmission_unit: mtu,
+        }
+    }
+
+    pub fn tun(mtu: usize) -> Self {
         Self {
             tx_queue: Default::default(),
             rx_queue: Default::default(),
             medium: Medium::Ip,
+            max_transmission_unit: mtu,
         }
     }
 
@@ -59,7 +68,7 @@ impl<'a> phy::Device<'a> for CaptureDevice {
 
     fn capabilities(&self) -> phy::DeviceCapabilities {
         let mut caps = phy::DeviceCapabilities::default();
-        caps.max_transmission_unit = MTU;
+        caps.max_transmission_unit = self.max_transmission_unit;
         caps.medium = self.medium;
         caps
     }
