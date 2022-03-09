@@ -47,6 +47,8 @@ pub enum BadRequest {
     DecodingFailed,
     #[error("Invalid Challenge. Error: {0}")]
     InvalidChallenge(String),
+    #[error("Invalid Parameter: {0}")]
+    InvalidParam(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]

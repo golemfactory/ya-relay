@@ -32,6 +32,7 @@ pub struct NodeInfo {
 
     /// Endpoints registered by Node.
     pub endpoints: Vec<Endpoint>,
+    pub supported_encryptions: Vec<String>,
 }
 
 #[derive(Clone)]

@@ -8,8 +8,8 @@ use crate::{Protocol, MAX_FRAME_SIZE};
 
 pub const TCP_NAGLE_ENABLED: bool = false;
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
-const TCP_TIMEOUT: Duration = Duration::from_secs(6);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(3);
+const TCP_TIMEOUT: Duration = Duration::from_secs(240);
+const TCP_KEEP_ALIVE: Duration = Duration::from_secs(75);
 const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
 
 const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
@@ -83,6 +83,7 @@ pub trait SocketExt {
     fn remote_endpoint(&self) -> SocketEndpoint;
 
     fn is_closed(&self) -> bool;
+    fn close(&mut self);
 
     fn can_recv(&self) -> bool;
     fn recv(&mut self) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, smoltcp::Error>;
@@ -120,19 +121,19 @@ impl<'a> SocketExt for Socket<'a> {
 
     fn is_closed(&self) -> bool {
         match &self {
-            Self::Tcp(s) => matches!(
-                s.state(),
-                TcpState::FinWait1
-                    | TcpState::FinWait2
-                    | TcpState::CloseWait
-                    | TcpState::Closing
-                    | TcpState::LastAck
-                    | TcpState::Closed
-            ),
+            Self::Tcp(s) => s.state() == TcpState::Closed,
             Self::Udp(s) => !s.is_open(),
             Self::Icmp(s) => !s.is_open(),
             Self::Raw(_) => false,
             Self::Dhcpv4(_) => false,
+        }
+    }
+
+    fn close(&mut self) {
+        match self {
+            Self::Tcp(s) => s.close(),
+            Self::Udp(s) => s.close(),
+            _ => (),
         }
     }
 

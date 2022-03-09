@@ -19,6 +19,7 @@ pub const FORWARD_TAG: u32 = 1;
 pub const SESSION_ID_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 1;
 pub const UNRELIABLE_FLAG: u16 = 0x01;
+pub const ENCRYPTED_FLAG: u16 = 0x02;
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -284,7 +285,9 @@ impl Packet {
             kind: Some(packet::Kind::Response(Response {
                 request_id,
                 code: code.into(),
-                kind: None,
+                // Probably we should send here packet response type matching request that we got.
+                // We send at least anything, because client doesn't handle errors with None here.
+                kind: Some(response::Kind::Pong(response::Pong {})),
             })),
         }
     }

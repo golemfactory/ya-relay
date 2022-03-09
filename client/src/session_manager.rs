@@ -19,8 +19,9 @@ use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
+use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
-use ya_relay_stack::Channel;
+use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
 use crate::dispatch::{dispatch, Dispatcher, Handler};
@@ -58,6 +59,7 @@ pub struct SessionManagerState {
     sessions: HashMap<SocketAddr, Arc<Session>>,
     nodes_addr: HashMap<SocketAddr, NodeId>,
 
+    forward_reliable: HashMap<NodeId, ForwardSender>,
     forward_unreliable: HashMap<NodeId, ForwardSender>,
     forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
 
@@ -82,6 +84,7 @@ impl SessionManager {
                 public_addr: None,
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
+                forward_reliable: Default::default(),
                 forward_unreliable: Default::default(),
                 forward_paused_till: Arc::new(RwLock::new(Default::default())),
                 p2p_sessions: Default::default(),
@@ -187,6 +190,7 @@ impl SessionManager {
             challenge_req: None,
             node_id: node_id.into_array().to_vec(),
             public_key: public_key.bytes().to_vec(),
+            supported_encryptions: vec![],
         };
         let response = tmp_session
             .request::<proto::response::Session>(
@@ -221,7 +225,12 @@ impl SessionManager {
 
         let session = self.add_session(addr, session_id).await?;
 
-        log::trace!("[{}] session established with address: {}", node_id, addr);
+        log::trace!(
+            "[{}] session {} established with address: {}",
+            node_id,
+            session_id,
+            addr
+        );
         Ok(session)
     }
 
@@ -244,7 +253,12 @@ impl SessionManager {
             state.p2p_sessions.entry(node_id).or_insert(session).clone()
         };
 
-        log::info!("Established P2P session with node [{}] ({})", node_id, addr);
+        log::info!(
+            "Established P2P session {} with node [{}] ({})",
+            session.id,
+            node_id,
+            addr
+        );
         Ok(session)
     }
 
@@ -259,7 +273,11 @@ impl SessionManager {
             .sessions
             .insert(addr, session.clone());
 
-        log::info!("Established session with NET relay server ({})", addr);
+        log::info!(
+            "Established session {} with NET relay server ({})",
+            session.id,
+            addr
+        );
         Ok(session)
     }
 
@@ -284,6 +302,11 @@ impl SessionManager {
             .iter()
             .map(|(_, session)| session.clone())
             .collect()
+    }
+
+    pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<Session>> {
+        let state = self.state.read().await;
+        state.sessions.get(&addr).cloned()
     }
 
     pub(crate) async fn add_session(
@@ -315,8 +338,9 @@ impl SessionManager {
             state.add_session(addr, session.clone());
             state.nodes_addr.insert(addr, node_id);
             log::trace!(
-                "[{}] Saved node session {} {}",
+                "[{}] Saved node session {} [{}] {}",
                 self.config.node_id,
+                session.id,
                 node_id,
                 addr
             )
@@ -324,7 +348,7 @@ impl SessionManager {
         Ok(session)
     }
 
-    async fn remove_node(&self, node_id: NodeId) {
+    pub async fn remove_node(&self, node_id: NodeId) {
         log::trace!(
             "Removing Node [{}] information. Stopping communication..",
             node_id
@@ -335,13 +359,19 @@ impl SessionManager {
 
         {
             let mut state = self.state.write().await;
-
-            if let Some(mut tx) = state.forward_unreliable.remove(&node_id) {
-                tx.close().await.ok();
-            }
+            let tx_r = state.forward_reliable.remove(&node_id);
+            let tx_u = state.forward_unreliable.remove(&node_id);
 
             if let Some(session) = state.p2p_sessions.remove(&node_id) {
                 state.nodes_addr.remove(&session.remote);
+            }
+
+            drop(state);
+            if let Some(mut tx) = tx_r {
+                tx.close().await.ok();
+            }
+            if let Some(mut tx) = tx_u {
+                tx.close().await.ok();
             }
         }
     }
@@ -397,16 +427,26 @@ impl SessionManager {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
         let node = self.registry.resolve_node(node_id).await?;
-        let paused_check = { self.state.read().await.forward_paused_till.clone() };
-        let (sender, disconnected) = self.virtual_tcp.connect(node, paused_check).await?;
+        let (conn, tx, rx) = {
+            match {
+                let state = self.state.read().await;
+                state.forward_reliable.get(&node_id).cloned()
+            } {
+                Some(tx) => return Ok(tx),
+                None => {
+                    let conn = self.virtual_tcp.connect(node.clone()).await?;
+                    let (tx, rx) = mpsc::channel(1);
+                    {
+                        let mut state = self.state.write().await;
+                        state.forward_reliable.insert(node_id, tx.clone());
+                    }
+                    (conn, tx, rx)
+                }
+            }
+        };
 
-        let myself = self.clone();
-        tokio::task::spawn_local(async move {
-            disconnected.await.ok();
-            myself.remove_node(node_id).await;
-        });
-
-        Ok(sender)
+        tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
+        Ok(tx)
     }
 
     pub async fn forward_unreliable(
@@ -432,33 +472,37 @@ impl SessionManager {
         Ok(tx)
     }
 
-    async fn forward_unreliable_handler(
+    async fn forward_reliable_handler(
         self,
-        session: Arc<Session>,
+        connection: Connection,
         node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
         let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        let session = node.session.clone();
+
         while let Some(payload) = self
             .virtual_tcp
             .get_next_fwd_payload(&mut rx, paused_check.clone())
             .await
         {
             log::trace!(
-                "Forwarding message (U) to {} through {}",
+                "Forwarding message to {} through {} (session id: {})",
                 node.id,
-                session.remote
+                session.remote,
+                session.id
             );
 
-            let forward = Forward::unreliable(session.id, node.slot, payload);
-            if let Err(error) = session.send(forward).await {
+            if let Err(err) = self.virtual_tcp.send(payload, connection).await {
                 log::trace!(
-                    "[{}] forward (U) to {} through {} failed: {}",
+                    "[{}] forward to {} through {} (session id: {}) failed: {}",
                     self.config.node_id,
                     node.id,
                     session.remote,
-                    error
+                    session.id,
+                    err
                 );
+                break;
             }
         }
 
@@ -466,7 +510,51 @@ impl SessionManager {
         rx.close();
 
         log::trace!(
-            "[{}] forward (U): disconnected from server: {}",
+            "[{}] forward: disconnected from: {}",
+            node.id,
+            session.remote
+        );
+    }
+
+    async fn forward_unreliable_handler(
+        self,
+        session: Arc<Session>,
+        node: NodeEntry,
+        mut rx: mpsc::Receiver<Vec<u8>>,
+    ) {
+        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+
+        while let Some(payload) = self
+            .virtual_tcp
+            .get_next_fwd_payload(&mut rx, paused_check.clone())
+            .await
+        {
+            log::trace!(
+                "Forwarding message (U) to {} through {} (session id: {})",
+                node.id,
+                session.remote,
+                session.id
+            );
+
+            let forward = Forward::unreliable(session.id, node.slot, payload);
+            if let Err(error) = session.send(forward).await {
+                log::trace!(
+                    "[{}] forward (U) to {} through {} (session id: {}) failed: {}",
+                    self.config.node_id,
+                    node.id,
+                    session.remote,
+                    session.id,
+                    error
+                );
+                break;
+            }
+        }
+
+        self.remove_node(node.id).await;
+        rx.close();
+
+        log::trace!(
+            "[{}] forward (U): disconnected from: {}",
             node.id,
             session.remote
         );
@@ -480,7 +568,7 @@ impl SessionManager {
     ) -> anyhow::Result<NodeEntry> {
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
-        let (session, slot) = match self
+        let (session, resolved_slot) = match self
             .try_direct_session(node_id, endpoints)
             .await
             .map_err(|e| log::info!("{}", e))
@@ -491,15 +579,21 @@ impl SessionManager {
         };
 
         let node_id = node_id.try_into()?;
-        if slot != 0 {
+        if resolved_slot != 0 {
             log::info!(
-                "Using Server to forward packets to [{}](slot {})",
+                "Using relay Server to forward packets to [{}](slot {})",
                 node_id,
-                slot
+                resolved_slot
             );
         }
 
-        Ok(self.registry.add_node(node_id, session.clone(), slot).await)
+        let node = self
+            .registry
+            .add_node(node_id, session, resolved_slot)
+            .await;
+        self.registry.add_slot_for_node(node_id, slot).await;
+
+        Ok(node)
     }
 
     pub async fn try_direct_session(
@@ -531,7 +625,7 @@ impl SessionManager {
                 Ok(session) => return Ok(session),
                 Err(e) => {
                     log::debug!(
-                        "Failed to establish p2p session with node {}, address: {}. Error: {}",
+                        "Failed to establish p2p session with node [{}], address: {}. Error: {}",
                         node_id,
                         addr,
                         e
@@ -598,14 +692,14 @@ impl SessionManager {
     }
 
     pub async fn server_session(&self) -> anyhow::Result<Arc<Session>> {
-        if let Some(session) = self
-            .state
-            .read()
-            .await
-            .sessions
-            .get(&self.config.srv_addr)
-            .cloned()
-        {
+        if let Some(session) = {
+            self.state
+                .read()
+                .await
+                .sessions
+                .get(&self.config.srv_addr)
+                .cloned()
+        } {
             return Ok(session);
         }
 
@@ -624,17 +718,16 @@ impl SessionManager {
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
-        let abort_handles = {
+        let (starting, abort_handles) = {
             let mut state = self.state.write().await;
-
-            if let Some(starting) = state.starting_sessions.clone() {
-                starting.shutdown().await;
-            }
-
-            state.starting_sessions = None;
-            state.handles.clone()
+            let starting = state.starting_sessions.take();
+            let handles = std::mem::take(&mut state.handles);
+            (starting, handles)
         };
 
+        if let Some(starting) = starting {
+            starting.shutdown().await;
+        }
         for abort_handle in abort_handles {
             abort_handle.abort();
         }
@@ -718,6 +811,13 @@ impl SessionManager {
         }
     }
 
+    async fn send_disconnect(&self, session_id: SessionId, addr: SocketAddr) -> anyhow::Result<()> {
+        // Don't use temporary session, because we don't want to initialize session
+        // with this address, nor receive the response.
+        let session = Session::new(addr, session_id, self.out_stream()?);
+        session.disconnect().await
+    }
+
     pub(crate) async fn error_response(
         &self,
         req_id: u64,
@@ -767,6 +867,10 @@ impl SessionManager {
         // Note: computing starts here, not after awaiting.
         challenge::solve_blocking(request.challenge, request.difficulty, crypto)
     }
+
+    pub async fn has_p2p_connection(self, node_id: NodeId) -> bool {
+        self.state.read().await.p2p_sessions.get(&node_id).is_some()
+    }
 }
 
 impl Handler for SessionManager {
@@ -785,8 +889,7 @@ impl Handler for SessionManager {
                     state
                         .starting_sessions
                         .clone()
-                        .map(|entity| entity.dispatcher(from))
-                        .flatten()
+                        .and_then(|entity| entity.dispatcher(from))
                 })
         }
         .boxed_local()
@@ -831,22 +934,50 @@ impl Handler for SessionManager {
                 ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
                     return async move {
                         log::trace!("Got Pause! {:?}", message);
-                        *self.state.read().await.forward_paused_till.write().await =
-                            Some(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY))
+                        let lock = {
+                            let state = self.state.read().await;
+                            state.forward_paused_till.clone()
+                        };
+                        lock.write()
+                            .await
+                            .replace(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY));
                     }
                     .boxed_local();
                 }
                 ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => {
                     return async move {
                         log::trace!("Got Resume! {:?}", message);
-                        *self.state.write().await.forward_paused_till.write().await = None
+                        let lock = {
+                            let state = self.state.read().await;
+                            state.forward_paused_till.clone()
+                        };
+                        lock.write().await.take();
                     }
                     .boxed_local();
                 }
-                ya_relay_proto::proto::control::Kind::Disconnected(message) => {
+                ya_relay_proto::proto::control::Kind::Disconnected(
+                    proto::control::Disconnected { by: Some(by) },
+                ) => {
                     return async move {
-                        log::trace!("Got Disconnected! {:?}", message);
-                        if let Ok(node) = self.registry.resolve_slot(message.slot).await {
+                        log::trace!("Got Disconnected! {:?}", by);
+
+                        if let Ok(node) = match by {
+                            By::Slot(id) => self.registry.resolve_slot(id).await,
+                            By::NodeId(id) if NodeId::try_from(&id).is_ok() => {
+                                self.registry
+                                    .resolve_node(NodeId::try_from(&id).unwrap())
+                                    .await
+                            }
+                            // We will disconnect session responsible for sending message. Doesn't matter
+                            // what id was sent.
+                            By::SessionId(_session) => {
+                                if let Some(session) = self.find_session(from).await {
+                                    self.close_session(session).await.ok();
+                                }
+                                return;
+                            }
+                            _ => return,
+                        } {
                             log::info!(
                                 "Node [{}] disconnected from Relay. Stopping forwarding..",
                                 node.id
@@ -909,10 +1040,10 @@ impl Handler for SessionManager {
                         // In this case we can't establish session, because we don't have
                         // neither NodeId nor SlotId.
                         log::warn!(
-                            "Forward packet from unknown address: {}. Can't resolve.",
+                            "Forward packet from unknown address: {}. Can't resolve. Sending Disconnected message.",
                             from
                         );
-                        return Ok(());
+                        return myself.send_disconnect(SessionId::from(forward.session_id), from).await;
                     }
                 }
             } else {

@@ -24,6 +24,8 @@ use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
+use ya_relay_proto::proto::control::disconnected::By;
+use ya_relay_proto::proto::control::Disconnected;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
 
@@ -62,15 +64,13 @@ impl Server {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
                 if session_id.is_empty() {
-                    match kind {
+                    return match kind {
                         Some(proto::packet::Kind::Request(proto::Request {
                             request_id,
                             kind: Some(proto::request::Kind::Session(_)),
-                        })) => {
-                            return self.clone().new_session(request_id, from).await;
-                        }
-                        _ => return Err(BadRequest::NoSessionId.into()),
-                    }
+                        })) => self.clone().new_session(request_id, from).await,
+                        _ => Err(BadRequest::NoSessionId.into()),
+                    };
                 }
 
                 let id = SessionId::try_from(session_id.clone())
@@ -110,8 +110,8 @@ impl Server {
                             node.info.node_id,
                         );
                     }
-                    Some(proto::packet::Kind::Control(_control)) => {
-                        log::info!("Control packet from: {}", from);
+                    Some(proto::packet::Kind::Control(packet)) => {
+                        self.control(id, packet, from).await?
                     }
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
@@ -158,8 +158,12 @@ impl Server {
                     // to notify only interested Nodes, that means Nodes forwarding something.
                     let control_packet = proto::Packet::control(
                         session_id.to_vec(),
-                        ya_relay_proto::proto::control::Disconnected { slot },
+                        ya_relay_proto::proto::control::Disconnected {
+                            by: Some(proto::control::disconnected::By::Slot(slot)),
+                        },
                     );
+
+                    drop(server);
                     self.send_to(PacketKind::Packet(control_packet), &from)
                         .await
                         .map_err(|_| InternalError::Send)?;
@@ -175,6 +179,7 @@ impl Server {
             };
             (src_node, dest_node)
         };
+
         if let Err(e) = src_node
             .forwarding_limiter
             .check_n(NonZeroU32::new(packet.payload.len().try_into().unwrap_or(u32::MAX)).unwrap())
@@ -221,17 +226,57 @@ impl Server {
         packet.slot = src_node.info.slot;
         packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
-        log::debug!(
-            "Sending forward packet from [{}] to [{}]",
+        log::trace!(
+            "Sending forward packet from [{}] to [{}] ({} B)",
             src_node.info.node_id,
-            dest_node.info.node_id
+            dest_node.info.node_id,
+            packet.payload.len(),
         );
 
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
             .await
             .map_err(|_| InternalError::Send)?;
+        Ok(())
+    }
 
-        // TODO: We should update `last_seen` timestamp of `src_node`.
+    async fn control(
+        &self,
+        session: SessionId,
+        packet: proto::Control,
+        from: SocketAddr,
+    ) -> ServerResult<()> {
+        log::debug!("Control packet from: {}. Packet: {:?}", from, packet);
+
+        if let proto::Control {
+            kind: Some(proto::control::Kind::Disconnected(Disconnected { by: Some(by) })),
+        } = packet
+        {
+            let mut server = self.state.write().await;
+            match by {
+                By::SessionId(_id) => match server.nodes.get_by_session(session) {
+                    None => return Err(Unauthorized::SessionNotFound(session).into()),
+                    Some(node) => {
+                        log::info!(
+                            "Received Disconnected message from Node [{}]({}).",
+                            node.info.node_id,
+                            from
+                        );
+                        server.nodes.remove_session(node.info.slot)
+                    }
+                },
+                // Allowing only closing sessions. Otherwise we could close someone's else session.
+                By::Slot(_) => {
+                    return Err(
+                        BadRequest::InvalidParam("Slot. Only Session allowed".into()).into(),
+                    )
+                }
+                By::NodeId(_) => {
+                    return Err(
+                        BadRequest::InvalidParam("NodeId. Only Session allowed".into()).into(),
+                    )
+                }
+            };
+        }
         Ok(())
     }
 
@@ -308,7 +353,6 @@ impl Server {
         .map_err(|_| InternalError::Send)?;
 
         log::trace!("Responding to ping from: {}", from);
-
         Ok(())
     }
 
@@ -354,7 +398,8 @@ impl Server {
         let nodes = nodes
             .into_iter()
             .map(|node_info| to_node_response(node_info, params.public_key))
-            .collect();
+            .collect::<Vec<_>>();
+        let return_count = nodes.len();
 
         self.send_to(
             proto::Packet::response(
@@ -369,8 +414,10 @@ impl Server {
         .map_err(|_| InternalError::Send)?;
 
         log::info!(
-            "Neighborhood sent to (request: {}): {}, session: {}",
+            "Neighborhood ({} node(s)) sent to (request: {}, count: {}): {}, session: {}",
+            return_count,
             request_id,
+            params.count,
             from,
             session_id
         );
@@ -609,6 +656,7 @@ impl Server {
                     public_key: session.public_key,
                     slot: u32::MAX,
                     endpoints: vec![],
+                    supported_encryptions: vec![],
                 };
 
                 let node = NodeSession {
@@ -714,7 +762,10 @@ impl Server {
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(self.config.session_timeout);
+        server.nodes.check_timeouts(
+            self.config.session_timeout,
+            self.config.session_purge_timeout,
+        );
     }
 
     async fn forward_resumer(&self) {
@@ -837,7 +888,11 @@ impl Server {
                 Err(e) => e,
             };
 
-            log::error!("Packet dispatch failed. {}", error);
+            log::error!(
+                "Packet dispatch failed (request={:?}). {}",
+                request_id,
+                error
+            );
             if let Some(request_id) = request_id {
                 server
                     .error_response(request_id, session_id, &addr, error)
@@ -908,5 +963,6 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
             .collect(),
         seen_ts: node_info.last_seen.timestamp() as u32,
         slot: node_info.info.slot,
+        supported_encryptions: node_info.info.supported_encryptions,
     }
 }
