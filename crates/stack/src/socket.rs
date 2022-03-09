@@ -7,6 +7,7 @@ use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 use crate::Protocol;
 
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
+pub const TCP_DISCONN_TIMEOUT: Duration = Duration::from_secs(2);
 const TCP_TIMEOUT: Duration = Duration::from_secs(120);
 const TCP_KEEP_ALIVE: Duration = Duration::from_secs(30);
 const TCP_ACK_DELAY: Duration = Duration::from_millis(10);

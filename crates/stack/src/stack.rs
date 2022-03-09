@@ -7,8 +7,9 @@ use smoltcp::socket::*;
 use smoltcp::time::Instant;
 use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
 
-use crate::connection::{Connect, Connection, ConnectionMeta, Send};
+use crate::connection::{Connect, Connection, ConnectionMeta, Disconnect, Send};
 use crate::interface::*;
+use crate::patch_smoltcp::GetSocketSafe;
 use crate::port;
 use crate::protocol::Protocol;
 use crate::socket::*;
@@ -147,22 +148,22 @@ impl<'a> Stack<'a> {
         ))
     }
 
-    pub fn close(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+    pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
         let mut iface = self.iface.borrow_mut();
-        let mut sockets = iface.sockets_mut();
+        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+            sock.close();
+        }
+        Disconnect::new(handle, self.iface.clone())
+    }
 
-        if let Some((_, socket)) = sockets.find(|(h, _)| h == &handle) {
-            log::trace!(
-                "closing connection: {}:{}:{}",
-                meta.protocol,
-                meta.local,
-                meta.remote,
-            );
-            socket.close();
+    pub(crate) fn abort(&self, handle: SocketHandle) {
+        let mut iface = self.iface.borrow_mut();
+        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+            sock.abort();
         }
     }
 
-    pub fn remove(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+    pub(crate) fn remove(&self, meta: &ConnectionMeta, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 

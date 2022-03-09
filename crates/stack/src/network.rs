@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use futures::future::LocalBoxFuture;
+use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::iface::SocketHandle;
 use smoltcp::phy::Device;
@@ -106,6 +106,48 @@ impl Network {
         .boxed_local()
     }
 
+    /// Close all TCP connections with a remote IP address
+    pub fn disconnect_all(
+        &self,
+        remote_ip: Box<[u8]>,
+        timeout: impl Into<Duration>,
+    ) -> LocalBoxFuture<()> {
+        let (handles, futs): (Vec<_>, Vec<_>) = {
+            let connections = self.connections.borrow();
+            connections
+                .values()
+                .filter(|conn| {
+                    conn.meta.remote.addr.as_bytes() == remote_ip.as_ref()
+                        && conn.meta.protocol == Protocol::Tcp
+                })
+                .map(|conn| (conn.handle, self.stack.disconnect(conn.handle)))
+                .unzip()
+        };
+
+        if futs.is_empty() {
+            return futures::future::ready(()).boxed_local();
+        }
+
+        self.poll();
+
+        let timeout = timeout.into();
+        let net = self.clone();
+
+        async move {
+            let pending = futures::future::join_all(futs);
+            let timeout = tokio::time::delay_for(timeout);
+
+            if let Either::Right((_, pending)) = futures::future::select(pending, timeout).await {
+                handles.into_iter().for_each(|h| net.stack.abort(h));
+                net.poll();
+
+                let timeout = tokio::time::delay_for(Duration::from_millis(500));
+                let _ = futures::future::select(pending, timeout).await;
+            }
+        }
+        .boxed_local()
+    }
+
     #[inline(always)]
     fn is_connected(&self, meta: &ConnectionMeta) -> bool {
         self.connections.borrow().contains_key(meta)
@@ -127,13 +169,7 @@ impl Network {
         handles.borrow_mut().insert(handle, meta);
     }
 
-    pub fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
-        { self.connections.borrow_mut().remove(meta) }.map(|connection| {
-            self.stack.close(&connection.meta, connection.handle);
-            connection
-        })
-    }
-
+    #[inline(always)]
     fn remove_connection(&self, meta: &ConnectionMeta, handle: SocketHandle) {
         self.stack.remove(meta, handle);
         self.connections.borrow_mut().remove(meta);
@@ -246,6 +282,9 @@ impl Network {
                 match { self.handles.borrow().get(&handle).cloned() } {
                     Some(meta) => {
                         remove.push((meta, handle));
+                        if let Ok(desc) = meta.try_into() {
+                            events.push(IngressEvent::Disconnected { desc })
+                        }
                     }
                     None => {
                         if let Ok(meta) = desc.try_into() {
