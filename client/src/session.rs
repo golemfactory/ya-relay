@@ -1,5 +1,5 @@
 use futures::future::LocalBoxFuture;
-use futures::SinkExt;
+use futures::{FutureExt, SinkExt};
 use std::convert::TryInto;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -15,6 +15,7 @@ use ya_relay_proto::{codec, proto};
 
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
+const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Udp connection to other Node. It is either peer-to-peer connection
 /// or central server session. Implements functions for sending
@@ -120,7 +121,7 @@ impl Session {
         self.request::<proto::response::Pong>(
             packet.into(),
             self.id.to_vec(),
-            DEFAULT_REQUEST_TIMEOUT,
+            DEFAULT_PING_TIMEOUT,
         )
         .await?;
 
@@ -149,8 +150,20 @@ impl Session {
         let last_seen = self.dispatcher.last_seen();
 
         if last_seen + expiration < Instant::now() {
+            // Sending 3 pings after each other to avoid lost UDP packets.
+            // We need only one response.
+            // Note: futures are asynchronous, because we shouldn't wait for ping timeout
+            //       in case of lost packets.
+            futures::future::select_ok((0..3).into_iter().map(|i| {
+                async move {
+                    tokio::time::delay_for(Duration::from_millis(200 * i)).await;
+                    self.ping().await
+                }
+                .boxed_local()
+            }))
+            .await
             // Ignoring error, because in such a case, we should disconnect anyway.
-            self.ping().await.ok();
+            .ok();
         }
 
         // Could be updated after ping.
