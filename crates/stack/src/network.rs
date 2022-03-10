@@ -9,16 +9,12 @@ use std::time::{Duration, Instant};
 use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::iface::SocketHandle;
-use smoltcp::phy::Device;
 use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
 
 use crate::connection::{Connection, ConnectionMeta};
-use crate::packet::{
-    ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket, ETHERNET_HDR_SIZE, IP6_HDR_SIZE,
-    TCP_HDR_SIZE,
-};
+use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
 use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
@@ -204,31 +200,12 @@ impl Network {
         let net = self.clone();
         let stack = self.stack.clone();
 
-        let (mtu, is_tun) = {
-            let iface_rfc = stack.iface();
-            let iface = iface_rfc.borrow();
-            let mtu = iface.device().capabilities().max_transmission_unit;
-            let is_tun = iface.device().is_tun();
-            (mtu, is_tun)
-        };
-
-        let mut chunk_size = mtu - IP6_HDR_SIZE - TCP_HDR_SIZE;
-        if !is_tun {
-            chunk_size -= ETHERNET_HDR_SIZE;
-        }
-
         self.poller.clone().spawn();
         self.sender.spawn_local(move |vec, conn| {
             let net = net.clone();
             let stack = stack.clone();
 
-            async move {
-                for chunk in vec.chunks(chunk_size) {
-                    let net = net.clone();
-                    stack.send(chunk.to_vec(), conn, move || net.poll()).await?;
-                }
-                Ok(())
-            }
+            async move { stack.send(vec, conn, move || net.poll()).await }
         });
     }
 
