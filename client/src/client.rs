@@ -16,7 +16,8 @@ use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::SlotId;
+use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
+use ya_relay_stack::packet::{ETHERNET_HDR_SIZE, IP6_HDR_SIZE, UDP_HDR_SIZE};
 
 use crate::session_manager::SessionManager;
 
@@ -34,6 +35,7 @@ pub struct ClientConfig {
     pub srv_addr: SocketAddr,
     pub auto_connect: bool,
     pub session_expiration: Duration,
+    pub max_transmission_unit: usize,
 }
 
 pub struct ClientBuilder {
@@ -307,6 +309,7 @@ impl ClientBuilder {
 
         let default_id = crypto.default_id().await?;
         let default_pub_key = crypto.get(default_id).await?.public_key().await?;
+        let mtu = resolve_udp_mtu().await? - MAX_TAG_SIZE - Forward::header_size();
 
         let mut client = Client::new(ClientConfig {
             node_id: default_id,
@@ -318,6 +321,7 @@ impl ClientBuilder {
             session_expiration: self
                 .session_expiration
                 .unwrap_or_else(|| Duration::from_secs(25)),
+            max_transmission_unit: mtu,
         });
 
         client.spawn().await?;
@@ -338,6 +342,10 @@ impl ClientConfig {
             .await
             .map_err(|e| InternalError::Generic(e.to_string()))
     }
+}
+
+async fn resolve_udp_mtu() -> anyhow::Result<usize> {
+    Ok(1500 - ETHERNET_HDR_SIZE - IP6_HDR_SIZE - UDP_HDR_SIZE)
 }
 
 #[derive(Clone)]

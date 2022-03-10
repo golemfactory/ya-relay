@@ -12,11 +12,10 @@ use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
-use ya_relay_stack::connection::ConnectionMeta;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, tun_iface};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
-use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
+use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
 use ya_relay_stack::{Channel, Connection, EgressEvent, IngressEvent, Network, Protocol, Stack};
 
 use crate::client::ClientConfig;
@@ -71,7 +70,7 @@ impl VirtNode {
 
 impl TcpLayer {
     pub fn new(config: Arc<ClientConfig>, ingress: Channel<Forwarded>) -> TcpLayer {
-        let net = default_network(config.node_pub_key.clone());
+        let net = default_network(config.node_pub_key.clone(), config.max_transmission_unit);
         TcpLayer {
             net,
             state: Arc::new(RwLock::new(TcpLayerState {
@@ -119,9 +118,22 @@ impl TcpLayer {
     }
 
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let remote_ip = {
+            let state = self.state.read().await;
+            match state.ips.get(&node_id).cloned() {
+                Some(ip) => ip,
+                _ => return Ok(()),
+            }
+        };
+
+        self.net
+            .disconnect_all(remote_ip, TCP_DISCONN_TIMEOUT)
+            .await;
+
         let mut state = self.state.write().await;
-        if let Some(ip) = state.ips.remove(&node_id) {
-            state.nodes.remove(&ip);
+        if let Some(remote_ip) = state.ips.remove(&node_id) {
+            log::debug!("[VirtualTcp] Disconnected from node [{}]", node_id);
+            state.nodes.remove(&remote_ip);
         }
         Ok(())
     }
@@ -137,11 +149,6 @@ impl TcpLayer {
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
         Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
-    }
-
-    #[inline(always)]
-    pub fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
-        self.net.close_connection(meta)
     }
 
     pub async fn get_next_fwd_payload<T>(
@@ -371,11 +378,11 @@ fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
     Ipv6Addr::from(ipv6_bytes)
 }
 
-fn default_network(key: PublicKey) -> Network {
+fn default_network(key: PublicKey, mtu: usize) -> Network {
     let address = key.address();
     let ipv6_addr = to_ipv6(address);
     let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
-    let mut iface = tun_iface();
+    let mut iface = tun_iface(mtu);
 
     let name = format!(
         "{:02x}{:02x}{:02x}{:02x}",

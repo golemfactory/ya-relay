@@ -7,6 +7,10 @@ use std::ops::Deref;
 use crate::{Error, Protocol};
 
 pub const ETHERNET_HDR_SIZE: usize = 14;
+pub const IP4_HDR_SIZE: usize = 20;
+pub const IP6_HDR_SIZE: usize = 40;
+pub const TCP_HDR_SIZE: usize = 20;
+pub const UDP_HDR_SIZE: usize = 20;
 
 mod field {
     /// Field slice range within packet bytes
