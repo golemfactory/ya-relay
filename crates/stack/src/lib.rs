@@ -14,7 +14,7 @@ mod stack;
 pub use connection::{Connect, Connection, DisconnectReason, Send};
 pub use device::CaptureDevice;
 pub use error::Error;
-pub use network::{Channel, EgressEvent, IngressEvent, Network};
+pub use network::{Channel, EgressEvent, IngressEvent, Network, NetworkConfig};
 pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;
 pub use stack::Stack;

@@ -10,22 +10,24 @@ use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
 use crate::connection::{Connect, Connection, ConnectionMeta, Disconnect, Send};
 use crate::interface::*;
 use crate::patch_smoltcp::GetSocketSafe;
-use crate::port;
 use crate::protocol::Protocol;
 use crate::socket::*;
+use crate::{port, NetworkConfig};
 use crate::{Error, Result};
 
 #[derive(Clone)]
 pub struct Stack<'a> {
     iface: Rc<RefCell<CaptureInterface<'a>>>,
     ports: Rc<RefCell<port::Allocator>>,
+    config: Rc<NetworkConfig>,
 }
 
 impl<'a> Stack<'a> {
-    pub fn new(iface: CaptureInterface<'a>) -> Self {
+    pub fn new(iface: CaptureInterface<'a>, config: Rc<NetworkConfig>) -> Self {
         Self {
             iface: Rc::new(RefCell::new(iface)),
             ports: Default::default(),
+            config,
         }
     }
 
@@ -66,7 +68,7 @@ impl<'a> Stack<'a> {
         let handle = match protocol {
             Protocol::Tcp => {
                 if let SocketEndpoint::Ip(ep) = endpoint {
-                    let mut socket = tcp_socket(mtu);
+                    let mut socket = tcp_socket(mtu, self.config.buffer_size_multiplier);
                     socket.listen(ep).map_err(|e| Error::Other(e.to_string()))?;
                     socket.set_defaults();
                     iface.add_socket(socket)
@@ -76,7 +78,7 @@ impl<'a> Stack<'a> {
             }
             Protocol::Udp => {
                 if let SocketEndpoint::Ip(ep) = endpoint {
-                    let mut socket = udp_socket(mtu);
+                    let mut socket = udp_socket(mtu, self.config.buffer_size_multiplier);
                     socket.bind(ep).map_err(|e| Error::Other(e.to_string()))?;
                     iface.add_socket(socket)
                 } else {
@@ -85,7 +87,7 @@ impl<'a> Stack<'a> {
             }
             Protocol::Icmp => {
                 if let SocketEndpoint::Icmp(e) = endpoint {
-                    let mut socket = icmp_socket(mtu);
+                    let mut socket = icmp_socket(mtu, self.config.buffer_size_multiplier);
                     socket.bind(e).map_err(|e| Error::Other(e.to_string()))?;
                     iface.add_socket(socket)
                 } else {
@@ -104,7 +106,12 @@ impl<'a> Stack<'a> {
                     }
                 };
 
-                let socket = raw_socket(ip_version, map_protocol(protocol)?, mtu);
+                let socket = raw_socket(
+                    ip_version,
+                    map_protocol(protocol)?,
+                    mtu,
+                    self.config.buffer_size_multiplier,
+                );
                 iface.add_socket(socket)
             }
         };
@@ -119,7 +126,7 @@ impl<'a> Stack<'a> {
         let mtu = iface.device().capabilities().max_transmission_unit;
 
         let protocol = Protocol::Tcp;
-        let handle = iface.add_socket(tcp_socket(mtu));
+        let handle = iface.add_socket(tcp_socket(mtu, self.config.buffer_size_multiplier));
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
 
