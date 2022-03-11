@@ -216,29 +216,34 @@ impl<'a> TcpSocketExt for TcpSocket<'a> {
     }
 }
 
-pub fn tcp_socket<'a>(mtu: usize) -> TcpSocket<'a> {
-    let rx_buf = TcpSocketBuffer::new(vec![0; mtu * 4]);
-    let tx_buf = TcpSocketBuffer::new(vec![0; mtu * 4]);
+pub fn tcp_socket<'a>(mtu: usize, buf_multiplier: usize) -> TcpSocket<'a> {
+    let rx_buf = TcpSocketBuffer::new(vec![0; mtu * buf_multiplier]);
+    let tx_buf = TcpSocketBuffer::new(vec![0; mtu * buf_multiplier]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
     socket.set_defaults();
     socket
 }
 
-pub fn udp_socket<'a>(mtu: usize) -> UdpSocket<'a> {
-    let rx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
-    let tx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
+pub fn udp_socket<'a>(mtu: usize, buf_multiplier: usize) -> UdpSocket<'a> {
+    let rx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+    let tx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
     UdpSocket::new(rx_buf, tx_buf)
 }
 
-pub fn icmp_socket<'a>(mtu: usize) -> IcmpSocket<'a> {
-    let rx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
-    let tx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
+pub fn icmp_socket<'a>(mtu: usize, buf_multiplier: usize) -> IcmpSocket<'a> {
+    let rx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+    let tx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
     IcmpSocket::new(rx_buf, tx_buf)
 }
 
-pub fn raw_socket<'a>(ip_version: IpVersion, ip_protocol: IpProtocol, mtu: usize) -> RawSocket<'a> {
-    let rx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
-    let tx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * 4));
+pub fn raw_socket<'a>(
+    ip_version: IpVersion,
+    ip_protocol: IpProtocol,
+    mtu: usize,
+    buf_multiplier: usize,
+) -> RawSocket<'a> {
+    let rx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+    let tx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
     RawSocket::new(ip_version, ip_protocol, rx_buf, tx_buf)
 }
 

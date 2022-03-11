@@ -4,6 +4,7 @@ use futures::channel::mpsc;
 use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::Ipv6Addr;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
@@ -16,7 +17,9 @@ use ya_relay_stack::interface::{add_iface_address, add_iface_route, tun_iface};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
-use ya_relay_stack::{Channel, Connection, EgressEvent, IngressEvent, Network, Protocol, Stack};
+use ya_relay_stack::{
+    Channel, Connection, EgressEvent, IngressEvent, Network, NetworkConfig, Protocol, Stack,
+};
 
 use crate::client::ClientConfig;
 use crate::client::Forwarded;
@@ -70,7 +73,10 @@ impl VirtNode {
 
 impl TcpLayer {
     pub fn new(config: Arc<ClientConfig>, ingress: Channel<Forwarded>) -> TcpLayer {
-        let net = default_network(config.node_pub_key.clone(), config.max_transmission_unit);
+        let net = default_network(
+            config.node_pub_key.clone(),
+            Rc::new(config.tcp_config.clone()),
+        );
         TcpLayer {
             net,
             state: Arc::new(RwLock::new(TcpLayerState {
@@ -378,11 +384,11 @@ fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
     Ipv6Addr::from(ipv6_bytes)
 }
 
-fn default_network(key: PublicKey, mtu: usize) -> Network {
+fn default_network(key: PublicKey, config: Rc<NetworkConfig>) -> Network {
     let address = key.address();
     let ipv6_addr = to_ipv6(address);
     let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
-    let mut iface = tun_iface(mtu);
+    let mut iface = tun_iface(config.max_transmission_unit);
 
     let name = format!(
         "{:02x}{:02x}{:02x}{:02x}",
@@ -398,5 +404,5 @@ fn default_network(key: PublicKey, mtu: usize) -> Network {
         Route::new_ipv6_gateway(ipv6_addr.into()),
     );
 
-    Network::new(name, Stack::new(iface))
+    Network::new(name, config.clone(), Stack::new(iface, config))
 }

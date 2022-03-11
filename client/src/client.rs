@@ -18,6 +18,7 @@ use ya_relay_core::utils::parse_udp_url;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
 use ya_relay_stack::packet::{ETHERNET_HDR_SIZE, IP6_HDR_SIZE, UDP_HDR_SIZE};
+use ya_relay_stack::NetworkConfig;
 
 use crate::session_manager::SessionManager;
 
@@ -35,7 +36,7 @@ pub struct ClientConfig {
     pub srv_addr: SocketAddr,
     pub auto_connect: bool,
     pub session_expiration: Duration,
-    pub max_transmission_unit: usize,
+    pub tcp_config: NetworkConfig,
 }
 
 pub struct ClientBuilder {
@@ -44,6 +45,7 @@ pub struct ClientBuilder {
     crypto: Option<Rc<dyn CryptoProvider>>,
     auto_connect: bool,
     session_expiration: Option<Duration>,
+    vtcp_buffer_size: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -276,6 +278,7 @@ impl ClientBuilder {
             crypto: None,
             auto_connect: false,
             session_expiration: None,
+            vtcp_buffer_size: None,
         }
     }
 
@@ -296,6 +299,11 @@ impl ClientBuilder {
 
     pub fn expire_session_after(mut self, expiration: Duration) -> Self {
         self.session_expiration = Some(expiration);
+        self
+    }
+
+    pub fn virtual_tcp_buffer_size_multiplier(mut self, multiplier: usize) -> Self {
+        self.vtcp_buffer_size = Some(multiplier);
         self
     }
 
@@ -321,7 +329,10 @@ impl ClientBuilder {
             session_expiration: self
                 .session_expiration
                 .unwrap_or_else(|| Duration::from_secs(25)),
-            max_transmission_unit: mtu,
+            tcp_config: NetworkConfig {
+                max_transmission_unit: mtu,
+                buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(4),
+            },
         });
 
         client.spawn().await?;

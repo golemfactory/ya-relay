@@ -29,8 +29,16 @@ pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
 
 #[derive(Clone)]
+pub struct NetworkConfig {
+    pub max_transmission_unit: usize,
+    /// Size of TCP send and receive buffer as multiply of MTU.
+    pub buffer_size_multiplier: usize,
+}
+
+#[derive(Clone)]
 pub struct Network {
     pub name: Rc<String>,
+    pub config: Rc<NetworkConfig>,
     stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
@@ -43,9 +51,10 @@ pub struct Network {
 
 impl Network {
     /// Creates a new Network instance
-    pub fn new(name: impl ToString, stack: Stack<'static>) -> Self {
+    pub fn new(name: impl ToString, config: Rc<NetworkConfig>, stack: Stack<'static>) -> Self {
         let network = Self {
             name: Rc::new(name.to_string()),
+            config,
             stack,
             sender: Default::default(),
             poller: Default::default(),
@@ -661,6 +670,7 @@ impl<T> Default for Channel<T> {
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
+    use std::rc::Rc;
     use std::time::Duration;
 
     use futures::channel::{mpsc, oneshot};
@@ -672,11 +682,12 @@ mod tests {
     use tokio::task::spawn_local;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
-    use crate::{Connection, IngressEvent, Network, Protocol, Stack};
+    use crate::{Connection, IngressEvent, Network, NetworkConfig, Protocol, Stack};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-    fn new_network(medium: Medium, ip: IpAddress, mtu: usize) -> Network {
+    fn new_network(medium: Medium, ip: IpAddress, config: NetworkConfig) -> Network {
+        let config = Rc::new(config);
         let cidr = IpCidr::new(ip.into(), 16);
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
@@ -685,14 +696,18 @@ mod tests {
         };
 
         let mut iface = match medium {
-            Medium::Ethernet => tap_iface(ip_to_mac(ip), mtu),
-            Medium::Ip => tun_iface(mtu),
+            Medium::Ethernet => tap_iface(ip_to_mac(ip), config.max_transmission_unit),
+            Medium::Ip => tun_iface(config.max_transmission_unit),
             _ => panic!("unsupported medium: {:?}", medium),
         };
 
         add_iface_address(&mut iface, cidr);
         add_iface_route(&mut iface, cidr, route);
-        Network::new(format!("[{:?}] {}", medium, ip), Stack::new(iface))
+        Network::new(
+            format!("[{:?}] {}", medium, ip),
+            config.clone(),
+            Stack::new(iface, config),
+        )
     }
 
     fn produce_data<S, E>(
@@ -834,8 +849,13 @@ mod tests {
         let ip1 = Ipv4Address::new(10, 0, 0, 1);
         let ip2 = Ipv4Address::new(10, 0, 0, 2);
 
-        let net1 = new_network(medium, ip1.into(), MTU);
-        let net2 = new_network(medium, ip2.into(), MTU);
+        let config = NetworkConfig {
+            max_transmission_unit: MTU,
+            buffer_size_multiplier: 4,
+        };
+
+        let net1 = new_network(medium, ip1.into(), config.clone());
+        let net2 = new_network(medium, ip2.into(), config.clone());
 
         net1.spawn_local();
         net2.spawn_local();
