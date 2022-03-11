@@ -1,14 +1,16 @@
-use anyhow::{anyhow, bail};
-use derive_more::From;
-use futures::channel::mpsc;
-use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, bail};
+use derive_more::From;
+use futures::channel::mpsc;
+use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use tokio::sync::RwLock;
 use url::Url;
 
@@ -25,6 +27,7 @@ use crate::session_manager::SessionManager;
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
+pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
 const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
@@ -37,6 +40,7 @@ pub struct ClientConfig {
     pub auto_connect: bool,
     pub session_expiration: Duration,
     pub tcp_config: NetworkConfig,
+    pub pcap_path: Option<PathBuf>,
 }
 
 pub struct ClientBuilder {
@@ -318,6 +322,7 @@ impl ClientBuilder {
         let default_id = crypto.default_id().await?;
         let default_pub_key = crypto.get(default_id).await?.public_key().await?;
         let mtu = resolve_udp_mtu().await? - MAX_TAG_SIZE - Forward::header_size();
+        let pcap_path = std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from);
 
         let mut client = Client::new(ClientConfig {
             node_id: default_id,
@@ -333,6 +338,7 @@ impl ClientBuilder {
                 max_transmission_unit: mtu,
                 buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(4),
             },
+            pcap_path,
         });
 
         client.spawn().await?;
