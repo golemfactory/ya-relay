@@ -3,6 +3,7 @@ use smoltcp::socket::*;
 use smoltcp::storage::PacketMetadata;
 use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
+use std::hash::{Hash, Hasher};
 
 use crate::Protocol;
 
@@ -41,6 +42,46 @@ pub enum SocketEndpoint {
     Ip(IpEndpoint),
     Icmp(IcmpEndpoint),
     Other,
+}
+
+impl SocketEndpoint {
+    pub fn is_specified(&self) -> bool {
+        match self {
+            Self::Ip(ip) => ip.is_specified(),
+            Self::Icmp(icmp) => match icmp {
+                IcmpEndpoint::Udp(ip) => ip.is_specified(),
+                IcmpEndpoint::Ident(_) => true,
+                IcmpEndpoint::Unspecified => false,
+            },
+            Self::Other => false,
+        }
+    }
+}
+
+impl Hash for SocketEndpoint {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Ip(ip) => {
+                state.write_u8(1);
+                ip.hash(state);
+            }
+            Self::Icmp(icmp) => {
+                state.write_u8(2);
+                match icmp {
+                    IcmpEndpoint::Unspecified => state.write_u8(1),
+                    IcmpEndpoint::Udp(ip) => {
+                        state.write_u8(2);
+                        ip.hash(state);
+                    }
+                    IcmpEndpoint::Ident(id) => {
+                        state.write_u8(3);
+                        id.hash(state);
+                    }
+                }
+            }
+            Self::Other => state.write_u8(3),
+        }
+    }
 }
 
 impl PartialEq<IpEndpoint> for SocketEndpoint {
