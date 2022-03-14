@@ -153,12 +153,17 @@ impl Network {
         .boxed_local()
     }
 
-    #[inline(always)]
+    #[inline]
+    pub fn connections(&self) -> Vec<(SocketEndpoint, SocketEndpoint)> {
+        self.stack.connections()
+    }
+
+    #[inline]
     fn is_connected(&self, meta: &ConnectionMeta) -> bool {
         self.connections.borrow().contains_key(meta)
     }
 
-    #[inline(always)]
+    #[inline]
     fn add_connection(&self, connection: Connection) {
         Self::add_connection_to(connection, &self.connections, &self.handles);
     }

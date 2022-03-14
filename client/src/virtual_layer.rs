@@ -234,6 +234,17 @@ impl TcpLayer {
         Ok(())
     }
 
+    fn debug_connections(&self) {
+        let conns = self
+            .net
+            .connections()
+            .into_iter()
+            .map(|(l, r)| format!("{:?} -> {:?}", l, r))
+            .collect::<Vec<_>>()
+            .join("\n");
+        log::debug!("[VirtualTcp] Connections: \n{}", conns);
+    }
+
     async fn ingress_router(self, ingress_rx: UnboundedReceiver<IngressEvent>) {
         ingress_rx
             .for_each(move |event| {
@@ -247,6 +258,7 @@ impl TcpLayer {
                                 desc.remote,
                                 desc.local,
                             );
+                            myself.debug_connections();
                             return;
                         }
                         IngressEvent::Disconnected { desc } => {
@@ -257,6 +269,7 @@ impl TcpLayer {
                                 desc.remote,
                                 desc.local,
                             );
+                            myself.debug_connections();
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => (desc, payload),

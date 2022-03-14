@@ -155,6 +155,17 @@ impl<'a> Stack<'a> {
         ))
     }
 
+    pub fn connections(&self) -> Vec<(SocketEndpoint, SocketEndpoint)> {
+        let iface = self.iface.borrow();
+        let mut conns = Vec::new();
+
+        for (_, socket) in iface.sockets() {
+            conns.push((socket.local_endpoint(), socket.remote_endpoint()));
+        }
+
+        conns
+    }
+
     pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
