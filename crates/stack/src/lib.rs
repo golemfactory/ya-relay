@@ -17,8 +17,7 @@ pub use error::Error;
 pub use network::{Channel, EgressEvent, IngressEvent, Network, NetworkConfig};
 pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;
-pub use stack::Stack;
-
 pub use smoltcp;
+pub use stack::Stack;
 
 pub type Result<T> = std::result::Result<T, Error>;
