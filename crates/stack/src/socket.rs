@@ -48,16 +48,13 @@ impl SocketEndpoint {
     pub fn is_specified(&self) -> bool {
         match self {
             Self::Ip(ip) => ip.is_specified(),
-            Self::Icmp(icmp) => match icmp {
-                IcmpEndpoint::Udp(ip) => ip.is_specified(),
-                IcmpEndpoint::Ident(_) => true,
-                IcmpEndpoint::Unspecified => false,
-            },
+            Self::Icmp(icmp) => icmp.is_specified(),
             Self::Other => false,
         }
     }
 }
 
+#[allow(clippy::derive_hash_xor_eq)]
 impl Hash for SocketEndpoint {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
