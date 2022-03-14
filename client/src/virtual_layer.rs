@@ -162,7 +162,10 @@ impl TcpLayer {
 
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
-        Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
+        let result = self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?;
+
+        self.debug_connections();
+        Ok(result)
     }
 
     pub async fn get_next_fwd_payload<T>(
