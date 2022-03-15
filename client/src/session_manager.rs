@@ -729,19 +729,26 @@ impl SessionManager {
             self.sink = None;
         }
 
-        for session in self.sessions().await {
-            self.close_session(session.clone())
-                .await
-                .map_err(|e| {
-                    log::warn!(
-                        "Failed to close session {} ({}). {}",
-                        session.id,
-                        session.remote,
-                        e,
-                    )
-                })
-                .ok();
-        }
+        // Close sessions simultaneously, otherwise shutdown could last too long.
+        let sessions = self.sessions().await;
+        futures::future::join_all(sessions.into_iter().map(|session| {
+            let myself = self.clone();
+            async move {
+                myself
+                    .close_session(session.clone())
+                    .await
+                    .map_err(|e| {
+                        log::warn!(
+                            "Failed to close session {} ({}). {}",
+                            session.id,
+                            session.remote,
+                            e,
+                        )
+                    })
+                    .ok();
+            }
+        }))
+        .await;
 
         self.virtual_tcp.shutdown().await;
         Ok(())
