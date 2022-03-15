@@ -272,6 +272,10 @@ impl Network {
                         }
                     }
                     None => {
+                        if !desc.local.is_specified() {
+                            // skip; the socket is initializing
+                            continue;
+                        }
                         if let Ok(meta) = desc.try_into() {
                             log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
                             remove.push((meta, handle));
