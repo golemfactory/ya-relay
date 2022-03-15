@@ -38,7 +38,7 @@ pub struct Network {
     stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
-    bindings: Rc<RefCell<HashSet<SocketHandle>>>,
+    bindings: Rc<RefCell<HashSet<(Protocol, SocketEndpoint)>>>,
     connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
     handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
     ingress: Channel<IngressEvent>,
@@ -71,14 +71,10 @@ impl Network {
         protocol: Protocol,
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
+        let endpoint = endpoint.into();
         let handle = self.stack.bind(protocol, endpoint)?;
-        self.bindings.borrow_mut().insert(handle);
+        self.bindings.borrow_mut().insert((protocol, endpoint));
         Ok(handle)
-    }
-
-    #[inline(always)]
-    fn is_bound(&self, handle: &SocketHandle) -> bool {
-        self.bindings.borrow().contains(handle)
     }
 
     /// Initiate a TCP connection
@@ -176,6 +172,9 @@ impl Network {
 
     #[inline(always)]
     fn remove_connection(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+        if !meta.remote.is_specified() {
+            return;
+        }
         self.stack.remove(meta, handle);
         self.connections.borrow_mut().remove(meta);
     }
@@ -255,7 +254,7 @@ impl Network {
         let mut iface = iface_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
-        let mut rebind = None;
+        let mut rebind = self.bindings.borrow().clone();
 
         for (handle, socket) in iface.sockets_mut() {
             let mut desc = SocketDesc {
@@ -274,13 +273,17 @@ impl Network {
                     }
                     None => {
                         if let Ok(meta) = desc.try_into() {
-                            log::trace!("{}: removing unregistered socket {:?}", *self.name, desc);
+                            log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
                             remove.push((meta, handle));
                             events.push(IngressEvent::Disconnected { desc });
                         }
                     }
                 };
                 continue;
+            }
+
+            if !desc.remote.is_specified() {
+                rebind.remove(&(desc.protocol, desc.local));
             }
 
             while socket.can_recv() {
@@ -291,39 +294,25 @@ impl Network {
                     }
                     Ok(None) => break,
                     Err(err) => {
-                        log::trace!("{}: ingress packet error: {}", *self.name, err);
+                        log::trace!("{}: ingress packet error: {}", self.name, err);
                         processed = true;
                         continue;
                     }
                 };
 
                 desc.remote = remote.into();
-
-                if self.is_bound(&handle) {
-                    if let Ok(meta) = desc.try_into() {
-                        if !self.is_connected(&meta) {
-                            self.add_connection(Connection { handle, meta });
-                            events.push(IngressEvent::InboundConnection { desc });
-
-                            if let (Protocol::Tcp, SocketEndpoint::Ip(ep)) =
-                                (desc.protocol, desc.local)
-                            {
-                                rebind = Some((Protocol::Tcp, ep));
-                                self.bindings.borrow_mut().remove(&handle);
-                            }
-                        }
+                if let Ok(meta) = desc.try_into() {
+                    if !self.is_connected(&meta) {
+                        self.add_connection(Connection { handle, meta });
+                        events.push(IngressEvent::InboundConnection { desc });
                     }
                 }
 
-                log::trace!("{}: ingress {} B IP packet", *self.name, payload.len());
+                log::trace!("{}: ingress {} B IP packet", self.name, payload.len());
 
                 received += 1;
                 let no = COUNTER.fetch_add(1, Ordering::Relaxed);
                 events.push(IngressEvent::Packet { desc, payload, no });
-
-                if rebind.is_some() {
-                    break;
-                }
             }
         }
 
@@ -332,9 +321,9 @@ impl Network {
             self.remove_connection(&meta, handle);
         });
 
-        if let Some((p, ep)) = rebind {
+        for (p, ep) in rebind {
             if let Err(e) = self.bind(p, ep) {
-                log::trace!("{}: ingress: cannot re-bind {} {}: {}", self.name, p, ep, e);
+                log::trace!("{}: ingress: cannot bind {} {:?}: {}", self.name, p, ep, e);
             }
         }
 
@@ -344,7 +333,7 @@ impl Network {
                 if ingress_tx.send(event).is_err() {
                     log::trace!(
                         "{}: ingress channel closed, unable to receive packets",
-                        *self.name
+                        self.name
                     );
                     break;
                 }
