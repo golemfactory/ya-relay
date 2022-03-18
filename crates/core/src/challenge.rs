@@ -11,7 +11,8 @@ pub const SIGNATURE_SIZE: usize = std::mem::size_of::<ethsign::Signature>();
 pub const PREFIX_SIZE: usize = std::mem::size_of::<u64>();
 
 pub const CHALLENGE_SIZE: usize = 16;
-pub const CHALLENGE_DIFFICULTY: u64 = 16;
+// pub const CHALLENGE_DIFFICULTY: u64 = 16;
+pub const CHALLENGE_DIFFICULTY: u64 = 1;
 
 pub async fn solve(
     challenge: &[u8],
