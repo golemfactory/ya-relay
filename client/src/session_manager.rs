@@ -382,9 +382,14 @@ impl SessionManager {
         } else {
             // We are removing relay server session and all Nodes that are using
             // it to forward messages.
-            for node_id in self.registry.nodes_using_session(session.clone()).await {
-                self.remove_node(node_id).await;
-            }
+            futures::future::join_all(
+                self.registry
+                    .nodes_using_session(session.clone())
+                    .await
+                    .into_iter()
+                    .map(|id| self.remove_node(id)),
+            )
+            .await;
         }
 
         session.close().await?;
@@ -715,35 +720,35 @@ impl SessionManager {
             (starting, handles)
         };
 
-        if let Some(starting) = starting {
-            starting.shutdown().await;
-        }
         for abort_handle in abort_handles {
             abort_handle.abort();
         }
 
-        if let Some(mut out_stream) = self.sink.clone() {
+        if let Some(starting) = starting {
+            starting.shutdown().await;
+        }
+
+        // Close sessions simultaneously, otherwise shutdown could last too long.
+        let sessions = self.sessions().await;
+        futures::future::join_all(sessions.into_iter().map(|session| {
+            self.close_session(session.clone()).map_err(move |err| {
+                log::warn!(
+                    "Failed to close session {} ({}). {}",
+                    session.id,
+                    session.remote,
+                    err,
+                )
+            })
+        }))
+        .await;
+
+        self.virtual_tcp.shutdown().await;
+        if let Some(mut out_stream) = self.sink.take() {
             if let Err(e) = out_stream.close().await {
                 log::warn!("Error closing socket (output stream). {}", e);
             }
-            self.sink = None;
         }
 
-        for session in self.sessions().await {
-            self.close_session(session.clone())
-                .await
-                .map_err(|e| {
-                    log::warn!(
-                        "Failed to close session {} ({}). {}",
-                        session.id,
-                        session.remote,
-                        e,
-                    )
-                })
-                .ok();
-        }
-
-        self.virtual_tcp.shutdown().await;
         Ok(())
     }
 
