@@ -17,7 +17,7 @@ use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
-use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
+use crate::socket::{SocketDesc, SocketEndpoint, SocketExt, SocketState};
 use crate::stack::Stack;
 use crate::{Error, Result};
 
@@ -147,6 +147,15 @@ impl Network {
             }
         }
         .boxed_local()
+    }
+
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        iface
+            .sockets()
+            .map(|(_, s)| (s.desc(), s.state()))
+            .collect()
     }
 
     #[inline(always)]

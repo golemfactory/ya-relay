@@ -19,9 +19,7 @@ use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_ifa
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
-use ya_relay_stack::{
-    Channel, Connection, EgressEvent, IngressEvent, Network, NetworkConfig, Protocol, Stack,
-};
+use ya_relay_stack::*;
 
 use crate::client::ClientConfig;
 use crate::client::Forwarded;
@@ -163,6 +161,11 @@ impl TcpLayer {
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
         Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
+    }
+
+    #[inline]
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+        self.net.sockets()
     }
 
     pub async fn get_next_fwd_payload<T>(

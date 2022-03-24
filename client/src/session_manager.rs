@@ -56,8 +56,8 @@ pub struct SessionManagerState {
     /// we don't have public IP.
     public_addr: Option<SocketAddr>,
 
-    sessions: HashMap<SocketAddr, Arc<Session>>,
-    nodes_addr: HashMap<SocketAddr, NodeId>,
+    pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
+    pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
 
     forward_reliable: HashMap<NodeId, ForwardSender>,
     forward_unreliable: HashMap<NodeId, ForwardSender>,
@@ -131,6 +131,15 @@ impl SessionManager {
 
     pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
         self.state.write().await.public_addr = addr;
+    }
+
+    pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
+        let state = self.state.read().await;
+        state.nodes_addr.get(addr).copied()
+    }
+
+    pub async fn is_p2p(&self, node_id: &NodeId) -> bool {
+        self.state.read().await.p2p_sessions.contains_key(node_id)
     }
 
     async fn init_session(

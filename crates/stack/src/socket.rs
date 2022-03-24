@@ -36,6 +36,27 @@ impl SocketDesc {
     }
 }
 
+#[derive(From, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SocketState {
+    Tcp(TcpState),
+    Other,
+}
+
+impl Default for SocketState {
+    fn default() -> Self {
+        SocketState::Other
+    }
+}
+
+impl ToString for SocketState {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Tcp(state) => format!("{:?}", state),
+            _ => String::default(),
+        }
+    }
+}
+
 /// Socket endpoint kind
 #[derive(From, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SocketEndpoint {
@@ -50,6 +71,24 @@ impl SocketEndpoint {
             Self::Ip(ip) => ip.is_specified(),
             Self::Icmp(icmp) => icmp.is_specified(),
             Self::Other => false,
+        }
+    }
+
+    pub fn addr_repr(&self) -> String {
+        match self {
+            Self::Ip(ip) => format!("{}", ip.addr),
+            _ => Default::default(),
+        }
+    }
+
+    pub fn port_repr(&self) -> String {
+        match self {
+            Self::Ip(ip) => format!("{}", ip.port),
+            Self::Icmp(icmp) => match icmp {
+                IcmpEndpoint::Unspecified => "*".to_string(),
+                endpoint => format!("{:?}", endpoint),
+            },
+            Self::Other => Default::default(),
         }
     }
 }
@@ -127,6 +166,9 @@ pub trait SocketExt {
     fn can_send(&self) -> bool;
     fn send_capacity(&self) -> usize;
     fn send_queue(&self) -> usize;
+
+    fn state(&self) -> SocketState;
+    fn desc(&self) -> SocketDesc;
 }
 
 impl<'a> SocketExt for Socket<'a> {
@@ -237,6 +279,21 @@ impl<'a> SocketExt for Socket<'a> {
                     0
                 }
             }
+        }
+    }
+
+    fn state(&self) -> SocketState {
+        match &self {
+            Self::Tcp(s) => SocketState::from(s.state()),
+            _ => SocketState::Other,
+        }
+    }
+
+    fn desc(&self) -> SocketDesc {
+        SocketDesc {
+            protocol: self.protocol(),
+            local: self.local_endpoint(),
+            remote: self.remote_endpoint(),
         }
     }
 }
