@@ -34,6 +34,7 @@ pub struct Session {
 pub struct SessionDesc {
     pub remote: SocketAddr,
     pub id: SessionId,
+    pub last_seen: std::time::Instant,
     pub created: std::time::Instant,
 }
 
@@ -42,6 +43,7 @@ impl<'a> From<&'a Session> for SessionDesc {
         SessionDesc {
             remote: session.remote,
             id: session.id,
+            last_seen: session.dispatcher.last_seen().into_std(),
             created: session.created.into_std(),
         }
     }
