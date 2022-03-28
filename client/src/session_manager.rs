@@ -1051,12 +1051,21 @@ impl Handler for SessionManager {
                             forward.slot
                         );
 
-                        // Try to establish session in case we can't find Node.
                         let session = myself.server_session().await?;
                         let node = session.find_slot(forward.slot).await?;
-                        myself
-                            .resolve(&node.node_id, &node.endpoints, node.slot)
-                            .await?
+                        let node_id = NodeId::try_from(&node.node_id)?;
+
+                        match myself.registry.resolve_node(node_id).await {
+                            // Session is already established, but the relay slot wasn't known
+                            Ok(entry) => {
+                                myself.registry.add_slot_for_node(node_id, node.slot).await;
+                                entry
+                            },
+                            // Try to establish session in case we can't find Node.
+                            _ => myself
+                                    .resolve(&node.node_id, &node.endpoints, node.slot)
+                                    .await?,
+                        }
                     }
                 }
             };
