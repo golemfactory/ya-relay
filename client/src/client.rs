@@ -16,12 +16,13 @@ use url::Url;
 
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
+use ya_relay_core::udp_stream::resolve_max_payload_size;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
-use ya_relay_stack::packet::{ETHERNET_HDR_SIZE, IP6_HDR_SIZE, UDP_HDR_SIZE};
-use ya_relay_stack::NetworkConfig;
+use ya_relay_stack::{NetworkConfig, SocketDesc, SocketState};
 
+use crate::session::SessionDesc;
 use crate::session_manager::SessionManager;
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
@@ -99,6 +100,24 @@ impl Client {
 
     pub async fn public_addr(&self) -> Option<SocketAddr> {
         self.sessions.get_public_addr().await
+    }
+
+    pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
+        self.sessions.remote_id(addr).await
+    }
+
+    pub async fn sessions(&self) -> Vec<SessionDesc> {
+        self.sessions
+            .sessions()
+            .await
+            .into_iter()
+            .map(|s| SessionDesc::from(s.as_ref()))
+            .collect()
+    }
+
+    #[inline]
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+        self.sessions.virtual_tcp.sockets()
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
@@ -321,7 +340,7 @@ impl ClientBuilder {
 
         let default_id = crypto.default_id().await?;
         let default_pub_key = crypto.get(default_id).await?.public_key().await?;
-        let mtu = resolve_udp_mtu().await? - MAX_TAG_SIZE - Forward::header_size();
+        let mtu = resolve_max_payload_size().await? - MAX_TAG_SIZE - Forward::header_size();
         let pcap_path = std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from);
 
         let mut client = Client::new(ClientConfig {
@@ -359,10 +378,6 @@ impl ClientConfig {
             .await
             .map_err(|e| InternalError::Generic(e.to_string()))
     }
-}
-
-async fn resolve_udp_mtu() -> anyhow::Result<usize> {
-    Ok(1500 - ETHERNET_HDR_SIZE - IP6_HDR_SIZE - UDP_HDR_SIZE)
 }
 
 #[derive(Clone)]

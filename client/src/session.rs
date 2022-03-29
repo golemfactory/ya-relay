@@ -24,9 +24,29 @@ const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct Session {
     pub remote: SocketAddr,
     pub id: SessionId,
+    pub created: Instant,
 
     sink: OutStream,
     pub(crate) dispatcher: Dispatcher,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SessionDesc {
+    pub remote: SocketAddr,
+    pub id: SessionId,
+    pub last_seen: std::time::Instant,
+    pub created: std::time::Instant,
+}
+
+impl<'a> From<&'a Session> for SessionDesc {
+    fn from(session: &'a Session) -> Self {
+        SessionDesc {
+            remote: session.remote,
+            id: session.id,
+            last_seen: session.dispatcher.last_seen().into_std(),
+            created: session.created.into_std(),
+        }
+    }
 }
 
 impl Session {
@@ -35,6 +55,7 @@ impl Session {
             remote: remote_addr,
             id,
             sink,
+            created: Instant::now(),
             dispatcher: Dispatcher::default(),
         })
     }
