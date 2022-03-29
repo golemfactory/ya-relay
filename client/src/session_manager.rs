@@ -48,6 +48,7 @@ pub struct SessionManager {
     pub virtual_tcp: TcpLayer,
     pub registry: NodesRegistry,
 
+    guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
 }
 
@@ -55,6 +56,8 @@ pub struct SessionManagerState {
     /// If address is None after registering endpoints on Server, that means
     /// we don't have public IP.
     public_addr: Option<SocketAddr>,
+    /// Equals to `None` when not listening
+    bind_addr: Option<SocketAddr>,
 
     pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
     pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
@@ -80,8 +83,10 @@ impl SessionManager {
             config: config.clone(),
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
             registry: NodesRegistry::new(),
+            guarded: Default::default(),
             state: Arc::new(RwLock::new(SessionManagerState {
                 public_addr: None,
+                bind_addr: None,
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
                 forward_reliable: Default::default(),
@@ -117,6 +122,7 @@ impl SessionManager {
         {
             let mut state = self.state.write().await;
 
+            state.bind_addr.replace(bind_addr);
             state.handles.push(abort_dispatcher);
             state.handles.push(abort_expiration);
             state.starting_sessions = Some(StartingSessions::new(self.clone(), sink));
@@ -148,7 +154,6 @@ impl SessionManager {
         challenge: bool,
     ) -> anyhow::Result<Arc<Session>> {
         let node_id = self.config.node_id;
-
         log::debug!("[{}] initializing session with {}", node_id, addr);
 
         let tmp_session = self.temporary_session(addr).await?;
@@ -570,10 +575,52 @@ impl SessionManager {
         endpoints: &[proto::Endpoint],
         slot: u32,
     ) -> anyhow::Result<NodeEntry> {
+        let node_id: NodeId = node_id.try_into()?;
+        let addrs: Vec<SocketAddr> = endpoints
+            .iter()
+            .cloned()
+            .filter_map(|e| e.try_into().ok())
+            .collect();
+
+        let session_guard = self.guarded.get_or_insert(node_id, &addrs).await;
+        let session_lock = session_guard.lock.clone();
+        let _locked = session_lock.write().await;
+
+        // Check whether we already are connected to the remote node
+        if let Ok(entry) = self.registry.resolve_node(node_id).await {
+            return Ok(entry);
+        }
+
+        // Sanity checks
+        if let Err(e) = self
+            .assert_remote_node(node_id, &addrs)
+            .and_then(|_| self.assert_not_connected(&addrs))
+            .await
+        {
+            anyhow::bail!(format!(
+                "Not establishing session with [{}]: {}",
+                node_id, e
+            ));
+        }
+
+        self.establish(node_id, addrs, slot)
+            .then(move |result| async move {
+                session_guard.cleanup().await;
+                result
+            })
+            .await
+    }
+
+    async fn establish(
+        &self,
+        node_id: NodeId,
+        addrs: Vec<SocketAddr>,
+        slot: u32,
+    ) -> anyhow::Result<NodeEntry> {
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
         let (session, resolved_slot) = match self
-            .try_direct_session(node_id, endpoints)
+            .try_direct_session(node_id, addrs)
             .await
             .map_err(|e| log::info!("{}", e))
         {
@@ -582,10 +629,9 @@ impl SessionManager {
             Err(_) => (self.server_session().await?, slot),
         };
 
-        let node_id = node_id.try_into()?;
         if resolved_slot != 0 {
             log::info!(
-                "Using relay Server to forward packets to [{}](slot {})",
+                "Using relay Server to forward packets to [{}] (slot {})",
                 node_id,
                 resolved_slot
             );
@@ -602,11 +648,10 @@ impl SessionManager {
 
     pub async fn try_direct_session(
         &self,
-        node_id: &[u8],
-        endpoints: &[proto::Endpoint],
+        node_id: NodeId,
+        addrs: Vec<SocketAddr>,
     ) -> anyhow::Result<Arc<Session>> {
-        let node_id: NodeId = node_id.try_into()?;
-        if endpoints.is_empty() {
+        if addrs.is_empty() {
             // We are trying to connect to Node without public IP. Trying to send
             // ReverseConnection message, so Node will try to connect to us.
             if self.get_public_addr().await.is_some() {
@@ -619,12 +664,7 @@ impl SessionManager {
             )
         }
 
-        for endpoint in endpoints.iter() {
-            let addr = match endpoint.clone().try_into() {
-                Ok(addr) => addr,
-                Err(_) => continue,
-            };
-
+        for addr in addrs {
             match self.init_p2p_session(addr, node_id).await {
                 Ok(session) => return Ok(session),
                 Err(e) => {
@@ -719,6 +759,46 @@ impl SessionManager {
         }
 
         Ok(session)
+    }
+
+    async fn assert_remote_node(
+        &self,
+        node_id: NodeId,
+        addrs: &[SocketAddr],
+    ) -> anyhow::Result<()> {
+        // Match against own node id
+        if node_id == self.config.node_id {
+            anyhow::bail!("remote id is used by this node");
+        }
+
+        // Match against own IP addresses
+        let own_addrs: Vec<_> = {
+            let state = self.state.read().await;
+            vec![state.bind_addr, state.public_addr]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        for addr in addrs {
+            if own_addrs.iter().any(|a| a == addr) {
+                anyhow::bail!(format!("address {} is used by this node", addr));
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn assert_not_connected(&self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
+        let state = self.state.read().await;
+
+        // Fail if we're already connected to the remote address
+        for addr in addrs.iter() {
+            if state.nodes_addr.contains_key(addr) {
+                anyhow::bail!("already connected to {}", addr);
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
@@ -922,17 +1002,18 @@ impl Handler for SessionManager {
                             log::warn!("Got ReverseConnection with no endpoints to connect to.");
                             return;
                         }
-                        if let Err(e) = myself
+
+                        match myself
                             .resolve(&message.node_id, &message.endpoints, 0)
                             .await
                         {
-                            log::warn!(
+                            Err(e) => log::warn!(
                                 "Failed to resolve reverse connection. node_id={:?} error={}",
                                 message.node_id,
                                 e
-                            )
+                            ),
+                            Ok(_) => log::trace!("ReverseConnection succeeded: {:?}", message),
                         };
-                        log::trace!("DONE ReverseConnection! {:?}", message);
                     });
                 }
                 ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
@@ -1064,17 +1145,10 @@ impl Handler for SessionManager {
                         let node = session.find_slot(forward.slot).await?;
                         let node_id = NodeId::try_from(&node.node_id)?;
 
-                        match myself.registry.resolve_node(node_id).await {
-                            // Session is already established, but the relay slot wasn't known
-                            Ok(entry) => {
-                                myself.registry.add_slot_for_node(node_id, node.slot).await;
-                                entry
-                            },
-                            // Try to establish session in case we can't find Node.
-                            _ => myself
-                                    .resolve(&node.node_id, &node.endpoints, node.slot)
-                                    .await?,
-                        }
+                        log::debug!("Establishing connection to Node {} (slot {})", node_id, node.slot);
+                        myself
+                            .resolve(&node.node_id, &node.endpoints, node.slot)
+                            .await?
                     }
                 }
             };
@@ -1102,5 +1176,84 @@ impl SessionManagerState {
         }
 
         self.sessions.entry(addr).or_insert(session);
+    }
+}
+
+#[derive(Clone, Default)]
+struct GuardedSessions {
+    state: Arc<RwLock<GuardedSessionsState>>,
+}
+
+impl GuardedSessions {
+    async fn get_or_insert<'a>(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionGuard {
+        match {
+            let state = self.state.read().await;
+            state.get(node_id, addrs)
+        } {
+            Some(guard) => guard,
+            None => {
+                let guard = SessionGuard::new(self.state.clone(), node_id, addrs.to_vec());
+                let mut state = self.state.write().await;
+                state.add(guard.clone());
+                guard
+            }
+        }
+    }
+}
+
+#[derive(Default)]
+struct GuardedSessionsState {
+    by_node_id: HashMap<NodeId, SessionGuard>,
+    by_addr: HashMap<SocketAddr, SessionGuard>,
+}
+
+impl GuardedSessionsState {
+    fn get(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<SessionGuard> {
+        self.by_node_id
+            .get(&node_id)
+            .or_else(|| addrs.iter().filter_map(|a| self.by_addr.get(a)).next())
+            .cloned()
+    }
+
+    fn add(&mut self, guard: SessionGuard) {
+        for addr in guard.addrs.iter() {
+            self.by_addr.insert(*addr, guard.clone());
+        }
+        self.by_node_id.insert(guard.node_id, guard);
+    }
+
+    fn remove(&mut self, guard: &SessionGuard) {
+        for addr in guard.addrs.iter() {
+            self.by_addr.remove(addr);
+        }
+        self.by_node_id.remove(&guard.node_id);
+    }
+}
+
+#[derive(Clone)]
+struct SessionGuard {
+    node_id: NodeId,
+    state: Arc<RwLock<GuardedSessionsState>>,
+    addrs: Arc<Vec<SocketAddr>>,
+    lock: Arc<RwLock<()>>,
+}
+
+impl SessionGuard {
+    fn new(
+        state: Arc<RwLock<GuardedSessionsState>>,
+        node_id: NodeId,
+        addrs: Vec<SocketAddr>,
+    ) -> Self {
+        Self {
+            node_id,
+            state,
+            addrs: Arc::new(addrs),
+            lock: Default::default(),
+        }
+    }
+
+    async fn cleanup(&self) {
+        let mut state = self.state.write().await;
+        state.remove(self);
     }
 }
