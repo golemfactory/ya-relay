@@ -160,8 +160,11 @@ impl TcpLayer {
             node.session.id
         );
 
+        let conn_lock = node.conn_lock.clone();
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
+
+        let _guard = conn_lock.write().await;
         Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
     }
 
