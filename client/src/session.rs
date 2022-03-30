@@ -1,6 +1,7 @@
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
 use std::convert::TryInto;
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
@@ -16,6 +17,8 @@ use ya_relay_proto::{codec, proto};
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub type SessionResult<T> = Result<T, SessionError>;
 
 /// Udp connection to other Node. It is either peer-to-peer connection
 /// or central server session. Implements functions for sending
@@ -234,5 +237,45 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         log::trace!("Dropping Session {} ({}).", self.id, self.remote);
+    }
+}
+
+pub enum SessionError {
+    Drop(anyhow::Error),
+    Retry(anyhow::Error),
+}
+
+impl SessionError {
+    pub fn into_inner(self) -> anyhow::Error {
+        match self {
+            Self::Drop(e) | Self::Retry(e) => e,
+        }
+    }
+}
+
+impl From<anyhow::Error> for SessionError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Retry(e)
+    }
+}
+
+impl fmt::Debug for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drop(e) => {
+                write!(f, "Drop({:?})", e)
+            }
+            Self::Retry(e) => {
+                write!(f, "Retry({:?})", e)
+            }
+        }
+    }
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drop(e) | Self::Retry(e) => e.fmt(f),
+        }
     }
 }

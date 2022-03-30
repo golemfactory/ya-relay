@@ -252,7 +252,7 @@ impl Client {
                             }
                         }
                         Err(e) => {
-                            bail!("Cannot broadcast to {}: channel error: {}", node_id, e);
+                            bail!("Cannot broadcast to {}: {}", node_id, e);
                         }
                     };
                     anyhow::Result::<()>::Ok(())
