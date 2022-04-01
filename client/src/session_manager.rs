@@ -608,26 +608,35 @@ impl SessionManager {
         slot: u32,
     ) -> anyhow::Result<NodeEntry> {
         let node_id: NodeId = node_id.try_into()?;
-        let addrs: Vec<SocketAddr> = endpoints
-            .iter()
-            .cloned()
-            .filter_map(|e| e.try_into().ok())
-            .collect();
-
-        let target = self.guarded.get_or_create(node_id, &addrs).await;
-        let lock = target.lock.clone();
-        let _guard = lock.write().await;
+        if node_id == self.config.node_id {
+            bail!("remote id belongs to this node");
+        }
 
         // Check whether we are already connected to a node with this id
         if let Ok(entry) = self.registry.resolve_node(node_id).await {
             return Ok(entry);
         }
 
-        // Check for own addresses
-        self.assert_remote_node(node_id, &addrs)
-            // Check whether we are already connected to a node with any of the addresses
-            .and_then(|_| self.assert_not_connected(&addrs))
-            .await?;
+        let own_addrs: Vec<_> = {
+            let state = self.state.read().await;
+            vec![state.bind_addr, state.public_addr]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        let addrs: Vec<SocketAddr> = endpoints
+            .iter()
+            .cloned()
+            .filter_map(|e| e.try_into().ok())
+            .filter(|a| !own_addrs.iter().any(|o| o == a))
+            .collect();
+
+        // Check whether we are already connected to a node with any of the addresses
+        self.assert_not_connected(&addrs).await?;
+
+        let target = self.guarded.get_or_create(node_id, &addrs).await;
+        let lock = target.lock.clone();
+        let _guard = lock.write().await;
 
         let this = self.clone();
         self.try_resolve(node_id, addrs, slot)
@@ -792,33 +801,6 @@ impl SessionManager {
         }
 
         Ok(session)
-    }
-
-    async fn assert_remote_node(
-        &self,
-        node_id: NodeId,
-        addrs: &[SocketAddr],
-    ) -> anyhow::Result<()> {
-        // Match against own node id
-        if node_id == self.config.node_id {
-            anyhow::bail!("remote id belongs to this node");
-        }
-
-        // Match against own IP addresses
-        let own_addrs: Vec<_> = {
-            let state = self.state.read().await;
-            vec![state.bind_addr, state.public_addr]
-                .into_iter()
-                .flatten()
-                .collect()
-        };
-        for addr in addrs {
-            if own_addrs.iter().any(|a| a == addr) {
-                anyhow::bail!(format!("remote address {} belongs to this node", addr));
-            }
-        }
-
-        Ok(())
     }
 
     async fn assert_not_connected(&self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
