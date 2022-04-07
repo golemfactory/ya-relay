@@ -15,6 +15,8 @@ pub struct NodeEntry {
     /// To change Session, we need to replace whole NodeEntry.
     pub session: Arc<Session>,
     pub slot: SlotId,
+    /// Connection lock
+    pub conn_lock: Arc<RwLock<()>>,
 }
 
 /// Keeps track of Nodes information, for which we asked relay server.
@@ -48,6 +50,7 @@ impl NodesRegistry {
             id: node_id,
             session,
             slot,
+            conn_lock: Default::default(),
         };
 
         {
