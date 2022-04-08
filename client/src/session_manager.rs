@@ -11,9 +11,10 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;
 
-use ya_relay_core::challenge::{self, prepare_challenge_request, CHALLENGE_DIFFICULTY};
+use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::{CryptoProvider, PublicKey};
 use ya_relay_core::error::Error;
+use ya_relay_core::identity::Identity;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::NodeId;
@@ -61,6 +62,7 @@ pub struct SessionManagerState {
 
     pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
     pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
+    pub(crate) nodes_identity: HashMap<NodeId, (NodeId, PublicKey)>,
 
     forward_reliable: HashMap<NodeId, ForwardSender>,
     forward_unreliable: HashMap<NodeId, ForwardSender>,
@@ -89,6 +91,7 @@ impl SessionManager {
                 bind_addr: None,
                 sessions: Default::default(),
                 nodes_addr: Default::default(),
+                nodes_identity: Default::default(),
                 forward_reliable: Default::default(),
                 forward_unreliable: Default::default(),
                 forward_paused_till: Arc::new(RwLock::new(Default::default())),
@@ -144,6 +147,11 @@ impl SessionManager {
         state.nodes_addr.get(addr).copied()
     }
 
+    pub async fn alias(&self, node_id: &NodeId) -> Option<NodeId> {
+        let state = self.state.read().await;
+        state.nodes_identity.get(node_id).map(|(id, _)| *id)
+    }
+
     pub async fn is_p2p(&self, node_id: &NodeId) -> bool {
         self.state.read().await.p2p_sessions.contains_key(node_id)
     }
@@ -154,46 +162,30 @@ impl SessionManager {
         challenge: bool,
         remote_id: Option<NodeId>,
     ) -> SessionResult<Arc<Session>> {
-        let node_id = self.config.node_id;
-        log::debug!("[{}] initializing session with {}", node_id, addr);
+        let this_id = self.config.node_id;
+        log::debug!("[{}] initializing session with {}", this_id, addr);
 
         let tmp_session = self.temporary_session(addr).await?;
-
-        let (request, raw_challenge) = prepare_challenge_request();
-        let request = match challenge {
-            true => request,
-            false => proto::request::Session::default(),
-        };
-
-        let request = proto::request::Session {
-            node_id: node_id.into_array().to_vec(),
-            ..request
-        };
-
+        let (request, raw_challenge) = challenge::prepare_challenge_request();
+        let request = challenge.then(|| request).unwrap_or_default();
         let response = tmp_session
             .request::<proto::response::Session>(request.into(), vec![], SESSION_REQUEST_TIMEOUT)
             .await?;
 
-        let crypto = self.config.crypto.get(node_id).await?;
-        let public_key = crypto.public_key().await?;
-
-        let packet = response.packet.challenge_req.ok_or_else(|| {
+        let session_id = SessionId::try_from(response.session_id.clone())?;
+        let challenge_req = response.packet.challenge_req.ok_or_else(|| {
             anyhow!(
                 "Expected ChallengeRequest while initializing session with {}",
                 addr
             )
         })?;
+        let challenge_handle = self.solve_challenge(challenge_req).await;
 
-        let challenge_handle =
-            challenge::solve_blocking(packet.challenge, packet.difficulty, crypto);
-        let session_id = SessionId::try_from(response.session_id.clone())?;
-
+        // with the current ECDSA scheme the public key
+        // can be recovered from challenge signature
         let packet = proto::request::Session {
-            challenge_resp: challenge_handle.await?,
-            challenge_req: None,
-            node_id: node_id.into_array().to_vec(),
-            public_key: public_key.bytes().to_vec(),
-            supported_encryptions: vec![],
+            challenge_resp: Some(challenge_handle.await?),
+            ..Default::default()
         };
         let response = tmp_session
             .request::<proto::response::Session>(
@@ -207,57 +199,43 @@ impl SessionManager {
             let _ = tmp_session.disconnect().await;
             return Err(SessionError::Drop(anyhow!(
                 "[{}] init session id mismatch: {} vs {:?} (response)",
-                node_id,
+                this_id,
                 session_id,
                 response.session_id,
             )));
         }
 
-        if challenge {
-            // Validate the challenge
-            match challenge::verify(
-                &raw_challenge,
-                CHALLENGE_DIFFICULTY,
-                &response.packet.challenge_resp,
-                response.packet.public_key.as_slice(),
-            ) {
-                Err(err) => {
-                    let _ = tmp_session.disconnect().await;
-                    return Err(SessionError::Drop(anyhow!(
-                        "Invalid challenge format: {}",
-                        err
-                    )));
-                }
-                Ok(false) => {
-                    let _ = tmp_session.disconnect().await;
-                    return Err(SessionError::Drop(anyhow!("Challenge verification failed")));
-                }
-                Ok(_) => (),
+        let (remote_id, identities) = match {
+            if challenge {
+                // Validate the challenge
+                challenge::recover_identities_from_challenge::<ChallengeDigest>(
+                    &raw_challenge,
+                    CHALLENGE_DIFFICULTY,
+                    response.packet.challenge_resp,
+                    remote_id,
+                )
+            } else {
+                Ok((Default::default(), Default::default()))
             }
-        }
-
-        if let Some(expected_id) = remote_id {
-            // Validate remote NodeId
-            let public_key = PublicKey::from_slice(response.packet.public_key.as_slice())
-                .map_err(|_| anyhow!("Invalid remote public key"))?;
-            let received_id: NodeId = NodeId::from(public_key.address().as_ref());
-
-            if received_id != expected_id {
+        } {
+            Ok(tuple) => tuple,
+            Err(err) => {
                 let _ = tmp_session.disconnect().await;
                 return Err(SessionError::Drop(anyhow!(
-                    "[{}] remote node id mismatch: {} vs {} (response)",
-                    node_id,
-                    expected_id,
-                    received_id,
+                    "{} while initializing session with {}",
+                    err,
+                    addr
                 )));
             }
-        }
+        };
 
-        let session = self.add_session(addr, session_id).await?;
+        let session = self
+            .add_session(addr, session_id, remote_id, identities)
+            .await?;
 
         log::trace!(
             "[{}] session {} established with address: {}",
-            node_id,
+            this_id,
             session_id,
             addr
         );
@@ -343,10 +321,15 @@ impl SessionManager {
         &self,
         addr: SocketAddr,
         id: SessionId,
+        node_id: NodeId,
+        identities: impl IntoIterator<Item = Identity>,
     ) -> anyhow::Result<Arc<Session>> {
         let session = Session::new(addr, id, self.out_stream()?);
+        let mut state = self.state.write().await;
 
-        self.state.write().await.add_session(addr, session.clone());
+        state.add_session(addr, session.clone());
+        state.add_identities(node_id, identities);
+
         Ok(session)
     }
 
@@ -357,6 +340,7 @@ impl SessionManager {
         addr: SocketAddr,
         id: SessionId,
         node_id: NodeId,
+        identities: impl IntoIterator<Item = Identity>,
     ) -> anyhow::Result<Arc<Session>> {
         let session = Session::new(addr, id, self.out_stream()?);
 
@@ -366,7 +350,10 @@ impl SessionManager {
             let mut state = self.state.write().await;
 
             state.add_session(addr, session.clone());
+            state.add_identities(node_id, identities);
+
             state.nodes_addr.insert(addr, node_id);
+
             log::trace!(
                 "[{}] Saved node session {} [{}] {}",
                 self.config.node_id,
@@ -445,11 +432,12 @@ impl SessionManager {
         // get node info
         let server_session = self.server_session().await?;
         let node = server_session.find_node(node_id).await?;
+        let ident = Identity::try_from(&node)?;
 
         // Find node on server. p2p session will be established, if possible. Otherwise
         // communication will be forwarder through relay server.
         Ok(self
-            .resolve(&node.node_id, &node.endpoints, node.slot)
+            .resolve(ident.node_id.as_ref(), &node.endpoints, node.slot)
             .await?
             .session)
     }
@@ -734,22 +722,21 @@ impl SessionManager {
             self.config.node_id,
             node_id
         );
+
+        let mut start_registration;
         {
             let starting_session = { self.state.read().await.starting_sessions.clone() }
                 .ok_or_else(|| anyhow!("Starting sessions not loaded yet"))?;
-            let wait_for_tmp = starting_session.register_waiting_for_node(node_id);
-            {
-                let server_session = self.server_session().await?;
-                if let Err(e) = server_session.reverse_connection(node_id).await {
-                    starting_session.unregister_waiting_for_node(&node_id);
-                    return Err(e);
-                };
-                log::trace!("ReverseConnection - Requested with node {}", &node_id);
-            }
+
+            start_registration = starting_session.register_waiting_for_node(node_id);
+
+            let server_session = self.server_session().await?;
+            server_session.reverse_connection(node_id).await?;
+            log::trace!("ReverseConnection - Requested with node {}", &node_id);
 
             tokio::time::timeout(
                 Duration::from_secs(REVERSE_CONNECTION_TMP_TIMEOUT),
-                wait_for_tmp,
+                start_registration.rx()?,
             )
             .await??;
         }
@@ -950,21 +937,27 @@ impl SessionManager {
 
     pub async fn solve_challenge<'a>(
         &self,
-        request: proto::request::Session,
-    ) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
-        let request = match request.challenge_req {
-            Some(request) => request,
-            None => return Box::pin(futures::future::ready(Ok(vec![]))),
+        request: proto::ChallengeRequest,
+    ) -> LocalBoxFuture<'a, anyhow::Result<proto::ChallengeResponse>> {
+        let mut crypto_vec = match self.config.crypto.get(self.config.node_id).await {
+            Ok(crypto) => vec![crypto],
+            Err(e) => return Box::pin(futures::future::err(e)),
         };
-
-        let crypto = match self.config.crypto.get(self.config.node_id).await {
-            Ok(crypto) => crypto,
-            Err(e) => return Box::pin(futures::future::ready(Err(e))),
+        let aliases = match self.config.crypto.aliases().await {
+            Ok(aliases) => aliases,
+            Err(e) => return Box::pin(futures::future::err(e)),
         };
+        for alias in aliases {
+            match self.config.crypto.get(alias).await {
+                Ok(crypto) => crypto_vec.push(crypto),
+                _ => log::debug!("Unable to retrieve Crypto instance for id [{}]", alias),
+            }
+        }
 
         // Compute challenge in different thread to avoid blocking runtime.
         // Note: computing starts here, not after awaiting.
-        challenge::solve_blocking(request.challenge, request.difficulty, crypto)
+        challenge::solve::<ChallengeDigest, _>(request.challenge, request.difficulty, crypto_vec)
+            .boxed_local()
     }
 
     pub async fn has_p2p_connection(self, node_id: NodeId) -> bool {
@@ -1158,11 +1151,11 @@ impl Handler for SessionManager {
 
                         let session = myself.server_session().await?;
                         let node = session.find_slot(forward.slot).await?;
-                        let node_id = NodeId::try_from(&node.node_id)?;
+                        let ident = Identity::try_from(&node)?;
 
-                        log::debug!("Establishing connection to Node {} (slot {})", node_id, node.slot);
+                        log::debug!("Establishing connection to Node {} (slot {})", ident.node_id, node.slot);
                         myself
-                            .resolve(&node.node_id, &node.endpoints, node.slot)
+                            .resolve(ident.node_id.as_ref(), &node.endpoints, node.slot)
                             .await?
                     }
                 }
@@ -1191,6 +1184,20 @@ impl SessionManagerState {
         }
 
         self.sessions.entry(addr).or_insert(session);
+    }
+
+    pub fn add_identities(
+        &mut self,
+        node_id: NodeId,
+        identities: impl IntoIterator<Item = Identity>,
+    ) {
+        identities
+            .into_iter()
+            .filter(|ident| ident.node_id != node_id)
+            .for_each(|ident| {
+                self.nodes_identity
+                    .insert(ident.node_id, (node_id, ident.public_key));
+            })
     }
 }
 

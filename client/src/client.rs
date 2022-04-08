@@ -16,6 +16,7 @@ use url::Url;
 
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
+use ya_relay_core::identity::Identity;
 use ya_relay_core::udp_stream::resolve_max_payload_size;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_core::NodeId;
@@ -143,6 +144,14 @@ impl Client {
     }
 
     pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+        let node_id = match self.sessions.alias(&node_id).await {
+            Some(target_id) => {
+                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
+                target_id
+            }
+            None => node_id,
+        };
+
         log::trace!(
             "Forward reliable from [{}] to [{}]",
             self.config.node_id,
@@ -155,6 +164,14 @@ impl Client {
     }
 
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+        let node_id = match self.sessions.alias(&node_id).await {
+            Some(target_id) => {
+                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
+                target_id
+            }
+            None => node_id,
+        };
+
         log::trace!(
             "Forward unreliable from [{}] to [{}]",
             self.config.node_id,
@@ -180,15 +197,17 @@ impl Client {
 
         log::debug!("Asking NET relay Server for neighborhood ({}).", count);
 
-        let nodes = self
+        let neighbours = self
             .sessions
             .server_session()
             .await?
             .neighbours(count)
-            .await?
+            .await?;
+
+        let nodes = neighbours
             .nodes
             .into_iter()
-            .filter_map(|n| NodeId::try_from(n.node_id.as_slice()).ok())
+            .filter_map(|n| Identity::try_from(&n).map(|ident| ident.node_id).ok())
             .collect::<Vec<_>>();
 
         let prev_neighborhood = {
