@@ -41,7 +41,7 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
         .unwrap()
         .nodes
         .into_iter()
-        .map(|node| (&node.node_id).try_into().unwrap())
+        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
         .collect();
 
     // Node itself isn't returned in it's neighbourhood.
@@ -58,7 +58,7 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
         .unwrap()
         .nodes
         .into_iter()
-        .map(|node| (&node.node_id).try_into().unwrap())
+        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
         .collect();
 
     assert_eq!(ids, ids2);
@@ -70,7 +70,7 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
         .unwrap()
         .nodes
         .into_iter()
-        .map(|node| (&node.node_id).try_into().unwrap())
+        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
         .collect();
 
     assert!(ids2.iter().all(|item| ids3.contains(item)));
@@ -91,7 +91,7 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
         .unwrap()
         .nodes
         .into_iter()
-        .map(|node| (&node.node_id).try_into().unwrap())
+        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
         .collect();
 
     // Node itself isn't returned in it's neighbourhood.
