@@ -78,7 +78,9 @@ message ChallengeRequest {
 
 /* Response to session challenge */
 message ChallengeResponse {
-    bytes data = 1;
+    bytes solution = 1;
+    /* First signature by default identity */
+    repeated bytes signatures = 2;
 }
 
 /* Requests sent to the server by the client */
@@ -96,11 +98,13 @@ message Request {
     }
 
     message Session {
-        bytes node_id = 2;
-        bytes public_key = 3;
-        ChallengeRequest challenge_req = 4;
-        bytes challenge_resp = 5;
-        repeated string supported_encryptions = 6;
+        ChallengeRequest challenge_req = 1;
+        ChallengeResponse challenge_resp = 2;
+        /* Supported encryption schemes, in order of preference */
+        repeated string supported_encryptions = 3;
+        /* First identity is the default one.
+           For non-default encryption schemes. */
+        repeated Identity identities = 4;
     }
 
     message Register {
@@ -152,10 +156,13 @@ message Response {
 
     /* Session ACK */
     message Session {
-        bytes public_key = 3;
-        ChallengeRequest challenge_req = 4;
-        bytes challenge_resp = 5;
-        repeated string supported_encryptions = 6;
+        ChallengeRequest challenge_req = 1;
+        ChallengeResponse challenge_resp = 2;
+        /* Supported encryption schemes, in order of preference */
+        repeated string supported_encryptions = 3;
+        /* First identity is the default one.
+           For non-default encryption schemes. */
+        repeated Identity identities = 4;
     }
 
     /* Registered endpoints */
@@ -166,12 +173,11 @@ message Response {
 
     /* Node information */
     message Node {
-        bytes node_id = 2;
-        bytes public_key = 3;
-        repeated Endpoint endpoints = 4;
-        uint32 seen_ts = 5;
-        uint32 slot = 6;
-        repeated string supported_encryptions = 7;
+        repeated Identity identities = 1;
+        repeated Endpoint endpoints = 2;
+        uint32 seen_ts = 3;
+        uint32 slot = 4;
+        repeated string supported_encryptions = 5;
     }
 
     /* Neighbourhood */
@@ -242,6 +248,11 @@ enum Protocol {
     UNSUPPORTED = 0;
     TCP = 6;
     UDP = 17;
+}
+
+message Identity {
+    bytes public_key = 1;
+    bytes node_id = 2;
 }
 
 message Endpoint {
