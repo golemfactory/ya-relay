@@ -13,6 +13,8 @@ derive_more = "0.99"
 futures = "0.3"
 log = "0.4"
 managed = { version = "0.8", features = ["std"] }
+num-derive = "0.3"
+num-traits = "0.2"
 rand = { version = "0.8", features = ["std"] }
 smoltcp = "0.8"
 thiserror = "1.0"
