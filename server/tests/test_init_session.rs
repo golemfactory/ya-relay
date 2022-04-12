@@ -25,7 +25,10 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
     let node_info = session.find_node(node_id).await.unwrap();
 
     // TODO: More checks, after everything will be implemented.
-    assert_eq!(node_id, (&node_info.node_id).try_into().unwrap());
+    assert_eq!(
+        node_id,
+        (&node_info.identities[0].node_id).try_into().unwrap()
+    );
     assert_ne!(node_info.slot, u32::MAX);
     assert_eq!(node_info.endpoints.len(), 1);
     assert_eq!(node_info.endpoints[0], endpoints[0]);
@@ -82,7 +85,13 @@ async fn test_query_other_node_info() -> anyhow::Result<()> {
     let node2_info = session1.find_node(node2_id).await.unwrap();
     let node1_info = session2.find_node(node1_id).await.unwrap();
 
-    assert_eq!(node1_id, (&node1_info.node_id).try_into().unwrap());
-    assert_eq!(node2_id, (&node2_info.node_id).try_into().unwrap());
+    assert_eq!(
+        node1_id,
+        (&node1_info.identities[0].node_id).try_into().unwrap()
+    );
+    assert_eq!(
+        node2_id,
+        (&node2_info.identities[0].node_id).try_into().unwrap()
+    );
     Ok(())
 }

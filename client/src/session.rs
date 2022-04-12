@@ -233,7 +233,7 @@ impl Session {
         };
         self.send(packet).await?;
 
-        Ok(response.await?)
+        response.await
     }
 
     #[inline(always)]

@@ -1,10 +1,13 @@
 use crate::crypto::Crypto;
+use std::convert::TryFrom;
 
 use digest::{Digest, Output};
-use futures::future::LocalBoxFuture;
-use futures::FutureExt;
+use ethsign::PublicKey;
+use futures::{Future, StreamExt, TryStreamExt};
 use rand::Rng;
 
+use crate::identity::Identity;
+use ya_client_model::NodeId;
 use ya_relay_proto::proto;
 
 pub const SIGNATURE_SIZE: usize = std::mem::size_of::<ethsign::Signature>();
@@ -13,44 +16,34 @@ pub const PREFIX_SIZE: usize = std::mem::size_of::<u64>();
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
 
-pub async fn solve(
-    challenge: &[u8],
-    difficulty: u64,
-    crypto: impl Crypto,
-) -> anyhow::Result<Vec<u8>> {
-    let solution = solve_challenge::<sha3::Sha3_512>(challenge, difficulty)?;
-    sign(solution, crypto).await
-}
+pub type ChallengeDigest = sha3::Sha3_512;
 
-pub fn solve_blocking<'a>(
+pub fn solve<'a, D: Digest, C: Crypto + 'a>(
     challenge: Vec<u8>,
     difficulty: u64,
-    crypto: impl Crypto + 'a,
-) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
-    // Compute challenge in different thread to avoid blocking runtime.
+    crypto_vec: Vec<C>,
+) -> impl Future<Output = anyhow::Result<proto::ChallengeResponse>> + 'a {
+    // Compute challenge in different thread to avoid blocking the runtime.
     // Note: computing starts here, not after awaiting.
-    let challenge_handle = tokio::task::spawn_blocking(move || {
-        solve_challenge::<sha3::Sha3_512>(challenge.as_slice(), difficulty)
-    });
+    let challenge_handle =
+        tokio::task::spawn_blocking(move || solve_challenge::<D>(challenge.as_slice(), difficulty));
 
     async move {
         let solution = challenge_handle.await??;
-        sign(solution, crypto).await
+        let message = sha2::Sha256::digest(solution.as_slice());
+        let signatures: anyhow::Result<Vec<_>> = futures::stream::iter(crypto_vec)
+            .then(|crypto| sign(message.as_slice(), crypto))
+            .try_collect()
+            .await;
+
+        Ok(proto::ChallengeResponse {
+            solution,
+            signatures: signatures?,
+        })
     }
-    .boxed_local()
 }
 
-pub fn verify(
-    challenge: &[u8],
-    difficulty: u64,
-    response: &[u8],
-    pub_key: &[u8],
-) -> anyhow::Result<bool> {
-    let inner = verify_signature(response, pub_key)?;
-    verify_challenge::<sha3::Sha3_512>(challenge, difficulty, inner)
-}
-
-pub fn solve_challenge<D: Digest>(challenge: &[u8], difficulty: u64) -> anyhow::Result<Vec<u8>> {
+fn solve_challenge<D: Digest>(challenge: &[u8], difficulty: u64) -> anyhow::Result<Vec<u8>> {
     let mut counter: u64 = 0;
     loop {
         let prefix = counter.to_be_bytes();
@@ -63,50 +56,123 @@ pub fn solve_challenge<D: Digest>(challenge: &[u8], difficulty: u64) -> anyhow::
             return Ok(response);
         }
 
-        counter = counter
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("Could not find hash for difficulty {}", difficulty))?;
+        counter = counter.checked_add(1).ok_or_else(|| {
+            anyhow::anyhow!("Could not find a hash for difficulty {}", difficulty)
+        })?;
     }
 }
 
-pub fn verify_challenge<D: Digest>(
+pub fn verify<D: Digest>(
     challenge: &[u8],
     difficulty: u64,
-    response: &[u8],
+    solution: &[u8],
 ) -> anyhow::Result<bool> {
-    if response.len() < PREFIX_SIZE {
-        anyhow::bail!("Invalid response size: {}", response.len());
+    if solution.len() <= PREFIX_SIZE {
+        anyhow::bail!("Invalid challenge solution size: {}", solution.len());
     }
 
-    let prefix = &response[0..PREFIX_SIZE];
-    let to_verify = &response[PREFIX_SIZE..];
+    let prefix = &solution[0..PREFIX_SIZE];
+    let to_verify = &solution[PREFIX_SIZE..];
     let expected = digest::<D>(prefix, challenge);
     let zeros = leading_zeros(expected.as_slice());
 
     Ok(expected.as_slice() == to_verify && zeros >= difficulty)
 }
 
-pub async fn sign(solution: Vec<u8>, crypto: impl Crypto) -> anyhow::Result<Vec<u8>> {
-    let message = sha2::Sha256::digest(solution.as_slice());
-    let sig = crypto.sign(message.as_slice()).await?;
+#[allow(unused)]
+pub fn recover_identities(
+    identities: &[proto::Identity],
+    remote_id: Option<NodeId>,
+) -> anyhow::Result<(NodeId, Vec<Identity>)> {
+    let default_ident = {
+        let ident = identities
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("Missing public key"))?;
+        Identity::try_from(ident)?
+    };
 
-    let mut result = Vec::with_capacity(SIGNATURE_SIZE + solution.len());
+    let default_id = default_ident.node_id;
+    if let Some(remote_id) = remote_id {
+        if default_id != remote_id {
+            anyhow::bail!(
+                "Invalid default NodeId [{}] vs [{}] (response)",
+                remote_id,
+                default_id
+            );
+        }
+    }
+
+    let identities = std::iter::once(Ok(default_ident))
+        .chain(identities.iter().skip(1).map(Identity::try_from))
+        .collect::<anyhow::Result<_>>()?;
+
+    Ok((default_id, identities))
+}
+
+pub fn recover_identities_from_challenge<D: Digest>(
+    raw_challenge: &[u8],
+    difficulty: u64,
+    response: Option<proto::ChallengeResponse>,
+    remote_id: Option<NodeId>,
+) -> anyhow::Result<(NodeId, Vec<Identity>)> {
+    let response = response.ok_or_else(|| anyhow::anyhow!("Missing ChallengeResponse"))?;
+
+    if !verify::<D>(raw_challenge, difficulty, &response.solution)? {
+        anyhow::bail!("Challenge verification failed");
+    }
+
+    let message = sha2::Sha256::digest(&response.solution);
+    let default_ident = {
+        let sig = response
+            .signatures
+            .get(0)
+            .ok_or_else(|| anyhow::anyhow!("Missing signature"))?;
+
+        let key = recover(sig.as_slice(), message.as_slice())?;
+        Identity::from(key)
+    };
+
+    let default_id = default_ident.node_id;
+    if let Some(remote_id) = remote_id {
+        if default_id != remote_id {
+            anyhow::bail!(
+                "Invalid default NodeId [{}] vs [{}] (response)",
+                remote_id,
+                default_id
+            );
+        }
+    }
+
+    let identities = std::iter::once(Ok(default_ident))
+        .chain(response.signatures.iter().skip(1).map(|sig| {
+            let key = recover(sig.as_slice(), message.as_slice())?;
+            Ok(Identity::from(key))
+        }))
+        .collect::<anyhow::Result<_>>()?;
+
+    Ok((default_id, identities))
+}
+
+async fn sign(message: &[u8], crypto: impl Crypto) -> anyhow::Result<Vec<u8>> {
+    let sig = crypto.sign(message).await?;
+
+    let mut result = Vec::with_capacity(SIGNATURE_SIZE);
     result.push(sig.v);
     result.extend_from_slice(&sig.r[..]);
     result.extend_from_slice(&sig.s[..]);
-    result.extend(solution.into_iter());
 
     Ok(result)
 }
 
-pub fn verify_signature<'b>(response: &'b [u8], pub_key: &[u8]) -> anyhow::Result<&'b [u8]> {
-    let len = response.len();
-    if len < SIGNATURE_SIZE {
-        anyhow::bail!("Signature too short: {} out of {} B", len, SIGNATURE_SIZE);
+fn recover(sig: &[u8], message: &[u8]) -> anyhow::Result<PublicKey> {
+    let len = sig.len();
+    if len != SIGNATURE_SIZE {
+        anyhow::bail!(
+            "Invalid signature size: {} vs {} B (response)",
+            SIGNATURE_SIZE,
+            len,
+        );
     }
-
-    let sig = &response[..SIGNATURE_SIZE];
-    let embedded = &response[SIGNATURE_SIZE..];
 
     let v = sig[0];
     let mut r = [0; 32];
@@ -115,14 +181,7 @@ pub fn verify_signature<'b>(response: &'b [u8], pub_key: &[u8]) -> anyhow::Resul
     r.copy_from_slice(&sig[1..33]);
     s.copy_from_slice(&sig[33..]);
 
-    let message = sha2::Sha256::digest(embedded);
-    let recovered_key = ethsign::Signature { v, r, s }.recover(message.as_slice())?;
-
-    if pub_key == recovered_key.bytes() {
-        Ok(embedded)
-    } else {
-        anyhow::bail!("Invalid public key");
-    }
+    Ok(ethsign::Signature { v, r, s }.recover(message)?)
 }
 
 fn digest<D: Digest>(nonce: &[u8], input: &[u8]) -> Output<D> {
@@ -150,7 +209,7 @@ pub fn prepare_challenge() -> (proto::ChallengeRequest, [u8; CHALLENGE_SIZE]) {
     let request = proto::ChallengeRequest {
         version: "0.0.1".to_string(),
         caps: 0,
-        kind: 10,
+        kind: proto::challenge_request::Kind::Sha3512LeadingZeros as i32,
         difficulty: CHALLENGE_DIFFICULTY as u64,
         challenge: raw_challenge.to_vec(),
     };
@@ -160,11 +219,8 @@ pub fn prepare_challenge() -> (proto::ChallengeRequest, [u8; CHALLENGE_SIZE]) {
 pub fn prepare_challenge_request() -> (proto::request::Session, [u8; CHALLENGE_SIZE]) {
     let (challenge, raw_challenge) = prepare_challenge();
     let request = proto::request::Session {
-        node_id: vec![],
-        public_key: vec![],
         challenge_req: Some(challenge),
-        challenge_resp: vec![],
-        supported_encryptions: vec![],
+        ..Default::default()
     };
     (request, raw_challenge)
 }
@@ -172,10 +228,69 @@ pub fn prepare_challenge_request() -> (proto::request::Session, [u8; CHALLENGE_S
 pub fn prepare_challenge_response() -> (proto::response::Session, [u8; CHALLENGE_SIZE]) {
     let (challenge, raw_challenge) = prepare_challenge();
     let response = proto::response::Session {
-        public_key: vec![],
         challenge_req: Some(challenge),
-        challenge_resp: vec![],
-        supported_encryptions: vec![],
+        ..Default::default()
     };
     (response, raw_challenge)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::rc::Rc;
+
+    use ethsign::PublicKey;
+    use futures::{StreamExt, TryStreamExt};
+    use rand::Rng;
+
+    use crate::challenge::ChallengeDigest;
+    use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
+    use ya_client_model::NodeId;
+
+    async fn gen_crypto(n: usize) -> anyhow::Result<(Vec<PublicKey>, Vec<Rc<dyn Crypto>>)> {
+        let pairs: Vec<_> = futures::stream::iter((0..n).map(anyhow::Ok))
+            .then(|_| async {
+                let bytes = rand::thread_rng().gen::<[u8; 32]>();
+                let secret = ethsign::SecretKey::from_raw(&bytes)?;
+                let public = secret.public();
+
+                let provider = FallbackCryptoProvider::new(secret);
+                let crypto = provider.get(provider.default_id().await?).await?;
+
+                Ok::<_, anyhow::Error>((public, crypto))
+            })
+            .try_collect()
+            .await?;
+
+        Ok(pairs.into_iter().unzip())
+    }
+
+    #[tokio::test]
+    async fn sign_verify_recover() -> anyhow::Result<()> {
+        const DIFFICULTY: u64 = 2;
+
+        let (keys, crypto_vec) = gen_crypto(3).await?;
+        let challenge: Vec<u8> = (0..16).collect();
+
+        let response =
+            super::solve::<ChallengeDigest, _>(challenge.clone(), DIFFICULTY, crypto_vec).await?;
+
+        let (node_id, identities) = super::recover_identities_from_challenge::<ChallengeDigest>(
+            challenge.as_slice(),
+            DIFFICULTY,
+            Some(response),
+            None,
+        )?;
+
+        assert_eq!(identities.len(), keys.len());
+        assert_eq!(identities[0].node_id, node_id);
+
+        for i in 0..keys.len() {
+            assert_eq!(
+                identities[i].node_id,
+                NodeId::from(keys[i].address().as_slice())
+            );
+        }
+
+        Ok(())
+    }
 }

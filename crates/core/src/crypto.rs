@@ -11,18 +11,27 @@ use crate::key::generate;
 
 pub trait CryptoProvider {
     fn default_id<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<NodeId>>;
+    fn aliases<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<Vec<NodeId>>>;
     fn get<'a>(&self, node_id: NodeId) -> LocalBoxFuture<'a, anyhow::Result<Rc<dyn Crypto>>>;
 }
 
 pub trait Crypto {
     fn public_key<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<PublicKey>>;
     fn sign<'a>(&self, message: &'a [u8]) -> LocalBoxFuture<'a, anyhow::Result<Signature>>;
-    fn encrypt<'a>(&self, message: &'a [u8]) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>>;
+    fn encrypt<'a>(
+        &self,
+        message: &'a [u8],
+        remote_key: &'a PublicKey,
+    ) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>>;
 }
 
 impl<C: CryptoProvider + ?Sized> CryptoProvider for Rc<C> {
     fn default_id<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<NodeId>> {
         (**self).default_id()
+    }
+
+    fn aliases<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<Vec<NodeId>>> {
+        (**self).aliases()
     }
 
     fn get<'a>(&self, node_id: NodeId) -> LocalBoxFuture<'a, anyhow::Result<Rc<dyn Crypto>>> {
@@ -39,8 +48,12 @@ impl<C: Crypto + ?Sized> Crypto for Rc<C> {
         (**self).sign(message)
     }
 
-    fn encrypt<'a>(&self, message: &'a [u8]) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
-        (**self).encrypt(message)
+    fn encrypt<'a>(
+        &self,
+        message: &'a [u8],
+        remote_key: &'a PublicKey,
+    ) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
+        (**self).encrypt(message, remote_key)
     }
 }
 
@@ -73,6 +86,16 @@ impl Default for FallbackCryptoProvider {
 impl CryptoProvider for FallbackCryptoProvider {
     fn default_id<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<NodeId>> {
         futures::future::ok(self.default_id).boxed_local()
+    }
+
+    fn aliases<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<Vec<NodeId>>> {
+        let aliases = self
+            .inner
+            .keys()
+            .filter(|id| *id != &self.default_id)
+            .copied()
+            .collect();
+        futures::future::ok(aliases).boxed_local()
     }
 
     fn get<'a>(&self, node_id: NodeId) -> LocalBoxFuture<'a, anyhow::Result<Rc<dyn Crypto>>> {
@@ -110,7 +133,11 @@ impl Crypto for FallbackCrypto {
         async move { Ok(result?) }.boxed_local()
     }
 
-    fn encrypt<'a>(&self, _message: &'a [u8]) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
+    fn encrypt<'a>(
+        &self,
+        _message: &'a [u8],
+        _remote_key: &'a PublicKey,
+    ) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
         unimplemented!()
     }
 }

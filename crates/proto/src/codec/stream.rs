@@ -339,11 +339,19 @@ mod tests {
             Packet::request(
                 Vec::new(),
                 request::Session {
-                    challenge_resp: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
-                    node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
-                    public_key: vec![0x05, 0x0e, 0x0c],
-                    challenge_req: None,
-                    supported_encryptions: vec![],
+                    challenge_resp: Some(ChallengeResponse {
+                        solution: vec![0x0d, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                        signatures: vec![
+                            vec![0x0a, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                            vec![0x0b, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                            vec![0x0c, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
+                        ],
+                    }),
+                    identities: vec![Identity {
+                        node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
+                        public_key: vec![0x05, 0x0e, 0x0c],
+                    }],
+                    ..Default::default()
                 },
             )
             .into(),
@@ -405,11 +413,15 @@ mod tests {
                 kind: Some(packet::Kind::Request(Request {
                     request_id: 1,
                     kind: Some(request::Kind::Session(request::Session {
-                        challenge_resp: vec![0u8; MAX_PARSE_MESSAGE_SIZE],
-                        node_id: vec![],
-                        public_key: vec![],
-                        challenge_req: None,
-                        supported_encryptions: vec![],
+                        challenge_resp: Some(ChallengeResponse {
+                            solution: vec![0u8; MAX_PACKET_SIZE as usize - 128],
+                            signatures: vec![],
+                        }),
+                        identities: vec![Identity {
+                            node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
+                            public_key: vec![0x05, 0x0e, 0x0c],
+                        }],
+                        ..Default::default()
                     })),
                 })),
             }),
