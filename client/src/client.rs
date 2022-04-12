@@ -249,6 +249,10 @@ impl Client {
 
         let server = self.sessions.server_session().await?;
         for neighbor in lost_neighbors {
+            if self.sessions.is_p2p(&neighbor).await {
+                continue;
+            }
+
             log::debug!(
                 "Neighborhood changed. Checking state of Node [{}] on relay Server.",
                 neighbor
@@ -303,6 +307,13 @@ impl Client {
 
         futures::future::join_all(broadcast_futures).await;
         Ok(())
+    }
+
+    pub async fn reconnect_server(&self) {
+        if self.sessions.drop_server_session().await {
+            log::info!("Reconnecting to Hybrid NET relay server");
+            let _ = self.sessions.server_session().await;
+        }
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {

@@ -765,14 +765,7 @@ impl SessionManager {
     }
 
     pub async fn server_session(&self) -> anyhow::Result<Arc<Session>> {
-        if let Some(session) = {
-            self.state
-                .read()
-                .await
-                .sessions
-                .get(&self.config.srv_addr)
-                .cloned()
-        } {
+        if let Some(session) = self.get_server_session().await {
             return Ok(session);
         }
 
@@ -788,6 +781,19 @@ impl SessionManager {
         }
 
         Ok(session)
+    }
+
+    pub(crate) async fn drop_server_session(&self) -> bool {
+        if let Some(session) = self.get_server_session().await {
+            let _ = self.close_session(session).await;
+            return true;
+        }
+        false
+    }
+
+    async fn get_server_session(&self) -> Option<Arc<Session>> {
+        let state = self.state.read().await;
+        state.sessions.get(&self.config.srv_addr).cloned()
     }
 
     async fn assert_not_connected(&self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
@@ -958,10 +964,6 @@ impl SessionManager {
         // Note: computing starts here, not after awaiting.
         challenge::solve::<ChallengeDigest, _>(request.challenge, request.difficulty, crypto_vec)
             .boxed_local()
-    }
-
-    pub async fn has_p2p_connection(self, node_id: NodeId) -> bool {
-        self.state.read().await.p2p_sessions.get(&node_id).is_some()
     }
 }
 
