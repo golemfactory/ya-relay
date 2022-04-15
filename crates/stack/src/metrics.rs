@@ -5,7 +5,7 @@ use num_traits::{One, Zero};
 
 pub const DEFAULT_EWMA_ALPHA_SHORT: f32 = 0.9;
 pub const DEFAULT_EWMA_ALPHA_MID: f32 = 0.7;
-pub const DEFAULT_EWMA_ALPHA_LONG: f32 = 0.45;
+pub const DEFAULT_EWMA_ALPHA_LONG: f32 = 0.2;
 
 #[derive(Clone, Default)]
 pub struct ChannelMetrics {
@@ -34,11 +34,12 @@ impl Default for Metrics {
 impl Metrics {
     pub fn new(short_alpha: f32, mid_alpha: f32, long_alpha: f32) -> Result<Self, f32> {
         let now = Instant::now();
+        let sample_freq = Duration::from_secs(1);
 
         Ok(Self {
-            short: TimeWindow::new(now, Duration::from_millis(500), Ewma::new(short_alpha)?),
-            mid: TimeWindow::new(now, Duration::from_secs(1), Ewma::new(mid_alpha)?),
-            long: TimeWindow::new(now, Duration::from_secs(1), Ewma::new(long_alpha)?),
+            short: TimeWindow::new(now, sample_freq, Ewma::new(short_alpha)?),
+            mid: TimeWindow::new(now, sample_freq, Ewma::new(mid_alpha)?),
+            long: TimeWindow::new(now, sample_freq, Ewma::new(long_alpha)?),
         })
     }
 
@@ -112,10 +113,12 @@ pub struct TimeWindow<V = f32, A = Ewma<V>>
 where
     A: Average<V>,
 {
-    sample_freq: Duration,
+    size: Duration,
+    sampled: Instant,
     updated: Instant,
+    acc: V,
+    total: V,
     average: A,
-    sum: V,
 }
 
 impl<V, A> TimeWindow<V, A>
@@ -123,26 +126,23 @@ where
     V: Zero,
     A: Average<V>,
 {
-    pub fn new(start: Instant, sample_freq: Duration, average: A) -> Self {
+    pub fn new(start: Instant, size: Duration, average: A) -> Self {
         Self {
-            sample_freq,
-            updated: start,
+            size,
+            sampled: start - size,
+            updated: start - size,
+            acc: V::zero(),
+            total: V::zero(),
             average,
-            sum: V::zero(),
         }
     }
 }
 
 impl<V, A> TimeWindow<V, A>
 where
-    V: Add<Output = V> + Zero + Clone + std::fmt::Display,
+    V: Add<Output = V> + PartialEq + Zero + Clone,
     A: Average<V>,
 {
-    pub fn push(&mut self, value: V, time: Instant) {
-        self.advance(time);
-        self.push_value(value, time);
-    }
-
     #[inline]
     pub fn average(&mut self, time: Instant) -> V {
         self.advance(time);
@@ -151,7 +151,18 @@ where
 
     #[inline]
     pub fn sum(&self) -> V {
-        self.sum.clone()
+        self.total.clone()
+    }
+
+    pub fn push(&mut self, mut value: V, time: Instant) {
+        if time - self.updated < self.size {
+            self.acc = self.acc.clone() + value;
+            self.sampled = time;
+        } else {
+            self.advance(time);
+            value = value + std::mem::replace(&mut self.acc, V::zero());
+            self.push_value(value, time);
+        }
     }
 
     fn advance(&mut self, time: Instant) {
@@ -159,18 +170,24 @@ where
             return;
         }
 
-        let freq = self.sample_freq.as_millis() as f64;
-        let dt = ((time - self.updated).as_millis() as f64 + freq / 2.) / freq;
-        let samples = (dt as usize).saturating_sub(1);
+        let size_ms = self.size.as_millis() as f64;
+        let cycles = ((time - self.updated).as_millis() as f64 + size_ms / 2.) / size_ms;
+        let samples = (cycles as usize).saturating_sub(1);
+
+        if samples > 0 && !self.acc.eq(&V::zero()) {
+            let value = std::mem::replace(&mut self.acc, V::zero());
+            self.push_value(value, self.sampled);
+        }
 
         for _ in 0..samples {
-            self.push_value(V::zero(), self.updated + self.sample_freq);
+            self.push_value(V::zero(), self.updated + self.size);
         }
     }
 
     fn push_value(&mut self, value: V, time: Instant) {
-        self.sum = self.sum.clone().add(value.clone());
+        self.total = self.total.clone().add(value.clone());
         self.average.push(value);
+        self.sampled = time;
         self.updated = time;
     }
 }
@@ -180,6 +197,12 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::metrics::{Ewma, TimeWindow};
+
+    // approximate equality for floating-point number repr
+    fn assert_approx_eq(val: f64, expected: f64) {
+        assert!(val > expected - 0.01);
+        assert!(val < expected + 0.01);
+    }
 
     #[test]
     fn time_window_ewma_swift() {
@@ -192,9 +215,9 @@ mod tests {
 
         while now <= until {
             tw.push(0.1, now);
-            assert_eq!(tw.average(now), 0.1);
             now += Duration::from_millis(sample_freq.as_millis() as u64 / 10);
         }
+        assert_approx_eq(tw.average(now), 1.);
     }
 
     #[test]
@@ -207,10 +230,10 @@ mod tests {
         let mut tw = TimeWindow::new(now, sample_freq, avg);
 
         while now <= until {
-            tw.push(0.1, now);
-            assert_eq!(tw.average(now), 0.1);
+            tw.push(123., now);
             now += sample_freq;
         }
+        assert_approx_eq(tw.average(now), 123.);
     }
 
     #[test]
@@ -219,22 +242,14 @@ mod tests {
         let sample_freq = Duration::from_secs(1);
         let until = now + Duration::from_secs(8);
 
-        let avg = Ewma::new(0.8_f64).expect("failed to create an instance of EWMA");
+        let avg = Ewma::new(0.2_f64).expect("failed to create an instance of EWMA");
         let mut tw = TimeWindow::new(now, sample_freq, avg);
 
-        let mut i = 0;
         while now <= until {
-            tw.push(0.1, now);
-
-            if i == 0 {
-                assert_eq!(tw.average(now), 0.1);
-            } else {
-                assert!(tw.average(now) < 0.1);
-                assert!(tw.average(now) > 0.);
-            }
-
+            tw.push(1., now);
             now += sample_freq * 2;
-            i += 1;
         }
+
+        assert_approx_eq(tw.average(now), 0.5);
     }
 }
