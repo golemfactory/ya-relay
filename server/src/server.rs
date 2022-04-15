@@ -587,7 +587,7 @@ impl Server {
     ) -> ServerResult<()> {
         let mut sender = {
             match { self.state.read().await.starting_session.get(&id).cloned() } {
-                Some(sender) => sender.clone(),
+                Some(sender) => sender,
                 None => return Err(Unauthorized::SessionNotFound(id).into()),
             }
         };
@@ -597,10 +597,16 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
         };
 
-        Ok(sender
-            .send(request)
-            .await
-            .map_err(|_| InternalError::Send)?)
+        //
+        tokio::task::spawn_local(async move {
+            let _ = sender.send(request).await.map_err(|_| {
+                log::warn!(
+                    "Establish session channel closed. Dropping packet for session [{}]",
+                    id
+                )
+            });
+        });
+        Ok(())
     }
 
     async fn init_session(
