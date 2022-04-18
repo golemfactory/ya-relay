@@ -114,7 +114,6 @@ where
     A: Average<V>,
 {
     size: Duration,
-    sampled: Instant,
     updated: Instant,
     acc: V,
     total: V,
@@ -129,7 +128,6 @@ where
     pub fn new(start: Instant, size: Duration, average: A) -> Self {
         Self {
             size,
-            sampled: start - size,
             updated: start - size,
             acc: V::zero(),
             total: V::zero(),
@@ -157,7 +155,6 @@ where
     pub fn push(&mut self, mut value: V, time: Instant) {
         if time - self.updated < self.size {
             self.acc = self.acc.clone() + value;
-            self.sampled = time;
         } else {
             self.advance(time);
             value = value + std::mem::replace(&mut self.acc, V::zero());
@@ -173,12 +170,14 @@ where
         let size_ms = self.size.as_millis() as f64;
         let cycles = ((time - self.updated).as_millis() as f64 + size_ms / 2.) / size_ms;
         let samples = (cycles as usize).saturating_sub(1);
-
-        if samples > 0 && !self.acc.eq(&V::zero()) {
-            let value = std::mem::replace(&mut self.acc, V::zero());
-            self.push_value(value, self.sampled);
+        if samples == 0 {
+            return;
         }
 
+        if !self.acc.eq(&V::zero()) {
+            let value = std::mem::replace(&mut self.acc, V::zero());
+            self.push_value(value, self.updated);
+        }
         for _ in 0..samples {
             self.push_value(V::zero(), self.updated + self.size);
         }
@@ -187,7 +186,6 @@ where
     fn push_value(&mut self, value: V, time: Instant) {
         self.total = self.total.clone().add(value.clone());
         self.average.push(value);
-        self.sampled = time;
         self.updated = time;
     }
 }
