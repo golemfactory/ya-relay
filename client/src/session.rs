@@ -1,6 +1,7 @@
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
 use std::convert::TryInto;
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
@@ -17,6 +18,8 @@ const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
+pub type SessionResult<T> = Result<T, SessionError>;
+
 /// Udp connection to other Node. It is either peer-to-peer connection
 /// or central server session. Implements functions for sending
 /// protocol messages or forwarding generic messages.
@@ -24,9 +27,29 @@ const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 pub struct Session {
     pub remote: SocketAddr,
     pub id: SessionId,
+    pub created: Instant,
 
     sink: OutStream,
     pub(crate) dispatcher: Dispatcher,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SessionDesc {
+    pub remote: SocketAddr,
+    pub id: SessionId,
+    pub last_seen: std::time::Instant,
+    pub created: std::time::Instant,
+}
+
+impl<'a> From<&'a Session> for SessionDesc {
+    fn from(session: &'a Session) -> Self {
+        SessionDesc {
+            remote: session.remote,
+            id: session.id,
+            last_seen: session.dispatcher.last_seen().into_std(),
+            created: session.created.into_std(),
+        }
+    }
 }
 
 impl Session {
@@ -35,6 +58,7 @@ impl Session {
             remote: remote_addr,
             id,
             sink,
+            created: Instant::now(),
             dispatcher: Dispatcher::default(),
         })
     }
@@ -209,7 +233,7 @@ impl Session {
         };
         self.send(packet).await?;
 
-        Ok(response.await?)
+        response.await
     }
 
     #[inline(always)]
@@ -234,5 +258,38 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         log::trace!("Dropping Session {} ({}).", self.id, self.remote);
+    }
+}
+
+#[derive(thiserror::Error, Clone)]
+pub enum SessionError {
+    Drop(String),
+    Retry(String),
+}
+
+impl From<anyhow::Error> for SessionError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Retry(e.to_string())
+    }
+}
+
+impl fmt::Debug for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drop(e) => {
+                write!(f, "Drop({:?})", e)
+            }
+            Self::Retry(e) => {
+                write!(f, "Retry({:?})", e)
+            }
+        }
+    }
+}
+
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drop(e) | Self::Retry(e) => e.fmt(f),
+        }
     }
 }

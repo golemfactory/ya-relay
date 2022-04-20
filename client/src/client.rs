@@ -1,28 +1,35 @@
-use anyhow::{anyhow, bail};
-use derive_more::From;
-use futures::channel::mpsc;
-use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+use anyhow::{anyhow, bail};
+use derive_more::From;
+use futures::channel::mpsc;
+use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use tokio::sync::RwLock;
 use url::Url;
 
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
+use ya_relay_core::identity::Identity;
+use ya_relay_core::udp_stream::resolve_max_payload_size;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::SlotId;
+use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
+use ya_relay_stack::{NetworkConfig, SocketDesc, SocketState};
 
+use crate::session::SessionDesc;
 use crate::session_manager::SessionManager;
 
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
+pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
 const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
@@ -34,6 +41,8 @@ pub struct ClientConfig {
     pub srv_addr: SocketAddr,
     pub auto_connect: bool,
     pub session_expiration: Duration,
+    pub tcp_config: NetworkConfig,
+    pub pcap_path: Option<PathBuf>,
 }
 
 pub struct ClientBuilder {
@@ -42,6 +51,7 @@ pub struct ClientBuilder {
     crypto: Option<Rc<dyn CryptoProvider>>,
     auto_connect: bool,
     session_expiration: Option<Duration>,
+    vtcp_buffer_size: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -93,6 +103,24 @@ impl Client {
         self.sessions.get_public_addr().await
     }
 
+    pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
+        self.sessions.remote_id(addr).await
+    }
+
+    pub async fn sessions(&self) -> Vec<SessionDesc> {
+        self.sessions
+            .sessions()
+            .await
+            .into_iter()
+            .map(|s| SessionDesc::from(s.as_ref()))
+            .collect()
+    }
+
+    #[inline]
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+        self.sessions.virtual_tcp.sockets()
+    }
+
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
         self.sessions.virtual_tcp.receiver().await
     }
@@ -116,6 +144,14 @@ impl Client {
     }
 
     pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+        let node_id = match self.sessions.alias(&node_id).await {
+            Some(target_id) => {
+                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
+                target_id
+            }
+            None => node_id,
+        };
+
         log::trace!(
             "Forward reliable from [{}] to [{}]",
             self.config.node_id,
@@ -128,6 +164,14 @@ impl Client {
     }
 
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+        let node_id = match self.sessions.alias(&node_id).await {
+            Some(target_id) => {
+                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
+                target_id
+            }
+            None => node_id,
+        };
+
         log::trace!(
             "Forward unreliable from [{}] to [{}]",
             self.config.node_id,
@@ -153,15 +197,17 @@ impl Client {
 
         log::debug!("Asking NET relay Server for neighborhood ({}).", count);
 
-        let nodes = self
+        let neighbours = self
             .sessions
             .server_session()
             .await?
             .neighbours(count)
-            .await?
+            .await?;
+
+        let nodes = neighbours
             .nodes
             .into_iter()
-            .filter_map(|n| NodeId::try_from(n.node_id.as_slice()).ok())
+            .filter_map(|n| Identity::try_from(&n).map(|ident| ident.node_id).ok())
             .collect::<Vec<_>>();
 
         let prev_neighborhood = {
@@ -203,6 +249,10 @@ impl Client {
 
         let server = self.sessions.server_session().await?;
         for neighbor in lost_neighbors {
+            if self.sessions.is_p2p(&neighbor).await {
+                continue;
+            }
+
             log::debug!(
                 "Neighborhood changed. Checking state of Node [{}] on relay Server.",
                 neighbor
@@ -244,7 +294,7 @@ impl Client {
                             }
                         }
                         Err(e) => {
-                            bail!("Cannot broadcast to {}: channel error: {}", node_id, e);
+                            bail!("Cannot broadcast to {}: {}", node_id, e);
                         }
                     };
                     anyhow::Result::<()>::Ok(())
@@ -257,6 +307,13 @@ impl Client {
 
         futures::future::join_all(broadcast_futures).await;
         Ok(())
+    }
+
+    pub async fn reconnect_server(&self) {
+        if self.sessions.drop_server_session().await {
+            log::info!("Reconnecting to Hybrid NET relay server");
+            let _ = self.sessions.server_session().await;
+        }
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
@@ -274,6 +331,7 @@ impl ClientBuilder {
             crypto: None,
             auto_connect: false,
             session_expiration: None,
+            vtcp_buffer_size: None,
         }
     }
 
@@ -297,6 +355,11 @@ impl ClientBuilder {
         self
     }
 
+    pub fn virtual_tcp_buffer_size_multiplier(mut self, multiplier: usize) -> Self {
+        self.vtcp_buffer_size = Some(multiplier);
+        self
+    }
+
     pub async fn build(self) -> anyhow::Result<Client> {
         let bind_url = self
             .bind_url
@@ -307,6 +370,8 @@ impl ClientBuilder {
 
         let default_id = crypto.default_id().await?;
         let default_pub_key = crypto.get(default_id).await?.public_key().await?;
+        let mtu = resolve_max_payload_size().await? - MAX_TAG_SIZE - Forward::header_size();
+        let pcap_path = std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from);
 
         let mut client = Client::new(ClientConfig {
             node_id: default_id,
@@ -318,6 +383,11 @@ impl ClientBuilder {
             session_expiration: self
                 .session_expiration
                 .unwrap_or_else(|| Duration::from_secs(25)),
+            tcp_config: NetworkConfig {
+                max_transmission_unit: mtu,
+                buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(4),
+            },
+            pcap_path,
         });
 
         client.spawn().await?;

@@ -1,9 +1,12 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, Context};
 use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::StreamExt;
 use std::collections::HashMap;
+use std::io::Write;
 use std::net::Ipv6Addr;
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
@@ -12,12 +15,11 @@ use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
-use ya_relay_stack::connection::ConnectionMeta;
-use ya_relay_stack::interface::{add_iface_address, add_iface_route, tun_iface};
+use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
-use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT};
-use ya_relay_stack::{Channel, Connection, EgressEvent, IngressEvent, Network, Protocol, Stack};
+use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
+use ya_relay_stack::*;
 
 use crate::client::ClientConfig;
 use crate::client::Forwarded;
@@ -71,7 +73,16 @@ impl VirtNode {
 
 impl TcpLayer {
     pub fn new(config: Arc<ClientConfig>, ingress: Channel<Forwarded>) -> TcpLayer {
-        let net = default_network(config.node_pub_key.clone());
+        let pcap = config.pcap_path.clone().map(|p| match pcap_writer(p) {
+            Ok(pcap) => pcap,
+            Err(err) => panic!("{}", err),
+        });
+        let net = default_network(
+            config.node_pub_key.clone(),
+            Rc::new(config.tcp_config.clone()),
+            pcap,
+        );
+
         TcpLayer {
             net,
             state: Arc::new(RwLock::new(TcpLayerState {
@@ -119,9 +130,22 @@ impl TcpLayer {
     }
 
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let remote_ip = {
+            let state = self.state.read().await;
+            match state.ips.get(&node_id).cloned() {
+                Some(ip) => ip,
+                _ => return Ok(()),
+            }
+        };
+
+        self.net
+            .disconnect_all(remote_ip, TCP_DISCONN_TIMEOUT)
+            .await;
+
         let mut state = self.state.write().await;
-        if let Some(ip) = state.ips.remove(&node_id) {
-            state.nodes.remove(&ip);
+        if let Some(remote_ip) = state.ips.remove(&node_id) {
+            log::debug!("[VirtualTcp] Disconnected from node [{}]", node_id);
+            state.nodes.remove(&remote_ip);
         }
         Ok(())
     }
@@ -134,14 +158,17 @@ impl TcpLayer {
             node.session.id
         );
 
+        let conn_lock = node.conn_lock.clone();
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
+
+        let _guard = conn_lock.write().await;
         Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
     }
 
-    #[inline(always)]
-    pub fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
-        self.net.close_connection(meta)
+    #[inline]
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+        self.net.sockets()
     }
 
     pub async fn get_next_fwd_payload<T>(
@@ -371,11 +398,40 @@ fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
     Ipv6Addr::from(ipv6_bytes)
 }
 
-fn default_network(key: PublicKey) -> Network {
+fn pcap_writer(path: PathBuf) -> anyhow::Result<Box<dyn Write>> {
+    let parent = path.parent().ok_or_else(|| {
+        anyhow::anyhow!(format!(
+            "Unable to read pcap file parent directory: {}",
+            path.display()
+        ))
+    })?;
+
+    std::fs::create_dir_all(parent).context(format!(
+        "Unable to create pcap file parent directory: {}",
+        parent.display()
+    ))?;
+
+    let file = std::fs::File::create(&path).context(format!(
+        "Unable to open pcap file for writing: {}",
+        path.display()
+    ))?;
+
+    let pcap = Box::new(std::io::BufWriter::new(file));
+    Ok(pcap)
+}
+
+fn default_network(
+    key: PublicKey,
+    config: Rc<NetworkConfig>,
+    pcap: Option<Box<dyn Write>>,
+) -> Network {
     let address = key.address();
     let ipv6_addr = to_ipv6(address);
     let ipv6_cidr = IpCidr::new(IpAddress::from(ipv6_addr), IPV6_DEFAULT_CIDR);
-    let mut iface = tun_iface();
+    let mut iface = match pcap {
+        Some(pcap) => pcap_tun_iface(config.max_transmission_unit, pcap),
+        None => tun_iface(config.max_transmission_unit),
+    };
 
     let name = format!(
         "{:02x}{:02x}{:02x}{:02x}",
@@ -391,5 +447,5 @@ fn default_network(key: PublicKey) -> Network {
         Route::new_ipv6_gateway(ipv6_addr.into()),
     );
 
-    Network::new(name, Stack::new(iface))
+    Network::new(name, config.clone(), Stack::new(iface, config))
 }

@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use futures::future::LocalBoxFuture;
+use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, StreamExt};
 use smoltcp::iface::SocketHandle;
 use smoltcp::wire::IpEndpoint;
@@ -17,22 +17,28 @@ use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
-use crate::socket::{SocketDesc, SocketEndpoint, SocketExt};
+use crate::socket::{SocketDesc, SocketEndpoint, SocketExt, SocketState};
 use crate::stack::Stack;
 use crate::{Error, Result};
 
 pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
 
-const MAX_TCP_PAYLOAD_SIZE: usize = 1300 - 20 - 30;
+#[derive(Clone)]
+pub struct NetworkConfig {
+    pub max_transmission_unit: usize,
+    /// Size of TCP send and receive buffer as multiply of MTU.
+    pub buffer_size_multiplier: usize,
+}
 
 #[derive(Clone)]
 pub struct Network {
     pub name: Rc<String>,
+    pub config: Rc<NetworkConfig>,
     stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
-    bindings: Rc<RefCell<HashSet<SocketHandle>>>,
+    bindings: Rc<RefCell<HashSet<(Protocol, SocketEndpoint)>>>,
     connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
     handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
     ingress: Channel<IngressEvent>,
@@ -41,9 +47,10 @@ pub struct Network {
 
 impl Network {
     /// Creates a new Network instance
-    pub fn new(name: impl ToString, stack: Stack<'static>) -> Self {
+    pub fn new(name: impl ToString, config: Rc<NetworkConfig>, stack: Stack<'static>) -> Self {
         let network = Self {
             name: Rc::new(name.to_string()),
+            config,
             stack,
             sender: Default::default(),
             poller: Default::default(),
@@ -64,14 +71,10 @@ impl Network {
         protocol: Protocol,
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
+        let endpoint = endpoint.into();
         let handle = self.stack.bind(protocol, endpoint)?;
-        self.bindings.borrow_mut().insert(handle);
+        self.bindings.borrow_mut().insert((protocol, endpoint));
         Ok(handle)
-    }
-
-    #[inline(always)]
-    fn is_bound(&self, handle: &SocketHandle) -> bool {
-        self.bindings.borrow().contains(handle)
     }
 
     /// Initiate a TCP connection
@@ -104,6 +107,57 @@ impl Network {
         .boxed_local()
     }
 
+    /// Close all TCP connections with a remote IP address
+    pub fn disconnect_all(
+        &self,
+        remote_ip: Box<[u8]>,
+        timeout: impl Into<Duration>,
+    ) -> LocalBoxFuture<()> {
+        let (handles, futs): (Vec<_>, Vec<_>) = {
+            let connections = self.connections.borrow();
+            connections
+                .values()
+                .filter(|conn| {
+                    conn.meta.remote.addr.as_bytes() == remote_ip.as_ref()
+                        && conn.meta.protocol == Protocol::Tcp
+                })
+                .map(|conn| (conn.handle, self.stack.disconnect(conn.handle)))
+                .unzip()
+        };
+
+        if futs.is_empty() {
+            return futures::future::ready(()).boxed_local();
+        }
+
+        self.poll();
+
+        let timeout = timeout.into();
+        let net = self.clone();
+
+        async move {
+            let pending = futures::future::join_all(futs);
+            let timeout = tokio::time::delay_for(timeout);
+
+            if let Either::Right((_, pending)) = futures::future::select(pending, timeout).await {
+                handles.into_iter().for_each(|h| net.stack.abort(h));
+                net.poll();
+
+                let timeout = tokio::time::delay_for(Duration::from_millis(500));
+                let _ = futures::future::select(pending, timeout).await;
+            }
+        }
+        .boxed_local()
+    }
+
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        iface
+            .sockets()
+            .map(|(_, s)| (s.desc(), s.state()))
+            .collect()
+    }
+
     #[inline(always)]
     fn is_connected(&self, meta: &ConnectionMeta) -> bool {
         self.connections.borrow().contains_key(meta)
@@ -125,14 +179,11 @@ impl Network {
         handles.borrow_mut().insert(handle, meta);
     }
 
-    pub fn close_connection(&self, meta: &ConnectionMeta) -> Option<Connection> {
-        { self.connections.borrow_mut().remove(meta) }.map(|connection| {
-            self.stack.close(&connection.meta, connection.handle);
-            connection
-        })
-    }
-
+    #[inline(always)]
     fn remove_connection(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+        if !meta.remote.is_specified() {
+            return;
+        }
         self.stack.remove(meta, handle);
         self.connections.borrow_mut().remove(meta);
     }
@@ -162,13 +213,7 @@ impl Network {
             let net = net.clone();
             let stack = stack.clone();
 
-            async move {
-                for chunk in vec.chunks(MAX_TCP_PAYLOAD_SIZE) {
-                    let net = net.clone();
-                    stack.send(chunk.to_vec(), conn, move || net.poll()).await?;
-                }
-                Ok(())
-            }
+            async move { stack.send(vec, conn, move || net.poll()).await }
         });
     }
 
@@ -218,7 +263,7 @@ impl Network {
         let mut iface = iface_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
-        let mut rebind = None;
+        let mut rebind = self.bindings.borrow().clone();
 
         for (handle, socket) in iface.sockets_mut() {
             let mut desc = SocketDesc {
@@ -231,16 +276,27 @@ impl Network {
                 match { self.handles.borrow().get(&handle).cloned() } {
                     Some(meta) => {
                         remove.push((meta, handle));
+                        if let Ok(desc) = meta.try_into() {
+                            events.push(IngressEvent::Disconnected { desc })
+                        }
                     }
                     None => {
+                        if !desc.local.is_specified() {
+                            // skip; the socket is initializing
+                            continue;
+                        }
                         if let Ok(meta) = desc.try_into() {
-                            log::trace!("{}: removing unregistered socket {:?}", *self.name, desc);
+                            log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
                             remove.push((meta, handle));
                             events.push(IngressEvent::Disconnected { desc });
                         }
                     }
                 };
                 continue;
+            }
+
+            if !desc.remote.is_specified() {
+                rebind.remove(&(desc.protocol, desc.local));
             }
 
             while socket.can_recv() {
@@ -251,39 +307,25 @@ impl Network {
                     }
                     Ok(None) => break,
                     Err(err) => {
-                        log::trace!("{}: ingress packet error: {}", *self.name, err);
+                        log::trace!("{}: ingress packet error: {}", self.name, err);
                         processed = true;
                         continue;
                     }
                 };
 
                 desc.remote = remote.into();
-
-                if self.is_bound(&handle) {
-                    if let Ok(meta) = desc.try_into() {
-                        if !self.is_connected(&meta) {
-                            self.add_connection(Connection { handle, meta });
-                            events.push(IngressEvent::InboundConnection { desc });
-
-                            if let (Protocol::Tcp, SocketEndpoint::Ip(ep)) =
-                                (desc.protocol, desc.local)
-                            {
-                                rebind = Some((Protocol::Tcp, ep));
-                                self.bindings.borrow_mut().remove(&handle);
-                            }
-                        }
+                if let Ok(meta) = desc.try_into() {
+                    if !self.is_connected(&meta) {
+                        self.add_connection(Connection { handle, meta });
+                        events.push(IngressEvent::InboundConnection { desc });
                     }
                 }
 
-                log::trace!("{}: ingress {} B IP packet", *self.name, payload.len());
+                log::trace!("{}: ingress {} B IP packet", self.name, payload.len());
 
                 received += 1;
                 let no = COUNTER.fetch_add(1, Ordering::Relaxed);
                 events.push(IngressEvent::Packet { desc, payload, no });
-
-                if rebind.is_some() {
-                    break;
-                }
             }
         }
 
@@ -292,9 +334,9 @@ impl Network {
             self.remove_connection(&meta, handle);
         });
 
-        if let Some((p, ep)) = rebind {
+        for (p, ep) in rebind {
             if let Err(e) = self.bind(p, ep) {
-                log::trace!("{}: ingress: cannot re-bind {} {}: {}", self.name, p, ep, e);
+                log::trace!("{}: ingress: cannot bind {} {:?}: {}", self.name, p, ep, e);
             }
         }
 
@@ -304,7 +346,7 @@ impl Network {
                 if ingress_tx.send(event).is_err() {
                     log::trace!(
                         "{}: ingress channel closed, unable to receive packets",
-                        *self.name
+                        self.name
                     );
                     break;
                 }
@@ -607,6 +649,7 @@ impl<T> Default for Channel<T> {
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
+    use std::rc::Rc;
     use std::time::Duration;
 
     use futures::channel::{mpsc, oneshot};
@@ -618,11 +661,12 @@ mod tests {
     use tokio::task::spawn_local;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
-    use crate::{Connection, IngressEvent, Network, Protocol, Stack};
+    use crate::{Connection, IngressEvent, Network, NetworkConfig, Protocol, Stack};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-    fn new_network(medium: Medium, ip: IpAddress) -> Network {
+    fn new_network(medium: Medium, ip: IpAddress, config: NetworkConfig) -> Network {
+        let config = Rc::new(config);
         let cidr = IpCidr::new(ip.into(), 16);
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
@@ -631,14 +675,18 @@ mod tests {
         };
 
         let mut iface = match medium {
-            Medium::Ethernet => tap_iface(ip_to_mac(ip)),
-            Medium::Ip => tun_iface(),
+            Medium::Ethernet => tap_iface(ip_to_mac(ip), config.max_transmission_unit),
+            Medium::Ip => tun_iface(config.max_transmission_unit),
             _ => panic!("unsupported medium: {:?}", medium),
         };
 
         add_iface_address(&mut iface, cidr);
         add_iface_route(&mut iface, cidr, route);
-        Network::new(format!("[{:?}] {}", medium, ip), Stack::new(iface))
+        Network::new(
+            format!("[{:?}] {}", medium, ip),
+            config.clone(),
+            Stack::new(iface, config),
+        )
     }
 
     fn produce_data<S, E>(
@@ -773,13 +821,20 @@ mod tests {
 
     /// Generate, send and receive data across 2 network instances
     async fn net_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
+        const MTU: usize = 65535;
+
         println!(">> exchanging {} B in {} B chunks", total, chunk_size);
 
         let ip1 = Ipv4Address::new(10, 0, 0, 1);
         let ip2 = Ipv4Address::new(10, 0, 0, 2);
 
-        let net1 = new_network(medium, ip1.into());
-        let net2 = new_network(medium, ip2.into());
+        let config = NetworkConfig {
+            max_transmission_unit: MTU,
+            buffer_size_multiplier: 4,
+        };
+
+        let net1 = new_network(medium, ip1.into(), config.clone());
+        let net2 = new_network(medium, ip2.into(), config.clone());
 
         net1.spawn_local();
         net2.spawn_local();

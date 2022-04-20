@@ -18,8 +18,7 @@ use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Una
 use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
-use ya_relay_core::challenge::prepare_challenge_response;
-use ya_relay_core::challenge::{self, CHALLENGE_DIFFICULTY};
+use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_proto::codec::PacketKind;
@@ -107,7 +106,7 @@ impl Server {
                         log::warn!(
                             "Server shouldn't get Response packet. Sender: {}, node {}",
                             from,
-                            node.info.node_id,
+                            node.info.node_id(),
                         );
                     }
                     Some(proto::packet::Kind::Control(packet)) => {
@@ -171,7 +170,7 @@ impl Server {
                     log::trace!(
                         "Sent Disconnected [slot={}] message to Node: {}.",
                         slot,
-                        src_node.info.node_id
+                        src_node.info.node_id()
                     );
 
                     return Err(e.into());
@@ -228,8 +227,8 @@ impl Server {
 
         log::trace!(
             "Sending forward packet from [{}] to [{}] ({} B)",
-            src_node.info.node_id,
-            dest_node.info.node_id,
+            src_node.info.node_id(),
+            dest_node.info.node_id(),
             packet.payload.len(),
         );
 
@@ -258,7 +257,7 @@ impl Server {
                     Some(node) => {
                         log::info!(
                             "Received Disconnected message from Node [{}]({}).",
-                            node.info.node_id,
+                            node.info.node_id(),
                             from
                         );
                         server.nodes.remove_session(node.info.slot)
@@ -291,7 +290,7 @@ impl Server {
         // TODO: Note that we ignore endpoints sent by Node and only try
         //       to verify address, from which we received messages.
 
-        let node_id = session.info.node_id;
+        let node_id = session.info.node_id();
         let endpoints = self
             .inner
             .ip_checker
@@ -431,7 +430,7 @@ impl Server {
         from: SocketAddr,
         params: proto::request::ReverseConnection,
     ) -> ServerResult<()> {
-        let source_node_info = match { self.state.read().await }.nodes.get_by_session(session_id) {
+        let source_node_info = match { self.state.read().await.nodes.get_by_session(session_id) } {
             None => return Err(Unauthorized::SessionNotFound(session_id).into()),
             Some(node_id) => node_id.info,
         };
@@ -443,10 +442,7 @@ impl Server {
             .try_into()
             .map_err(|_| BadRequest::InvalidNodeId)?;
         let target_session = {
-            match { self.state.read().await }
-                .nodes
-                .get_by_node_id(target_node_id)
-            {
+            match { self.state.read().await.nodes.get_by_node_id(target_node_id) } {
                 None => {
                     return Err(InternalError::Generic(format!(
                         "There is no session with node_id {}",
@@ -461,7 +457,7 @@ impl Server {
         let message_to_send = proto::Packet::control(
             target_session.session.to_vec(),
             proto::control::ReverseConnection {
-                node_id: source_node_info.node_id.into_array().to_vec(),
+                node_id: source_node_info.node_id().into_array().to_vec(),
                 endpoints: source_node_info
                     .endpoints
                     .into_iter()
@@ -528,7 +524,7 @@ impl Server {
         node_info: NodeSession,
         public_key: bool,
     ) -> ServerResult<()> {
-        let node_id = node_info.info.node_id;
+        let node_id = node_info.info.node_id();
         let node = to_node_response(node_info, public_key);
 
         self.send_to(
@@ -591,7 +587,7 @@ impl Server {
     ) -> ServerResult<()> {
         let mut sender = {
             match { self.state.read().await.starting_session.get(&id).cloned() } {
-                Some(sender) => sender.clone(),
+                Some(sender) => sender,
                 None => return Err(Unauthorized::SessionNotFound(id).into()),
             }
         };
@@ -601,10 +597,16 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
         };
 
-        Ok(sender
-            .send(request)
-            .await
-            .map_err(|_| InternalError::Send)?)
+        //
+        tokio::task::spawn_local(async move {
+            let _ = sender.send(request).await.map_err(|_| {
+                log::warn!(
+                    "Establish session channel closed. Dropping packet for session [{}]",
+                    id
+                )
+            });
+        });
+        Ok(())
     }
 
     async fn init_session(
@@ -614,7 +616,7 @@ impl Server {
         session_id: SessionId,
         mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
-        let (packet, raw_challenge) = prepare_challenge_response();
+        let (packet, raw_challenge) = challenge::prepare_challenge_response();
         let challenge = proto::Packet::response(
             request_id,
             session_id.to_vec(),
@@ -636,24 +638,17 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // Validate the challenge
-                if !challenge::verify(
-                    &raw_challenge,
-                    CHALLENGE_DIFFICULTY,
-                    &session.challenge_resp,
-                    session.public_key.as_slice(),
-                )
-                .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
-                {
-                    return Err(Unauthorized::InvalidChallenge.into());
-                }
-
-                let node_id = (&session.node_id)
-                    .try_into()
-                    .map_err(|_| BadRequest::InvalidNodeId)?;
+                let (node_id, identities) =
+                    challenge::recover_identities_from_challenge::<ChallengeDigest>(
+                        &raw_challenge,
+                        CHALLENGE_DIFFICULTY,
+                        session.challenge_resp,
+                        None,
+                    )
+                    .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?;
 
                 let info = NodeInfo {
-                    node_id,
-                    public_key: session.public_key,
+                    identities,
                     slot: u32::MAX,
                     endpoints: vec![],
                     supported_encryptions: vec![],
@@ -709,7 +704,7 @@ impl Server {
                         request_id
                     );
 
-                    let node_id = node.info.node_id;
+                    let node_id = node.info.node_id();
                     let node = self
                         .register_endpoints(request_id, session_id, with, registration, node)
                         .await?;
@@ -757,6 +752,7 @@ impl Server {
             let s = self.clone();
             log::trace!("Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
+            log::trace!("Session cleanup complete");
         }
     }
 
@@ -947,14 +943,13 @@ pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, pr
 }
 
 pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::response::Node {
-    let public_key = match public_key {
-        true => node_info.info.public_key,
+    let identities = match public_key {
+        true => node_info.info.identities.iter().map(Into::into).collect(),
         false => vec![],
     };
 
     proto::response::Node {
-        node_id: node_info.info.node_id.into_array().to_vec(),
-        public_key,
+        identities,
         endpoints: node_info
             .info
             .endpoints

@@ -1,6 +1,7 @@
-use managed::{ManagedMap, ManagedSlice};
 use std::collections::BTreeMap;
+use std::io::Write;
 
+use managed::{ManagedMap, ManagedSlice};
 use smoltcp::iface::{Interface, InterfaceBuilder, NeighborCache, Route, Routes};
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
@@ -20,18 +21,39 @@ pub fn iface_builder<'a>(device: CaptureDevice) -> InterfaceBuilder<'a, CaptureD
 }
 
 /// Creates a default TAP (Ethernet) network interface
-pub fn tap_iface<'a>(mac: HardwareAddress) -> CaptureInterface<'a> {
+pub fn tap_iface<'a>(mac: HardwareAddress, mtu: usize) -> CaptureInterface<'a> {
     let neighbor_cache = NeighborCache::new(BTreeMap::new());
 
-    iface_builder(CaptureDevice::default())
+    iface_builder(CaptureDevice::tap(mtu))
         .neighbor_cache(neighbor_cache)
         .hardware_addr(mac)
         .finalize()
 }
 
 /// Creates a default TUN (IP) network interface
-pub fn tun_iface<'a>() -> CaptureInterface<'a> {
-    iface_builder(CaptureDevice::tun()).finalize()
+pub fn tun_iface<'a>(mtu: usize) -> CaptureInterface<'a> {
+    iface_builder(CaptureDevice::tun(mtu)).finalize()
+}
+
+/// Creates a pcap TAP (Ethernet) network interface
+pub fn pcap_tap_iface<'a, W>(mac: HardwareAddress, mtu: usize, pcap: W) -> CaptureInterface<'a>
+where
+    W: Write + 'static,
+{
+    let neighbor_cache = NeighborCache::new(BTreeMap::new());
+
+    iface_builder(CaptureDevice::pcap_tap(mtu, pcap))
+        .neighbor_cache(neighbor_cache)
+        .hardware_addr(mac)
+        .finalize()
+}
+
+/// Creates a pcap TUN (IP) network interface
+pub fn pcap_tun_iface<'a, W>(mtu: usize, pcap: W) -> CaptureInterface<'a>
+where
+    W: Write + 'static,
+{
+    iface_builder(CaptureDevice::pcap_tun(mtu, pcap)).finalize()
 }
 
 /// Assigns a new interface IP address

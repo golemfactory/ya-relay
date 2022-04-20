@@ -136,6 +136,39 @@ impl<'a> Future for Connect<'a> {
     }
 }
 
+/// TCP disconnection future
+pub struct Disconnect<'a> {
+    handle: SocketHandle,
+    iface: Rc<RefCell<CaptureInterface<'a>>>,
+}
+
+impl<'a> Disconnect<'a> {
+    pub fn new(handle: SocketHandle, iface: Rc<RefCell<CaptureInterface<'a>>>) -> Self {
+        Self { handle, iface }
+    }
+}
+
+impl<'a> Future for Disconnect<'a> {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let iface_rfc = self.iface.clone();
+        let mut iface = iface_rfc.borrow_mut();
+
+        let socket = match iface.get_socket_safe::<TcpSocket>(self.handle) {
+            Ok(s) => s,
+            Err(_) => return Poll::Ready(Ok(())),
+        };
+
+        if !socket.is_open() {
+            Poll::Ready(Ok(()))
+        } else {
+            socket.register_recv_waker(cx.waker());
+            Poll::Pending
+        }
+    }
+}
+
 /// Packet send future
 pub struct Send<'a> {
     data: Vec<u8>,

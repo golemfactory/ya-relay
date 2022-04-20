@@ -3,17 +3,16 @@ use smoltcp::socket::*;
 use smoltcp::storage::PacketMetadata;
 use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
+use std::hash::{Hash, Hasher};
 
-use crate::{Protocol, MAX_FRAME_SIZE};
+use crate::Protocol;
 
-pub const TCP_NAGLE_ENABLED: bool = false;
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
-const TCP_TIMEOUT: Duration = Duration::from_secs(240);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(75);
+pub const TCP_DISCONN_TIMEOUT: Duration = Duration::from_secs(2);
+const TCP_TIMEOUT: Duration = Duration::from_secs(120);
+const TCP_KEEP_ALIVE: Duration = Duration::from_secs(30);
 const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
-
-const TCP_TX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
-const RX_BUFFER_SIZE: usize = MAX_FRAME_SIZE * 4;
+const TCP_NAGLE_ENABLED: bool = false;
 
 /// Socket quintuplet
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -37,12 +36,88 @@ impl SocketDesc {
     }
 }
 
+#[derive(From, Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SocketState {
+    Tcp(TcpState),
+    Other,
+}
+
+impl Default for SocketState {
+    fn default() -> Self {
+        SocketState::Other
+    }
+}
+
+impl ToString for SocketState {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Tcp(state) => format!("{:?}", state),
+            _ => String::default(),
+        }
+    }
+}
+
 /// Socket endpoint kind
 #[derive(From, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SocketEndpoint {
     Ip(IpEndpoint),
     Icmp(IcmpEndpoint),
     Other,
+}
+
+impl SocketEndpoint {
+    pub fn is_specified(&self) -> bool {
+        match self {
+            Self::Ip(ip) => ip.is_specified(),
+            Self::Icmp(icmp) => icmp.is_specified(),
+            Self::Other => false,
+        }
+    }
+
+    pub fn addr_repr(&self) -> String {
+        match self {
+            Self::Ip(ip) => format!("{}", ip.addr),
+            _ => Default::default(),
+        }
+    }
+
+    pub fn port_repr(&self) -> String {
+        match self {
+            Self::Ip(ip) => format!("{}", ip.port),
+            Self::Icmp(icmp) => match icmp {
+                IcmpEndpoint::Unspecified => "*".to_string(),
+                endpoint => format!("{:?}", endpoint),
+            },
+            Self::Other => Default::default(),
+        }
+    }
+}
+
+#[allow(clippy::derive_hash_xor_eq)]
+impl Hash for SocketEndpoint {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Ip(ip) => {
+                state.write_u8(1);
+                ip.hash(state);
+            }
+            Self::Icmp(icmp) => {
+                state.write_u8(2);
+                match icmp {
+                    IcmpEndpoint::Unspecified => state.write_u8(1),
+                    IcmpEndpoint::Udp(ip) => {
+                        state.write_u8(2);
+                        ip.hash(state);
+                    }
+                    IcmpEndpoint::Ident(id) => {
+                        state.write_u8(3);
+                        id.hash(state);
+                    }
+                }
+            }
+            Self::Other => state.write_u8(3),
+        }
+    }
 }
 
 impl PartialEq<IpEndpoint> for SocketEndpoint {
@@ -91,6 +166,9 @@ pub trait SocketExt {
     fn can_send(&self) -> bool;
     fn send_capacity(&self) -> usize;
     fn send_queue(&self) -> usize;
+
+    fn state(&self) -> SocketState;
+    fn desc(&self) -> SocketDesc;
 }
 
 impl<'a> SocketExt for Socket<'a> {
@@ -203,6 +281,21 @@ impl<'a> SocketExt for Socket<'a> {
             }
         }
     }
+
+    fn state(&self) -> SocketState {
+        match &self {
+            Self::Tcp(s) => SocketState::from(s.state()),
+            _ => SocketState::Other,
+        }
+    }
+
+    fn desc(&self) -> SocketDesc {
+        SocketDesc {
+            protocol: self.protocol(),
+            local: self.local_endpoint(),
+            remote: self.remote_endpoint(),
+        }
+    }
 }
 
 pub trait TcpSocketExt {
@@ -218,38 +311,43 @@ impl<'a> TcpSocketExt for TcpSocket<'a> {
     }
 }
 
-pub fn tcp_socket<'a>() -> TcpSocket<'a> {
-    let rx_buf = TcpSocketBuffer::new(vec![0; RX_BUFFER_SIZE]);
-    let tx_buf = TcpSocketBuffer::new(vec![0; TCP_TX_BUFFER_SIZE]);
+pub fn tcp_socket<'a>(mtu: usize, buf_multiplier: usize) -> TcpSocket<'a> {
+    let rx_buf = TcpSocketBuffer::new(vec![0; mtu * buf_multiplier]);
+    let tx_buf = TcpSocketBuffer::new(vec![0; mtu * buf_multiplier]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
     socket.set_defaults();
     socket
 }
 
-pub fn udp_socket<'a>() -> UdpSocket<'a> {
-    let rx_buf = UdpSocketBuffer::new(meta_storage(), payload_storage());
-    let tx_buf = UdpSocketBuffer::new(meta_storage(), payload_storage());
+pub fn udp_socket<'a>(mtu: usize, buf_multiplier: usize) -> UdpSocket<'a> {
+    let rx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+    let tx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
     UdpSocket::new(rx_buf, tx_buf)
 }
 
-pub fn icmp_socket<'a>() -> IcmpSocket<'a> {
-    let rx_buf = IcmpSocketBuffer::new(meta_storage(), payload_storage());
-    let tx_buf = IcmpSocketBuffer::new(meta_storage(), payload_storage());
+pub fn icmp_socket<'a>(mtu: usize, buf_multiplier: usize) -> IcmpSocket<'a> {
+    let rx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+    let tx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
     IcmpSocket::new(rx_buf, tx_buf)
 }
 
-pub fn raw_socket<'a>(ip_version: IpVersion, ip_protocol: IpProtocol) -> RawSocket<'a> {
-    let rx_buf = RawSocketBuffer::new(meta_storage(), payload_storage());
-    let tx_buf = RawSocketBuffer::new(meta_storage(), payload_storage());
+pub fn raw_socket<'a>(
+    ip_version: IpVersion,
+    ip_protocol: IpProtocol,
+    mtu: usize,
+    buf_multiplier: usize,
+) -> RawSocket<'a> {
+    let rx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+    let tx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
     RawSocket::new(ip_version, ip_protocol, rx_buf, tx_buf)
 }
 
 #[inline]
-fn meta_storage<H: Clone>() -> Vec<PacketMetadata<H>> {
-    vec![PacketMetadata::EMPTY; RX_BUFFER_SIZE]
+fn meta_storage<H: Clone>(size: usize) -> Vec<PacketMetadata<H>> {
+    vec![PacketMetadata::EMPTY; size]
 }
 
 #[inline]
-fn payload_storage<T: Default + Clone>() -> Vec<T> {
-    vec![Default::default(); RX_BUFFER_SIZE]
+fn payload_storage<T: Default + Clone>(size: usize) -> Vec<T> {
+    vec![Default::default(); size]
 }

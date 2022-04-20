@@ -1,13 +1,13 @@
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, oneshot};
 
-use ya_relay_core::challenge::{self, prepare_challenge_response, CHALLENGE_DIFFICULTY};
+use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
@@ -16,7 +16,7 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
 
 use crate::dispatch::Dispatcher;
-use crate::session::Session;
+use crate::session::{Session, SessionError, SessionResult};
 use crate::session_manager::SessionManager;
 
 #[derive(Clone)]
@@ -43,12 +43,13 @@ struct StartingSessionsState {
 
 struct TmpSession {
     pub session: Arc<Session>,
-    pub notify: broadcast::Sender<()>,
+    pub notify: broadcast::Sender<SessionResult<Arc<Session>>>,
 }
 
 pub enum SessionInitialization {
-    Started(Arc<Session>),
-    Finished,
+    Starting(Arc<Session>),
+    Finished(Arc<Session>),
+    Failure(SessionError),
 }
 
 impl StartingSessions {
@@ -79,19 +80,32 @@ impl StartingSessions {
                             notify: notify_tx,
                         },
                     );
-                    SessionInitialization::Started(session)
+                    SessionInitialization::Starting(session)
                 }
                 Some(entry) => {
-                    entry.notify.subscribe().next().await;
-                    SessionInitialization::Finished
+                    // Don't wait under lock. It can block tokio.
+                    let mut wait = entry.notify.subscribe();
+                    drop(state);
+
+                    match wait.next().await {
+                        Some(Ok(Ok(session))) => SessionInitialization::Finished(session),
+                        Some(Ok(Err(err))) => SessionInitialization::Failure(err),
+                        _ => SessionInitialization::Failure(SessionError::Drop(
+                            "Unexpected channel error".to_string(),
+                        )),
+                    }
                 }
             }
         }
     }
 
-    pub fn remove_temporary_session(&mut self, addr: &SocketAddr) {
+    pub fn remove_temporary_session(
+        &mut self,
+        addr: &SocketAddr,
+        result: SessionResult<Arc<Session>>,
+    ) {
         if let Some(entry) = self.state.lock().unwrap().tmp_sessions.remove(addr) {
-            entry.notify.send(()).ok();
+            entry.notify.send(result).ok();
         }
     }
 
@@ -129,15 +143,10 @@ impl StartingSessions {
         with: SocketAddr,
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
-        let node_id = NodeId::try_from(&request.node_id)?;
         let session_id = SessionId::generate();
         let (sender, receiver) = mpsc::channel(1);
 
-        log::info!(
-            "Node [{}] ({}) tries to establish p2p session.",
-            node_id,
-            with
-        );
+        log::info!("Node ({}) tries to establish p2p session.", with);
 
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
@@ -153,7 +162,7 @@ impl StartingSessions {
                     log::warn!(
                         "Error initializing session {} with node {}. Error: {}",
                         session_id,
-                        node_id,
+                        with,
                         e
                     );
 
@@ -169,14 +178,8 @@ impl StartingSessions {
 
         {
             let mut state = myself.state.lock().unwrap();
-
             state.incoming_sessions.entry(session_id).or_insert(sender);
             state.handles.push(abort_handle);
-        }
-
-        if let Some(sender) = { myself.state.lock().unwrap().tmp_node_ids.remove(&node_id) } {
-            // Try to fire the event, ignore failures
-            let _ = sender.send(());
         }
 
         tokio::task::spawn_local(init_future);
@@ -221,14 +224,15 @@ impl StartingSessions {
         request: proto::request::Session,
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> ServerResult<()> {
-        let node_id = NodeId::try_from(&request.node_id).map_err(|_| BadRequest::InvalidNodeId)?;
-
         let tmp_session = match self.temporary_session(with).await {
-            SessionInitialization::Started(tmp) => tmp,
-            SessionInitialization::Finished => return Ok(()),
+            SessionInitialization::Starting(tmp) => tmp,
+            SessionInitialization::Finished(_) => return Ok(()),
+            SessionInitialization::Failure(err) => {
+                return Err(InternalError::Generic(err.to_string()).into())
+            }
         };
 
-        let (packet, raw_challenge) = prepare_challenge_response();
+        let (packet, raw_challenge) = challenge::prepare_challenge_response();
         let challenge = proto::Packet::response(
             request_id,
             session_id.to_vec(),
@@ -241,30 +245,26 @@ impl StartingSessions {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::debug!("Challenge sent to Node: [{}], address: {}", node_id, with);
+        log::debug!("Challenge sent to Node at address: {}", with);
 
         // Compute challenge in different thread to avoid blocking runtime.
-        let challenge_handle = self.layer.solve_challenge(request).await;
+        let challenge_handle = match request.challenge_req {
+            Some(request) => self.layer.solve_challenge(request).await,
+            None => futures::future::ok(proto::ChallengeResponse::default()).boxed_local(),
+        };
 
         if let Some((request_id, session)) = rc.next().await {
-            log::debug!(
-                "Got challenge response from node: [{}], address: {}",
-                node_id,
-                with
-            );
+            log::debug!("Got challenge response from Node at address: {}", with);
 
             // Validate the challenge
-            let verification = challenge::verify(
-                &raw_challenge,
-                CHALLENGE_DIFFICULTY,
-                &session.challenge_resp,
-                session.public_key.as_slice(),
-            )
-            .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?;
-
-            if !verification {
-                return Err(Unauthorized::InvalidChallenge.into());
-            }
+            let (node_id, identities) =
+                challenge::recover_identities_from_challenge::<ChallengeDigest>(
+                    &raw_challenge,
+                    CHALLENGE_DIFFICULTY,
+                    session.challenge_resp,
+                    None,
+                )
+                .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?;
 
             log::debug!(
                 "Challenge from Node: [{}], address: {} verified.",
@@ -272,13 +272,18 @@ impl StartingSessions {
                 with
             );
 
+            if let Some(sender) = { self.state.lock().unwrap().tmp_node_ids.remove(&node_id) } {
+                // Try to fire the event, ignore failures
+                let _ = sender.send(());
+            }
+
             let packet = proto::response::Session {
-                challenge_resp: challenge_handle
-                    .await
-                    .map_err(|e| InternalError::Generic(e.to_string()))?,
-                challenge_req: None,
-                public_key: self.layer.config.public_key().await?.bytes().to_vec(),
-                supported_encryptions: vec![],
+                challenge_resp: Some(
+                    challenge_handle
+                        .await
+                        .map_err(|e| InternalError::Generic(e.to_string()))?,
+                ),
+                ..Default::default()
             };
 
             tmp_session
@@ -292,7 +297,7 @@ impl StartingSessions {
                 .map_err(|_| InternalError::Send)?;
 
             self.layer
-                .add_incoming_session(with, session_id, node_id)
+                .add_incoming_session(with, session_id, node_id, identities)
                 .await
                 .map_err(|e| InternalError::Generic(e.to_string()))?;
 
@@ -307,18 +312,10 @@ impl StartingSessions {
         Ok(())
     }
 
-    pub fn register_waiting_for_node(&self, node_id: NodeId) -> oneshot::Receiver<()> {
-        let (connect_tx, connect_rx) = oneshot::channel();
-        self.state
-            .lock()
-            .unwrap()
-            .tmp_node_ids
-            .insert(node_id, connect_tx);
-        connect_rx
-    }
-
-    pub fn unregister_waiting_for_node(&self, node_id: &NodeId) {
-        self.state.lock().unwrap().tmp_node_ids.remove(node_id);
+    pub fn register_waiting_for_node(&self, node_id: NodeId) -> StartRegistration {
+        let (reg, tx) = StartRegistration::with(self.state.clone(), node_id);
+        self.state.lock().unwrap().tmp_node_ids.insert(node_id, tx);
+        reg
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
@@ -348,5 +345,48 @@ impl StartingSessions {
 
         state.incoming_sessions.clear();
         state.tmp_sessions.clear();
+    }
+}
+
+pub struct StartRegistration {
+    node_id: NodeId,
+    state: Arc<Mutex<StartingSessionsState>>,
+    rx: Option<oneshot::Receiver<()>>,
+}
+
+impl StartRegistration {
+    fn with(
+        state: Arc<Mutex<StartingSessionsState>>,
+        node_id: NodeId,
+    ) -> (Self, oneshot::Sender<()>) {
+        let (tx, rx) = oneshot::channel();
+        let reg = Self {
+            node_id,
+            state,
+            rx: Some(rx),
+        };
+        (reg, tx)
+    }
+
+    #[inline]
+    pub fn rx(&mut self) -> anyhow::Result<oneshot::Receiver<()>> {
+        self.rx
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Registration receiver already taken"))
+    }
+}
+
+impl Drop for StartRegistration {
+    fn drop(&mut self) {
+        if let Some(tx) = {
+            self.state
+                .lock()
+                .unwrap()
+                .tmp_node_ids
+                .remove(&self.node_id)
+        } {
+            // Try to fire the event, ignore failures
+            let _ = tx.send(());
+        }
     }
 }
