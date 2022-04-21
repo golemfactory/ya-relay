@@ -187,6 +187,11 @@ impl SessionManager {
         })?;
         let challenge_handle = self.solve_challenge(challenge_req).await;
 
+        log::trace!(
+            "Solving challenge while establishing session with: {}",
+            addr
+        );
+
         // with the current ECDSA scheme the public key
         // can be recovered from challenge signature
         let packet = proto::request::Session {
@@ -201,6 +206,8 @@ impl SessionManager {
             )
             .await?;
 
+        log::trace!("Challenge sent to: {}", addr);
+
         if session_id != &response.session_id[..] {
             let _ = tmp_session.disconnect().await;
             return Err(SessionError::Drop(format!(
@@ -208,6 +215,8 @@ impl SessionManager {
                 this_id, session_id, response.session_id,
             )));
         }
+
+        log::trace!("Validating challenge from: {}", addr);
 
         let (remote_id, identities) = match {
             if challenge {
@@ -255,7 +264,7 @@ impl SessionManager {
             Ok(session) => Ok(session),
             Err(err) => {
                 // Clear state and notify other futures waiting for this session to be initialized.
-                if let Some(mut s) = self.state.read().await.starting_sessions.clone() {
+                if let Some(mut s) = { self.state.read().await.starting_sessions.clone() } {
                     s.remove_temporary_session(&addr, Err(err.clone()))
                 }
                 Err(err)
@@ -312,7 +321,7 @@ impl SessionManager {
     }
 
     async fn temporary_session(&self, addr: SocketAddr) -> anyhow::Result<SessionInitialization> {
-        if let Some(mut starting_sessions) = self.state.write().await.starting_sessions.clone() {
+        if let Some(mut starting_sessions) = { self.state.read().await.starting_sessions.clone() } {
             Ok(starting_sessions.temporary_session(addr).await)
         } else {
             bail!("StartingSessions struct not initialized.")
@@ -340,6 +349,8 @@ impl SessionManager {
         node_id: NodeId,
         identities: impl IntoIterator<Item = Identity>,
     ) -> anyhow::Result<Arc<Session>> {
+        log::trace!("add_session {} {} {}", id, addr, node_id);
+
         let session = Session::new(addr, id, self.out_stream()?);
         let mut state = self.state.write().await;
 
@@ -987,20 +998,19 @@ impl Handler for SessionManager {
     fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>> {
         let handler = self.clone();
         async move {
-            let state = handler.state.read().await;
+            let (starting_sessions, session) = {
+                let state = handler.state.read().await;
+
+                let starting_sessions = state.starting_sessions.clone();
+                let session = state.sessions.get(&from).cloned();
+                (starting_sessions, session)
+            };
 
             // We get either dispatcher for already existing Session from self,
             // or temporary session, that is during creation.
-            state
-                .sessions
-                .get(&from)
+            session
                 .map(|session| session.dispatcher())
-                .or_else(|| {
-                    state
-                        .starting_sessions
-                        .clone()
-                        .and_then(|entity| entity.dispatcher(from))
-                })
+                .or_else(|| starting_sessions.and_then(|entity| entity.dispatcher(from)))
         }
         .boxed_local()
     }

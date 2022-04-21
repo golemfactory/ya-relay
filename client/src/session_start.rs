@@ -87,6 +87,11 @@ impl StartingSessions {
                     let mut wait = entry.notify.subscribe();
                     drop(state);
 
+                    log::debug!(
+                        "Waiting for other thread to initialize session with: {}",
+                        addr
+                    );
+
                     match wait.next().await {
                         Some(Ok(Ok(session))) => SessionInitialization::Finished(session),
                         Some(Ok(Err(err))) => SessionInitialization::Failure(err),
@@ -104,7 +109,7 @@ impl StartingSessions {
         addr: &SocketAddr,
         result: SessionResult<Arc<Session>>,
     ) {
-        if let Some(entry) = self.state.lock().unwrap().tmp_sessions.remove(addr) {
+        if let Some(entry) = { self.state.lock().unwrap().tmp_sessions.remove(addr) } {
             entry.notify.send(result).ok();
         }
     }
