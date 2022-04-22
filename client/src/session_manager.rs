@@ -251,6 +251,13 @@ impl SessionManager {
             session_id,
             addr
         );
+
+        // Send ping to measure response time.
+        let session_cp = session.clone();
+        tokio::task::spawn_local(async move {
+            session_cp.ping().await.ok();
+        });
+
         Ok(session)
     }
 
