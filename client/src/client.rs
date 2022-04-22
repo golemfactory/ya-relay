@@ -309,6 +309,16 @@ impl Client {
         Ok(())
     }
 
+    pub async fn ping_sessions(&self) {
+        let sessions = self.sessions.sessions().await;
+        let ping_futures = sessions
+            .iter()
+            .map(|session| async move { session.ping().await.ok() })
+            .collect::<Vec<_>>();
+
+        futures::future::join_all(ping_futures).await;
+    }
+
     pub async fn reconnect_server(&self) {
         if self.sessions.drop_server_session().await {
             log::info!("Reconnecting to Hybrid NET relay server");
