@@ -43,6 +43,7 @@ pub struct ClientConfig {
     pub session_expiration: Duration,
     pub tcp_config: NetworkConfig,
     pub pcap_path: Option<PathBuf>,
+    pub ping_measure_interval: Duration,
 }
 
 pub struct ClientBuilder {
@@ -138,6 +139,15 @@ impl Client {
         if self.config.auto_connect {
             self.sessions.server_session().await?;
         }
+
+        // Measure ping from time to time
+        let this = self.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                tokio::time::delay_for(this.config.ping_measure_interval).await;
+                this.ping_sessions().await;
+            }
+        });
 
         log::debug!("[{}] started", self.node_id());
         Ok(())
@@ -398,6 +408,7 @@ impl ClientBuilder {
                 buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(4),
             },
             pcap_path,
+            ping_measure_interval: Duration::from_secs(300),
         });
 
         client.spawn().await?;
