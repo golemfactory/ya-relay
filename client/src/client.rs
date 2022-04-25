@@ -21,7 +21,7 @@ use ya_relay_core::udp_stream::resolve_max_payload_size;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
-use ya_relay_stack::{NetworkConfig, SocketDesc, SocketState};
+use ya_relay_stack::{ChannelMetrics, NetworkConfig, SocketDesc, SocketState};
 
 use crate::session::SessionDesc;
 use crate::session_manager::SessionManager;
@@ -118,8 +118,13 @@ impl Client {
     }
 
     #[inline]
-    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         self.sessions.virtual_tcp.sockets()
+    }
+
+    #[inline]
+    pub fn metrics(&self) -> ChannelMetrics {
+        self.sessions.virtual_tcp.metrics()
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
