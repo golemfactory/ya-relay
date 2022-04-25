@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::ops::Add;
@@ -157,16 +157,12 @@ impl SessionManager {
     }
 
     pub async fn list_identities(&self) -> Vec<NodeId> {
-        let state = self.state.read().await;
-
         // This list stores only aliases. We need to add default ids.
+        let unique_nodes = self.registry.list_nodes().await;
+
+        let state = self.state.read().await;
         let mut ids = state.nodes_identity.keys().cloned().collect::<Vec<_>>();
-        let unique_nodes = state
-            .nodes_identity
-            .iter()
-            .map(|(_, (id, _))| id)
-            .cloned()
-            .collect::<HashSet<_>>();
+
         ids.extend(unique_nodes.into_iter());
         ids
     }
