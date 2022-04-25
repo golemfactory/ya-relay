@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::convert::TryFrom;
+use std::iter::zip;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail};
 use derive_more::From;
 use futures::channel::mpsc;
+use futures::future::join_all;
 use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use tokio::sync::RwLock;
 use url::Url;
@@ -332,6 +334,20 @@ impl Client {
             .collect::<Vec<_>>();
 
         futures::future::join_all(ping_futures).await;
+    }
+
+    // Returns connected NodeIds. Single Node can have many identities, so the second
+    // tuple element contains main NodeId (default Id).
+    pub async fn connected_nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
+        let ids = self.sessions.list_identities().await;
+        let aliases = join_all(
+            ids.iter()
+                .map(|id| self.sessions.alias(&id))
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .into_iter();
+        zip(ids.into_iter(), aliases).collect()
     }
 
     pub async fn reconnect_server(&self) {
