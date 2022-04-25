@@ -167,8 +167,13 @@ impl TcpLayer {
     }
 
     #[inline]
-    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         self.net.sockets()
+    }
+
+    #[inline]
+    pub fn metrics(&self) -> ChannelMetrics {
+        self.net.metrics()
     }
 
     pub async fn get_next_fwd_payload<T>(

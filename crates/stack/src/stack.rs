@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use smoltcp::iface::SocketHandle;
@@ -9,6 +10,7 @@ use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::connection::{Connect, Connection, ConnectionMeta, Disconnect, Send};
 use crate::interface::*;
+use crate::metrics::ChannelMetrics;
 use crate::patch_smoltcp::GetSocketSafe;
 use crate::protocol::Protocol;
 use crate::socket::*;
@@ -18,6 +20,7 @@ use crate::{Error, Result};
 #[derive(Clone)]
 pub struct Stack<'a> {
     iface: Rc<RefCell<CaptureInterface<'a>>>,
+    metrics: Rc<RefCell<HashMap<SocketDesc, ChannelMetrics>>>,
     ports: Rc<RefCell<port::Allocator>>,
     config: Rc<NetworkConfig>,
 }
@@ -26,6 +29,7 @@ impl<'a> Stack<'a> {
     pub fn new(iface: CaptureInterface<'a>, config: Rc<NetworkConfig>) -> Self {
         Self {
             iface: Rc::new(RefCell::new(iface)),
+            metrics: Default::default(),
             ports: Default::default(),
             config,
         }
@@ -52,6 +56,21 @@ impl<'a> Stack<'a> {
     #[inline]
     pub(crate) fn iface(&self) -> Rc<RefCell<CaptureInterface<'a>>> {
         self.iface.clone()
+    }
+
+    #[inline]
+    pub(crate) fn metrics(&self) -> Rc<RefCell<HashMap<SocketDesc, ChannelMetrics>>> {
+        self.metrics.clone()
+    }
+
+    pub(crate) fn on_sent(&self, desc: &SocketDesc, size: usize) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.entry(*desc).or_default().tx.push(size as f32);
+    }
+
+    pub(crate) fn on_received(&self, desc: &SocketDesc, size: usize) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.entry(*desc).or_default().rx.push(size as f32);
     }
 }
 
@@ -115,6 +134,7 @@ impl<'a> Stack<'a> {
                 iface.add_socket(socket)
             }
         };
+
         Ok(handle)
     }
 
@@ -172,11 +192,12 @@ impl<'a> Stack<'a> {
 
     pub(crate) fn remove(&self, meta: &ConnectionMeta, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
+        let mut metrics = self.metrics.borrow_mut();
         let mut ports = self.ports.borrow_mut();
 
-        if let Some(handle) = {
+        if let Some((handle, socket)) = {
             let mut sockets = iface.sockets();
-            sockets.find(|(h, _)| h == &handle).map(|(h, _)| h)
+            sockets.find(|(h, _)| h == &handle)
         } {
             log::trace!(
                 "removing connection: {}:{}:{}",
@@ -185,6 +206,7 @@ impl<'a> Stack<'a> {
                 meta.remote,
             );
 
+            metrics.remove(&socket.desc());
             iface.remove_socket(handle);
             ports.free(meta.protocol, meta.local.port);
         }
