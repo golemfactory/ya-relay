@@ -156,6 +156,17 @@ impl SessionManager {
         self.state.read().await.p2p_sessions.contains_key(node_id)
     }
 
+    pub async fn list_identities(&self) -> Vec<NodeId> {
+        // This list stores only aliases. We need to add default ids.
+        let unique_nodes = self.registry.list_nodes().await;
+
+        let state = self.state.read().await;
+        let mut ids = state.nodes_identity.keys().cloned().collect::<Vec<_>>();
+
+        ids.extend(unique_nodes.into_iter());
+        ids
+    }
+
     async fn init_session_impl(
         &self,
         addr: SocketAddr,
@@ -251,6 +262,13 @@ impl SessionManager {
             session_id,
             addr
         );
+
+        // Send ping to measure response time.
+        let session_cp = session.clone();
+        tokio::task::spawn_local(async move {
+            session_cp.ping().await.ok();
+        });
+
         Ok(session)
     }
 

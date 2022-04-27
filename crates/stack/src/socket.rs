@@ -15,7 +15,7 @@ const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
 const TCP_NAGLE_ENABLED: bool = false;
 
 /// Socket quintuplet
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
 pub struct SocketDesc {
     pub protocol: Protocol,
     pub local: SocketEndpoint,
@@ -36,22 +36,47 @@ impl SocketDesc {
     }
 }
 
-#[derive(From, Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SocketState {
-    Tcp(TcpState),
-    Other,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SocketState<T> {
+    Tcp { state: TcpState, inner: T },
+    Other { inner: T },
 }
 
-impl Default for SocketState {
-    fn default() -> Self {
-        SocketState::Other
+impl<T> SocketState<T> {
+    pub fn inner_mut(&mut self) -> &mut T {
+        match self {
+            Self::Tcp { inner, .. } | Self::Other { inner } => inner,
+        }
+    }
+
+    pub fn set_inner(&mut self, value: T) {
+        match self {
+            Self::Tcp { inner, .. } | Self::Other { inner } => *inner = value,
+        }
     }
 }
 
-impl ToString for SocketState {
+impl<T: Default> From<TcpState> for SocketState<T> {
+    fn from(state: TcpState) -> Self {
+        Self::Tcp {
+            state,
+            inner: Default::default(),
+        }
+    }
+}
+
+impl<T: Default> Default for SocketState<T> {
+    fn default() -> Self {
+        SocketState::Other {
+            inner: Default::default(),
+        }
+    }
+}
+
+impl<T> ToString for SocketState<T> {
     fn to_string(&self) -> String {
         match self {
-            Self::Tcp(state) => format!("{:?}", state),
+            Self::Tcp { state, .. } => format!("{:?}", state),
             _ => String::default(),
         }
     }
@@ -167,7 +192,7 @@ pub trait SocketExt {
     fn send_capacity(&self) -> usize;
     fn send_queue(&self) -> usize;
 
-    fn state(&self) -> SocketState;
+    fn state<T: Default>(&self) -> SocketState<T>;
     fn desc(&self) -> SocketDesc;
 }
 
@@ -282,10 +307,12 @@ impl<'a> SocketExt for Socket<'a> {
         }
     }
 
-    fn state(&self) -> SocketState {
+    fn state<T: Default>(&self) -> SocketState<T> {
         match &self {
             Self::Tcp(s) => SocketState::from(s.state()),
-            _ => SocketState::Other,
+            _ => SocketState::Other {
+                inner: Default::default(),
+            },
         }
     }
 

@@ -1,8 +1,11 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 
 use smoltcp::phy;
 use smoltcp::time;
+
+use crate::metrics::ChannelMetrics;
 
 type Pcap = RefCell<Box<dyn phy::PcapSink>>;
 
@@ -13,6 +16,7 @@ pub struct CaptureDevice {
     medium: phy::Medium,
     max_transmission_unit: usize,
     pcap: Option<Pcap>,
+    metrics: Rc<RefCell<ChannelMetrics>>,
 }
 
 impl Default for CaptureDevice {
@@ -23,6 +27,7 @@ impl Default for CaptureDevice {
             medium: Default::default(),
             max_transmission_unit: 1280,
             pcap: Default::default(),
+            metrics: Default::default(),
         }
     }
 }
@@ -77,10 +82,17 @@ impl CaptureDevice {
         self.medium == phy::Medium::Ip
     }
 
+    #[inline]
+    pub fn metrics(&self) -> ChannelMetrics {
+        self.metrics.borrow().clone()
+    }
+
+    #[inline]
     pub fn phy_rx(&mut self, data: Vec<u8>) {
         self.rx_queue.push_back(data);
     }
 
+    #[inline]
     pub fn next_phy_tx(&mut self) -> Option<Vec<u8>> {
         self.tx_queue.pop_front()
     }
@@ -96,10 +108,12 @@ impl<'a> phy::Device<'a> for CaptureDevice {
             let rx = RxToken {
                 buffer,
                 pcap: &self.pcap,
+                metrics: self.metrics.clone(),
             };
             let tx = TxToken {
                 queue: &mut self.tx_queue,
                 pcap: &self.pcap,
+                metrics: self.metrics.clone(),
             };
             (rx, tx)
         })
@@ -109,6 +123,7 @@ impl<'a> phy::Device<'a> for CaptureDevice {
         Some(TxToken {
             queue: &mut self.tx_queue,
             pcap: &self.pcap,
+            metrics: self.metrics.clone(),
         })
     }
 
@@ -124,6 +139,7 @@ impl<'a> phy::Device<'a> for CaptureDevice {
 pub struct RxToken<'a> {
     buffer: Vec<u8>,
     pcap: &'a Option<Pcap>,
+    metrics: Rc<RefCell<ChannelMetrics>>,
 }
 
 impl<'a> phy::RxToken for RxToken<'a> {
@@ -132,6 +148,11 @@ impl<'a> phy::RxToken for RxToken<'a> {
         F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
     {
         let result = f(&mut self.buffer);
+
+        {
+            let mut metrics = self.metrics.borrow_mut();
+            metrics.rx.push(self.buffer.len() as f32);
+        }
 
         if let Some(pcap) = self.pcap {
             pcap.borrow_mut().packet(timestamp, self.buffer.as_ref());
@@ -145,6 +166,7 @@ impl<'a> phy::RxToken for RxToken<'a> {
 pub struct TxToken<'a> {
     queue: &'a mut VecDeque<Vec<u8>>,
     pcap: &'a Option<Pcap>,
+    metrics: Rc<RefCell<ChannelMetrics>>,
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
@@ -155,6 +177,11 @@ impl<'a> phy::TxToken for TxToken<'a> {
         let mut buffer = vec![0; len];
         buffer.resize(len, 0);
         let result = f(&mut buffer);
+
+        {
+            let mut metrics = self.metrics.borrow_mut();
+            metrics.tx.push(buffer.len() as f32);
+        }
 
         if let Some(pcap) = self.pcap {
             pcap.borrow_mut().packet(timestamp, buffer.as_ref());

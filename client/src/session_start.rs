@@ -301,7 +301,8 @@ impl StartingSessions {
                 .await
                 .map_err(|_| InternalError::Send)?;
 
-            self.layer
+            let session = self
+                .layer
                 .add_incoming_session(with, session_id, node_id, identities)
                 .await
                 .map_err(|e| InternalError::Generic(e.to_string()))?;
@@ -312,6 +313,11 @@ impl StartingSessions {
                 node_id,
                 with
             );
+
+            // Send ping to measure response time.
+            tokio::task::spawn_local(async move {
+                session.ping().await.ok();
+            });
         }
 
         Ok(())

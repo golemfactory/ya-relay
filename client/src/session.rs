@@ -38,6 +38,7 @@ pub struct SessionDesc {
     pub remote: SocketAddr,
     pub id: SessionId,
     pub last_seen: std::time::Instant,
+    pub last_ping: std::time::Duration,
     pub created: std::time::Instant,
 }
 
@@ -47,6 +48,7 @@ impl<'a> From<&'a Session> for SessionDesc {
             remote: session.remote,
             id: session.id,
             last_seen: session.dispatcher.last_seen().into_std(),
+            last_ping: session.dispatcher.last_ping(),
             created: session.created.into_std(),
         }
     }
@@ -142,13 +144,17 @@ impl Session {
 
     pub async fn ping(&self) -> anyhow::Result<()> {
         let packet = proto::request::Ping {};
-        self.request::<proto::response::Pong>(
-            packet.into(),
-            self.id.to_vec(),
-            DEFAULT_PING_TIMEOUT,
-        )
-        .await?;
+        let ping_ts = Instant::now();
 
+        let ping = match self
+            .request::<proto::response::Pong>(packet.into(), self.id.to_vec(), DEFAULT_PING_TIMEOUT)
+            .await
+        {
+            Ok(_) => Instant::now() - ping_ts,
+            Err(_) => Instant::now() - self.dispatcher.last_seen(),
+        };
+
+        self.dispatcher.update_ping(ping);
         Ok(())
     }
 

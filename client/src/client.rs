@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::convert::TryFrom;
+use std::iter::zip;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -10,6 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail};
 use derive_more::From;
 use futures::channel::mpsc;
+use futures::future::join_all;
 use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use tokio::sync::RwLock;
 use url::Url;
@@ -21,7 +23,7 @@ use ya_relay_core::udp_stream::resolve_max_payload_size;
 use ya_relay_core::utils::parse_udp_url;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
-use ya_relay_stack::{NetworkConfig, SocketDesc, SocketState};
+use ya_relay_stack::{ChannelMetrics, NetworkConfig, SocketDesc, SocketState};
 
 use crate::session::SessionDesc;
 use crate::session_manager::SessionManager;
@@ -43,6 +45,7 @@ pub struct ClientConfig {
     pub session_expiration: Duration,
     pub tcp_config: NetworkConfig,
     pub pcap_path: Option<PathBuf>,
+    pub ping_measure_interval: Duration,
 }
 
 pub struct ClientBuilder {
@@ -117,8 +120,13 @@ impl Client {
     }
 
     #[inline]
-    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         self.sessions.virtual_tcp.sockets()
+    }
+
+    #[inline]
+    pub fn metrics(&self) -> ChannelMetrics {
+        self.sessions.virtual_tcp.metrics()
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
@@ -138,6 +146,15 @@ impl Client {
         if self.config.auto_connect {
             self.sessions.server_session().await?;
         }
+
+        // Measure ping from time to time
+        let this = self.clone();
+        tokio::task::spawn_local(async move {
+            loop {
+                tokio::time::delay_for(this.config.ping_measure_interval).await;
+                this.ping_sessions().await;
+            }
+        });
 
         log::debug!("[{}] started", self.node_id());
         Ok(())
@@ -309,6 +326,30 @@ impl Client {
         Ok(())
     }
 
+    pub async fn ping_sessions(&self) {
+        let sessions = self.sessions.sessions().await;
+        let ping_futures = sessions
+            .iter()
+            .map(|session| async move { session.ping().await.ok() })
+            .collect::<Vec<_>>();
+
+        futures::future::join_all(ping_futures).await;
+    }
+
+    // Returns connected NodeIds. Single Node can have many identities, so the second
+    // tuple element contains main NodeId (default Id).
+    pub async fn connected_nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
+        let ids = self.sessions.list_identities().await;
+        let aliases = join_all(
+            ids.iter()
+                .map(|id| self.sessions.alias(&id))
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .into_iter();
+        zip(ids.into_iter(), aliases).collect()
+    }
+
     pub async fn reconnect_server(&self) {
         if self.sessions.drop_server_session().await {
             log::info!("Reconnecting to Hybrid NET relay server");
@@ -388,6 +429,7 @@ impl ClientBuilder {
                 buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(4),
             },
             pcap_path,
+            ping_measure_interval: Duration::from_secs(300),
         });
 
         client.spawn().await?;

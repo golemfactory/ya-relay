@@ -14,12 +14,14 @@ use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
 
 use crate::connection::{Connection, ConnectionMeta};
-use crate::packet::{ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket};
+use crate::packet::{
+    ip_ntoh, ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket, TcpPacket, UdpPacket,
+};
 use crate::protocol::Protocol;
 use crate::queue::{ProcessedFuture, Queue};
 use crate::socket::{SocketDesc, SocketEndpoint, SocketExt, SocketState};
 use crate::stack::Stack;
-use crate::{Error, Result};
+use crate::{ChannelMetrics, Error, Result};
 
 pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
@@ -149,13 +151,28 @@ impl Network {
         .boxed_local()
     }
 
-    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState)> {
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
+        let metrics_rfc = self.stack.metrics();
+        let metrics = metrics_rfc.borrow();
+
         iface
             .sockets()
-            .map(|(_, s)| (s.desc(), s.state()))
+            .map(|(_, s)| {
+                let desc = s.desc();
+                let metrics = metrics.get(&desc).cloned().unwrap_or_default();
+                let mut state = s.state();
+                state.set_inner(metrics);
+                (desc, state)
+            })
             .collect()
+    }
+
+    pub fn metrics(&self) -> ChannelMetrics {
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        iface.device().metrics()
     }
 
     #[inline(always)]
@@ -324,6 +341,8 @@ impl Network {
                 log::trace!("{}: ingress {} B IP packet", self.name, payload.len());
 
                 received += 1;
+                self.stack.on_received(&desc, payload.len());
+
                 let no = COUNTER.fetch_add(1, Ordering::Relaxed);
                 events.push(IngressEvent::Packet { desc, payload, no });
             }
@@ -378,6 +397,10 @@ impl Network {
                 Ok(event) => {
                     sent += 1;
 
+                    if let Some((desc, size)) = event.desc.as_ref() {
+                        self.stack.on_sent(desc, *size);
+                    }
+
                     if self.egress.tx.send(event).is_err() {
                         log::trace!(
                             "{}: egress channel closed, unable to send packets",
@@ -412,40 +435,80 @@ pub enum IngressEvent {
 pub struct EgressEvent {
     pub remote: Box<[u8]>,
     pub payload: Box<[u8]>,
+    pub desc: Option<(SocketDesc, usize)>,
 }
 
 impl EgressEvent {
-    #[inline(always)]
     pub fn from_eth_frame(data: Vec<u8>) -> Result<Self> {
         let frame = EtherFrame::try_from(data)?;
-        let remote = match &frame {
+        let (desc, remote) = match &frame {
             EtherFrame::Ip(_) => {
-                let packet = IpPacket::packet(frame.payload());
-                packet.dst_address().into()
+                let data = frame.payload();
+                IpPacket::peek(data)?;
+
+                let packet = IpPacket::packet(data);
+                let remote = packet.dst_address().into();
+                let desc = Self::payload_desc(&packet);
+                (desc, remote)
             }
             EtherFrame::Arp(_) => {
                 let packet = ArpPacket::packet(frame.payload());
-                packet.get_field(ArpField::TPA).into()
+                let remote = packet.get_field(ArpField::TPA).into();
+                (None, remote)
             }
         };
 
         Ok(EgressEvent {
             remote,
             payload: frame.into(),
+            desc,
         })
     }
 
-    #[inline(always)]
     pub fn from_ip_packet(data: Vec<u8>) -> Result<Self> {
-        let remote = {
+        let (desc, remote) = {
             IpPacket::peek(&data)?;
-            IpPacket::packet(&data).dst_address().into()
+            let packet = IpPacket::packet(&data);
+            let remote = packet.dst_address().into();
+            let desc = Self::payload_desc(&packet);
+
+            (desc, remote)
         };
 
         Ok(EgressEvent {
             remote,
             payload: data.into_boxed_slice(),
+            desc,
         })
+    }
+
+    fn payload_desc(packet: &IpPacket) -> Option<(SocketDesc, usize)> {
+        let protocol = Protocol::try_from(packet.protocol()).ok()?;
+
+        let (local_port, remote_port, size) = match protocol {
+            Protocol::Tcp => {
+                TcpPacket::peek(packet.payload()).ok()?;
+                let tcp = TcpPacket::packet(packet.payload());
+                (tcp.src_port(), tcp.dst_port(), tcp.payload_size)
+            }
+            Protocol::Udp => {
+                UdpPacket::peek(packet.payload()).ok()?;
+                let udp = UdpPacket::packet(packet.payload());
+                (udp.src_port(), udp.dst_port(), udp.payload_size)
+            }
+            _ => return None,
+        };
+
+        let local_ip = ip_ntoh(packet.src_address())?;
+        let remote_ip = ip_ntoh(packet.dst_address())?;
+
+        let desc = SocketDesc {
+            protocol,
+            local: (local_ip, local_port).into(),
+            remote: (remote_ip, remote_port).into(),
+        };
+
+        Some((desc, size))
     }
 }
 

@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use self::field::*;
+use smoltcp::wire::{IpAddress, Ipv6Address};
 use std::convert::TryFrom;
 use std::ops::Deref;
 
@@ -491,6 +492,8 @@ impl TcpField {
 pub struct TcpPacket<'a> {
     pub src_port: &'a [u8],
     pub dst_port: &'a [u8],
+    pub payload_off: usize,
+    pub payload_size: usize,
 }
 
 impl<'a> TcpPacket<'a> {
@@ -509,8 +512,8 @@ impl<'a> PeekPacket<'a> for TcpPacket<'a> {
             return Err(Error::PacketMalformed("TCP: packet too short".into()));
         }
 
-        let off = get_bit_field(data, TcpField::DATA_OFF) as usize;
-        if data.len() < off {
+        let payload_off = get_bit_field(data, TcpField::DATA_OFF) as usize;
+        if data.len() < payload_off {
             return Err(Error::PacketMalformed("TCP: packet too short".into()));
         }
 
@@ -518,16 +521,80 @@ impl<'a> PeekPacket<'a> for TcpPacket<'a> {
     }
 
     fn packet(data: &'a [u8]) -> Self {
+        let payload_off = get_bit_field(data, TcpField::DATA_OFF) as usize;
+        let payload_size = data.len().saturating_sub(payload_off);
         Self {
             src_port: &data[TcpField::SRC_PORT],
             dst_port: &data[TcpField::DST_PORT],
+            payload_off,
+            payload_size,
+        }
+    }
+}
+
+pub struct UdpField;
+impl UdpField {
+    pub const SRC_PORT: Field = 0..2;
+    pub const DST_PORT: Field = 2..4;
+    pub const LEN: Field = 4..6;
+    pub const PAYLOAD: Rest = 8..;
+}
+
+pub struct UdpPacket<'a> {
+    pub src_port: &'a [u8],
+    pub dst_port: &'a [u8],
+    pub payload_size: usize,
+}
+
+impl<'a> UdpPacket<'a> {
+    pub fn src_port(&self) -> u16 {
+        ntoh_u16(self.src_port).unwrap()
+    }
+
+    pub fn dst_port(&self) -> u16 {
+        ntoh_u16(self.dst_port).unwrap()
+    }
+}
+
+impl<'a> PeekPacket<'a> for UdpPacket<'a> {
+    fn peek(data: &'a [u8]) -> Result<(), Error> {
+        if data.len() < 8 {
+            return Err(Error::PacketMalformed("UDP: packet too short".into()));
+        }
+
+        let len = ntoh_u16(&data[UdpField::LEN]).unwrap() as usize;
+        if data.len() < len {
+            return Err(Error::PacketMalformed("UDP: packet too short".into()));
+        }
+
+        Ok(())
+    }
+
+    fn packet(data: &'a [u8]) -> Self {
+        let payload_size = data.len().saturating_sub(UdpField::PAYLOAD.start);
+        Self {
+            src_port: &data[UdpField::SRC_PORT],
+            dst_port: &data[UdpField::DST_PORT],
+            payload_size,
         }
     }
 }
 
 #[inline(always)]
 fn get_bit_field(data: &[u8], bit_field: BitField) -> u8 {
-    (data[bit_field.0] << bit_field.1.start) >> (bit_field.1.start + (8 - bit_field.1.end))
+    (data[bit_field.0] << bit_field.1.start) >> (8 - bit_field.1.len())
+}
+
+/// Convert a byte slice to `IpAddress`
+#[inline(always)]
+pub fn ip_ntoh(data: &[u8]) -> Option<IpAddress> {
+    if data.len() == 4 {
+        Some(IpAddress::v4(data[0], data[1], data[2], data[3]))
+    } else if data.len() == 16 {
+        Some(IpAddress::Ipv6(Ipv6Address::from_bytes(data)))
+    } else {
+        None
+    }
 }
 
 macro_rules! impl_ntoh_n {
