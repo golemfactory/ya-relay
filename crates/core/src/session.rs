@@ -9,6 +9,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use crate::identity::Identity;
 use ya_client_model::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::SESSION_ID_SIZE;
@@ -26,12 +27,25 @@ pub struct Endpoint {
 
 #[derive(Clone)]
 pub struct NodeInfo {
-    pub node_id: NodeId,
-    pub public_key: Vec<u8>,
+    pub identities: Vec<Identity>,
     pub slot: u32,
 
     /// Endpoints registered by Node.
     pub endpoints: Vec<Endpoint>,
+    pub supported_encryptions: Vec<String>,
+}
+
+impl NodeInfo {
+    pub fn node_id(&self) -> NodeId {
+        self.identities.get(0).map(|ident| ident.node_id).unwrap()
+    }
+
+    pub fn public_key(&self) -> Vec<u8> {
+        self.identities
+            .get(0)
+            .map(|ident| ident.public_key.bytes().to_vec())
+            .unwrap()
+    }
 }
 
 #[derive(Clone)]

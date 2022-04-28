@@ -1,6 +1,7 @@
 #![allow(unused)]
 
 use self::field::*;
+use smoltcp::wire::{IpAddress, Ipv6Address};
 use std::convert::TryFrom;
 use std::ops::Deref;
 
@@ -8,6 +9,10 @@ use crate::{Error, Protocol};
 use smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
 
 pub const ETHERNET_HDR_SIZE: usize = 14;
+pub const IP4_HDR_SIZE: usize = 20;
+pub const IP6_HDR_SIZE: usize = 40;
+pub const TCP_HDR_SIZE: usize = 20;
+pub const UDP_HDR_SIZE: usize = 20;
 
 mod field {
     /// Field slice range within packet bytes
@@ -548,6 +553,7 @@ pub struct TcpPacket<'a> {
     pub src_port: &'a [u8],
     pub dst_port: &'a [u8],
     pub payload_off: usize,
+    pub payload_size: usize,
 }
 
 impl<'a> TcpPacket<'a> {
@@ -576,10 +582,12 @@ impl<'a> PeekPacket<'a> for TcpPacket<'a> {
 
     fn packet(data: &'a [u8]) -> Self {
         let payload_off = get_bit_field(data, TcpField::DATA_OFF) as usize;
+        let payload_size = data.len().saturating_sub(payload_off);
         Self {
             src_port: &data[TcpField::SRC_PORT],
             dst_port: &data[TcpField::DST_PORT],
             payload_off,
+            payload_size,
         }
     }
 }
@@ -595,6 +603,7 @@ impl UdpField {
 pub struct UdpPacket<'a> {
     pub src_port: &'a [u8],
     pub dst_port: &'a [u8],
+    pub payload_size: usize,
 }
 
 impl<'a> UdpPacket<'a> {
@@ -622,9 +631,11 @@ impl<'a> PeekPacket<'a> for UdpPacket<'a> {
     }
 
     fn packet(data: &'a [u8]) -> Self {
+        let payload_size = data.len().saturating_sub(UdpField::PAYLOAD.start);
         Self {
             src_port: &data[UdpField::SRC_PORT],
             dst_port: &data[UdpField::DST_PORT],
+            payload_size,
         }
     }
 }
@@ -670,28 +681,21 @@ pub fn read_bit_field(data: &[u8], bit_field: BitField) -> Option<u8> {
     }
 }
 
-/// Write a bit field spanning over a single byte
-#[inline(always)]
-pub fn write_bit_field(data: &mut [u8], bit_field: BitField, value: u8) -> bool {
-    if data.len() >= bit_field.0 && bit_field.1.len() <= 8 {
-        set_bit_field(data, bit_field, value);
-        true
-    } else {
-        false
-    }
-}
-
 #[inline(always)]
 fn get_bit_field(data: &[u8], bit_field: BitField) -> u8 {
     (data[bit_field.0] << bit_field.1.start) >> (8 - bit_field.1.len())
 }
 
+/// Convert a byte slice to `IpAddress`
 #[inline(always)]
-fn set_bit_field(data: &mut [u8], bit_field: BitField, value: u8) {
-    let bit_len = bit_field.1.len();
-    let mask = (0xff_u8 << (8 - bit_len)) >> bit_field.1.start;
-    data[bit_field.0] &= !mask;
-    data[bit_field.0] |= (value << (8 - bit_len)) >> bit_field.1.start;
+pub fn ip_ntoh(data: &[u8]) -> Option<IpAddress> {
+    if data.len() == 4 {
+        Some(IpAddress::v4(data[0], data[1], data[2], data[3]))
+    } else if data.len() == 16 {
+        Some(IpAddress::Ipv6(Ipv6Address::from_bytes(data)))
+    } else {
+        None
+    }
 }
 
 macro_rules! impl_ntoh_n {
@@ -712,27 +716,3 @@ macro_rules! impl_ntoh_n {
 impl_ntoh_n!(ntoh_u16, u16, 2);
 impl_ntoh_n!(ntoh_u32, u32, 4);
 impl_ntoh_n!(ntoh_u64, u64, 8);
-
-#[cfg(test)]
-mod tests {
-    use crate::packet::{get_bit_field, set_bit_field};
-
-    #[test]
-    fn change_bit_field() {
-        for len in 1..8 {
-            for off in 0..8 {
-                let mut bytes = [0u8; 1];
-                let range = off..8.min(off + len);
-                println!("range: {:?}", range);
-
-                set_bit_field(&mut bytes, (0, range.clone()), 0xff);
-                println!("byte: {:#010b}", bytes[0]);
-
-                assert_eq!(
-                    get_bit_field(&bytes, (0, range.clone())),
-                    0xff_u8 >> (8 - range.len())
-                );
-            }
-        }
-    }
-}

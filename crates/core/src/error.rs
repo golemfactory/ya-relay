@@ -39,12 +39,16 @@ pub enum BadRequest {
     NoSessionId,
     #[error("Invalid NodeId.")]
     InvalidNodeId,
+    #[error("No Public Endpoints.")]
+    NoPublicEndpoints,
     #[error("Invalid packet type for session [{0}]. Expected: {1}")]
     InvalidPacket(SessionId, String),
     #[error("Failed to decode packet.")]
     DecodingFailed,
     #[error("Invalid Challenge. Error: {0}")]
     InvalidChallenge(String),
+    #[error("Invalid Parameter: {0}")]
+    InvalidParam(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug)]

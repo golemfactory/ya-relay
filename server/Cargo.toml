@@ -15,10 +15,10 @@ path = "src/main.rs"
 
 
 [dependencies]
-ya-relay-stack = { path = "../crates/stack" }
-ya-relay-proto = { path = "../crates/proto" }
-ya-relay-core = { path = "../crates/core" }
-ya-client-model = "0.3"
+ya-relay-stack = { version = "0.4", path = "../crates/stack" }
+ya-relay-proto = { version = "0.3", path = "../crates/proto" }
+ya-relay-core = { version = "0.2", path = "../crates/core" }
+ya-relay-client = { version = "0.2", path = "../client" }
 
 actix-rt = "1.1"
 anyhow = "1.0"
@@ -27,6 +27,7 @@ dotenv = "0.15"
 env_logger = { version = "0.8", default-features = false }
 futures = "0.3"
 governor = "0.3.2"
+humantime = "2.1"
 itertools = "0.10.1"
 log = "0.4"
 rand = { version = "0.8", features = ["std"] }
@@ -38,4 +39,3 @@ url = "2.1"
 
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test"}
-ya-relay-client = { path = "../client" }

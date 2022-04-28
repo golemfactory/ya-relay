@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
@@ -8,29 +9,22 @@ use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
-use tokio::time::{self, timeout, Duration};
-use tokio_util::codec::{Decoder, Encoder};
+use tokio::time;
 use url::Url;
 
-use crate::error::{
-    BadRequest, Error, InternalError, NotFound, ServerResult, Timeout, Unauthorized,
-};
+use crate::config::Config;
+use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
-use ya_client_model::NodeId;
-
-use ya_relay_core::challenge::prepare_challenge_response;
-use ya_relay_core::challenge::{self, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{Endpoint, NodeInfo, NodeSession, SessionId};
+use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
+use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
-use ya_relay_core::{
-    FORWARDER_RATE_LIMIT, FORWARDER_RESUME_INTERVAL, SESSION_CLEANER_INTERVAL, SESSION_TIMEOUT,
-};
-use ya_relay_proto::codec::datagram::Codec;
-use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
+use ya_relay_proto::proto::control::disconnected::By;
+use ya_relay_proto::proto::control::Disconnected;
 use ya_relay_proto::proto::request::Kind;
 use ya_relay_proto::proto::{RequestId, StatusCode};
 
@@ -38,6 +32,7 @@ use ya_relay_proto::proto::{RequestId, StatusCode};
 pub struct Server {
     pub state: Arc<RwLock<ServerState>>,
     pub inner: Arc<ServerImpl>,
+    pub config: Arc<Config>,
 }
 
 pub struct ServerState {
@@ -51,6 +46,7 @@ pub struct ServerState {
 pub struct ServerImpl {
     pub socket: OutStream,
     pub url: Url,
+    pub ip_checker: EndpointsChecker,
 }
 
 impl Server {
@@ -67,21 +63,19 @@ impl Server {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
                 if session_id.is_empty() {
-                    match kind {
+                    return match kind {
                         Some(proto::packet::Kind::Request(proto::Request {
                             request_id,
                             kind: Some(proto::request::Kind::Session(_)),
-                        })) => {
-                            return self.clone().new_session(request_id, from).await;
-                        }
-                        _ => return Err(BadRequest::NoSessionId.into()),
-                    }
+                        })) => self.clone().new_session(request_id, from).await,
+                        _ => Err(BadRequest::NoSessionId.into()),
+                    };
                 }
 
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
 
-                let node = match self.state.read().await.nodes.get_by_session(id) {
+                let node = match { self.state.read().await.nodes.get_by_session(id) } {
                     None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
                 };
@@ -103,18 +97,20 @@ impl Server {
                             self.neighbours_request(request_id, id, from, params)
                                 .await?
                         }
-                        Kind::ReverseConnection(_) => {}
+                        Kind::ReverseConnection(params) => {
+                            self.reverse_request(request_id, id, from, params).await?
+                        }
                         Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
                     },
                     Some(proto::packet::Kind::Response(_)) => {
                         log::warn!(
                             "Server shouldn't get Response packet. Sender: {}, node {}",
                             from,
-                            node.info.node_id,
+                            node.info.node_id(),
                         );
                     }
-                    Some(proto::packet::Kind::Control(_control)) => {
-                        log::info!("Control packet from: {}", from);
+                    Some(proto::packet::Kind::Control(packet)) => {
+                        self.control(id, packet, from).await?
                     }
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
@@ -144,12 +140,45 @@ impl Server {
                 .get_by_session(session_id)
                 .ok_or(Unauthorized::SessionNotFound(session_id))?;
 
-            let dest_node = server
+            let dest_node = match server
                 .nodes
                 .get_by_slot(slot)
-                .ok_or(NotFound::NodeBySlot(slot))?;
+                .ok_or(NotFound::NodeBySlot(slot))
+            {
+                Ok(dest_node) => dest_node,
+                Err(e) => {
+                    // Node probably won't notice, that his packets aren't reaching destination
+                    // before TCP connection timeouts. It gets worse in case of unreliable forwarding.
+                    // This is due to the fact, that client has no reason to get Node info again.
+                    // That's why we must notify him.
+                    //
+                    // We could send Disconnected message, when we discover, that Node stopped responding
+                    // to ping, but we would have to spam all Nodes in the network in this case. It is better
+                    // to notify only interested Nodes, that means Nodes forwarding something.
+                    let control_packet = proto::Packet::control(
+                        session_id.to_vec(),
+                        ya_relay_proto::proto::control::Disconnected {
+                            by: Some(proto::control::disconnected::By::Slot(slot)),
+                        },
+                    );
+
+                    drop(server);
+                    self.send_to(PacketKind::Packet(control_packet), &from)
+                        .await
+                        .map_err(|_| InternalError::Send)?;
+
+                    log::trace!(
+                        "Sent Disconnected [slot={}] message to Node: {}.",
+                        slot,
+                        src_node.info.node_id()
+                    );
+
+                    return Err(e.into());
+                }
+            };
             (src_node, dest_node)
         };
+
         if let Err(e) = src_node
             .forwarding_limiter
             .check_n(NonZeroU32::new(packet.payload.len().try_into().unwrap_or(u32::MAX)).unwrap())
@@ -157,7 +186,7 @@ impl Server {
             log::trace!("Rate limiting: {:?}", e);
             match e {
                 NegativeMultiDecision::InsufficientCapacity(cells) => {
-                    // the query was invalid as the rate limite parameters can never accomodate the
+                    // the query was invalid as the rate limit parameters can never accommodate the
                     // number of cells queried for.
                     log::warn!(
                         "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
@@ -196,66 +225,58 @@ impl Server {
         packet.slot = src_node.info.slot;
         packet.session_id = src_node.session.to_vec().as_slice().try_into().unwrap();
 
-        log::debug!("Sending forward packet to {}", dest_node.address);
+        log::trace!(
+            "Sending forward packet from [{}] to [{}] ({} B)",
+            src_node.info.node_id(),
+            dest_node.info.node_id(),
+            packet.payload.len(),
+        );
 
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
             .await
             .map_err(|_| InternalError::Send)?;
-
-        // TODO: We should update `last_seen` timestamp of `src_node`.
         Ok(())
     }
 
-    async fn public_endpoints(
+    async fn control(
         &self,
-        session_id: SessionId,
-        addr: &SocketAddr,
-    ) -> ServerResult<Vec<Endpoint>> {
-        // We need new socket to check, if Node's address is public.
-        // If we would use the same socket as always, we would be able to
-        // send packets even to addresses behind NAT.
-        let mut sock = UdpSocket::bind("0.0.0.0:0")
-            .await
-            .map_err(|e| InternalError::BindingSocket(e.to_string()))?;
+        session: SessionId,
+        packet: proto::Control,
+        from: SocketAddr,
+    ) -> ServerResult<()> {
+        log::debug!("Control packet from: {}. Packet: {:?}", from, packet);
 
-        let mut codec = Codec::default();
-        let mut buf = BytesMut::new();
-
-        // If we can ping `from` address it was public, if we don't get response
-        // it could be private.
-        let ping = proto::Packet::request(session_id.to_vec(), proto::request::Ping {}).into();
-
-        codec
-            .encode(ping, &mut buf)
-            .map_err(|_| InternalError::Encoding)?;
-
-        sock.send_to(&buf, &addr)
-            .await
-            .map_err(|_| InternalError::Send)?;
-
-        buf.resize(MAX_PACKET_SIZE as usize, 0);
-
-        let size = timeout(Duration::from_millis(300), sock.recv(&mut buf))
-            .await
-            .map_err(|_| Timeout::Ping)?
-            .map_err(|_| InternalError::Receiving)?;
-
-        buf.truncate(size);
-
-        match dispatch_response(
-            codec
-                .decode(&mut buf)
-                .map_err(|_| InternalError::Decoding)?
-                .ok_or(InternalError::Decoding)?,
-        ) {
-            Ok(proto::response::Kind::Pong(_)) => {}
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Pong".to_string()).into()),
-        };
-
-        Ok(vec![Endpoint {
-            protocol: proto::Protocol::Udp,
-            address: *addr,
-        }])
+        if let proto::Control {
+            kind: Some(proto::control::Kind::Disconnected(Disconnected { by: Some(by) })),
+        } = packet
+        {
+            let mut server = self.state.write().await;
+            match by {
+                By::SessionId(_id) => match server.nodes.get_by_session(session) {
+                    None => return Err(Unauthorized::SessionNotFound(session).into()),
+                    Some(node) => {
+                        log::info!(
+                            "Received Disconnected message from Node [{}]({}).",
+                            node.info.node_id(),
+                            from
+                        );
+                        server.nodes.remove_session(node.info.slot)
+                    }
+                },
+                // Allowing only closing sessions. Otherwise we could close someone's else session.
+                By::Slot(_) => {
+                    return Err(
+                        BadRequest::InvalidParam("Slot. Only Session allowed".into()).into(),
+                    )
+                }
+                By::NodeId(_) => {
+                    return Err(
+                        BadRequest::InvalidParam("NodeId. Only Session allowed".into()).into(),
+                    )
+                }
+            };
+        }
+        Ok(())
     }
 
     async fn register_endpoints(
@@ -269,8 +290,12 @@ impl Server {
         // TODO: Note that we ignore endpoints sent by Node and only try
         //       to verify address, from which we received messages.
 
-        let node_id = session.info.node_id;
-        let endpoints = self.public_endpoints(session_id, &from).await?;
+        let node_id = session.info.node_id();
+        let endpoints = self
+            .inner
+            .ip_checker
+            .public_endpoints(session_id, &from)
+            .await?;
 
         for endpoint in endpoints.iter() {
             log::info!(
@@ -327,7 +352,6 @@ impl Server {
         .map_err(|_| InternalError::Send)?;
 
         log::trace!("Responding to ping from: {}", from);
-
         Ok(())
     }
 
@@ -338,10 +362,9 @@ impl Server {
         from: SocketAddr,
         params: proto::request::Node,
     ) -> ServerResult<()> {
-        if params.node_id.len() != 20 {
-            return Err(BadRequest::InvalidNodeId.into());
-        }
-        let node_id = NodeId::from(&params.node_id[..]);
+        let node_id = (&params.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
 
         log::debug!("{} requested Node [{}] info.", from, node_id);
 
@@ -374,7 +397,8 @@ impl Server {
         let nodes = nodes
             .into_iter()
             .map(|node_info| to_node_response(node_info, params.public_key))
-            .collect();
+            .collect::<Vec<_>>();
+        let return_count = nodes.len();
 
         self.send_to(
             proto::Packet::response(
@@ -389,11 +413,85 @@ impl Server {
         .map_err(|_| InternalError::Send)?;
 
         log::info!(
-            "Neighborhood sent to (request: {}): {}, session: {}",
+            "Neighborhood ({} node(s)) sent to (request: {}, count: {}): {}, session: {}",
+            return_count,
             request_id,
+            params.count,
             from,
             session_id
         );
+        Ok(())
+    }
+
+    async fn reverse_request(
+        &self,
+        request_id: RequestId,
+        session_id: SessionId,
+        from: SocketAddr,
+        params: proto::request::ReverseConnection,
+    ) -> ServerResult<()> {
+        let source_node_info = match { self.state.read().await.nodes.get_by_session(session_id) } {
+            None => return Err(Unauthorized::SessionNotFound(session_id).into()),
+            Some(node_id) => node_id.info,
+        };
+        if source_node_info.endpoints.is_empty() {
+            return Err(BadRequest::NoPublicEndpoints.into());
+        }
+
+        let target_node_id = (&params.node_id)
+            .try_into()
+            .map_err(|_| BadRequest::InvalidNodeId)?;
+        let target_session = {
+            match { self.state.read().await.nodes.get_by_node_id(target_node_id) } {
+                None => {
+                    return Err(InternalError::Generic(format!(
+                        "There is no session with node_id {}",
+                        target_node_id
+                    ))
+                    .into())
+                }
+                Some(session) => session,
+            }
+        };
+
+        let message_to_send = proto::Packet::control(
+            target_session.session.to_vec(),
+            proto::control::ReverseConnection {
+                node_id: source_node_info.node_id().into_array().to_vec(),
+                endpoints: source_node_info
+                    .endpoints
+                    .into_iter()
+                    .map(proto::Endpoint::from)
+                    .collect(),
+            },
+        );
+        self.send_to(message_to_send, &target_session.address)
+            .await
+            .map_err(|_| InternalError::Send)?;
+
+        let reponse = proto::Packet::response(
+            request_id,
+            session_id.to_vec(),
+            StatusCode::Ok,
+            proto::response::ReverseConnection {},
+        );
+
+        self.send_to(reponse, &from)
+            .await
+            .map_err(|_| InternalError::Send)?;
+
+        log::info!(
+            "ReverseConnection sent. source: {}, target: {}, request: {}",
+            &from,
+            &target_session.address,
+            &request_id,
+        );
+        log::debug!(
+            "source_session: {}, target_session: {}",
+            &session_id,
+            &target_session.session
+        );
+
         Ok(())
     }
 
@@ -426,7 +524,7 @@ impl Server {
         node_info: NodeSession,
         public_key: bool,
     ) -> ServerResult<()> {
-        let node_id = node_info.info.node_id;
+        let node_id = node_info.info.node_id();
         let node = to_node_response(node_info, public_key);
 
         self.send_to(
@@ -489,7 +587,7 @@ impl Server {
     ) -> ServerResult<()> {
         let mut sender = {
             match { self.state.read().await.starting_session.get(&id).cloned() } {
-                Some(sender) => sender.clone(),
+                Some(sender) => sender,
                 None => return Err(Unauthorized::SessionNotFound(id).into()),
             }
         };
@@ -499,10 +597,16 @@ impl Server {
             _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
         };
 
-        Ok(sender
-            .send(request)
-            .await
-            .map_err(|_| InternalError::Send)?)
+        //
+        tokio::task::spawn_local(async move {
+            let _ = sender.send(request).await.map_err(|_| {
+                log::warn!(
+                    "Establish session channel closed. Dropping packet for session [{}]",
+                    id
+                )
+            });
+        });
+        Ok(())
     }
 
     async fn init_session(
@@ -512,7 +616,7 @@ impl Server {
         session_id: SessionId,
         mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
-        let (packet, raw_challenge) = prepare_challenge_response();
+        let (packet, raw_challenge) = challenge::prepare_challenge_response();
         let challenge = proto::Packet::response(
             request_id,
             session_id.to_vec(),
@@ -534,27 +638,20 @@ impl Server {
                 log::info!("Got challenge from node: {}", with);
 
                 // Validate the challenge
-                if !challenge::verify(
-                    &raw_challenge,
-                    CHALLENGE_DIFFICULTY,
-                    &session.challenge_resp,
-                    session.public_key.as_slice(),
-                )
-                .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?
-                {
-                    return Err(Unauthorized::InvalidChallenge.into());
-                }
+                let (node_id, identities) =
+                    challenge::recover_identities_from_challenge::<ChallengeDigest>(
+                        &raw_challenge,
+                        CHALLENGE_DIFFICULTY,
+                        session.challenge_resp,
+                        None,
+                    )
+                    .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?;
 
-                if session.node_id.len() != 20 {
-                    return Err(BadRequest::InvalidNodeId.into());
-                }
-
-                let node_id = NodeId::from(&session.node_id[..]);
                 let info = NodeInfo {
-                    node_id,
-                    public_key: session.public_key,
+                    identities,
                     slot: u32::MAX,
                     endpoints: vec![],
+                    supported_encryptions: vec![],
                 };
 
                 let node = NodeSession {
@@ -563,10 +660,10 @@ impl Server {
                     session: session_id,
                     last_seen: Utc::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
-                        NonZeroU32::new(*FORWARDER_RATE_LIMIT).ok_or_else(|| {
+                        NonZeroU32::new(self.config.forwarder_rate_limit).ok_or_else(|| {
                             InternalError::RateLimiterInit(format!(
                                 "Invalid non zero value: {}",
-                                *FORWARDER_RATE_LIMIT
+                                self.config.forwarder_rate_limit
                             ))
                         })?,
                     ))),
@@ -607,7 +704,7 @@ impl Server {
                         request_id
                     );
 
-                    let node_id = node.info.node_id;
+                    let node_id = node.info.node_id();
                     let node = self
                         .register_endpoints(request_id, session_id, with, registration, node)
                         .await?;
@@ -647,24 +744,28 @@ impl Server {
     async fn session_cleaner(&self) {
         log::debug!(
             "Starting session cleaner at interval {}s",
-            (*SESSION_CLEANER_INTERVAL).as_secs()
+            (self.config.session_cleaner_interval).as_secs()
         );
-        let mut interval = time::interval(*SESSION_CLEANER_INTERVAL);
+        let mut interval = time::interval(self.config.session_cleaner_interval);
         loop {
             interval.tick().await;
             let s = self.clone();
             log::trace!("Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
+            log::trace!("Session cleanup complete");
         }
     }
 
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
-        server.nodes.check_timeouts(*SESSION_TIMEOUT);
+        server.nodes.check_timeouts(
+            self.config.session_timeout,
+            self.config.session_purge_timeout,
+        );
     }
 
     async fn forward_resumer(&self) {
-        let mut interval = time::interval(*FORWARDER_RESUME_INTERVAL);
+        let mut interval = time::interval(self.config.forwarder_resume_interval);
         loop {
             interval.tick().await;
             self.check_resume_forwarding().await;
@@ -724,16 +825,25 @@ impl Server {
             .await?)
     }
 
-    pub async fn bind_udp(addr: url::Url) -> anyhow::Result<Server> {
-        let (input, output, addr) = udp_bind(&addr).await?;
+    pub async fn bind_udp(config: Config) -> anyhow::Result<Server> {
+        let (input, output, addr) = udp_bind(&config.address).await?;
         let url = Url::parse(&format!("udp://{}:{}", addr.ip(), addr.port()))?;
 
-        Server::bind(url, input, output)
+        Server::bind(config, url, input, output).await
     }
 
-    pub fn bind(addr: url::Url, input: InStream, output: OutStream) -> anyhow::Result<Server> {
+    pub async fn bind(
+        config: Config,
+        addr: url::Url,
+        input: InStream,
+        output: OutStream,
+    ) -> anyhow::Result<Server> {
+        let config = Arc::new(config);
         let inner = Arc::new(ServerImpl {
             socket: output,
+            ip_checker: EndpointsChecker::spawn(config.clone())
+                .await
+                .map_err(|e| anyhow!("Public endpoints checker initialization failed: {}", e))?,
             url: addr,
         });
 
@@ -744,7 +854,11 @@ impl Server {
             resume_forwarding: BTreeSet::new(),
         }));
 
-        Ok(Server { state, inner })
+        Ok(Server {
+            state,
+            inner,
+            config,
+        })
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
@@ -770,7 +884,11 @@ impl Server {
                 Err(e) => e,
             };
 
-            log::error!("Packet dispatch failed. {}", error);
+            log::error!(
+                "Packet dispatch failed (request={:?}). {}",
+                request_id,
+                error
+            );
             if let Some(request_id) = request_id {
                 server
                     .error_response(request_id, session_id, &addr, error)
@@ -825,14 +943,13 @@ pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, pr
 }
 
 pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::response::Node {
-    let public_key = match public_key {
-        true => node_info.info.public_key,
+    let identities = match public_key {
+        true => node_info.info.identities.iter().map(Into::into).collect(),
         false => vec![],
     };
 
     proto::response::Node {
-        node_id: node_info.info.node_id.into_array().to_vec(),
-        public_key,
+        identities,
         endpoints: node_info
             .info
             .endpoints
@@ -841,5 +958,6 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
             .collect(),
         seen_ts: node_info.last_seen.timestamp() as u32,
         slot: node_info.info.slot,
+        supported_encryptions: node_info.info.supported_encryptions,
     }
 }

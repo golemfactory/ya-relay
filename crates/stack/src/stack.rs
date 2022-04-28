@@ -1,44 +1,43 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use smoltcp::iface::Route;
+use smoltcp::iface::SocketHandle;
+use smoltcp::phy::Device;
 use smoltcp::socket::*;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
 
-use crate::connection::{Connect, Connection, ConnectionMeta, Send};
+use crate::connection::{Connect, Connection, ConnectionMeta, Disconnect, Send};
 use crate::interface::*;
-use crate::port;
+use crate::metrics::ChannelMetrics;
+use crate::patch_smoltcp::GetSocketSafe;
 use crate::protocol::Protocol;
 use crate::socket::*;
+use crate::{port, NetworkConfig};
 use crate::{Error, Result};
 
 #[derive(Clone)]
 pub struct Stack<'a> {
     iface: Rc<RefCell<CaptureInterface<'a>>>,
-    sockets: Rc<RefCell<SocketSet<'a>>>,
+    metrics: Rc<RefCell<HashMap<SocketDesc, ChannelMetrics>>>,
     ports: Rc<RefCell<port::Allocator>>,
-}
-
-impl<'a> Default for Stack<'a> {
-    fn default() -> Self {
-        Self::new(default_iface())
-    }
+    config: Rc<NetworkConfig>,
 }
 
 impl<'a> Stack<'a> {
-    pub fn new(iface: CaptureInterface<'a>) -> Self {
-        let sockets = SocketSet::new(Vec::with_capacity(8));
+    pub fn new(iface: CaptureInterface<'a>, config: Rc<NetworkConfig>) -> Self {
         Self {
             iface: Rc::new(RefCell::new(iface)),
-            sockets: Rc::new(RefCell::new(sockets)),
+            metrics: Default::default(),
             ports: Default::default(),
+            config,
         }
     }
 
-    pub fn phy_address(&self) -> EthernetAddress {
-        let iface = self.iface.borrow();
-        iface.ethernet_addr()
+    #[inline]
+    pub fn addresses(&self) -> Vec<IpCidr> {
+        self.iface.borrow().ip_addrs().to_vec()
     }
 
     pub fn address(&self) -> Result<IpCidr> {
@@ -63,12 +62,24 @@ impl<'a> Stack<'a> {
         add_iface_route(&mut (*iface), net_ip, route);
     }
 
+    #[inline]
     pub(crate) fn iface(&self) -> Rc<RefCell<CaptureInterface<'a>>> {
         self.iface.clone()
     }
 
-    pub(crate) fn sockets(&self) -> Rc<RefCell<SocketSet<'a>>> {
-        self.sockets.clone()
+    #[inline]
+    pub(crate) fn metrics(&self) -> Rc<RefCell<HashMap<SocketDesc, ChannelMetrics>>> {
+        self.metrics.clone()
+    }
+
+    pub(crate) fn on_sent(&self, desc: &SocketDesc, size: usize) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.entry(*desc).or_default().tx.push(size as f32);
+    }
+
+    pub(crate) fn on_received(&self, desc: &SocketDesc, size: usize) {
+        let mut metrics = self.metrics.borrow_mut();
+        metrics.entry(*desc).or_default().rx.push(size as f32);
     }
 }
 
@@ -79,31 +90,34 @@ impl<'a> Stack<'a> {
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
-        let mut sockets = self.sockets.borrow_mut();
+        let mut iface = self.iface.borrow_mut();
+        let mtu = iface.device().capabilities().max_transmission_unit;
+
         let handle = match protocol {
             Protocol::Tcp => {
                 if let SocketEndpoint::Ip(ep) = endpoint {
-                    let mut socket = tcp_socket();
+                    let mut socket = tcp_socket(mtu, self.config.buffer_size_multiplier);
                     socket.listen(ep).map_err(|e| Error::Other(e.to_string()))?;
-                    sockets.add(socket)
+                    socket.set_defaults();
+                    iface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
             }
             Protocol::Udp => {
                 if let SocketEndpoint::Ip(ep) = endpoint {
-                    let mut socket = udp_socket();
+                    let mut socket = udp_socket(mtu, self.config.buffer_size_multiplier);
                     socket.bind(ep).map_err(|e| Error::Other(e.to_string()))?;
-                    sockets.add(socket)
+                    iface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
             }
             Protocol::Icmp | Protocol::Ipv6Icmp => {
-                if let SocketEndpoint::Icmp(ep) = endpoint {
-                    let mut socket = icmp_socket();
-                    socket.bind(ep).map_err(|e| Error::Other(e.to_string()))?;
-                    sockets.add(socket)
+                if let SocketEndpoint::Icmp(e) = endpoint {
+                    let mut socket = icmp_socket(mtu, self.config.buffer_size_multiplier);
+                    socket.bind(e).map_err(|e| Error::Other(e.to_string()))?;
+                    iface.add_socket(socket)
                 } else {
                     return Err(Error::Other("Expected an ICMP endpoint".to_string()));
                 }
@@ -120,8 +134,13 @@ impl<'a> Stack<'a> {
                     }
                 };
 
-                let socket = raw_socket(ip_version, map_protocol(protocol)?);
-                sockets.add(socket)
+                let socket = raw_socket(
+                    ip_version,
+                    map_protocol(protocol)?,
+                    mtu,
+                    self.config.buffer_size_multiplier,
+                );
+                iface.add_socket(socket)
             }
         };
 
@@ -155,23 +174,27 @@ impl<'a> Stack<'a> {
     pub fn connect(&self, remote: IpEndpoint) -> Result<Connect<'a>> {
         let ip = self.address()?.address();
 
-        let mut sockets = self.sockets.borrow_mut();
+        let mut iface = self.iface.borrow_mut();
         let mut ports = self.ports.borrow_mut();
+        let mtu = iface.device().capabilities().max_transmission_unit;
 
         let protocol = Protocol::Tcp;
-        let handle = sockets.add(tcp_socket());
+        let handle = iface.add_socket(tcp_socket(mtu, self.config.buffer_size_multiplier));
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
 
         log::trace!("connecting to {} ({})", remote, protocol);
 
-        if let Err(e) = {
-            let mut socket = sockets.get::<TcpSocket>(handle);
-            socket.connect(remote, local)
+        match {
+            let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
+            socket.connect(ctx, remote, local).map(|_| socket)
         } {
-            sockets.remove(handle);
-            ports.free(Protocol::Tcp, port);
-            return Err(Error::ConnectionError(e.to_string()));
+            Ok(socket) => socket.set_defaults(),
+            Err(e) => {
+                iface.remove_socket(handle);
+                ports.free(Protocol::Tcp, port);
+                return Err(Error::ConnectionError(e.to_string()));
+            }
         }
 
         let meta = ConnectionMeta {
@@ -181,25 +204,45 @@ impl<'a> Stack<'a> {
         };
         Ok(Connect::new(
             Connection { handle, meta },
-            self.sockets.clone(),
+            self.iface.clone(),
         ))
     }
 
-    pub fn close(&self, protocol: Protocol, handle: SocketHandle) {
-        let mut sockets = self.sockets.borrow_mut();
-        let endpoint = match sockets.iter().find(|s| s.handle() == handle) {
-            Some(_) => match protocol {
-                Protocol::Tcp => sockets.get::<TcpSocket>(handle).local_endpoint(),
-                Protocol::Udp => sockets.get::<UdpSocket>(handle).endpoint(),
-                _ => return,
-            },
-            None => return,
-        };
+    pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
+        let mut iface = self.iface.borrow_mut();
+        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+            sock.close();
+        }
+        Disconnect::new(handle, self.iface.clone())
+    }
 
-        log::trace!("disconnecting {} ({})", endpoint, protocol);
+    pub(crate) fn abort(&self, handle: SocketHandle) {
+        let mut iface = self.iface.borrow_mut();
+        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+            sock.abort();
+        }
+    }
 
+    pub(crate) fn remove(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+        let mut iface = self.iface.borrow_mut();
+        let mut metrics = self.metrics.borrow_mut();
         let mut ports = self.ports.borrow_mut();
-        ports.free(protocol, endpoint.port);
+
+        if let Some((handle, socket)) = {
+            let mut sockets = iface.sockets();
+            sockets.find(|(h, _)| h == &handle)
+        } {
+            log::trace!(
+                "removing connection: {}:{}:{}",
+                meta.protocol,
+                meta.local,
+                meta.remote,
+            );
+
+            metrics.remove(&socket.desc());
+            iface.remove_socket(handle);
+            ports.free(meta.protocol, meta.local.port);
+        }
     }
 
     pub fn send<B: Into<Vec<u8>>, F: Fn() + 'static>(
@@ -208,7 +251,7 @@ impl<'a> Stack<'a> {
         conn: Connection,
         f: F,
     ) -> Send<'a> {
-        Send::new(data.into(), conn, self.sockets.clone(), f)
+        Send::new(data.into(), meta, self.iface.clone(), f)
     }
 
     pub fn receive<B: Into<Vec<u8>>>(&self, data: B) {
@@ -218,9 +261,8 @@ impl<'a> Stack<'a> {
 
     pub fn poll(&self) -> Result<()> {
         let mut iface = self.iface.borrow_mut();
-        let mut sockets = self.sockets.borrow_mut();
         iface
-            .poll(&mut (*sockets), Instant::now())
+            .poll(Instant::now())
             .map_err(|e| Error::Other(e.to_string()))?;
         Ok(())
     }

@@ -28,6 +28,18 @@ pub enum Protocol {
     Smp = 121,
     Sctp = 132,
     Ethernet = 143,
+    None,
+}
+
+impl TryFrom<u8> for Protocol {
+    type Error = u8;
+
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match num_traits::FromPrimitive::from_u8(value) {
+            Some(protocol) => Ok(protocol),
+            None => Err(value),
+        }
+    }
 }
 
 impl TryFrom<u8> for Protocol {
