@@ -42,17 +42,6 @@ impl TryFrom<u8> for Protocol {
     }
 }
 
-impl TryFrom<u8> for Protocol {
-    type Error = u8;
-
-    fn try_from(value: u8) -> Result<Self, Self::Error> {
-        match num_traits::FromPrimitive::from_u8(value) {
-            Some(protocol) => Ok(protocol),
-            None => Err(value),
-        }
-    }
-}
-
 impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{:?}", self)

@@ -1,7 +1,6 @@
 #![allow(unused)]
 
 use self::field::*;
-use smoltcp::wire::{IpAddress, Ipv6Address};
 use std::convert::TryFrom;
 use std::ops::Deref;
 
@@ -684,18 +683,6 @@ pub fn read_bit_field(data: &[u8], bit_field: BitField) -> Option<u8> {
 #[inline(always)]
 fn get_bit_field(data: &[u8], bit_field: BitField) -> u8 {
     (data[bit_field.0] << bit_field.1.start) >> (8 - bit_field.1.len())
-}
-
-/// Convert a byte slice to `IpAddress`
-#[inline(always)]
-pub fn ip_ntoh(data: &[u8]) -> Option<IpAddress> {
-    if data.len() == 4 {
-        Some(IpAddress::v4(data[0], data[1], data[2], data[3]))
-    } else if data.len() == 16 {
-        Some(IpAddress::Ipv6(Ipv6Address::from_bytes(data)))
-    } else {
-        None
-    }
 }
 
 macro_rules! impl_ntoh_n {

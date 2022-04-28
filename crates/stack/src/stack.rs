@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use smoltcp::iface::SocketHandle;
+use smoltcp::iface::{Route, SocketHandle};
 use smoltcp::phy::Device;
 use smoltcp::socket::*;
 use smoltcp::time::Instant;
@@ -46,10 +46,6 @@ impl<'a> Stack<'a> {
             iface.ip_addrs().iter().next().cloned()
         }
         .ok_or(Error::NetEmpty)
-    }
-
-    pub fn addresses(&self) -> Vec<IpCidr> {
-        self.iface.borrow().ip_addrs().to_vec()
     }
 
     pub fn add_address(&self, address: IpCidr) {

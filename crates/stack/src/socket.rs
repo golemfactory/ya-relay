@@ -5,7 +5,7 @@ use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 use std::hash::{Hash, Hasher};
 
-use crate::Protocol;
+use crate::{Error, Protocol};
 
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
 pub const TCP_DISCONN_TIMEOUT: Duration = Duration::from_secs(2);
