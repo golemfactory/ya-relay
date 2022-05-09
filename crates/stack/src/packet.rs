@@ -1,13 +1,17 @@
 #![allow(unused)]
 
 use self::field::*;
+use smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
 use std::convert::TryFrom;
 use std::ops::Deref;
 
 use crate::{Error, Protocol};
-use smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
 
 pub const ETHERNET_HDR_SIZE: usize = 14;
+pub const IP4_HDR_SIZE: usize = 20;
+pub const IP6_HDR_SIZE: usize = 40;
+pub const TCP_HDR_SIZE: usize = 20;
+pub const UDP_HDR_SIZE: usize = 20;
 
 mod field {
     /// Field slice range within packet bytes
@@ -548,6 +552,7 @@ pub struct TcpPacket<'a> {
     pub src_port: &'a [u8],
     pub dst_port: &'a [u8],
     pub payload_off: usize,
+    pub payload_size: usize,
 }
 
 impl<'a> TcpPacket<'a> {
@@ -576,10 +581,12 @@ impl<'a> PeekPacket<'a> for TcpPacket<'a> {
 
     fn packet(data: &'a [u8]) -> Self {
         let payload_off = get_bit_field(data, TcpField::DATA_OFF) as usize;
+        let payload_size = data.len().saturating_sub(payload_off);
         Self {
             src_port: &data[TcpField::SRC_PORT],
             dst_port: &data[TcpField::DST_PORT],
             payload_off,
+            payload_size,
         }
     }
 }
@@ -595,6 +602,7 @@ impl UdpField {
 pub struct UdpPacket<'a> {
     pub src_port: &'a [u8],
     pub dst_port: &'a [u8],
+    pub payload_size: usize,
 }
 
 impl<'a> UdpPacket<'a> {
@@ -622,9 +630,11 @@ impl<'a> PeekPacket<'a> for UdpPacket<'a> {
     }
 
     fn packet(data: &'a [u8]) -> Self {
+        let payload_size = data.len().saturating_sub(UdpField::PAYLOAD.start);
         Self {
             src_port: &data[UdpField::SRC_PORT],
             dst_port: &data[UdpField::DST_PORT],
+            payload_size,
         }
     }
 }

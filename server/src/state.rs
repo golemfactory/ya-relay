@@ -4,15 +4,22 @@ use std::collections::HashMap;
 use std::ops::Sub;
 
 use crate::error::{InternalError, ServerResult, Unauthorized};
-use ya_relay_core::session::{NodeSession, SessionId};
 
-use ya_client_model::NodeId;
+use ya_relay_core::session::{NodeSession, SessionId};
+use ya_relay_core::NodeId;
+
+#[derive(Clone)]
+pub enum Slot<T: Clone> {
+    Free,
+    Some(T),
+    Purgatory(T),
+}
 
 pub struct NodesState {
     /// Constant time access using slot id optimized for forwarding.
     /// The consequence is, that we must store Option<NodeSession>, because
     /// we can't move elements after removal.
-    slots: Vec<Option<NodeSession>>,
+    slots: Vec<Slot<NodeSession>>,
     sessions: HashMap<SessionId, u32>,
     nodes: HashMap<NodeId, u32>,
 }
@@ -28,22 +35,22 @@ impl NodesState {
 
     pub fn register(&mut self, mut node: NodeSession) {
         // We don't want to store the same Node multiple times.
-        if let Some(node) = self.get_by_node_id(node.info.node_id) {
+        if let Some(node) = self.get_by_node_id(node.info.node_id()) {
             self.remove_session(node.info.slot);
         }
 
         let slot = self.empty_slot();
 
         if slot as usize >= self.slots.len() {
-            self.slots.resize(self.slots.len() + 1024, None);
+            self.slots.resize(self.slots.len() + 1024, Slot::Free);
         }
 
         self.sessions.insert(node.session, slot);
-        self.nodes.insert(node.info.node_id, slot);
+        self.nodes.insert(node.info.node_id(), slot);
 
         node.info.slot = slot;
 
-        self.slots[slot as usize] = Some(node);
+        self.slots[slot as usize] = Slot::Some(node);
     }
 
     pub fn neighbours(&self, id: SessionId, count: u32) -> ServerResult<Vec<NodeSession>> {
@@ -56,7 +63,7 @@ impl NodesState {
             .clone()
             .ok_or(InternalError::GettingSessionInfo(id))?
             .info
-            .node_id;
+            .node_id();
 
         // Sort all nodes by hamming distance between node ids (number of differing bits).
         // Neighbourhood of each node should differ as much as possible, because
@@ -66,7 +73,11 @@ impl NodesState {
             .slots
             .iter()
             .enumerate()
-            .filter_map(|(idx, entry)| entry.as_ref().map(|entry| (idx, entry.info.node_id)))
+            .filter_map(|(idx, entry)| match entry {
+                Slot::Free => None,
+                Slot::Some(entry) => Some((idx, entry.info.node_id())),
+                Slot::Purgatory(_) => None,
+            })
             .sorted_by(|(_, id1), (_, id2)| {
                 Ord::cmp(
                     &hamming_distance(*id1, ref_node_id),
@@ -81,24 +92,24 @@ impl NodesState {
         let count = std::cmp::min(neighbours.len() - 1, count as usize);
         let neighbours = neighbours[1..=count]
             .iter()
-            .filter_map(|&slot| self.slots[slot].clone())
+            .filter_map(|&slot| self.slots[slot].active())
             .collect();
 
         Ok(neighbours)
     }
 
-    pub fn check_timeouts(&mut self, timeout: i64) {
+    pub fn check_timeouts(&mut self, timeout: chrono::Duration, purge_timeout: chrono::Duration) {
         self.slots
             .iter()
             .filter_map(|slot| {
-                if let Some(ns) = slot {
-                    let deadline = Utc::now().sub(chrono::Duration::seconds(timeout));
+                if let Slot::Some(ns) = slot {
+                    let deadline = Utc::now().sub(timeout);
                     if ns.last_seen > deadline {
                         return None;
                     }
                     log::debug!(
                         "Session timeout. node_id: {}, session_id: {}",
-                        ns.info.node_id,
+                        ns.info.node_id(),
                         ns.session
                     );
                     Some(ns.info.slot)
@@ -109,13 +120,28 @@ impl NodesState {
             .collect::<Vec<u32>>()
             .into_iter()
             .for_each(|slot| self.remove_session(slot));
+
+        let deadline = Utc::now().sub(purge_timeout);
+        for slot in &mut self.slots {
+            if let Slot::Purgatory(session) = slot {
+                if session.last_seen < deadline {
+                    log::debug!(
+                        "Purging not active session with node_id: {}, session_id: {}",
+                        session.info.node_id(),
+                        session.session
+                    );
+
+                    slot.purge();
+                }
+            }
+        }
     }
 
     pub fn remove_session(&mut self, slot: u32) {
-        if let Some(session) = &self.slots[slot as usize] {
+        if let Slot::Some(session) = &self.slots[slot as usize] {
             self.sessions.remove(&session.session);
-            self.nodes.remove(&session.info.node_id);
-            self.slots[slot as usize] = None;
+            self.nodes.remove(&session.info.node_id());
+            self.slots[slot as usize] = Slot::Purgatory(session.clone());
         }
     }
 
@@ -123,7 +149,7 @@ impl NodesState {
         match self.sessions.get(&id) {
             None => return Err(Unauthorized::SessionNotFound(id).into()),
             Some(&slot) => match self.slots.get_mut(slot as usize) {
-                Some(Some(node)) => node.last_seen = Utc::now(),
+                Some(Slot::Some(node)) => node.last_seen = Utc::now(),
                 _ => return Err(InternalError::GettingSessionInfo(id).into()),
             },
         };
@@ -131,26 +157,37 @@ impl NodesState {
     }
 
     pub fn get_by_slot(&self, slot: u32) -> Option<NodeSession> {
-        self.slots.get(slot as usize).cloned().flatten()
+        self.slots
+            .get(slot as usize)
+            .cloned()
+            .and_then(|entry| entry.active())
     }
 
     pub fn get_by_session(&self, id: SessionId) -> Option<NodeSession> {
         match self.sessions.get(&id) {
             None => None,
-            Some(&slot) => self.slots.get(slot as usize).cloned().flatten(),
+            Some(&slot) => self
+                .slots
+                .get(slot as usize)
+                .cloned()
+                .and_then(|entry| entry.active()),
         }
     }
 
     pub fn get_by_node_id(&self, id: NodeId) -> Option<NodeSession> {
         match self.nodes.get(&id) {
             None => None,
-            Some(&slot) => self.slots.get(slot as usize).cloned().flatten(),
+            Some(&slot) => self
+                .slots
+                .get(slot as usize)
+                .cloned()
+                .and_then(|entry| entry.active()),
         }
     }
 
     fn empty_slot(&self) -> u32 {
         // Slot 0 reserved for direct communication will not be used.
-        1 + match self.slots.iter().skip(1).position(|slot| slot.is_none()) {
+        1 + match self.slots.iter().skip(1).position(|slot| slot.is_free()) {
             None => self.slots.len() as u32,
             Some(idx) => idx as u32,
         }
@@ -177,11 +214,42 @@ pub fn hamming_distance(id1: NodeId, id2: NodeId) -> u32 {
     hamming
 }
 
+impl<T> Slot<T>
+where
+    T: Clone,
+{
+    pub fn ok_or<E>(self, err: E) -> Result<T, E> {
+        match self {
+            Slot::Free => Err(err),
+            Slot::Some(entry) => Ok(entry),
+            Slot::Purgatory(_) => Err(err),
+        }
+    }
+
+    pub fn is_free(&self) -> bool {
+        matches!(self, Slot::Free)
+    }
+
+    pub fn active(&self) -> Option<T> {
+        match self {
+            Slot::Free => None,
+            Slot::Some(slot) => Some(slot.clone()),
+            Slot::Purgatory(_) => None,
+        }
+    }
+
+    pub fn purge(&mut self) {
+        if let Slot::Purgatory(_) = self {
+            *self = Slot::Free;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::state::hamming_distance;
     use std::str::FromStr;
-    use ya_client_model::NodeId;
+    use ya_relay_core::NodeId;
 
     #[test]
     fn test_hamming() {

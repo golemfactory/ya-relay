@@ -1,7 +1,9 @@
+use crate::config::Config;
 use chrono::Local;
 use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
 use std::io::Write;
+use std::time::Duration;
 use url::Url;
 
 use crate::server::Server;
@@ -18,6 +20,10 @@ impl ServerWrapper {
 }
 
 pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
+    init_test_server_with_config(test_default_config()).await
+}
+
+pub async fn init_test_server_with_config(config: Config) -> anyhow::Result<ServerWrapper> {
     // Initialize logger for all tests. Thi function will be called multiple times,
     // so we `try_init`.
     let _ = env_logger::Builder::new()
@@ -34,7 +40,7 @@ pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
         })
         .try_init();
 
-    let server = Server::bind_udp(Url::parse("udp://127.0.0.1:0")?).await?;
+    let server = Server::bind_udp(config).await?;
 
     let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
@@ -51,6 +57,18 @@ pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
         server,
         handle: abort_handle,
     })
+}
+
+pub fn test_default_config() -> Config {
+    Config {
+        address: Url::parse("udp://127.0.0.1:0").unwrap(),
+        ip_checker_port: 0,
+        session_cleaner_interval: Duration::from_secs(60),
+        session_timeout: chrono::Duration::seconds(10),
+        session_purge_timeout: chrono::Duration::seconds(600),
+        forwarder_rate_limit: 2048,
+        forwarder_resume_interval: Duration::from_secs(1),
+    }
 }
 
 impl Drop for ServerWrapper {

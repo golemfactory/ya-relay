@@ -1,26 +1,24 @@
-use futures::channel::mpsc;
 use futures::future::LocalBoxFuture;
-use futures::{SinkExt, StreamExt};
-use std::collections::HashMap;
-use std::convert::{TryFrom, TryInto};
+use futures::{FutureExt, SinkExt};
+use std::convert::TryInto;
+use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
+use tokio::time::{Duration, Instant};
 
 use crate::dispatch::{Dispatched, Dispatcher};
-use crate::session_layer::SessionsLayer;
 
-use ya_client_model::NodeId;
-use ya_relay_core::challenge::{self, prepare_challenge_response, CHALLENGE_DIFFICULTY};
-use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
-use ya_relay_core::utils::parse_node_id;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};
 use ya_relay_proto::{codec, proto};
 
 const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
+const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub type SessionResult<T> = Result<T, SessionError>;
 
 /// Udp connection to other Node. It is either peer-to-peer connection
 /// or central server session. Implements functions for sending
@@ -29,9 +27,29 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 pub struct Session {
     pub remote: SocketAddr,
     pub id: SessionId,
+    pub created: Instant,
 
     sink: OutStream,
-    dispatcher: Dispatcher,
+    pub(crate) dispatcher: Dispatcher,
+}
+
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SessionDesc {
+    pub remote: SocketAddr,
+    pub id: SessionId,
+    pub last_seen: std::time::Instant,
+    pub created: std::time::Instant,
+}
+
+impl<'a> From<&'a Session> for SessionDesc {
+    fn from(session: &'a Session) -> Self {
+        SessionDesc {
+            remote: session.remote,
+            id: session.id,
+            last_seen: session.dispatcher.last_seen().into_std(),
+            created: session.created.into_std(),
+        }
+    }
 }
 
 impl Session {
@@ -40,6 +58,7 @@ impl Session {
             remote: remote_addr,
             id,
             sink,
+            created: Instant::now(),
             dispatcher: Dispatcher::default(),
         })
     }
@@ -126,11 +145,73 @@ impl Session {
         self.request::<proto::response::Pong>(
             packet.into(),
             self.id.to_vec(),
+            DEFAULT_PING_TIMEOUT,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let packet = proto::request::ReverseConnection {
+            node_id: node_id.into_array().to_vec(),
+        };
+        self.request::<proto::response::ReverseConnection>(
+            packet.into(),
+            self.id.to_vec(),
             DEFAULT_REQUEST_TIMEOUT,
         )
         .await?;
 
         Ok(())
+    }
+
+    /// Check if any packet was seen during expiration period.
+    /// If it wasn't, ping will be sent.
+    /// Function returns timestamp of last seen packet from remote Node,
+    /// including ping that can be sent.
+    pub async fn keep_alive(&self, expiration: Duration) -> Instant {
+        let last_seen = self.dispatcher.last_seen();
+
+        if last_seen + expiration < Instant::now() {
+            // Sending 3 pings after each other to avoid lost UDP packets.
+            // We need only one response.
+            // Note: futures are asynchronous, because we shouldn't wait for ping timeout
+            //       in case of lost packets.
+            futures::future::select_ok((0..3).into_iter().map(|i| {
+                async move {
+                    tokio::time::delay_for(Duration::from_millis(200 * i)).await;
+                    self.ping().await
+                }
+                .boxed_local()
+            }))
+            .await
+            // Ignoring error, because in such a case, we should disconnect anyway.
+            .ok();
+        }
+
+        // Could be updated after ping.
+        self.dispatcher.last_seen()
+    }
+
+    pub async fn disconnect(&self) -> anyhow::Result<()> {
+        // Don't use temporary session, because we don't want to initialize session
+        // with this address, nor receive the response.
+        let control_packet = proto::Packet::control(
+            self.id.to_vec(),
+            ya_relay_proto::proto::control::Disconnected {
+                by: Some(proto::control::disconnected::By::SessionId(
+                    self.id.to_vec(),
+                )),
+            },
+        );
+        self.send(control_packet).await
+    }
+
+    /// Will send `Disconnect` message to other Node, to close end Session
+    /// more gracefully.  
+    pub async fn close(&self) -> anyhow::Result<()> {
+        self.disconnect().await
     }
 }
 
@@ -152,7 +233,7 @@ impl Session {
         };
         self.send(packet).await?;
 
-        Ok(response.await?)
+        response.await
     }
 
     #[inline(always)]
@@ -174,259 +255,48 @@ impl Session {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct StartingSessions {
-    state: Arc<Mutex<StartingSessionsState>>,
-
-    layer: SessionsLayer,
-    sink: OutStream,
+impl Drop for Session {
+    fn drop(&mut self) {
+        log::trace!("Dropping Session {} ({}).", self.id, self.remote);
+    }
 }
 
-#[derive(Default)]
-struct StartingSessionsState {
-    /// Initialization of session started by other peers.
-    incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
-    /// Temporary sessions stored during initialization period.
-    /// After session is established, new struct in SessionsLayer is created
-    /// and this one is removed.
-    tmp_sessions: HashMap<SocketAddr, Arc<Session>>,
+pub enum SessionError {
+    Drop(anyhow::Error),
+    Retry(anyhow::Error),
 }
 
-impl StartingSessions {
-    pub fn new(layer: SessionsLayer, sink: OutStream) -> StartingSessions {
-        StartingSessions {
-            state: Arc::new(Mutex::new(StartingSessionsState::default())),
-            sink,
-            layer,
+impl SessionError {
+    pub fn into_inner(self) -> anyhow::Error {
+        match self {
+            Self::Drop(e) | Self::Retry(e) => e,
         }
     }
+}
 
-    pub fn temporary_session(&mut self, addr: SocketAddr) -> Arc<Session> {
-        let session = Session::new(addr, SessionId::generate(), self.sink.clone());
-        self.state
-            .lock()
-            .unwrap()
-            .tmp_sessions
-            .insert(addr, session.clone());
-        session
+impl From<anyhow::Error> for SessionError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Retry(e)
     }
+}
 
-    pub fn remove_temporary_session(&mut self, addr: &SocketAddr) {
-        self.state.lock().unwrap().tmp_sessions.remove(addr);
-    }
-
-    pub fn dispatcher(&self, addr: SocketAddr) -> Option<Dispatcher> {
-        self.state
-            .lock()
-            .unwrap()
-            .tmp_sessions
-            .get(&addr)
-            .map(|session| session.dispatcher.clone())
-    }
-
-    pub async fn dispatch_session(
-        self,
-        session_id: Vec<u8>,
-        request_id: RequestId,
-        from: SocketAddr,
-        request: proto::request::Session,
-    ) {
-        // This will be new session.
-        match session_id.is_empty() {
-            true => self.new_session(request_id, from, request).await,
-            false => self
-                .existing_session(session_id, request_id, from, request)
-                .await
-                .map_err(|e| e.into()),
-        }
-        .map_err(|e| log::warn!("{}", e))
-        .ok();
-    }
-
-    pub async fn new_session(
-        self,
-        request_id: RequestId,
-        with: SocketAddr,
-        request: proto::request::Session,
-    ) -> anyhow::Result<()> {
-        let node_id = parse_node_id(&request.node_id)?;
-        let session_id = SessionId::generate();
-        let (sender, receiver) = mpsc::channel(1);
-
-        log::info!(
-            "Node {} ({}) tries to establish p2p session.",
-            node_id,
-            with
-        );
-
-        {
-            self.state
-                .lock()
-                .unwrap()
-                .incoming_sessions
-                .entry(session_id)
-                .or_insert(sender);
-        }
-
-        // TODO: Add timeout for session initialization.
-        tokio::task::spawn_local(async move {
-            if let Err(e) = self
-                .clone()
-                .init_session_handler(with, request_id, session_id, request, receiver)
-                .await
-            {
-                log::warn!(
-                    "Error initializing session {} with node {}. Error: {}",
-                    session_id,
-                    node_id,
-                    e
-                );
-
-                // Establishing session failed.
-                self.layer
-                    .error_response(request_id, session_id.to_vec(), &with, e)
-                    .await;
-                self.cleanup_initialization(&session_id).await;
+impl fmt::Debug for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drop(e) => {
+                write!(f, "Drop({:?})", e)
             }
-        });
-        Ok(())
-    }
-
-    async fn existing_session(
-        &self,
-        raw_id: Vec<u8>,
-        request_id: RequestId,
-        _from: SocketAddr,
-        request: proto::request::Session,
-    ) -> ServerResult<()> {
-        let id = SessionId::try_from(raw_id.clone())
-            .map_err(|_| Unauthorized::InvalidSessionId(raw_id))?;
-
-        let mut sender = {
-            match {
-                self.state
-                    .lock()
-                    .unwrap()
-                    .incoming_sessions
-                    .get(&id)
-                    .cloned()
-            } {
-                Some(sender) => sender.clone(),
-                None => return Err(Unauthorized::SessionNotFound(id).into()),
+            Self::Retry(e) => {
+                write!(f, "Retry({:?})", e)
             }
-        };
-
-        Ok(sender
-            .send((request_id, request))
-            .await
-            .map_err(|_| InternalError::Send)?)
-    }
-
-    async fn init_session_handler(
-        mut self,
-        with: SocketAddr,
-        request_id: RequestId,
-        session_id: SessionId,
-        request: proto::request::Session,
-        mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
-    ) -> ServerResult<()> {
-        let node_id = parse_node_id(&request.node_id)?;
-
-        let (packet, raw_challenge) = prepare_challenge_response();
-        let challenge = proto::Packet::response(
-            request_id,
-            session_id.to_vec(),
-            proto::StatusCode::Ok,
-            packet,
-        );
-
-        let tmp_session = self.temporary_session(with);
-
-        tmp_session
-            .send(challenge)
-            .await
-            .map_err(|_| InternalError::Send)?;
-
-        log::debug!("Challenge sent to Node: [{}], address: {}", node_id, with);
-
-        // Compute challenge in different thread to avoid blocking runtime.
-        let challenge_handle = self.layer.solve_challenge(request).await;
-
-        if let Some((request_id, session)) = rc.next().await {
-            log::debug!(
-                "Got challenge response from node: [{}], address: {}",
-                node_id,
-                with
-            );
-
-            // Validate the challenge
-            let verification = challenge::verify(
-                &raw_challenge,
-                CHALLENGE_DIFFICULTY,
-                &session.challenge_resp,
-                session.public_key.as_slice(),
-            )
-            .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?;
-
-            if !verification {
-                return Err(Unauthorized::InvalidChallenge.into());
-            }
-
-            log::debug!(
-                "Challenge from Node: [{}], address: {} verified.",
-                node_id,
-                with
-            );
-
-            let packet = proto::response::Session {
-                challenge_resp: challenge_handle
-                    .await
-                    .map_err(|e| InternalError::Generic(e.to_string()))?,
-                challenge_req: None,
-                public_key: self.layer.config.public_key().await?.bytes().to_vec(),
-            };
-
-            tmp_session
-                .send(proto::Packet::response(
-                    request_id,
-                    session_id.to_vec(),
-                    proto::StatusCode::Ok,
-                    packet,
-                ))
-                .await
-                .map_err(|_| InternalError::Send)?;
-
-            self.layer
-                .add_incoming_session(with, session_id, node_id)
-                .await
-                .map_err(|e| InternalError::Generic(e.to_string()))?;
-
-            log::info!(
-                "Incoming P2P session {} with Node: [{}], address: {} established.",
-                session_id,
-                node_id,
-                with
-            );
         }
-
-        Ok(())
     }
+}
 
-    async fn cleanup_initialization(&self, session_id: &SessionId) {
-        let mut state = self.state.lock().unwrap();
-
-        state.incoming_sessions.remove(session_id);
-        let addr =
-            state
-                .tmp_sessions
-                .iter()
-                .find_map(|(_, session)| match session.id == *session_id {
-                    true => Some(session.remote),
-                    false => None,
-                });
-
-        if let Some(addr) = addr {
-            state.tmp_sessions.remove(&addr);
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drop(e) | Self::Retry(e) => e.fmt(f),
         }
     }
 }

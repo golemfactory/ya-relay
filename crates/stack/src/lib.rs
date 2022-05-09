@@ -2,8 +2,10 @@ pub mod connection;
 pub mod device;
 mod error;
 pub mod interface;
+mod metrics;
 mod network;
 pub mod packet;
+mod patch_smoltcp;
 mod port;
 mod protocol;
 mod queue;
@@ -13,15 +15,14 @@ mod stack;
 pub use connection::{Connect, Connection, DisconnectReason, Send};
 pub use device::CaptureDevice;
 pub use error::Error;
-pub use network::{Channel, EgressEvent, EgressReceiver, IngressEvent, IngressReceiver, Network};
+pub use metrics::{Average, ChannelMetrics, Ewma, Metrics, TimeWindow};
+pub use network::{
+    Channel, EgressEvent, EgressReceiver, IngressEvent, IngressReceiver, Network, NetworkConfig,
+};
 pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;
-pub use stack::Stack;
-
 pub use smoltcp;
-
-/// Maximum size of Ethernet II frame + payload
-pub const MAX_FRAME_SIZE: usize = 14 + MAX_PACKET_SIZE;
-pub const MAX_PACKET_SIZE: usize = 65521;
+pub use socket::{SocketDesc, SocketState};
+pub use stack::Stack;
 
 pub type Result<T> = std::result::Result<T, Error>;

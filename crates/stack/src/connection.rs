@@ -5,9 +5,12 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
+use smoltcp::iface::SocketHandle;
 use smoltcp::socket::*;
 use smoltcp::wire::IpEndpoint;
 
+use crate::interface::CaptureInterface;
+use crate::patch_smoltcp::GetSocketSafe;
 use crate::socket::{SocketDesc, SocketEndpoint};
 use crate::{Error, Protocol, Result};
 
@@ -114,15 +117,12 @@ impl TryFrom<SocketDesc> for ConnectionMeta {
 /// TCP connection future
 pub struct Connect<'a> {
     pub connection: Connection,
-    sockets: Rc<RefCell<SocketSet<'a>>>,
+    iface: Rc<RefCell<CaptureInterface<'a>>>,
 }
 
 impl<'a> Connect<'a> {
-    pub fn new(connection: Connection, sockets: Rc<RefCell<SocketSet<'a>>>) -> Self {
-        Self {
-            connection,
-            sockets,
-        }
+    pub fn new(connection: Connection, iface: Rc<RefCell<CaptureInterface<'a>>>) -> Self {
+        Self { connection, iface }
     }
 }
 
@@ -130,18 +130,12 @@ impl<'a> Future for Connect<'a> {
     type Output = Result<Connection>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let sockets_rfc = self.sockets.clone();
-        let mut sockets = sockets_rfc.borrow_mut();
-        // TODO: we need to loop because `.get()` panics when connection was dropped
-        //let mut socket = sockets.get::<TcpSocket>(self.connection.handle);
-        let mut socket = match sockets
-            .iter_mut()
-            .find(|s| s.handle() == self.connection.handle)
-            .map(TcpSocket::downcast)
-            .flatten()
-        {
-            Some(s) => s,
-            None => return Poll::Ready(Err(Error::SocketClosed)),
+        let iface_rfc = self.iface.clone();
+        let mut iface = iface_rfc.borrow_mut();
+
+        let socket = match iface.get_socket_safe::<TcpSocket>(self.connection.handle) {
+            Ok(s) => s,
+            Err(_) => return Poll::Ready(Err(Error::SocketClosed)),
         };
 
         if !socket.is_open() {
@@ -155,12 +149,46 @@ impl<'a> Future for Connect<'a> {
     }
 }
 
+/// TCP disconnection future
+pub struct Disconnect<'a> {
+    handle: SocketHandle,
+    iface: Rc<RefCell<CaptureInterface<'a>>>,
+}
+
+impl<'a> Disconnect<'a> {
+    pub fn new(handle: SocketHandle, iface: Rc<RefCell<CaptureInterface<'a>>>) -> Self {
+        Self { handle, iface }
+    }
+}
+
+impl<'a> Future for Disconnect<'a> {
+    type Output = Result<()>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let iface_rfc = self.iface.clone();
+        let mut iface = iface_rfc.borrow_mut();
+
+        let socket = match iface.get_socket_safe::<TcpSocket>(self.handle) {
+            Ok(s) => s,
+            Err(_) => return Poll::Ready(Ok(())),
+        };
+
+        if !socket.is_open() {
+            Poll::Ready(Ok(()))
+        } else {
+            socket.register_recv_waker(cx.waker());
+            Poll::Pending
+        }
+    }
+}
+
 /// Packet send future
 pub struct Send<'a> {
     data: Vec<u8>,
     offset: usize,
     connection: Connection,
-    sockets: Rc<RefCell<SocketSet<'a>>>,
+    iface: Rc<RefCell<CaptureInterface<'a>>>,
+    /// Send completion callback; there may as well have been no data sent
     sent: Box<dyn Fn()>,
 }
 
@@ -168,14 +196,14 @@ impl<'a> Send<'a> {
     pub fn new<F: Fn() + 'static>(
         data: Vec<u8>,
         connection: Connection,
-        sockets: Rc<RefCell<SocketSet<'a>>>,
+        iface: Rc<RefCell<CaptureInterface<'a>>>,
         sent: F,
     ) -> Self {
         Self {
             data,
             offset: 0,
             connection,
-            sockets,
+            iface,
             sent: Box::new(sent),
         }
     }
@@ -186,18 +214,21 @@ impl<'a> Future for Send<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let result = {
-            let sockets_rfc = self.sockets.clone();
+            let mut iface = self.iface.borrow_mut();
             let conn = &self.connection;
 
             match conn.meta.protocol {
                 Protocol::Tcp => {
                     let result = {
-                        let mut sockets = sockets_rfc.borrow_mut();
-                        let mut socket = sockets.get::<TcpSocket>(conn.handle);
+                        let socket = match iface.get_socket_safe::<TcpSocket>(conn.handle) {
+                            Ok(socket) => socket,
+                            Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                        };
                         socket.register_send_waker(cx.waker());
                         socket.send_slice(&self.data[self.offset..])
                     };
 
+                    drop(iface);
                     (*self.sent)();
 
                     return match result {
@@ -214,18 +245,27 @@ impl<'a> Future for Send<'a> {
                     };
                 }
                 Protocol::Udp => {
-                    let mut sockets = sockets_rfc.borrow_mut();
-                    let mut socket = sockets.get::<UdpSocket>(conn.handle);
+                    let socket = match iface.get_socket_safe::<UdpSocket>(conn.handle) {
+                        Ok(socket) => socket,
+                        Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                    };
+                    socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data, conn.meta.remote)
                 }
                 Protocol::Icmp | Protocol::Ipv6Icmp => {
-                    let mut sockets = sockets_rfc.borrow_mut();
-                    let mut socket = sockets.get::<IcmpSocket>(conn.handle);
+                    let socket = match iface.get_socket_safe::<IcmpSocket>(conn.handle) {
+                        Ok(socket) => socket,
+                        Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                    };
+                    socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data, conn.meta.remote.addr)
                 }
                 _ => {
-                    let mut sockets = sockets_rfc.borrow_mut();
-                    let mut socket = sockets.get::<RawSocket>(conn.handle);
+                    let socket = match iface.get_socket_safe::<RawSocket>(conn.handle) {
+                        Ok(socket) => socket,
+                        Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
+                    };
+                    socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data)
                 }
             }

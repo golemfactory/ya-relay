@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
-use ya_client_model::NodeId;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto::SlotId;
 
 use crate::session::Session;
@@ -15,6 +15,8 @@ pub struct NodeEntry {
     /// To change Session, we need to replace whole NodeEntry.
     pub session: Arc<Session>,
     pub slot: SlotId,
+    /// Connection lock
+    pub conn_lock: Arc<RwLock<()>>,
 }
 
 /// Keeps track of Nodes information, for which we asked relay server.
@@ -48,14 +50,38 @@ impl NodesRegistry {
             id: node_id,
             session,
             slot,
+            conn_lock: Default::default(),
         };
 
         {
             let mut state = self.state.write().await;
             state.nodes.insert(node_id, node.clone());
-            state.slots.insert(slot, node_id);
+
+            // Slot 0 is special number for p2p session.
+            if slot != 0 {
+                state.slots.insert(slot, node_id);
+            }
             node
         }
+    }
+
+    pub async fn add_slot_for_node(&self, node_id: NodeId, slot: SlotId) {
+        if slot != 0 {
+            let mut state = self.state.write().await;
+            state.slots.insert(slot, node_id);
+        }
+    }
+
+    pub async fn nodes_using_session(&self, session: Arc<Session>) -> Vec<NodeId> {
+        let state = self.state.read().await;
+        state
+            .nodes
+            .iter()
+            .filter_map(|(_, entry)| match entry.session.id == session.id {
+                true => Some(entry.id),
+                false => None,
+            })
+            .collect()
     }
 
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {

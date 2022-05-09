@@ -28,6 +28,7 @@ pub enum Protocol {
     Smp = 121,
     Sctp = 132,
     Ethernet = 143,
+    None,
 }
 
 impl TryFrom<u8> for Protocol {
