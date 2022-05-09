@@ -37,7 +37,7 @@ pub struct NetworkConfig {
 pub struct Network {
     pub name: Rc<String>,
     pub config: Rc<NetworkConfig>,
-    stack: Stack<'static>,
+    pub stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
     bindings: Rc<RefCell<HashSet<(Protocol, SocketEndpoint)>>>,
@@ -65,6 +65,21 @@ impl Network {
 
         network.poller.net.borrow_mut().replace(network.clone());
         network
+    }
+
+    /// Returns a socket bound on an endpoint
+    pub fn get_bound(
+        &self,
+        protocol: Protocol,
+        endpoint: impl Into<SocketEndpoint>,
+    ) -> Option<SocketHandle> {
+        let endpoint = endpoint.into();
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        let mut sockets = iface.sockets();
+        sockets
+            .find(|(_, s)| s.protocol() == protocol && s.local_endpoint() == endpoint)
+            .map(|(h, _)| h)
     }
 
     /// Listen on a local endpoint

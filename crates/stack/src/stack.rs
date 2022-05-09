@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use smoltcp::iface::SocketHandle;
+use smoltcp::iface::{Route, SocketHandle};
 use smoltcp::phy::Device;
 use smoltcp::socket::*;
 use smoltcp::time::Instant;
@@ -45,6 +45,16 @@ impl<'a> Stack<'a> {
 
     pub fn addresses(&self) -> Vec<IpCidr> {
         self.iface.borrow().ip_addrs().to_vec()
+    }
+
+    pub fn add_address(&self, address: IpCidr) {
+        let mut iface = self.iface.borrow_mut();
+        add_iface_address(&mut (*iface), address);
+    }
+
+    pub fn add_route(&self, net_ip: IpCidr, route: Route) {
+        let mut iface = self.iface.borrow_mut();
+        add_iface_route(&mut (*iface), net_ip, route);
     }
 
     #[inline]
