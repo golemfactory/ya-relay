@@ -342,7 +342,7 @@ impl Client {
         let ids = self.sessions.list_identities().await;
         let aliases = join_all(
             ids.iter()
-                .map(|id| self.sessions.alias(&id))
+                .map(|id| self.sessions.alias(id))
                 .collect::<Vec<_>>(),
         )
         .await

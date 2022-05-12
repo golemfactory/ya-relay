@@ -3,6 +3,7 @@ mod dispatch;
 mod expire;
 mod registry;
 mod session;
+mod session_guard;
 mod session_manager;
 mod session_start;
 pub mod testing;
