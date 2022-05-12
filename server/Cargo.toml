@@ -1,6 +1,6 @@
 [package]
 name = "ya-relay-server"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
 
@@ -16,8 +16,8 @@ path = "src/main.rs"
 
 [dependencies]
 ya-relay-proto = { version = "0.3", path = "../crates/proto" }
-ya-relay-core = { version = "0.2", path = "../crates/core" }
-ya-relay-client = { version = "0.2", path = "../client" }
+ya-relay-core = { version = "0.3", path = "../crates/core" }
+ya-relay-client = { version = "0.3", path = "../client" }
 
 actix-rt = "1.1"
 anyhow = "1.0"
