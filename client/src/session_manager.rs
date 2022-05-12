@@ -302,10 +302,10 @@ impl SessionManager {
         );
 
         let session = self.init_session(addr, true, Some(node_id)).await?;
-        let session = {
+        {
             let mut state = self.state.write().await;
             state.nodes_addr.insert(addr, node_id);
-            state.p2p_sessions.entry(node_id).or_insert(session).clone()
+            state.p2p_sessions.insert(node_id, session.clone());
         };
 
         log::info!(
@@ -398,6 +398,7 @@ impl SessionManager {
             state.add_identities(node_id, identities);
 
             state.nodes_addr.insert(addr, node_id);
+            state.p2p_sessions.insert(node_id, session.clone());
 
             log::trace!(
                 "[{}] Saved node session {} [{}] {}",
