@@ -15,7 +15,6 @@ path = "src/main.rs"
 
 
 [dependencies]
-ya-relay-stack = { version = "0.3", path = "../crates/stack" }
 ya-relay-proto = { version = "0.3", path = "../crates/proto" }
 ya-relay-core = { version = "0.2", path = "../crates/core" }
 ya-relay-client = { version = "0.2", path = "../client" }
