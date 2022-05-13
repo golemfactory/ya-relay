@@ -92,10 +92,10 @@ impl StartingSessions {
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         let this = self.clone();
+        let this1 = this.clone();
+        let this2 = this.clone();
         let init_future = Abortable::new(
             timeout(self.layer.config.incoming_session_timeout, async move {
-                let this1 = this.clone();
-                let this2 = this.clone();
                 let lock = this
                     .guarded
                     .guard_initialization(remote_id, &[with.clone()])
@@ -106,36 +106,42 @@ impl StartingSessions {
                     .init_session_handler(
                         with, request_id, session_id, remote_id, request, receiver,
                     )
-                    .or_else(move |result| async move {
-                        if let Some(session) = this1.guarded.get_temporary_session(&with).await {
-                            session.disconnect().await.ok();
-                        }
-
-                        log::warn!(
-                            "Error initializing session {} with node [{}] ({}). Error: {}",
-                            session_id,
-                            remote_id,
-                            with,
-                            result
-                        );
-
-                        // Establishing session failed.
-                        this1.cleanup_initialization(&session_id).await;
-                        Err(result)
-                    })
-                    .then(move |result| async move {
-                        this2
-                            .guarded
-                            .stop_guarding(
-                                NodeId::default(),
-                                result.map_err(|e| SessionError::Drop(e.to_string())),
-                            )
-                            .await;
-                    })
                     .await
             }),
             abort_registration,
-        );
+        )
+        .map(move |result| match result {
+            Ok(Ok(Ok(result))) => Ok(result),
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(_timeout)) => Err(SessionError::Drop("Timeout".to_string())),
+            Err(_aborted) => Err(SessionError::Retry("Aborted".to_string())),
+        })
+        .or_else(move |result| async move {
+            if let Some(session) = this1.guarded.get_temporary_session(&with).await {
+                session.disconnect().await.ok();
+            }
+
+            log::warn!(
+                "Error initializing session {} with node [{}] ({}). Error: {}",
+                session_id,
+                remote_id,
+                with,
+                result
+            );
+
+            // Establishing session failed.
+            this1.cleanup_initialization(&session_id).await;
+            Err(result)
+        })
+        .then(move |result| async move {
+            this2
+                .guarded
+                .stop_guarding(
+                    NodeId::default(),
+                    result.map_err(|e| SessionError::Drop(e.to_string())),
+                )
+                .await;
+        });
 
         {
             let mut state = self.state.lock().unwrap();
