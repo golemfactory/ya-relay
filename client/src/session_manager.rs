@@ -182,7 +182,7 @@ impl SessionManager {
         // Default NodeId in case of relay server.
         // TODO: consider giving relay server proper NodeId.
         self.guarded
-            .notify_first_message(remote_id.unwrap_or(NodeId::default()))
+            .notify_first_message(remote_id.unwrap_or_default())
             .await;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
@@ -899,6 +899,7 @@ impl SessionManager {
             }
         }
 
+        self.guarded.shutdown().await;
         Ok(())
     }
 

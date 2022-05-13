@@ -96,17 +96,13 @@ impl StartingSessions {
         let this2 = this.clone();
         let init_future = Abortable::new(
             timeout(self.layer.config.incoming_session_timeout, async move {
-                let lock = this
-                    .guarded
-                    .guard_initialization(remote_id, &[with.clone()])
-                    .await;
+                let lock = this.guarded.guard_initialization(remote_id, &[with]).await;
                 let _guard = lock.write().await;
 
-                this.clone()
-                    .init_session_handler(
-                        with, request_id, session_id, remote_id, request, receiver,
-                    )
-                    .await
+                this.init_session_handler(
+                    with, request_id, session_id, remote_id, request, receiver,
+                )
+                .await
             }),
             abort_registration,
         )
@@ -134,13 +130,7 @@ impl StartingSessions {
             Err(result)
         })
         .then(move |result| async move {
-            this2
-                .guarded
-                .stop_guarding(
-                    NodeId::default(),
-                    result.map_err(|e| SessionError::Drop(e.to_string())),
-                )
-                .await;
+            this2.guarded.stop_guarding(NodeId::default(), result).await;
         });
 
         {
@@ -193,7 +183,7 @@ impl StartingSessions {
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> SessionResult<Arc<Session>> {
         // If we are connected and other side isn't, than maybe we should let him establish new session.
-        if let Err(_) = self.layer.assert_not_connected(&[with.clone()]).await {
+        if self.layer.assert_not_connected(&[with]).await.is_err() {
             if let Some(session) = self.layer.get_session(with).await {
                 log::info!("Node [{}] ({}) trying to start new session, despite it is already establish. Closing previous session.", remote_id, with);
                 self.layer.close_session(session).await.ok();
@@ -295,9 +285,9 @@ impl StartingSessions {
             return Ok(session);
         }
 
-        Err(SessionError::Drop(format!(
-            "Gave up, waiting for Session messages from peer."
-        )))
+        Err(SessionError::Drop(
+            "Gave up, waiting for Session messages from peer.".to_string(),
+        ))
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
@@ -306,12 +296,14 @@ impl StartingSessions {
     }
 
     pub async fn shutdown(&self) {
-        let mut state = self.state.lock().unwrap();
+        let handles = {
+            let mut state = self.state.lock().unwrap();
+            state.incoming_sessions.clear();
+            std::mem::take(&mut state.handles)
+        };
 
-        for handle in &state.handles {
+        for handle in handles {
             handle.abort();
         }
-
-        state.incoming_sessions.clear();
     }
 }
