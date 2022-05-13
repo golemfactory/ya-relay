@@ -16,7 +16,9 @@ pub use connection::{Connect, Connection, DisconnectReason, Send};
 pub use device::CaptureDevice;
 pub use error::Error;
 pub use metrics::{Average, ChannelMetrics, Ewma, Metrics, TimeWindow};
-pub use network::{Channel, EgressEvent, IngressEvent, Network, NetworkConfig};
+pub use network::{
+    Channel, EgressEvent, EgressReceiver, IngressEvent, IngressReceiver, Network, NetworkConfig,
+};
 pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;
 pub use smoltcp;

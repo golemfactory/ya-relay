@@ -2,7 +2,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use smoltcp::iface::SocketHandle;
+use smoltcp::iface::{Route, SocketHandle};
 use smoltcp::phy::Device;
 use smoltcp::socket::*;
 use smoltcp::time::Instant;
@@ -35,11 +35,6 @@ impl<'a> Stack<'a> {
         }
     }
 
-    #[inline]
-    pub fn addresses(&self) -> Vec<IpCidr> {
-        self.iface.borrow().ip_addrs().to_vec()
-    }
-
     pub fn address(&self) -> Result<IpCidr> {
         {
             let iface = self.iface.borrow();
@@ -48,9 +43,18 @@ impl<'a> Stack<'a> {
         .ok_or(Error::NetEmpty)
     }
 
+    pub fn addresses(&self) -> Vec<IpCidr> {
+        self.iface.borrow().ip_addrs().to_vec()
+    }
+
     pub fn add_address(&self, address: IpCidr) {
         let mut iface = self.iface.borrow_mut();
         add_iface_address(&mut (*iface), address);
+    }
+
+    pub fn add_route(&self, net_ip: IpCidr, route: Route) {
+        let mut iface = self.iface.borrow_mut();
+        add_iface_route(&mut (*iface), net_ip, route);
     }
 
     #[inline]
@@ -104,7 +108,7 @@ impl<'a> Stack<'a> {
                     return Err(Error::Other("Expected an IP endpoint".to_string()));
                 }
             }
-            Protocol::Icmp => {
+            Protocol::Icmp | Protocol::Ipv6Icmp => {
                 if let SocketEndpoint::Icmp(e) = endpoint {
                     let mut socket = icmp_socket(mtu, self.config.buffer_size_multiplier);
                     socket.bind(e).map_err(|e| Error::Other(e.to_string()))?;
@@ -116,10 +120,10 @@ impl<'a> Stack<'a> {
             _ => {
                 let ip_version = {
                     match endpoint {
-                        SocketEndpoint::Ip(e) => match e.addr {
+                        SocketEndpoint::Ip(ep) => match ep.addr {
                             IpAddress::Ipv4(_) => IpVersion::Ipv4,
                             IpAddress::Ipv6(_) => IpVersion::Ipv6,
-                            _ => return Err(Error::Other(format!("Invalid address: {}", e.addr))),
+                            _ => return Err(Error::Other(format!("Invalid address: {}", ep.addr))),
                         },
                         _ => return Err(Error::Other("Expected an IP endpoint".to_string())),
                     }
@@ -135,6 +139,34 @@ impl<'a> Stack<'a> {
             }
         };
 
+        Ok(handle)
+    }
+
+    pub fn unbind(
+        &self,
+        protocol: Protocol,
+        endpoint: impl Into<SocketEndpoint>,
+    ) -> Result<SocketHandle> {
+        let endpoint = endpoint.into();
+        let mut iface = self.iface.borrow_mut();
+        let mut sockets = iface.sockets_mut();
+
+        let handle = sockets
+            .find(|(_, s)| s.local_endpoint() == endpoint)
+            .and_then(|(h, _)| match protocol {
+                Protocol::Tcp | Protocol::Udp | Protocol::Icmp | Protocol::Ipv6Icmp => Some(h),
+                _ => None,
+            })
+            .ok_or(Error::SocketClosed)?;
+
+        let _ = endpoint.ip_endpoint().map(|e| {
+            log::trace!("unbinding {} ({})", e, protocol);
+            let mut ports = self.ports.borrow_mut();
+            ports.free(protocol, e.port);
+        });
+
+        drop(sockets);
+        iface.remove_socket(handle);
         Ok(handle)
     }
 
@@ -212,13 +244,14 @@ impl<'a> Stack<'a> {
         }
     }
 
+    #[inline]
     pub fn send<B: Into<Vec<u8>>, F: Fn() + 'static>(
         &self,
         data: B,
-        meta: Connection,
+        conn: Connection,
         f: F,
     ) -> Send<'a> {
-        Send::new(data.into(), meta, self.iface.clone(), f)
+        Send::new(data.into(), conn, self.iface.clone(), f)
     }
 
     pub fn receive<B: Into<Vec<u8>>>(&self, data: B) {

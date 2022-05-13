@@ -1,11 +1,12 @@
+use std::hash::{Hash, Hasher};
+
 use derive_more::From;
 use smoltcp::socket::*;
 use smoltcp::storage::PacketMetadata;
 use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
-use std::hash::{Hash, Hasher};
 
-use crate::Protocol;
+use crate::{Error, Protocol};
 
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
 pub const TCP_DISCONN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -91,6 +92,13 @@ pub enum SocketEndpoint {
 }
 
 impl SocketEndpoint {
+    pub fn ip_endpoint(&self) -> Result<IpEndpoint, Error> {
+        match self {
+            SocketEndpoint::Ip(endpoint) => Ok(*endpoint),
+            other => Err(Error::EndpointInvalid(*other)),
+        }
+    }
+
     pub fn is_specified(&self) -> bool {
         match self {
             Self::Ip(ip) => ip.is_specified(),
@@ -369,7 +377,6 @@ pub fn raw_socket<'a>(
     RawSocket::new(ip_version, ip_protocol, rx_buf, tx_buf)
 }
 
-#[inline]
 fn meta_storage<H: Clone>(size: usize) -> Vec<PacketMetadata<H>> {
     vec![PacketMetadata::EMPTY; size]
 }

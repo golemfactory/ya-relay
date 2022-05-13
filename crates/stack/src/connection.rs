@@ -32,6 +32,19 @@ pub struct Connection {
     pub meta: ConnectionMeta,
 }
 
+impl Connection {
+    pub fn try_new<T, E>(handle: SocketHandle, t: T) -> Result<Self>
+    where
+        ConnectionMeta: TryFrom<T, Error = E>,
+        Error: From<E>,
+    {
+        Ok(Self {
+            handle,
+            meta: ConnectionMeta::try_from(t)?,
+        })
+    }
+}
+
 impl From<Connection> for SocketDesc {
     fn from(c: Connection) -> Self {
         SocketDesc {
@@ -82,16 +95,16 @@ impl From<ConnectionMeta> for SocketDesc {
 }
 
 impl TryFrom<SocketDesc> for ConnectionMeta {
-    type Error = ();
+    type Error = Error;
 
     fn try_from(desc: SocketDesc) -> std::result::Result<Self, Self::Error> {
         let local = match desc.local {
             SocketEndpoint::Ip(endpoint) => endpoint,
-            _ => return Err(()),
+            endpoint => return Err(Error::EndpointInvalid(endpoint)),
         };
         let remote = match desc.remote {
             SocketEndpoint::Ip(endpoint) => endpoint,
-            _ => return Err(()),
+            endpoint => return Err(Error::EndpointInvalid(endpoint)),
         };
         Ok(Self {
             protocol: desc.protocol,
@@ -239,7 +252,7 @@ impl<'a> Future for Send<'a> {
                     socket.register_send_waker(cx.waker());
                     socket.send_slice(&self.data, conn.meta.remote)
                 }
-                Protocol::Icmp => {
+                Protocol::Icmp | Protocol::Ipv6Icmp => {
                     let socket = match iface.get_socket_safe::<IcmpSocket>(conn.handle) {
                         Ok(socket) => socket,
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),

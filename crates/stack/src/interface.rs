@@ -59,10 +59,16 @@ where
 /// Assigns a new interface IP address
 pub fn add_iface_address(iface: &mut CaptureInterface, node_ip: IpCidr) {
     iface.update_ip_addrs(|addrs| match addrs {
-        ManagedSlice::Owned(ref mut vec) => vec.push(node_ip),
+        ManagedSlice::Owned(ref mut vec) => {
+            if !vec.iter().any(|ip| *ip == node_ip) {
+                vec.push(node_ip);
+            }
+        }
         ManagedSlice::Borrowed(ref slice) => {
             let mut vec = slice.to_vec();
-            vec.push(node_ip);
+            if !vec.iter().any(|ip| *ip == node_ip) {
+                vec.push(node_ip);
+            }
             *addrs = vec.into();
         }
     });

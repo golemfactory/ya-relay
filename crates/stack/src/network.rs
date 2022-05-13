@@ -37,7 +37,7 @@ pub struct NetworkConfig {
 pub struct Network {
     pub name: Rc<String>,
     pub config: Rc<NetworkConfig>,
-    stack: Stack<'static>,
+    pub stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
     bindings: Rc<RefCell<HashSet<(Protocol, SocketEndpoint)>>>,
@@ -67,6 +67,21 @@ impl Network {
         network
     }
 
+    /// Returns a socket bound on an endpoint
+    pub fn get_bound(
+        &self,
+        protocol: Protocol,
+        endpoint: impl Into<SocketEndpoint>,
+    ) -> Option<SocketHandle> {
+        let endpoint = endpoint.into();
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        let mut sockets = iface.sockets();
+        sockets
+            .find(|(_, s)| s.protocol() == protocol && s.local_endpoint() == endpoint)
+            .map(|(h, _)| h)
+    }
+
     /// Listen on a local endpoint
     pub fn bind(
         &self,
@@ -77,6 +92,14 @@ impl Network {
         let handle = self.stack.bind(protocol, endpoint)?;
         self.bindings.borrow_mut().insert((protocol, endpoint));
         Ok(handle)
+    }
+
+    /// Stop listening on a local endpoint
+    pub fn unbind(&self, protocol: Protocol, endpoint: impl Into<SocketEndpoint>) -> Result<()> {
+        let endpoint = endpoint.into();
+        self.stack.unbind(protocol, endpoint)?;
+        self.bindings.borrow_mut().remove(&(protocol, endpoint));
+        Ok(())
     }
 
     /// Initiate a TCP connection
@@ -207,11 +230,11 @@ impl Network {
 
     /// Inject send data into the stack
     #[inline(always)]
-    pub fn send(
+    pub fn send<'a>(
         &self,
         data: impl Into<Vec<u8>>,
         connection: Connection,
-    ) -> Result<ProcessedFuture> {
+    ) -> Result<ProcessedFuture<'a>> {
         self.sender.send(data.into(), connection)
     }
 
