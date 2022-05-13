@@ -1,4 +1,7 @@
 use anyhow::Context;
+use futures::future::{AbortHandle, Abortable};
+use std::future::Future;
+
 pub use url::Url;
 
 pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
@@ -13,4 +16,15 @@ pub fn typed_from_env<T: std::str::FromStr + Copy>(env_key: &str, def_value: T) 
     std::env::var(env_key)
         .map(|s| s.parse::<T>().unwrap_or(def_value))
         .unwrap_or(def_value)
+}
+
+pub fn spawn_local_abortable<F>(future: F) -> AbortHandle
+where
+    F: Future + 'static,
+    F::Output: 'static,
+{
+    let (abort_handle, abort_registration) = AbortHandle::new_pair();
+
+    tokio::task::spawn_local(Abortable::new(future, abort_registration));
+    abort_handle
 }

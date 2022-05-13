@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, bail};
 use derive_more::From;
 use futures::channel::mpsc;
-use futures::future::join_all;
+use futures::future::{join_all, AbortHandle};
 use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use tokio::sync::RwLock;
 use url::Url;
@@ -20,7 +20,7 @@ use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::udp_stream::resolve_max_payload_size;
-use ya_relay_core::utils::parse_udp_url;
+use ya_relay_core::utils::{parse_udp_url, spawn_local_abortable};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
 use ya_relay_stack::{ChannelMetrics, NetworkConfig, SocketDesc, SocketState};
@@ -75,6 +75,8 @@ pub struct Client {
 pub(crate) struct ClientState {
     bind_addr: Option<SocketAddr>,
     neighbours: Option<Neighbourhood>,
+
+    handles: Vec<AbortHandle>,
 }
 
 impl Client {
@@ -85,6 +87,7 @@ impl Client {
         let state = Arc::new(RwLock::new(ClientState {
             bind_addr: None,
             neighbours: None,
+            handles: vec![],
         }));
 
         Self {
@@ -156,12 +159,17 @@ impl Client {
 
         // Measure ping from time to time
         let this = self.clone();
-        tokio::task::spawn_local(async move {
+        let ping_handle = spawn_local_abortable(async move {
             loop {
                 tokio::time::delay_for(this.config.ping_measure_interval).await;
                 this.ping_sessions().await;
             }
         });
+
+        {
+            let mut state = self.state.write().await;
+            state.handles.push(ping_handle);
+        }
 
         log::debug!("[{}] started", self.node_id());
         Ok(())
@@ -366,6 +374,15 @@ impl Client {
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         log::info!("Shutting down Hybrid NET client.");
+
+        let handles = {
+            let mut state = self.state.write().await;
+            std::mem::take(&mut state.handles)
+        };
+
+        for handle in handles {
+            handle.abort();
+        }
 
         self.sessions.shutdown().await
     }

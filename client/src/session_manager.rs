@@ -1,7 +1,7 @@
 use anyhow::{anyhow, bail};
 use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
-use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
+use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
@@ -15,6 +15,7 @@ use ya_relay_core::crypto::{Crypto, CryptoProvider, PublicKey};
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
+use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
@@ -105,17 +106,8 @@ impl SessionManager {
 
         self.virtual_tcp.spawn(self.config.node_id).await?;
 
-        let (abort_dispatcher, abort_dispatcher_reg) = AbortHandle::new_pair();
-        let (abort_expiration, abort_expiration_reg) = AbortHandle::new_pair();
-
-        tokio::task::spawn_local(Abortable::new(
-            dispatch(self.clone(), stream),
-            abort_dispatcher_reg,
-        ));
-        tokio::task::spawn_local(Abortable::new(
-            track_sessions_expiration(self.clone()),
-            abort_expiration_reg,
-        ));
+        let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
+        let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
 
         {
             let mut state = self.state.write().await;
