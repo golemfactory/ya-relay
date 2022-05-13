@@ -75,6 +75,15 @@ impl GuardedSessions {
         }
     }
 
+    pub async fn notify_first_message(&self, node_id: NodeId) {
+        let sender = match { self.state.read().await.by_node_id.get(&node_id) } {
+            None => return (),
+            Some(target) => target.notify_msg.clone(),
+        };
+
+        sender.send(()).ok();
+    }
+
     /// Differs from `temporary_session`, that it doesn't create session, if it doesn't exist.
     pub async fn get_temporary_session(&self, addr: &SocketAddr) -> Option<Arc<Session>> {
         self.state.read().await.tmp_sessions.get(addr).cloned()

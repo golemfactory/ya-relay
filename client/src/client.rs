@@ -46,6 +46,13 @@ pub struct ClientConfig {
     pub tcp_config: NetworkConfig,
     pub pcap_path: Option<PathBuf>,
     pub ping_measure_interval: Duration,
+
+    pub session_request_timeout: Duration,
+    pub challenge_request_timeout: Duration,
+
+    pub reverse_connection_tmp_timeout: Duration,
+    pub reverse_connection_real_timeout: Duration,
+    pub incoming_session_timeout: Duration,
 }
 
 pub struct ClientBuilder {
@@ -430,6 +437,11 @@ impl ClientBuilder {
             },
             pcap_path,
             ping_measure_interval: Duration::from_secs(300),
+            session_request_timeout: Duration::from_millis(3000),
+            challenge_request_timeout: Duration::from_millis(8000),
+            reverse_connection_tmp_timeout: Duration::from_secs(3),
+            reverse_connection_real_timeout: Duration::from_secs(13),
+            incoming_session_timeout: Duration::from_secs(16),
         });
 
         client.spawn().await?;

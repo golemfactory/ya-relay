@@ -1,4 +1,5 @@
 use crate::crypto::Crypto;
+use anyhow::bail;
 use std::convert::TryFrom;
 
 use digest::{Digest, Output};
@@ -15,6 +16,8 @@ pub const PREFIX_SIZE: usize = std::mem::size_of::<u64>();
 
 pub const CHALLENGE_SIZE: usize = 16;
 pub const CHALLENGE_DIFFICULTY: u64 = 16;
+
+pub type RawChallenge = [u8; CHALLENGE_SIZE];
 
 pub type ChallengeDigest = sha3::Sha3_512;
 
@@ -153,6 +156,13 @@ pub fn recover_identities_from_challenge<D: Digest>(
     Ok((default_id, identities))
 }
 
+pub fn recover_default_node_id(request: &proto::request::Session) -> anyhow::Result<NodeId> {
+    match request.identities.get(0) {
+        Some(identity) => Ok(NodeId::try_from(&identity.node_id)?),
+        None => bail!("First session request has empty identities vector."),
+    }
+}
+
 async fn sign(message: &[u8], crypto: impl Crypto) -> anyhow::Result<Vec<u8>> {
     let sig = crypto.sign(message).await?;
 
@@ -204,8 +214,8 @@ fn leading_zeros(result: &[u8]) -> u64 {
     total
 }
 
-pub fn prepare_challenge() -> (proto::ChallengeRequest, [u8; CHALLENGE_SIZE]) {
-    let raw_challenge = rand::thread_rng().gen::<[u8; CHALLENGE_SIZE]>();
+pub fn prepare_challenge() -> (proto::ChallengeRequest, RawChallenge) {
+    let raw_challenge = rand::thread_rng().gen::<RawChallenge>();
     let request = proto::ChallengeRequest {
         version: "0.0.1".to_string(),
         caps: 0,
@@ -216,7 +226,7 @@ pub fn prepare_challenge() -> (proto::ChallengeRequest, [u8; CHALLENGE_SIZE]) {
     (request, raw_challenge)
 }
 
-pub fn prepare_challenge_request() -> (proto::request::Session, [u8; CHALLENGE_SIZE]) {
+pub fn prepare_challenge_request() -> (proto::request::Session, RawChallenge) {
     let (challenge, raw_challenge) = prepare_challenge();
     let request = proto::request::Session {
         challenge_req: Some(challenge),
@@ -225,7 +235,7 @@ pub fn prepare_challenge_request() -> (proto::request::Session, [u8; CHALLENGE_S
     (request, raw_challenge)
 }
 
-pub fn prepare_challenge_response() -> (proto::response::Session, [u8; CHALLENGE_SIZE]) {
+pub fn prepare_challenge_response() -> (proto::response::Session, RawChallenge) {
     let (challenge, raw_challenge) = prepare_challenge();
     let response = proto::response::Session {
         challenge_req: Some(challenge),

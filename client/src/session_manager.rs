@@ -8,12 +8,10 @@ use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 
-use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
+use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::{Crypto, CryptoProvider, PublicKey};
-use ya_relay_core::error::Error;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
@@ -21,7 +19,7 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
-use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
+use ya_relay_proto::proto::{Forward, RequestId};
 use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
@@ -33,11 +31,7 @@ use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
 use crate::virtual_layer::TcpLayer;
 
-const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
-const CHALLENGE_REQUEST_TIMEOUT: Duration = Duration::from_millis(8000);
 const PAUSE_FWD_DELAY: i64 = 5;
-const REVERSE_CONNECTION_TMP_TIMEOUT: u64 = 3;
-const REVERSE_CONNECTION_REAL_TIMEOUT: u64 = 13;
 
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
@@ -184,11 +178,20 @@ impl SessionManager {
 
         log::debug!("[{}] initializing session with {}", this_id, addr);
 
-        let (request, raw_challenge) = challenge::prepare_challenge_request();
-        let request = challenge.then(|| request).unwrap_or_default();
+        let (request, raw_challenge) = self.prepare_challenge_request(challenge).await?;
         let response = tmp_session
-            .request::<proto::response::Session>(request.into(), vec![], SESSION_REQUEST_TIMEOUT)
+            .request::<proto::response::Session>(
+                request.into(),
+                vec![],
+                self.config.session_request_timeout,
+            )
             .await?;
+
+        // Default NodeId in case of relay server.
+        // TODO: consider giving relay server proper NodeId.
+        self.guarded
+            .notify_first_message(remote_id.unwrap_or(NodeId::default()))
+            .await;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
         let challenge_req = response.packet.challenge_req.ok_or_else(|| {
@@ -214,7 +217,7 @@ impl SessionManager {
             .request::<proto::response::Session>(
                 packet.into(),
                 session_id.to_vec(),
-                CHALLENGE_REQUEST_TIMEOUT,
+                self.config.challenge_request_timeout,
             )
             .await?;
 
@@ -763,7 +766,7 @@ impl SessionManager {
         // But if we won't receive any message from other Node, we would like to exit early,
         // to try out different connection methods.
         tokio::time::timeout(
-            Duration::from_secs(REVERSE_CONNECTION_TMP_TIMEOUT),
+            self.config.reverse_connection_tmp_timeout,
             awaiting.wait_for_first_message(),
         )
         .await?;
@@ -771,7 +774,7 @@ impl SessionManager {
         // If we have first handshake message from other node, we can wait with
         // longer timeout now, because we can have hope, that this node is responsive.
         let result = tokio::time::timeout(
-            Duration::from_secs(REVERSE_CONNECTION_REAL_TIMEOUT),
+            self.config.reverse_connection_real_timeout,
             awaiting.wait_for_connection(),
         )
         .await;
@@ -849,7 +852,12 @@ impl SessionManager {
         state.sessions.get(&self.config.srv_addr).cloned()
     }
 
-    async fn assert_not_connected(&self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
+    pub(crate) async fn get_session(&self, addr: SocketAddr) -> Option<Arc<Session>> {
+        let state = self.state.read().await;
+        state.sessions.get(&addr).cloned()
+    }
+
+    pub(crate) async fn assert_not_connected(&self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
         let state = self.state.read().await;
 
         // Fail if we're already connected to the remote address
@@ -963,32 +971,6 @@ impl SessionManager {
         session.disconnect().await
     }
 
-    pub(crate) async fn error_response(
-        &self,
-        req_id: u64,
-        id: Vec<u8>,
-        addr: &SocketAddr,
-        error: Error,
-    ) {
-        let status_code = match error {
-            Error::Undefined(_) => StatusCode::Undefined,
-            Error::BadRequest(_) => StatusCode::BadRequest,
-            Error::Unauthorized(_) => StatusCode::Unauthorized,
-            Error::NotFound(_) => StatusCode::NotFound,
-            Error::Timeout(_) => StatusCode::Timeout,
-            Error::Conflict(_) => StatusCode::Conflict,
-            Error::PayloadTooLarge(_) => StatusCode::PayloadTooLarge,
-            Error::TooManyRequests(_) => StatusCode::TooManyRequests,
-            Error::Internal(_) => StatusCode::ServerError,
-            Error::GatewayTimeout(_) => StatusCode::GatewayTimeout,
-        };
-
-        self.send(proto::Packet::error(req_id, id, status_code), *addr)
-            .await
-            .map_err(|e| log::error!("Failed to send error response. {}.", e))
-            .ok();
-    }
-
     async fn send(&self, packet: impl Into<PacketKind>, addr: SocketAddr) -> anyhow::Result<()> {
         let mut stream = self.out_stream()?;
         Ok(stream.send((packet.into(), addr)).await?)
@@ -1007,6 +989,35 @@ impl SessionManager {
         // Note: computing starts here, not after awaiting.
         challenge::solve::<ChallengeDigest, _>(request.challenge, request.difficulty, crypto_vec)
             .boxed_local()
+    }
+
+    pub async fn prepare_challenge_request(
+        &self,
+        challenge: bool,
+    ) -> SessionResult<(proto::request::Session, RawChallenge)> {
+        let (mut request, raw_challenge) = challenge::prepare_challenge_request();
+
+        let crypto = self
+            .list_crypto()
+            .await
+            .map_err(|e| SessionError::Drop(format!("Failed to query identities: {}", e)))?;
+
+        let mut identities = vec![];
+        for id in crypto {
+            let pub_key = id.public_key().await?;
+            identities.push(proto::Identity {
+                node_id: pub_key.address().to_vec(),
+                public_key: pub_key.bytes().to_vec(),
+            })
+        }
+
+        request.identities = identities;
+
+        if !challenge {
+            request.challenge_req = None;
+        }
+
+        Ok((request, raw_challenge))
     }
 
     pub async fn list_crypto(&self) -> anyhow::Result<Vec<Rc<dyn Crypto>>> {
