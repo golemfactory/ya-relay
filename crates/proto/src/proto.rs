@@ -68,6 +68,7 @@ impl Forward {
         }
     }
 
+    #[inline]
     pub fn is_reliable(&self) -> bool {
         self.flags & UNRELIABLE_FLAG != UNRELIABLE_FLAG
     }

@@ -93,7 +93,7 @@ impl EndpointsChecker {
         Ok(endpoints)
     }
 
-    fn incorrect_packet(&self, packet_type: &str, from: SocketAddr) -> LocalBoxFuture<()> {
+    fn incorrect_packet(packet_type: &str, from: SocketAddr) -> LocalBoxFuture<()> {
         log::warn!(
             "{} packet received on Socket for discovering endpoints (from {}). \
             Correct client implementation shouldn't send this. This could be either bug \
@@ -120,25 +120,28 @@ impl Handler for EndpointsChecker {
         .boxed_local()
     }
 
+    #[inline]
     fn on_control(
-        &self,
+        self,
         _session_id: Vec<u8>,
         _control: proto::Control,
         from: SocketAddr,
-    ) -> LocalBoxFuture<()> {
-        self.incorrect_packet("Control", from)
+    ) -> LocalBoxFuture<'static, ()> {
+        Self::incorrect_packet("Control", from)
     }
 
+    #[inline]
     fn on_request(
-        &self,
+        self,
         _session_id: Vec<u8>,
         _request: proto::Request,
         from: SocketAddr,
-    ) -> LocalBoxFuture<()> {
-        self.incorrect_packet("Request", from)
+    ) -> LocalBoxFuture<'static, ()> {
+        Self::incorrect_packet("Request", from)
     }
 
-    fn on_forward(&self, _forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<()> {
-        self.incorrect_packet("Forward", from)
+    #[inline]
+    fn on_forward(self, _forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<'static, ()> {
+        Self::incorrect_packet("Forward", from)
     }
 }

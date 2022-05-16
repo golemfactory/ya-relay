@@ -84,11 +84,13 @@ impl NodesRegistry {
             .collect()
     }
 
+    #[inline]
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {
         let state = self.state.read().await;
         state.resolve_node(node)
     }
 
+    #[inline]
     pub async fn resolve_slot(&self, slot: SlotId) -> anyhow::Result<NodeEntry> {
         let state = self.state.read().await;
         state.resolve_slot(slot)

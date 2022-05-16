@@ -991,17 +991,17 @@ impl Handler for SessionManager {
     }
 
     fn on_control(
-        &self,
+        self,
         _session_id: Vec<u8>,
         control: proto::Control,
         from: SocketAddr,
-    ) -> LocalBoxFuture<()> {
+    ) -> LocalBoxFuture<'static, ()> {
         log::debug!("Received control packet from {}: {:?}", from, control);
 
         if let Some(kind) = control.kind {
             match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
-                    let myself = self.clone();
+                    let myself = self;
                     tokio::task::spawn_local(async move {
                         log::info!(
                             "Got ReverseConnection message. node={:?}, endpoints={:?}",
@@ -1092,11 +1092,11 @@ impl Handler for SessionManager {
     }
 
     fn on_request(
-        &self,
+        self,
         session_id: Vec<u8>,
         request: proto::Request,
         from: SocketAddr,
-    ) -> LocalBoxFuture<()> {
+    ) -> LocalBoxFuture<'static, ()> {
         log::trace!("Received request packet from {}: {:?}", from, request);
 
         let (request_id, kind) = match request {
@@ -1109,17 +1109,20 @@ impl Handler for SessionManager {
 
         match kind {
             proto::request::Kind::Ping(request) => {
-                Box::pin(self.on_ping(session_id, request_id, from, request))
+                async move { self.on_ping(session_id, request_id, from, request).await }
+                    .boxed_local()
             }
-            proto::request::Kind::Session(request) => {
-                Box::pin(self.dispatch_session(session_id, request_id, from, request))
+            proto::request::Kind::Session(request) => async move {
+                self.dispatch_session(session_id, request_id, from, request)
+                    .await
             }
+            .boxed_local(),
             _ => Box::pin(futures::future::ready(())),
         }
     }
 
-    fn on_forward(&self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<()> {
-        let myself = self.clone();
+    fn on_forward(self, forward: Forward, from: SocketAddr) -> LocalBoxFuture<'static, ()> {
+        let myself = self;
         let fut = async move {
             log::trace!(
                 "[{}] received forward packet ({} B) via {}",

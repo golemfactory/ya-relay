@@ -7,6 +7,7 @@ use std::rc::Rc;
 use futures::channel::oneshot::{self, Sender};
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::stream::{Stream, StreamExt};
+use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
 
 use ya_relay_proto::codec;
@@ -22,33 +23,32 @@ where
 {
     while let Some((packet, from)) = stream.next().await {
         let handler = handler.clone();
-        tokio::task::spawn_local(async move {
-            if let Some(dispatcher) = handler.dispatcher(from).await {
-                dispatcher.update_seen();
-            }
+        if let Some(dispatcher) = handler.dispatcher(from).await {
+            dispatcher.update_seen();
+        }
 
-            match packet {
-                codec::PacketKind::Packet(proto::Packet {
-                    session_id,
-                    kind: Some(kind),
-                }) => match kind {
-                    proto::packet::Kind::Control(control) => {
-                        handler.on_control(session_id, control, from).await;
-                    }
-                    proto::packet::Kind::Request(request) => {
-                        handler.on_request(session_id, request, from).await;
-                    }
-                    proto::packet::Kind::Response(response) => {
-                        dispatch_response(session_id, response, from, &handler).await;
-                    }
-                },
-                codec::PacketKind::Forward(forward) => {
-                    handler.on_forward(forward, from).await;
+        match packet {
+            codec::PacketKind::Packet(proto::Packet {
+                session_id,
+                kind: Some(kind),
+            }) => match kind {
+                proto::packet::Kind::Control(control) => {
+                    spawn_local(handler.on_control(session_id, control, from));
                 }
-                _ => log::warn!("Unable to dispatch packet from {}: not supported", from),
+                proto::packet::Kind::Request(request) => {
+                    spawn_local(handler.on_request(session_id, request, from));
+                }
+                proto::packet::Kind::Response(response) => {
+                    spawn_local(dispatch_response(session_id, response, from, handler));
+                }
+            },
+            codec::PacketKind::Forward(forward) => {
+                spawn_local(handler.on_forward(forward, from));
             }
-        });
+            _ => log::warn!("Unable to dispatch packet from {}: not supported", from),
+        };
     }
+
     log::info!("Client stopped");
 }
 
@@ -57,7 +57,7 @@ async fn dispatch_response<H>(
     session_id: Vec<u8>,
     response: proto::Response,
     from: SocketAddr,
-    handler: &H,
+    handler: H,
 ) where
     H: Handler,
 {
@@ -80,22 +80,22 @@ pub trait Handler {
 
     /// Handles `proto::Control` packets
     fn on_control(
-        &self,
+        self,
         session_id: Vec<u8>,
         control: proto::Control,
         from: SocketAddr,
-    ) -> LocalBoxFuture<()>;
+    ) -> LocalBoxFuture<'static, ()>;
 
     /// Handles `proto::Request` packets
     fn on_request(
-        &self,
+        self,
         session_id: Vec<u8>,
         request: proto::Request,
         from: SocketAddr,
-    ) -> LocalBoxFuture<()>;
+    ) -> LocalBoxFuture<'static, ()>;
 
     /// Handles `proto::Forward` packets
-    fn on_forward(&self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<()>;
+    fn on_forward(self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<'static, ()>;
 }
 
 /// Dispatched packet wrapper
