@@ -96,13 +96,22 @@ impl StartingSessions {
         let this2 = this.clone();
         let init_future = Abortable::new(
             timeout(self.layer.config.incoming_session_timeout, async move {
-                let lock = this.guarded.guard_initialization(remote_id, &[with]).await;
-                let _guard = lock.write().await;
+                // In case of ReverseConnection, we are awaiting incoming connection from
+                // other party
+                if this.guarded.is_allowed_unguarded(remote_id).await {
+                    this.init_session_handler(
+                        with, request_id, session_id, remote_id, request, receiver,
+                    )
+                    .await
+                } else {
+                    let lock = this.guarded.guard_initialization(remote_id, &[with]).await;
+                    let _guard = lock.write().await;
 
-                this.init_session_handler(
-                    with, request_id, session_id, remote_id, request, receiver,
-                )
-                .await
+                    this.init_session_handler(
+                        with, request_id, session_id, remote_id, request, receiver,
+                    )
+                    .await
+                }
             }),
             abort_registration,
         )

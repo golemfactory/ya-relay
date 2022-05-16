@@ -1,6 +1,7 @@
 use anyhow::bail;
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
@@ -64,6 +65,7 @@ impl GuardedSessions {
     pub async fn register_waiting_for_node(&self, node_id: NodeId) -> anyhow::Result<NodeAwaiting> {
         let state = self.state.read().await;
         if let Some(target) = state.by_node_id.get(&node_id) {
+            target.wait_for_connection.store(true, Ordering::SeqCst);
             Ok(NodeAwaiting {
                 notify_finish: target.notify_finish.subscribe(),
                 notify_msg: target.notify_msg.subscribe(),
@@ -72,6 +74,15 @@ impl GuardedSessions {
             // If we are waiting for node to connect, we should already have entry
             // initialized by function `guard_initialization`. So this is programming error.
             bail!("Programming error. Waiting for node to connect, without calling `guard_initialization` earlier.")
+        }
+    }
+
+    pub async fn is_allowed_unguarded(&self, node_id: NodeId) -> bool {
+        let state = self.state.read().await;
+        if let Some(target) = state.by_node_id.get(&node_id) {
+            target.wait_for_connection.swap(false, Ordering::SeqCst)
+        } else {
+            false
         }
     }
 
@@ -140,6 +151,10 @@ struct SessionTarget {
     addresses: Arc<Vec<SocketAddr>>,
     lock: Arc<RwLock<()>>,
 
+    /// In case of ReverseConnection, we would like to allow one incoming
+    /// Session initialization attempt.
+    wait_for_connection: Arc<AtomicBool>,
+
     /// Notifies, when establishing session is finished either with success or with failure.
     notify_finish: Arc<broadcast::Sender<SessionResult<Arc<Session>>>>,
     /// Notifies first connection message received from other party.
@@ -155,6 +170,7 @@ impl SessionTarget {
             node_id,
             addresses: Arc::new(addresses),
             lock: Default::default(),
+            wait_for_connection: Arc::new(AtomicBool::new(false)),
             notify_finish: Arc::new(notify_finish),
             notify_msg: Arc::new(notify_msg),
         }
