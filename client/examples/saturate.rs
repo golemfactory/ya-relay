@@ -309,7 +309,7 @@ async fn main() -> anyhow::Result<()> {
     let chunk_size = 1_usize.max(cli.chunk_size);
     let log_file = std::env::temp_dir().join(format!("ya-relay-saturate-{}.log", node_id));
     let state = State::new(chunk_size, log_file.clone());
-    simple_logging::log_to_file(log_file.clone(), LevelFilter::Debug)?;
+    simple_logging::log_to_file(log_file.clone(), LevelFilter::Info)?;
 
     let address = client.bind_addr().await?;
     let receiver = client.forward_receiver().await.unwrap();
