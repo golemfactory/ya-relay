@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use futures::channel::mpsc;
 use futures::prelude::*;
 use std::net::SocketAddr;
@@ -13,6 +13,8 @@ use ya_relay_stack::packet::{ETHERNET_HDR_SIZE, IP6_HDR_SIZE, UDP_HDR_SIZE};
 
 use crate::utils::parse_udp_url;
 
+pub const MTU_ENV_VAR: &str = "YA_NET_MTU";
+pub const DEFAULT_MTU: usize = 1500;
 pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 1280;
 
 pub type InStream = Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr)>>>;
@@ -72,9 +74,7 @@ pub fn udp_sink(mut socket: SendHalf) -> anyhow::Result<mpsc::Sender<(PacketKind
     tokio::task::spawn_local(async move {
         let mut codec = Codec::default();
         let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
-        let max_size = resolve_max_payload_size()
-            .await
-            .unwrap_or(DEFAULT_MAX_PAYLOAD_SIZE);
+        let max_size = resolve_max_payload_size().await.unwrap();
 
         while let Some((packet, target)) = rx.next().await {
             // Reusing the buffer, clear existing contents
@@ -102,5 +102,26 @@ pub fn udp_sink(mut socket: SendHalf) -> anyhow::Result<mpsc::Sender<(PacketKind
 }
 
 pub async fn resolve_max_payload_size() -> anyhow::Result<usize> {
-    Ok(1500 - ETHERNET_HDR_SIZE - IP6_HDR_SIZE - UDP_HDR_SIZE)
+    resolve_max_payload_overhead_size(0).await
+}
+
+pub async fn resolve_max_payload_overhead_size(overhead: usize) -> anyhow::Result<usize> {
+    const OVERHEAD: usize = ETHERNET_HDR_SIZE + IP6_HDR_SIZE + UDP_HDR_SIZE;
+
+    let minimum = OVERHEAD + overhead + 1;
+    let mut mtu = std::env::var(MTU_ENV_VAR)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MTU);
+
+    if mtu < minimum {
+        let err = format!("MTU value {mtu} is below {minimum}");
+        if DEFAULT_MTU < minimum {
+            bail!(err);
+        }
+        log::warn!("{err}, reverting to {DEFAULT_MTU}");
+        mtu = DEFAULT_MTU;
+    }
+
+    Ok(mtu - OVERHEAD - overhead)
 }
