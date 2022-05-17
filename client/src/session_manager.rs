@@ -818,6 +818,18 @@ impl SessionManager {
                 .await?
         };
 
+        let manager = self.clone();
+        session
+            .dispatcher
+            .handle_error(proto::StatusCode::Unauthorized as i32, true, move || {
+                let manager = manager.clone();
+                async move {
+                    manager.drop_server_session().await;
+                    let _ = manager.server_session().await;
+                }
+                .boxed_local()
+            });
+
         let endpoints = session.register_endpoints(vec![]).await?;
 
         // If there is any (correct) endpoint on the list, that means we have public IP.
