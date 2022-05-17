@@ -109,6 +109,7 @@ pub struct Dispatched<T> {
 #[derive(Clone)]
 pub struct Dispatcher {
     seen: Rc<RefCell<Instant>>,
+    ping: Rc<RefCell<Duration>>,
     responses: Rc<RefCell<HashMap<u64, ResponseSender>>>,
 }
 
@@ -116,6 +117,7 @@ impl Default for Dispatcher {
     fn default() -> Self {
         Self {
             seen: Rc::new(RefCell::new(Instant::now())),
+            ping: Rc::new(RefCell::new(Duration::MAX)),
             responses: Default::default(),
         }
     }
@@ -126,8 +128,16 @@ impl Dispatcher {
         *self.seen.borrow_mut() = Instant::now();
     }
 
+    pub fn update_ping(&self, ping: Duration) {
+        *self.ping.borrow_mut() = ping;
+    }
+
     pub fn last_seen(&self) -> Instant {
         *self.seen.borrow()
+    }
+
+    pub fn last_ping(&self) -> Duration {
+        *self.ping.borrow()
     }
 
     /// Creates a future to await a `T` (response) packet on

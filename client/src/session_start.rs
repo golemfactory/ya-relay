@@ -1,28 +1,29 @@
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable};
-use futures::{FutureExt, SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
-use tokio::sync::oneshot;
+use tokio::time::timeout;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
-use ya_relay_core::error::{BadRequest, InternalError, ServerResult, Unauthorized};
+use ya_relay_core::error::{InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
 
-use crate::dispatch::Dispatcher;
-use crate::session::Session;
+use crate::session::{Session, SessionError, SessionResult};
+use crate::session_guard::GuardedSessions;
 use crate::session_manager::SessionManager;
 
 #[derive(Clone)]
 pub(crate) struct StartingSessions {
     state: Arc<Mutex<StartingSessionsState>>,
 
+    guarded: GuardedSessions,
     layer: SessionManager,
     sink: OutStream,
 }
@@ -31,46 +32,32 @@ pub(crate) struct StartingSessions {
 struct StartingSessionsState {
     /// Initialization of session started by other peers.
     incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
-    /// Temporary sessions stored during initialization period.
-    /// After session is established, new struct in SessionManager is created
-    /// and this one is removed.
-    tmp_sessions: HashMap<SocketAddr, Arc<Session>>,
-    tmp_node_ids: HashMap<NodeId, oneshot::Sender<()>>,
 
     /// Collection of background tasks that must be stopped on shutdown.
     handles: Vec<AbortHandle>,
 }
 
 impl StartingSessions {
-    pub fn new(layer: SessionManager, sink: OutStream) -> StartingSessions {
+    pub fn new(
+        layer: SessionManager,
+        guarded: GuardedSessions,
+        sink: OutStream,
+    ) -> StartingSessions {
         StartingSessions {
             state: Arc::new(Mutex::new(StartingSessionsState::default())),
             sink,
             layer,
+            guarded,
         }
     }
 
-    pub fn temporary_session(&mut self, addr: SocketAddr) -> Arc<Session> {
-        let session = Session::new(addr, SessionId::generate(), self.sink.clone());
-        self.state
-            .lock()
-            .unwrap()
-            .tmp_sessions
-            .insert(addr, session.clone());
-        session
-    }
-
-    pub fn remove_temporary_session(&mut self, addr: &SocketAddr) {
-        self.state.lock().unwrap().tmp_sessions.remove(addr);
-    }
-
-    pub fn dispatcher(&self, addr: SocketAddr) -> Option<Dispatcher> {
-        self.state
-            .lock()
-            .unwrap()
-            .tmp_sessions
-            .get(&addr)
-            .map(|session| session.dispatcher.clone())
+    /// Creates temporary session used only during initialization.
+    /// Only one session will be created for one target Node address.
+    /// If temporary session was already created, this function will wait for initialization finish.
+    pub async fn temporary_session(&mut self, addr: SocketAddr) -> Arc<Session> {
+        self.guarded
+            .temporary_session(addr, self.sink.clone())
+            .await
     }
 
     pub async fn dispatch_session(
@@ -99,40 +86,64 @@ impl StartingSessions {
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
         let session_id = SessionId::generate();
+        let remote_id = challenge::recover_default_node_id(&request)?;
         let (sender, receiver) = mpsc::channel(1);
-
-        log::info!("Node ({}) tries to establish p2p session.", with);
 
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
-        // TODO: Add timeout for session initialization.
-        let myself = self.clone();
+        let this = self.clone();
+        let this1 = this.clone();
+        let this2 = this.clone();
         let init_future = Abortable::new(
-            async move {
-                if let Err(e) = self
-                    .clone()
-                    .init_session_handler(with, request_id, session_id, request, receiver)
+            timeout(self.layer.config.incoming_session_timeout, async move {
+                // In case of ReverseConnection, we are awaiting incoming connection from
+                // other party
+                if this.guarded.is_allowed_unguarded(remote_id).await {
+                    this.init_session_handler(
+                        with, request_id, session_id, remote_id, request, receiver,
+                    )
                     .await
-                {
-                    log::warn!(
-                        "Error initializing session {} with node {}. Error: {}",
-                        session_id,
-                        with,
-                        e
-                    );
+                } else {
+                    let lock = this.guarded.guard_initialization(remote_id, &[with]).await;
+                    let _guard = lock.write().await;
 
-                    // Establishing session failed.
-                    self.layer
-                        .error_response(request_id, session_id.to_vec(), &with, e)
-                        .await;
-                    self.cleanup_initialization(&session_id).await;
+                    this.init_session_handler(
+                        with, request_id, session_id, remote_id, request, receiver,
+                    )
+                    .await
                 }
-            },
+            }),
             abort_registration,
-        );
+        )
+        .map(move |result| match result {
+            Ok(Ok(Ok(result))) => Ok(result),
+            Ok(Ok(Err(e))) => Err(e),
+            Ok(Err(_timeout)) => Err(SessionError::Drop("Timeout".to_string())),
+            Err(_aborted) => Err(SessionError::Retry("Aborted".to_string())),
+        })
+        .or_else(move |result| async move {
+            if let Some(session) = this1.guarded.get_temporary_session(&with).await {
+                session.disconnect().await.ok();
+            }
+
+            log::warn!(
+                "Error initializing session {} with node [{}] ({}). Error: {}",
+                session_id,
+                remote_id,
+                with,
+                result
+            );
+
+            // Establishing session failed.
+            this1.cleanup_initialization(&session_id).await;
+            Err(result)
+        })
+        .then(move |result| async move {
+            this2.guarded.stop_guarding(NodeId::default(), result).await;
+        });
 
         {
-            let mut state = myself.state.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             state.incoming_sessions.entry(session_id).or_insert(sender);
             state.handles.push(abort_handle);
         }
@@ -176,9 +187,28 @@ impl StartingSessions {
         with: SocketAddr,
         request_id: RequestId,
         session_id: SessionId,
+        remote_id: NodeId,
         request: proto::request::Session,
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
-    ) -> ServerResult<()> {
+    ) -> SessionResult<Arc<Session>> {
+        // If we are connected and other side isn't, than maybe we should let him establish new session.
+        if self.layer.assert_not_connected(&[with]).await.is_err() {
+            if let Some(session) = self.layer.get_session(with).await {
+                log::info!("Node [{remote_id}] ({with}) trying to start new session, despite it is already established. Closing previous session.");
+                self.layer.close_session(session).await.ok();
+            }
+        }
+
+        log::info!(
+            "Node [{}] ({}) tries to establish p2p session.",
+            remote_id,
+            with
+        );
+
+        self.guarded.notify_first_message(remote_id).await;
+
+        let tmp_session = self.temporary_session(with).await;
+
         let (packet, raw_challenge) = challenge::prepare_challenge_response();
         let challenge = proto::Packet::response(
             request_id,
@@ -187,11 +217,10 @@ impl StartingSessions {
             packet,
         );
 
-        let tmp_session = self.temporary_session(with);
         tmp_session
             .send(challenge)
             .await
-            .map_err(|_| InternalError::Send)?;
+            .map_err(|_| SessionError::Drop("Failed to send challenge".to_string()))?;
 
         log::debug!("Challenge sent to Node at address: {}", with);
 
@@ -212,7 +241,7 @@ impl StartingSessions {
                     session.challenge_resp,
                     None,
                 )
-                .map_err(|e| BadRequest::InvalidChallenge(e.to_string()))?;
+                .map_err(|e| SessionError::Drop(format!("Invalid challenge: {}", e)))?;
 
             log::debug!(
                 "Challenge from Node: [{}], address: {} verified.",
@@ -220,16 +249,11 @@ impl StartingSessions {
                 with
             );
 
-            if let Some(sender) = { self.state.lock().unwrap().tmp_node_ids.remove(&node_id) } {
-                // Try to fire the event, ignore failures
-                let _ = sender.send(());
-            }
-
             let packet = proto::response::Session {
                 challenge_resp: Some(
                     challenge_handle
                         .await
-                        .map_err(|e| InternalError::Generic(e.to_string()))?,
+                        .map_err(|e| SessionError::Drop(e.to_string()))?,
                 ),
                 ..Default::default()
             };
@@ -242,12 +266,17 @@ impl StartingSessions {
                     packet,
                 ))
                 .await
-                .map_err(|_| InternalError::Send)?;
+                .map_err(|_| {
+                    SessionError::Drop("Failed to send challenge response.".to_string())
+                })?;
 
-            self.layer
+            let session = self
+                .layer
                 .add_incoming_session(with, session_id, node_id, identities)
                 .await
-                .map_err(|e| InternalError::Generic(e.to_string()))?;
+                .map_err(|e| {
+                    SessionError::Drop(format!("Failed to add incoming session. {}", e))
+                })?;
 
             log::info!(
                 "Incoming P2P session {} with Node: [{}], address: {} established.",
@@ -255,86 +284,35 @@ impl StartingSessions {
                 node_id,
                 with
             );
+
+            // Send ping to measure response time.
+            let session_cp = session.clone();
+            tokio::task::spawn_local(async move {
+                session_cp.ping().await.ok();
+            });
+
+            return Ok(session);
         }
 
-        Ok(())
-    }
-
-    pub fn register_waiting_for_node(&self, node_id: NodeId) -> StartRegistration {
-        let (reg, tx) = StartRegistration::with(self.state.clone(), node_id);
-        self.state.lock().unwrap().tmp_node_ids.insert(node_id, tx);
-        reg
+        Err(SessionError::Drop(
+            "Gave up, waiting for Session messages from peer.".to_string(),
+        ))
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
         let mut state = self.state.lock().unwrap();
-
         state.incoming_sessions.remove(session_id);
-        let addr =
-            state
-                .tmp_sessions
-                .iter()
-                .find_map(|(_, session)| match session.id == *session_id {
-                    true => Some(session.remote),
-                    false => None,
-                });
-
-        if let Some(addr) = addr {
-            state.tmp_sessions.remove(&addr);
-        }
     }
 
     pub async fn shutdown(&self) {
-        let mut state = self.state.lock().unwrap();
-
-        for handle in &state.handles {
-            handle.abort();
-        }
-
-        state.incoming_sessions.clear();
-        state.tmp_sessions.clear();
-    }
-}
-
-pub struct StartRegistration {
-    node_id: NodeId,
-    state: Arc<Mutex<StartingSessionsState>>,
-    rx: Option<oneshot::Receiver<()>>,
-}
-
-impl StartRegistration {
-    fn with(
-        state: Arc<Mutex<StartingSessionsState>>,
-        node_id: NodeId,
-    ) -> (Self, oneshot::Sender<()>) {
-        let (tx, rx) = oneshot::channel();
-        let reg = Self {
-            node_id,
-            state,
-            rx: Some(rx),
+        let handles = {
+            let mut state = self.state.lock().unwrap();
+            state.incoming_sessions.clear();
+            std::mem::take(&mut state.handles)
         };
-        (reg, tx)
-    }
 
-    #[inline]
-    pub fn rx(&mut self) -> anyhow::Result<oneshot::Receiver<()>> {
-        self.rx
-            .take()
-            .ok_or_else(|| anyhow::anyhow!("Registration receiver already taken"))
-    }
-}
-
-impl Drop for StartRegistration {
-    fn drop(&mut self) {
-        if let Some(tx) = {
-            self.state
-                .lock()
-                .unwrap()
-                .tmp_node_ids
-                .remove(&self.node_id)
-        } {
-            // Try to fire the event, ignore failures
-            let _ = tx.send(());
+        for handle in handles {
+            handle.abort();
         }
     }
 }
