@@ -65,6 +65,10 @@ impl NodesRegistry {
         }
     }
 
+    pub async fn list_nodes(&self) -> Vec<NodeId> {
+        self.state.read().await.nodes.keys().cloned().collect()
+    }
+
     pub async fn add_slot_for_node(&self, node_id: NodeId, slot: SlotId) {
         if slot != 0 {
             let mut state = self.state.write().await;

@@ -1,27 +1,26 @@
 use anyhow::{anyhow, bail};
 use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
-use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
+use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
-use std::ops::Add;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::RwLock;
 
-use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
-use ya_relay_core::crypto::{CryptoProvider, PublicKey};
-use ya_relay_core::error::Error;
+use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
+use ya_relay_core::crypto::{Crypto, CryptoProvider, PublicKey};
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
+use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
-use ya_relay_proto::proto::{Forward, RequestId, StatusCode};
+use ya_relay_proto::proto::{Forward, RequestId};
 use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
@@ -29,14 +28,11 @@ use crate::dispatch::{dispatch, Dispatcher, Handler};
 use crate::expire::track_sessions_expiration;
 use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::{Session, SessionError, SessionResult};
+use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
 use crate::virtual_layer::TcpLayer;
 
-const SESSION_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
-const CHALLENGE_REQUEST_TIMEOUT: Duration = Duration::from_millis(8000);
 const PAUSE_FWD_DELAY: i64 = 5;
-const REVERSE_CONNECTION_TMP_TIMEOUT: u64 = 3;
-const REVERSE_CONNECTION_REAL_TIMEOUT: i64 = 13;
 
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
@@ -110,17 +106,8 @@ impl SessionManager {
 
         self.virtual_tcp.spawn(self.config.node_id).await?;
 
-        let (abort_dispatcher, abort_dispatcher_reg) = AbortHandle::new_pair();
-        let (abort_expiration, abort_expiration_reg) = AbortHandle::new_pair();
-
-        tokio::task::spawn_local(Abortable::new(
-            dispatch(self.clone(), stream),
-            abort_dispatcher_reg,
-        ));
-        tokio::task::spawn_local(Abortable::new(
-            track_sessions_expiration(self.clone()),
-            abort_expiration_reg,
-        ));
+        let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
+        let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
 
         {
             let mut state = self.state.write().await;
@@ -128,7 +115,11 @@ impl SessionManager {
             state.bind_addr.replace(bind_addr);
             state.handles.push(abort_dispatcher);
             state.handles.push(abort_expiration);
-            state.starting_sessions = Some(StartingSessions::new(self.clone(), sink));
+            state.starting_sessions = Some(StartingSessions::new(
+                self.clone(),
+                self.guarded.clone(),
+                sink,
+            ));
         }
 
         Ok(bind_addr)
@@ -156,6 +147,17 @@ impl SessionManager {
         self.state.read().await.p2p_sessions.contains_key(node_id)
     }
 
+    pub async fn list_identities(&self) -> Vec<NodeId> {
+        // This list stores only aliases. We need to add default ids.
+        let unique_nodes = self.registry.list_nodes().await;
+
+        let state = self.state.read().await;
+        let mut ids = state.nodes_identity.keys().cloned().collect::<Vec<_>>();
+
+        ids.extend(unique_nodes.into_iter());
+        ids
+    }
+
     async fn init_session(
         &self,
         addr: SocketAddr,
@@ -163,14 +165,25 @@ impl SessionManager {
         remote_id: Option<NodeId>,
     ) -> SessionResult<Arc<Session>> {
         let this_id = self.config.node_id;
-        log::debug!("[{}] initializing session with {}", this_id, addr);
 
         let tmp_session = self.temporary_session(addr).await?;
-        let (request, raw_challenge) = challenge::prepare_challenge_request();
-        let request = challenge.then(|| request).unwrap_or_default();
+
+        log::debug!("[{}] initializing session with {}", this_id, addr);
+
+        let (request, raw_challenge) = self.prepare_challenge_request(challenge).await?;
         let response = tmp_session
-            .request::<proto::response::Session>(request.into(), vec![], SESSION_REQUEST_TIMEOUT)
+            .request::<proto::response::Session>(
+                request.into(),
+                vec![],
+                self.config.session_request_timeout,
+            )
             .await?;
+
+        // Default NodeId in case of relay server.
+        // TODO: consider giving relay server proper NodeId.
+        self.guarded
+            .notify_first_message(remote_id.unwrap_or_default())
+            .await;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
         let challenge_req = response.packet.challenge_req.ok_or_else(|| {
@@ -180,6 +193,11 @@ impl SessionManager {
             )
         })?;
         let challenge_handle = self.solve_challenge(challenge_req).await;
+
+        log::trace!(
+            "Solving challenge while establishing session with: {}",
+            addr
+        );
 
         // with the current ECDSA scheme the public key
         // can be recovered from challenge signature
@@ -191,19 +209,21 @@ impl SessionManager {
             .request::<proto::response::Session>(
                 packet.into(),
                 session_id.to_vec(),
-                CHALLENGE_REQUEST_TIMEOUT,
+                self.config.challenge_request_timeout,
             )
             .await?;
 
+        log::trace!("Challenge sent to: {}", addr);
+
         if session_id != &response.session_id[..] {
             let _ = tmp_session.disconnect().await;
-            return Err(SessionError::Drop(anyhow!(
+            return Err(SessionError::Drop(format!(
                 "[{}] init session id mismatch: {} vs {:?} (response)",
-                this_id,
-                session_id,
-                response.session_id,
+                this_id, session_id, response.session_id,
             )));
         }
+
+        log::trace!("Validating challenge from: {}", addr);
 
         let (remote_id, identities) = match {
             if challenge {
@@ -221,10 +241,9 @@ impl SessionManager {
             Ok(tuple) => tuple,
             Err(err) => {
                 let _ = tmp_session.disconnect().await;
-                return Err(SessionError::Drop(anyhow!(
+                return Err(SessionError::Drop(format!(
                     "{} while initializing session with {}",
-                    err,
-                    addr
+                    err, addr
                 )));
             }
         };
@@ -239,6 +258,13 @@ impl SessionManager {
             session_id,
             addr
         );
+
+        // Send ping to measure response time.
+        let session_cp = session.clone();
+        tokio::task::spawn_local(async move {
+            session_cp.ping().await.ok();
+        });
+
         Ok(session)
     }
 
@@ -270,13 +296,10 @@ impl SessionManager {
         Ok(session)
     }
 
-    async fn init_server_session(&self, addr: SocketAddr) -> anyhow::Result<Arc<Session>> {
+    async fn init_server_session(&self, addr: SocketAddr) -> SessionResult<Arc<Session>> {
         log::info!("Initializing session with NET relay server at: {}", addr);
 
-        let session = self
-            .init_session(addr, false, None)
-            .await
-            .map_err(|e| e.into_inner())?;
+        let session = self.init_session(addr, false, None).await?;
 
         self.state
             .write()
@@ -294,13 +317,10 @@ impl SessionManager {
     }
 
     async fn temporary_session(&self, addr: SocketAddr) -> anyhow::Result<Arc<Session>> {
-        self.state
-            .write()
-            .await
-            .starting_sessions
-            .clone()
-            .map(|mut starting_sessions| starting_sessions.temporary_session(addr))
-            .ok_or_else(|| anyhow!("StartingSessions struct not initialized."))
+        Ok(self
+            .guarded
+            .temporary_session(addr, self.out_stream()?)
+            .await)
     }
 
     pub async fn sessions(&self) -> Vec<Arc<Session>> {
@@ -324,6 +344,8 @@ impl SessionManager {
         node_id: NodeId,
         identities: impl IntoIterator<Item = Identity>,
     ) -> anyhow::Result<Arc<Session>> {
+        log::trace!("add_session {} {} {}", id, addr, node_id);
+
         let session = Session::new(addr, id, self.out_stream()?);
         let mut state = self.state.write().await;
 
@@ -620,21 +642,22 @@ impl SessionManager {
             .filter(|a| !own_addrs.iter().any(|o| o == a))
             .collect();
 
+        let lock = self.guarded.guard_initialization(node_id, &addrs).await;
+        let _guard = lock.write().await;
+
         // Check whether we are already connected to a node with any of the addresses
         self.assert_not_connected(&addrs).await?;
 
-        let target = self.guarded.get_or_create(node_id, &addrs).await;
-        let lock = target.lock.clone();
-        let _guard = lock.write().await;
-
         let this = self.clone();
-        self.try_resolve(node_id, addrs, slot)
+        Ok(self
+            .try_resolve(node_id, addrs.clone(), slot)
             .then(move |result| async move {
-                let mut guarded = this.guarded.state.write().await;
-                guarded.remove(&target);
+                this.guarded
+                    .stop_guarding(node_id, result.clone().map(|entry| entry.session))
+                    .await;
                 result
             })
-            .await
+            .await?)
     }
 
     async fn try_resolve(
@@ -642,7 +665,7 @@ impl SessionManager {
         node_id: NodeId,
         addrs: Vec<SocketAddr>,
         slot: u32,
-    ) -> anyhow::Result<NodeEntry> {
+    ) -> SessionResult<NodeEntry> {
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
         let (session, resolved_slot) = match self.try_direct_session(node_id, addrs).await {
@@ -651,7 +674,7 @@ impl SessionManager {
             // Fatal error, cease further communication
             Err(SessionError::Drop(e)) => {
                 log::warn!("{}", e);
-                return Err(e);
+                return Err(SessionError::Drop(e));
             }
             // Recoverable error, continue
             Err(SessionError::Retry(e)) => {
@@ -724,53 +747,77 @@ impl SessionManager {
             node_id
         );
 
-        let mut start_registration;
-        {
-            let starting_session = { self.state.read().await.starting_sessions.clone() }
-                .ok_or_else(|| anyhow!("Starting sessions not loaded yet"))?;
+        let mut awaiting = self.guarded.register_waiting_for_node(node_id).await?;
 
-            start_registration = starting_session.register_waiting_for_node(node_id);
+        let server_session = self.server_session().await?;
+        server_session.reverse_connection(node_id).await?;
 
-            let server_session = self.server_session().await?;
-            server_session.reverse_connection(node_id).await?;
-            log::trace!("ReverseConnection - Requested with node {}", &node_id);
+        log::trace!("ReverseConnection - Requested with node {}", &node_id);
 
-            tokio::time::timeout(
-                Duration::from_secs(REVERSE_CONNECTION_TMP_TIMEOUT),
-                start_registration.rx()?,
-            )
-            .await??;
-        }
-
-        let deadline = Utc::now().add(chrono::Duration::seconds(REVERSE_CONNECTION_REAL_TIMEOUT));
-        loop {
-            if let Ok(node) = self.registry.resolve_node(node_id).await {
-                log::debug!("ReverseConnection - Got session with node. {}", &node_id);
-                return Ok(node.session);
-            }
-            if deadline <= Utc::now() {
-                log::debug!("ReverseConnection - Direct session timed out. {}", &node_id);
-                break;
-            }
-            log::trace!(
-                "ReverseConnection - no session yet, waiting... {}",
-                &node_id
-            );
-            tokio::time::delay_for(tokio::time::Duration::from_millis(100)).await;
-        }
-
-        bail!(
-            "Not able to setup ReverseConnection within timeout with node {}",
-            node_id
+        // We don't want to wait for connection finish, because we need longer timeout for this.
+        // But if we won't receive any message from other Node, we would like to exit early,
+        // to try out different connection methods.
+        tokio::time::timeout(
+            self.config.reverse_connection_tmp_timeout,
+            awaiting.wait_for_first_message(),
         )
+        .await?;
+
+        // If we have first handshake message from other node, we can wait with
+        // longer timeout now, because we can have hope, that this node is responsive.
+        let result = tokio::time::timeout(
+            self.config.reverse_connection_real_timeout,
+            awaiting.wait_for_connection(),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(session)) => {
+                log::debug!("ReverseConnection - Got session with node. {}", &node_id);
+                Ok(session)
+            }
+            Ok(Err(e)) => {
+                log::debug!(
+                    "ReverseConnection - failed to establish session with node. {}",
+                    &node_id
+                );
+                Err(e.into())
+            }
+            Err(_) => {
+                log::debug!("ReverseConnection - Direct session timed out. {}", &node_id);
+                bail!(
+                    "Not able to setup ReverseConnection within timeout with node {}",
+                    node_id
+                )
+            }
+        }
     }
 
     pub async fn server_session(&self) -> anyhow::Result<Arc<Session>> {
-        if let Some(session) = self.get_server_session().await {
-            return Ok(session);
-        }
+        // A little bit dirty hack, that we give default NodeId (0x00) for relay server.
+        let lock = self
+            .guarded
+            .guard_initialization(NodeId::default(), &[self.config.srv_addr])
+            .await;
 
-        let session = self.init_server_session(self.config.srv_addr).await?;
+        let this = self.clone();
+        let session = {
+            let _guard = lock.write().await;
+
+            if let Some(session) = self.get_server_session().await {
+                return Ok(session);
+            }
+
+            self.init_server_session(self.config.srv_addr)
+                .then(move |result| async move {
+                    this.guarded
+                        .stop_guarding(NodeId::default(), result.clone())
+                        .await;
+                    result
+                })
+                .await?
+        };
+
         let endpoints = session.register_endpoints(vec![]).await?;
 
         // If there is any (correct) endpoint on the list, that means we have public IP.
@@ -797,7 +844,12 @@ impl SessionManager {
         state.sessions.get(&self.config.srv_addr).cloned()
     }
 
-    async fn assert_not_connected(&self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
+    pub(crate) async fn get_session(&self, addr: SocketAddr) -> Option<Arc<Session>> {
+        let state = self.state.read().await;
+        state.sessions.get(&addr).cloned()
+    }
+
+    pub(crate) async fn assert_not_connected(&self, addrs: &[SocketAddr]) -> anyhow::Result<()> {
         let state = self.state.read().await;
 
         // Fail if we're already connected to the remote address
@@ -847,6 +899,7 @@ impl SessionManager {
             }
         }
 
+        self.guarded.shutdown().await;
         Ok(())
     }
 
@@ -911,32 +964,6 @@ impl SessionManager {
         session.disconnect().await
     }
 
-    pub(crate) async fn error_response(
-        &self,
-        req_id: u64,
-        id: Vec<u8>,
-        addr: &SocketAddr,
-        error: Error,
-    ) {
-        let status_code = match error {
-            Error::Undefined(_) => StatusCode::Undefined,
-            Error::BadRequest(_) => StatusCode::BadRequest,
-            Error::Unauthorized(_) => StatusCode::Unauthorized,
-            Error::NotFound(_) => StatusCode::NotFound,
-            Error::Timeout(_) => StatusCode::Timeout,
-            Error::Conflict(_) => StatusCode::Conflict,
-            Error::PayloadTooLarge(_) => StatusCode::PayloadTooLarge,
-            Error::TooManyRequests(_) => StatusCode::TooManyRequests,
-            Error::Internal(_) => StatusCode::ServerError,
-            Error::GatewayTimeout(_) => StatusCode::GatewayTimeout,
-        };
-
-        self.send(proto::Packet::error(req_id, id, status_code), *addr)
-            .await
-            .map_err(|e| log::error!("Failed to send error response. {}.", e))
-            .ok();
-    }
-
     async fn send(&self, packet: impl Into<PacketKind>, addr: SocketAddr) -> anyhow::Result<()> {
         let mut stream = self.out_stream()?;
         Ok(stream.send((packet.into(), addr)).await?)
@@ -946,13 +973,54 @@ impl SessionManager {
         &self,
         request: proto::ChallengeRequest,
     ) -> LocalBoxFuture<'a, anyhow::Result<proto::ChallengeResponse>> {
+        let crypto_vec = match self.list_crypto().await {
+            Ok(crypto) => crypto,
+            Err(e) => return Box::pin(futures::future::err(e)),
+        };
+
+        // Compute challenge in different thread to avoid blocking runtime.
+        // Note: computing starts here, not after awaiting.
+        challenge::solve::<ChallengeDigest, _>(request.challenge, request.difficulty, crypto_vec)
+            .boxed_local()
+    }
+
+    pub async fn prepare_challenge_request(
+        &self,
+        challenge: bool,
+    ) -> SessionResult<(proto::request::Session, RawChallenge)> {
+        let (mut request, raw_challenge) = challenge::prepare_challenge_request();
+
+        let crypto = self
+            .list_crypto()
+            .await
+            .map_err(|e| SessionError::Drop(format!("Failed to query identities: {}", e)))?;
+
+        let mut identities = vec![];
+        for id in crypto {
+            let pub_key = id.public_key().await?;
+            identities.push(proto::Identity {
+                node_id: pub_key.address().to_vec(),
+                public_key: pub_key.bytes().to_vec(),
+            })
+        }
+
+        request.identities = identities;
+
+        if !challenge {
+            request.challenge_req = None;
+        }
+
+        Ok((request, raw_challenge))
+    }
+
+    pub async fn list_crypto(&self) -> anyhow::Result<Vec<Rc<dyn Crypto>>> {
         let mut crypto_vec = match self.config.crypto.get(self.config.node_id).await {
             Ok(crypto) => vec![crypto],
-            Err(e) => return Box::pin(futures::future::err(e)),
+            Err(e) => bail!(e),
         };
         let aliases = match self.config.crypto.aliases().await {
             Ok(aliases) => aliases,
-            Err(e) => return Box::pin(futures::future::err(e)),
+            Err(e) => bail!(e),
         };
         for alias in aliases {
             match self.config.crypto.get(alias).await {
@@ -960,11 +1028,7 @@ impl SessionManager {
                 _ => log::debug!("Unable to retrieve Crypto instance for id [{}]", alias),
             }
         }
-
-        // Compute challenge in different thread to avoid blocking runtime.
-        // Note: computing starts here, not after awaiting.
-        challenge::solve::<ChallengeDigest, _>(request.challenge, request.difficulty, crypto_vec)
-            .boxed_local()
+        Ok(crypto_vec)
     }
 }
 
@@ -972,20 +1036,21 @@ impl Handler for SessionManager {
     fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>> {
         let handler = self.clone();
         async move {
-            let state = handler.state.read().await;
+            let session = {
+                let state = handler.state.read().await;
+                state.sessions.get(&from).cloned()
+            };
 
             // We get either dispatcher for already existing Session from self,
             // or temporary session, that is during creation.
-            state
-                .sessions
-                .get(&from)
-                .map(|session| session.dispatcher())
-                .or_else(|| {
-                    state
-                        .starting_sessions
-                        .clone()
-                        .and_then(|entity| entity.dispatcher(from))
-                })
+            match session {
+                Some(session) => Some(session.dispatcher()),
+                None => self
+                    .guarded
+                    .get_temporary_session(&from)
+                    .await
+                    .map(|entity| entity.dispatcher()),
+            }
         }
         .boxed_local()
     }
@@ -1185,10 +1250,6 @@ impl Handler for SessionManager {
 impl SessionManagerState {
     /// External function should acquire lock.
     pub fn add_session(&mut self, addr: SocketAddr, session: Arc<Session>) {
-        if let Some(mut s) = self.starting_sessions.clone() {
-            s.remove_temporary_session(&session.remote)
-        }
-
         self.sessions.entry(addr).or_insert(session);
     }
 
@@ -1204,73 +1265,5 @@ impl SessionManagerState {
                 self.nodes_identity
                     .insert(ident.node_id, (node_id, ident.public_key));
             })
-    }
-}
-
-#[derive(Clone, Default)]
-struct GuardedSessions {
-    state: Arc<RwLock<GuardedSessionsState>>,
-}
-
-impl GuardedSessions {
-    async fn get_or_create<'a>(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionTarget {
-        if let Some(target) = {
-            let state = self.state.read().await;
-            state.find(node_id, addrs)
-        } {
-            return target;
-        }
-
-        let target = SessionTarget::new(node_id, addrs.to_vec());
-        let mut state = self.state.write().await;
-        state.add(target.clone());
-
-        target
-    }
-}
-
-#[derive(Default)]
-struct GuardedSessionsState {
-    by_node_id: HashMap<NodeId, SessionTarget>,
-    by_addr: HashMap<SocketAddr, SessionTarget>,
-}
-
-impl GuardedSessionsState {
-    fn find(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<SessionTarget> {
-        self.by_node_id
-            .get(&node_id)
-            .or_else(|| addrs.iter().filter_map(|a| self.by_addr.get(a)).next())
-            .cloned()
-    }
-
-    fn add(&mut self, target: SessionTarget) {
-        for addr in target.addresses.iter() {
-            self.by_addr.insert(*addr, target.clone());
-        }
-        self.by_node_id.insert(target.node_id, target);
-    }
-
-    fn remove(&mut self, target: &SessionTarget) {
-        for addr in target.addresses.iter() {
-            self.by_addr.remove(addr);
-        }
-        self.by_node_id.remove(&target.node_id);
-    }
-}
-
-#[derive(Clone)]
-struct SessionTarget {
-    node_id: NodeId,
-    addresses: Arc<Vec<SocketAddr>>,
-    lock: Arc<RwLock<()>>,
-}
-
-impl SessionTarget {
-    fn new(node_id: NodeId, addresses: Vec<SocketAddr>) -> Self {
-        Self {
-            node_id,
-            addresses: Arc::new(addresses),
-            lock: Default::default(),
-        }
     }
 }
