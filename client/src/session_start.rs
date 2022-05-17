@@ -194,7 +194,7 @@ impl StartingSessions {
         // If we are connected and other side isn't, than maybe we should let him establish new session.
         if self.layer.assert_not_connected(&[with]).await.is_err() {
             if let Some(session) = self.layer.get_session(with).await {
-                log::info!("Node [{}] ({}) trying to start new session, despite it is already establish. Closing previous session.", remote_id, with);
+                log::info!("Node [{remote_id}] ({with}) trying to start new session, despite it is already established. Closing previous session.");
                 self.layer.close_session(session).await.ok();
             }
         }
