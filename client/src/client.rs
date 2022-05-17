@@ -19,7 +19,7 @@ use url::Url;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::identity::Identity;
-use ya_relay_core::udp_stream::resolve_max_payload_size;
+use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
 use ya_relay_core::utils::{parse_udp_url, spawn_local_abortable};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
@@ -435,7 +435,7 @@ impl ClientBuilder {
 
         let default_id = crypto.default_id().await?;
         let default_pub_key = crypto.get(default_id).await?.public_key().await?;
-        let mtu = resolve_max_payload_size().await? - MAX_TAG_SIZE - Forward::header_size();
+        let mtu = resolve_max_payload_overhead_size(MAX_TAG_SIZE + Forward::header_size()).await?;
         let pcap_path = std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from);
 
         let mut client = Client::new(ClientConfig {
@@ -450,7 +450,7 @@ impl ClientBuilder {
                 .unwrap_or_else(|| Duration::from_secs(25)),
             tcp_config: NetworkConfig {
                 max_transmission_unit: mtu,
-                buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(4),
+                buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(32),
             },
             pcap_path,
             ping_measure_interval: Duration::from_secs(300),

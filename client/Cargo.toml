@@ -23,5 +23,9 @@ url = "2.1"
 
 [dev-dependencies]
 actix-rt = "1.1"
+bytesize = "1.1"
 dotenv = "0.15"
+humantime = "2.1"
+prettytable-rs = "0.8"
+simple-logging = "2.0"
 structopt = "0.3"

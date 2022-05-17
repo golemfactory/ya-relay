@@ -908,6 +908,7 @@ mod tests {
     /// Generate, send and receive data across 2 network instances
     async fn net_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
         const MTU: usize = 65535;
+        const BUF_MULTIPLIER: usize = 32;
 
         println!(">> exchanging {} B in {} B chunks", total, chunk_size);
 
@@ -916,7 +917,7 @@ mod tests {
 
         let config = NetworkConfig {
             max_transmission_unit: MTU,
-            buffer_size_multiplier: 4,
+            buffer_size_multiplier: BUF_MULTIPLIER,
         };
 
         let net1 = new_network(medium, ip1.into(), config.clone());
