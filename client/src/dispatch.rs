@@ -15,9 +15,9 @@ use tokio::time::{Duration, Instant};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 
+pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult>;
+pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()>>>;
 type ResponseSender = Sender<Dispatched<proto::response::Kind>>;
-pub type ErrorHandler = Box<dyn Fn() -> Pin<Box<dyn Future<Output = ()>>>>;
-type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()>>>;
 
 /// Signals receipt of a response packet
 pub async fn dispatch<H, S>(handler: H, mut stream: S)
