@@ -1,7 +1,9 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::rc::Rc;
 
 use futures::channel::oneshot::{self, Sender};
@@ -13,6 +15,8 @@ use tokio::time::{Duration, Instant};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 
+pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult>;
+pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()>>>;
 type ResponseSender = Sender<Dispatched<proto::response::Kind>>;
 
 /// Signals receipt of a response packet
@@ -111,6 +115,7 @@ pub struct Dispatcher {
     seen: Rc<RefCell<Instant>>,
     ping: Rc<RefCell<Duration>>,
     responses: Rc<RefCell<HashMap<u64, ResponseSender>>>,
+    error_handlers: Rc<RefCell<HashMap<i32, ErrorHandler>>>,
 }
 
 impl Default for Dispatcher {
@@ -119,6 +124,7 @@ impl Default for Dispatcher {
             seen: Rc::new(RefCell::new(Instant::now())),
             ping: Rc::new(RefCell::new(Duration::MAX)),
             responses: Default::default(),
+            error_handlers: Default::default(),
         }
     }
 }
@@ -138,6 +144,39 @@ impl Dispatcher {
 
     pub fn last_ping(&self) -> Duration {
         *self.ping.borrow()
+    }
+
+    /// Registers a response code handler
+    pub fn handle_error<F: Fn() -> ErrorHandlerResult + 'static>(
+        &self,
+        code: i32,
+        exclusive: bool,
+        handler: F,
+    ) {
+        use std::sync::atomic::AtomicBool;
+        use std::sync::atomic::Ordering::SeqCst;
+
+        let handler_fn = Rc::new(Box::new(handler));
+        let latch = Rc::new(AtomicBool::new(false));
+
+        let handler = Box::new(move || {
+            let handler_fn = handler_fn.clone();
+            let latch = latch.clone();
+
+            async move {
+                if exclusive && latch.load(SeqCst) {
+                    return;
+                }
+
+                latch.store(true, SeqCst);
+                handler_fn().await;
+                latch.store(false, SeqCst);
+            }
+            .boxed_local()
+        });
+
+        let mut handlers = self.error_handlers.borrow_mut();
+        handlers.insert(code, handler);
     }
 
     /// Creates a future to await a `T` (response) packet on
@@ -210,6 +249,13 @@ impl Dispatcher {
                 "Unable to dispatch response: listener does not exist. {:?}",
                 kind
             ),
+        };
+
+        if code != proto::StatusCode::Ok as i32 {
+            let handlers = self.error_handlers.borrow();
+            if let Some(handler) = handlers.get(&code) {
+                spawn_local((*handler)());
+            }
         }
     }
 }
