@@ -19,7 +19,7 @@ ya-relay-proto = { version = "0.3", path = "../crates/proto" }
 ya-relay-core = { version = "0.3", path = "../crates/core" }
 ya-relay-client = { version = "0.3", path = "../client" }
 
-actix-rt = "1.1"
+actix-rt = "2.7"
 anyhow = "1.0"
 chrono = "0.4"
 dotenv = "0.15"
@@ -32,9 +32,11 @@ log = "0.4"
 rand = { version = "0.8", features = ["std"] }
 structopt = "0.3"
 thiserror = "1.0"
-tokio = { version = "0.2", features = ["tcp", "udp", "net", "sync", "macros", "rt-core", "stream", "time"] }
-tokio-util = { version = "0.3", features = ["codec"] }
+tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 url = "2.1"
 
 [dev-dependencies]
-serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test"}
+serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = ["actix-rt2"]}
+tokio-stream = "0.1.8"
+

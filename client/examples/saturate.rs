@@ -14,6 +14,7 @@ use prettytable::format::TableFormat;
 use prettytable::{Attr, Cell, Row, Table};
 use structopt::{clap, StructOpt};
 use tokio::sync::RwLock;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_client::client::ForwardSender;
 use ya_relay_client::{ClientBuilder, ForwardReceiver};
@@ -129,7 +130,7 @@ impl State {
 }
 
 fn receive(receiver: ForwardReceiver, state: State) -> impl Future<Output = ()> + 'static {
-    receiver.for_each(move |fwd| {
+    UnboundedReceiverStream::new(receiver).for_each(move |fwd| {
         let state = state.clone();
         async move {
             let mut inner = state.inner.write().await;
@@ -243,7 +244,7 @@ async fn print_state(node_id: NodeId, state: State, delay: Duration) {
             println!("\n{}, every {}s", Utc::now(), delay.as_secs_f32());
             print_table(&headers, values, *FORMAT_BOX_CHARS);
 
-            tokio::time::delay_for(delay).await;
+            tokio::time::sleep(delay).await;
         }
     };
 
@@ -280,7 +281,7 @@ fn print_table(headers: &[&str], values: Vec<Vec<String>>, table_format: TableFo
     let _ = table.printstd();
 }
 
-#[actix_rt::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(

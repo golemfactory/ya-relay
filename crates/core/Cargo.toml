@@ -29,11 +29,10 @@ serde_json = "1.0"
 sha2 = "0.9"
 sha3 = "0.9"
 thiserror = "1.0"
-tokio = { version = "0.2", features = ["tcp", "udp", "net", "sync", "macros", "rt-core", "stream", "time", "blocking"] }
-tokio-util = { version = "0.3", features = ["codec"] }
+tokio = { version = "1", features = ["net", "sync", "macros", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
 url = "2.1"
 uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
-actix-rt = "1.1"
 env_logger = { version = "0.8", default-features = false }

@@ -57,7 +57,7 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
     tx1.send(vec![1u8]).await?;
     println!("message send");
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(received2.load(SeqCst));
     println!("message confirmed");
 
@@ -77,7 +77,7 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
     tx2.send(vec![2u8]).await?;
     println!("message send");
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(received1.load(SeqCst));
     println!("message confirmed");
     Ok(())
@@ -129,7 +129,7 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
     tx1.send(vec![1u8]).await?;
     println!("message send");
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(received2.load(SeqCst));
     println!("message confirmed");
 
@@ -148,7 +148,7 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
 
     tx2.send(vec![2u8]).await?;
     println!("message send");
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(received1.load(SeqCst));
     println!("message confirmed");

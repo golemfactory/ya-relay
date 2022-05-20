@@ -8,6 +8,7 @@ use anyhow::Context;
 use futures::StreamExt;
 use itertools::Itertools;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_client::{client::Forwarded, Client, ClientBuilder};
 use ya_relay_core::NodeId;
@@ -112,14 +113,15 @@ async fn test_broadcast() -> anyhow::Result<()> {
         tokio::task::spawn_local({
             let received = received.clone();
             async move {
-                rx.for_each(|item| {
-                    let received = received.clone();
-                    async move {
-                        println!("received {:?}", item);
-                        received.clone().fetch_add(item.payload.len(), SeqCst);
-                    }
-                })
-                .await;
+                UnboundedReceiverStream::new(rx)
+                    .for_each(|item| {
+                        let received = received.clone();
+                        async move {
+                            println!("received {:?}", item);
+                            received.clone().fetch_add(item.payload.len(), SeqCst);
+                        }
+                    })
+                    .await;
             }
         });
     }
@@ -140,7 +142,7 @@ async fn test_broadcast() -> anyhow::Result<()> {
     broadcasting_client
         .broadcast(data, NEIGHBOURHOOD_SIZE)
         .await?;
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     for receiver in received {
         assert_eq!(receiver.load(SeqCst), 1);

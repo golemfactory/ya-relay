@@ -46,7 +46,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     println!("Waiting for session cleanup.");
 
     // Wait expiration timeout + ping timeout + 1s margin
-    tokio::time::delay_for(Duration::from_secs(6)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     println!("Starting Client2");
 
@@ -80,7 +80,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     println!("Waiting for session cleanup.");
 
     // Wait expiration timeout + ping timeout + 1s margin
-    tokio::time::delay_for(Duration::from_secs(6)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     println!("Starting Client2");
 
@@ -142,7 +142,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     println!("Waiting for session cleanup.");
 
     // Wait expiration timeout + ping timeout + 1s margin
-    tokio::time::delay_for(Duration::from_secs(6)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     println!("Starting Client2");
 
@@ -174,7 +174,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     println!("Waiting for session cleanup.");
 
     // Wait expiration timeout + ping timeout + 1s margin
-    tokio::time::delay_for(Duration::from_secs(6)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     println!("Starting Client2");
 
@@ -230,7 +230,7 @@ async fn test_restart_server() -> anyhow::Result<()> {
     drop(keep1);
     drop(keep2);
 
-    tokio::time::delay_for(Duration::from_secs(6)).await;
+    tokio::time::sleep(Duration::from_secs(6)).await;
 
     let _keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Unreliable)
         .await
@@ -290,7 +290,7 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     // Node will send data through relay. Since Relay didn't timed out
     // Client2 yet, forwarding will seem to be successfully, although
     // packets won't reach destination.
-    tokio::time::delay_for(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
 
     println!("Client1 will attempt to forward through relay.");
     client1.broadcast(vec![0x1], 2).await.unwrap();
@@ -299,11 +299,11 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     // because relay already noticed at this point, that Client2 disconnected.
     // Client2 Node should be removed here from Client1 too, because `find_node`
     // call to relay will fail.
-    tokio::time::delay_for(Duration::from_secs(5)).await;
+    tokio::time::sleep(Duration::from_secs(5)).await;
     println!("Client1 will request new neighborhood.");
     client1.broadcast(vec![0x1], 2).await.unwrap();
 
-    tokio::time::delay_for(Duration::from_secs(1)).await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
 
     println!("Starting Client2");
 
@@ -374,7 +374,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
 
     println!("Waiting for session cleanup on Client1.");
 
-    tokio::time::delay_for(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     println!("Restarting Client2");
 
@@ -391,7 +391,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
 
     println!("Client1 will send forward packet and will receive Disconnected message.");
     client1.broadcast(vec![0x1], 2).await.unwrap();
-    tokio::time::delay_for(Duration::from_secs(2)).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
 
     // Client1 should be able to connect to Client2 again.
     let _keep2 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Unreliable)

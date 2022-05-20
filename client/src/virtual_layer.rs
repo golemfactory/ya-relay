@@ -10,6 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::NodeId;
@@ -188,7 +189,7 @@ impl TcpLayer {
         if let Some(date) = raw_date {
             if let Ok(duration) = (date - Utc::now()).to_std() {
                 log::debug!("Receiver Paused!!! {:?}", duration);
-                tokio::time::delay_for(duration).await;
+                tokio::time::sleep(duration).await;
                 log::trace!("Receiver Continues...");
             }
             (*forward_paused_till.write().await) = None;
@@ -246,7 +247,7 @@ impl TcpLayer {
     }
 
     async fn ingress_router(self, ingress_rx: UnboundedReceiver<IngressEvent>) {
-        ingress_rx
+        UnboundedReceiverStream::new(ingress_rx)
             .for_each(move |event| {
                 let myself = self.clone();
                 async move {
@@ -337,7 +338,7 @@ impl TcpLayer {
     }
 
     async fn egress_router(self, egress_rx: UnboundedReceiver<EgressEvent>) {
-        egress_rx
+        UnboundedReceiverStream::new(egress_rx)
             .for_each(move |egress| {
                 let myself = self.clone();
                 async move {

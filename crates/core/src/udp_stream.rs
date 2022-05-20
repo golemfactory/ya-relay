@@ -3,7 +3,7 @@ use futures::channel::mpsc;
 use futures::prelude::*;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use tokio::net::udp::{RecvHalf, SendHalf};
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -21,20 +21,18 @@ pub type InStream = Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr)>>>;
 pub type OutStream = mpsc::Sender<(PacketKind, SocketAddr)>;
 
 pub async fn udp_bind(addr: &url::Url) -> anyhow::Result<(InStream, OutStream, SocketAddr)> {
-    let sock = UdpSocket::bind(&parse_udp_url(addr)?).await?;
+    let sock = Arc::new(UdpSocket::bind(&parse_udp_url(addr)?).await?);
     let addr = sock.local_addr()?;
 
     log::info!("Server listening on: {}", addr);
 
-    let (input, output) = sock.split();
-
-    let stream = Box::pin(udp_stream(input));
-    let sink = udp_sink(output)?;
+    let stream = Box::pin(udp_stream(sock.clone()));
+    let sink = udp_sink(sock)?;
 
     Ok((stream, sink, addr))
 }
 
-pub async fn receive_packet(socket: &mut RecvHalf) -> anyhow::Result<(PacketKind, SocketAddr)> {
+pub async fn receive_packet(socket: Arc<UdpSocket>) -> anyhow::Result<(PacketKind, SocketAddr)> {
     let mut codec = Codec::default();
     let mut buf = BytesMut::new();
 
@@ -53,11 +51,11 @@ pub async fn receive_packet(socket: &mut RecvHalf) -> anyhow::Result<(PacketKind
     Ok((packet, addr))
 }
 
-pub fn udp_stream(socket: RecvHalf) -> impl Stream<Item = (PacketKind, SocketAddr)> {
-    stream::unfold(socket, |mut socket| async {
-        //looping till Some is returned to avoid server shuttdown (as None triggers server shutdown)
+pub fn udp_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (PacketKind, SocketAddr)> {
+    stream::unfold(socket, |socket| async {
+        //looping till Some is returned to avoid server shutdown (as None triggers server shutdown)
         loop {
-            match receive_packet(&mut socket).await {
+            match receive_packet(socket.clone()).await {
                 Ok(item) => return Some((item, socket)),
                 Err(e) => {
                     log::warn!("Failed to receive packet. {}", e);
@@ -68,7 +66,7 @@ pub fn udp_stream(socket: RecvHalf) -> impl Stream<Item = (PacketKind, SocketAdd
     })
 }
 
-pub fn udp_sink(mut socket: SendHalf) -> anyhow::Result<mpsc::Sender<(PacketKind, SocketAddr)>> {
+pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKind, SocketAddr)>> {
     let (tx, mut rx) = mpsc::channel(20);
 
     tokio::task::spawn_local(async move {

@@ -13,19 +13,19 @@ default = ["codec"]
 codec = ["futures", "tokio", "tokio-util", "bytes", "derive_more", "thiserror"]
 
 [dependencies]
-prost = "0.6"
+prost = "0.10"
 rand = "0.8"
 
 anyhow = "1.0"
-bytes = { version = "0.5", optional = true }
+bytes = { version = "1", optional = true }
 derive_more = { version = "0.99", optional = true }
 futures = { version = "0.3", optional = true }
 thiserror = { version = "1.0", optional = true }
-tokio = { version = "0.2", optional = true, features = ["sync"] }
-tokio-util = { version = "0.3", optional = true, features = ["codec"] }
+tokio = { version = "1", optional = true, features = ["sync"] }
+tokio-util = { version = "0.7", optional = true, features = ["codec"] }
 
 [dev-dependencies]
-tokio = { version = "0.2", features = ["macros", "rt-core", "rt-util", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "sync", "time"] }
 
 [build-dependencies]
-prost-build = "0.6"
+prost-build = "0.10"

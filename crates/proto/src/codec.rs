@@ -51,7 +51,7 @@ impl PacketKind {
 
 #[inline(always)]
 pub(self) fn read_bytes(buf: &mut BytesMut, max: usize) -> Result<Option<BytesMut>, DecodeError> {
-    let (total, off) = peek_size(buf.bytes())?;
+    let (total, off) = peek_size(buf)?;
     read_bytes_inner(buf, total, off, max)
 }
 
