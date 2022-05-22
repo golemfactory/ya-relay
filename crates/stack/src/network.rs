@@ -636,7 +636,7 @@ impl Default for StackPollerStrategy {
 }
 
 impl StackPollerStrategy {
-    const MIN_INTERVAL: Duration = Duration::from_millis(10);
+    const MIN_INTERVAL: Duration = Duration::from_micros(1);
     const DEFAULT_INTERVAL: Duration = Duration::from_millis(750);
     const DEFAULT_FACTOR: u8 = 2;
 
