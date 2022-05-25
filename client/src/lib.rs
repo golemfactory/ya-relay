@@ -17,4 +17,4 @@ pub use ya_relay_stack::*;
 
 // TODO: Exposed for ya-relay-server. Should be made private after we merge implementations.
 pub use dispatch::{dispatch, Dispatcher, Handler};
-pub use session::Session;
+pub use session::{Session, SessionDesc};
