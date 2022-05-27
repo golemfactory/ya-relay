@@ -1263,16 +1263,17 @@ impl Handler for SessionManager {
                 }
             };
 
-            {
-                let mut cache = myself.volatile_cache.borrow_mut();
-                cache.insert((from, reliable), Instant::now() + Duration::from_millis(500));
-            }
-
             if reliable {
                 myself.virtual_tcp.receive(node, forward.payload).await;
             } else {
                 myself.dispatch_unreliable(node.id, forward).await;
             }
+
+            {
+                let mut cache = myself.volatile_cache.borrow_mut();
+                cache.insert((from, reliable), Instant::now() + Duration::from_millis(500));
+            }
+
             anyhow::Result::<()>::Ok(())
         }
         .map_err(|e| log::error!("On forward error: {}", e))
