@@ -221,6 +221,12 @@ impl TcpLayer {
         self.net.poll();
     }
 
+    #[inline]
+    pub fn receive_inject(&self, payload: Payload) {
+        self.net.receive(payload.into_vec());
+        self.net.poll();
+    }
+
     pub async fn shutdown(&self) {
         // empty
     }

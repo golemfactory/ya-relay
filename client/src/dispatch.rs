@@ -37,17 +37,21 @@ where
                 kind: Some(kind),
             }) => match kind {
                 proto::packet::Kind::Control(control) => {
-                    spawn_local(handler.on_control(session_id, control, from));
+                    handler
+                        .on_control(session_id, control, from)
+                        .map(spawn_local);
                 }
                 proto::packet::Kind::Request(request) => {
-                    spawn_local(handler.on_request(session_id, request, from));
+                    handler
+                        .on_request(session_id, request, from)
+                        .map(spawn_local);
                 }
                 proto::packet::Kind::Response(response) => {
                     spawn_local(dispatch_response(session_id, response, from, handler));
                 }
             },
             codec::PacketKind::Forward(forward) => {
-                spawn_local(handler.on_forward(forward, from));
+                handler.on_forward(forward, from).map(spawn_local);
             }
             _ => log::warn!("Unable to dispatch packet from {}: not supported", from),
         };
@@ -88,7 +92,7 @@ pub trait Handler {
         session_id: Vec<u8>,
         control: proto::Control,
         from: SocketAddr,
-    ) -> LocalBoxFuture<'static, ()>;
+    ) -> Option<LocalBoxFuture<'static, ()>>;
 
     /// Handles `proto::Request` packets
     fn on_request(
@@ -96,10 +100,14 @@ pub trait Handler {
         session_id: Vec<u8>,
         request: proto::Request,
         from: SocketAddr,
-    ) -> LocalBoxFuture<'static, ()>;
+    ) -> Option<LocalBoxFuture<'static, ()>>;
 
     /// Handles `proto::Forward` packets
-    fn on_forward(self, forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<'static, ()>;
+    fn on_forward(
+        self,
+        forward: proto::Forward,
+        from: SocketAddr,
+    ) -> Option<LocalBoxFuture<'static, ()>>;
 }
 
 /// Dispatched packet wrapper

@@ -3,11 +3,13 @@ use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
@@ -47,6 +49,7 @@ pub struct SessionManager {
 
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
+    volatile_cache: Rc<RefCell<HashMap<(SocketAddr, bool), Instant>>>,
 }
 
 pub struct SessionManagerState {
@@ -82,6 +85,7 @@ impl SessionManager {
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
             registry: NodesRegistry::new(),
             guarded: Default::default(),
+            volatile_cache: Default::default(),
             state: Arc::new(RwLock::new(SessionManagerState {
                 public_addr: None,
                 bind_addr: None,
@@ -1072,11 +1076,11 @@ impl Handler for SessionManager {
         _session_id: Vec<u8>,
         control: proto::Control,
         from: SocketAddr,
-    ) -> LocalBoxFuture<'static, ()> {
+    ) -> Option<LocalBoxFuture<'static, ()>> {
         log::debug!("Received control packet from {}: {:?}", from, control);
 
         if let Some(kind) = control.kind {
-            match kind {
+            let fut = match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
                     let myself = self;
                     tokio::task::spawn_local(async move {
@@ -1103,35 +1107,32 @@ impl Handler for SessionManager {
                             Ok(_) => log::trace!("ReverseConnection succeeded: {:?}", message),
                         };
                     });
+                    return None;
                 }
-                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => {
-                    return async move {
-                        log::trace!("Got Pause! {:?}", message);
-                        let lock = {
-                            let state = self.state.read().await;
-                            state.forward_paused_till.clone()
-                        };
-                        lock.write()
-                            .await
-                            .replace(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY));
-                    }
-                    .boxed_local();
+                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => async move {
+                    log::trace!("Got Pause! {:?}", message);
+                    let lock = {
+                        let state = self.state.read().await;
+                        state.forward_paused_till.clone()
+                    };
+                    lock.write()
+                        .await
+                        .replace(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY));
                 }
-                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => {
-                    return async move {
-                        log::trace!("Got Resume! {:?}", message);
-                        let lock = {
-                            let state = self.state.read().await;
-                            state.forward_paused_till.clone()
-                        };
-                        lock.write().await.take();
-                    }
-                    .boxed_local();
+                .boxed_local(),
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => async move {
+                    log::trace!("Got Resume! {:?}", message);
+                    let lock = {
+                        let state = self.state.read().await;
+                        state.forward_paused_till.clone()
+                    };
+                    lock.write().await.take();
                 }
+                .boxed_local(),
                 ya_relay_proto::proto::control::Kind::Disconnected(
                     proto::control::Disconnected { by: Some(by) },
                 ) => {
-                    return async move {
+                    async move {
                         log::trace!("Got Disconnected! {:?}", by);
 
                         if let Ok(node) = match by {
@@ -1158,14 +1159,16 @@ impl Handler for SessionManager {
                             self.remove_node(node.id).await;
                         }
                     }
-                    .boxed_local();
+                    .boxed_local()
                 }
                 _ => {
-                    log::trace!("Un-handled control packet: {:?}", kind)
+                    log::trace!("Un-handled control packet: {:?}", kind);
+                    return None;
                 }
-            }
+            };
+            return Some(fut);
         }
-        Box::pin(futures::future::ready(()))
+        None
     }
 
     fn on_request(
@@ -1173,7 +1176,7 @@ impl Handler for SessionManager {
         session_id: Vec<u8>,
         request: proto::Request,
         from: SocketAddr,
-    ) -> LocalBoxFuture<'static, ()> {
+    ) -> Option<LocalBoxFuture<'static, ()>> {
         log::trace!("Received request packet from {}: {:?}", from, request);
 
         let (request_id, kind) = match request {
@@ -1181,10 +1184,10 @@ impl Handler for SessionManager {
                 request_id,
                 kind: Some(kind),
             } => (request_id, kind),
-            _ => return Box::pin(futures::future::ready(())),
+            _ => return None,
         };
 
-        match kind {
+        let fut = match kind {
             proto::request::Kind::Ping(request) => {
                 async move { self.on_ping(session_id, request_id, from, request).await }
                     .boxed_local()
@@ -1194,11 +1197,27 @@ impl Handler for SessionManager {
                     .await
             }
             .boxed_local(),
-            _ => Box::pin(futures::future::ready(())),
-        }
+            _ => return None,
+        };
+
+        Some(fut)
     }
 
-    fn on_forward(self, forward: Forward, from: SocketAddr) -> LocalBoxFuture<'static, ()> {
+    fn on_forward(self, forward: Forward, from: SocketAddr) -> Option<LocalBoxFuture<'static, ()>> {
+        let reliable = forward.is_reliable();
+
+        // fast pass
+        {
+            let mut cache = self.volatile_cache.borrow_mut();
+            if let Some(instant) = cache.get_mut(&(from, reliable)) {
+                if *instant >= Instant::now() {
+                    *instant = Instant::now() + Duration::from_millis(500);
+                    self.virtual_tcp.receive_inject(forward.payload);
+                    return None;
+                }
+            }
+        }
+
         let myself = self;
         let fut = async move {
             log::trace!(
@@ -1244,7 +1263,12 @@ impl Handler for SessionManager {
                 }
             };
 
-            if forward.is_reliable() {
+            {
+                let mut cache = myself.volatile_cache.borrow_mut();
+                cache.insert((from, reliable), Instant::now() + Duration::from_millis(500));
+            }
+
+            if reliable {
                 myself.virtual_tcp.receive(node, forward.payload).await;
             } else {
                 myself.dispatch_unreliable(node.id, forward).await;
@@ -1255,7 +1279,7 @@ impl Handler for SessionManager {
         .map(|_| ());
 
         tokio::task::spawn_local(fut);
-        Box::pin(futures::future::ready(()))
+        None
     }
 }
 
