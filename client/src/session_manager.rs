@@ -4,12 +4,11 @@ use futures::channel::mpsc;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
@@ -49,7 +48,7 @@ pub struct SessionManager {
 
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
-    volatile_cache: Rc<RefCell<HashMap<(SocketAddr, bool), Instant>>>,
+    forward_pass: Rc<RefCell<HashSet<SocketAddr>>>,
 }
 
 pub struct SessionManagerState {
@@ -85,7 +84,7 @@ impl SessionManager {
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
             registry: NodesRegistry::new(),
             guarded: Default::default(),
-            volatile_cache: Default::default(),
+            forward_pass: Default::default(),
             state: Arc::new(RwLock::new(SessionManagerState {
                 public_addr: None,
                 bind_addr: None,
@@ -422,6 +421,11 @@ impl SessionManager {
 
     pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
         log::info!("Closing session {} ({})", session.id, session.remote);
+
+        {
+            let mut pass = self.forward_pass.borrow_mut();
+            pass.remove(&session.remote);
+        }
 
         if let Some(node_id) = {
             let mut state = self.state.write().await;
@@ -1206,15 +1210,11 @@ impl Handler for SessionManager {
     fn on_forward(self, forward: Forward, from: SocketAddr) -> Option<LocalBoxFuture<'static, ()>> {
         let reliable = forward.is_reliable();
 
-        // fast pass
         {
-            let mut cache = self.volatile_cache.borrow_mut();
-            if let Some(instant) = cache.get_mut(&(from, reliable)) {
-                if *instant >= Instant::now() {
-                    *instant = Instant::now() + Duration::from_millis(500);
-                    self.virtual_tcp.receive_inject(forward.payload);
-                    return None;
-                }
+            let pass = self.forward_pass.borrow();
+            if pass.contains(&from) {
+                self.virtual_tcp.receive_inject(forward.payload);
+                return None;
             }
         }
 
@@ -1270,8 +1270,8 @@ impl Handler for SessionManager {
             }
 
             {
-                let mut cache = myself.volatile_cache.borrow_mut();
-                cache.insert((from, reliable), Instant::now() + Duration::from_millis(500));
+                let mut pass = myself.forward_pass.borrow_mut();
+                pass.insert(from);
             }
 
             anyhow::Result::<()>::Ok(())
