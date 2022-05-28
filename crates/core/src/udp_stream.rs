@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use std::net::SocketAddr;
@@ -34,35 +34,30 @@ pub async fn udp_bind(addr: &url::Url) -> anyhow::Result<(InStream, OutStream, S
     Ok((stream, sink, addr))
 }
 
-pub async fn receive_packet(socket: &mut RecvHalf) -> anyhow::Result<(PacketKind, SocketAddr)> {
-    let mut codec = Codec::default();
-    let mut buf = BytesMut::new();
-
-    buf.resize(MAX_PACKET_SIZE as usize, 0);
-
-    let (size, addr) = socket.recv_from(&mut buf).await?;
-
-    log::trace!("Received {} bytes from {}", size, addr);
-
-    buf.truncate(size);
-
-    let packet = codec
-        .decode(&mut buf)?
-        .ok_or_else(|| anyhow!("Failed to decode packet."))?;
-
-    Ok((packet, addr))
-}
-
 pub fn udp_stream(socket: RecvHalf) -> impl Stream<Item = (PacketKind, SocketAddr)> {
     stream::unfold(socket, |mut socket| async {
-        //looping till Some is returned to avoid server shuttdown (as None triggers server shutdown)
+        let mut codec = Codec::default();
+        let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
+
+        // looping till Some is returned to avoid server shutdown (as None triggers server shutdown)
         loop {
-            match receive_packet(&mut socket).await {
-                Ok(item) => return Some((item, socket)),
+            buf.resize(MAX_PACKET_SIZE as usize, 0);
+
+            let (size, addr) = match socket.recv_from(&mut buf).await {
+                Ok((size, addr)) => (size, addr),
                 Err(e) => {
-                    log::warn!("Failed to receive packet. {}", e);
+                    log::warn!("UDP socket error: {}", e);
                     continue;
                 }
+            };
+
+            buf.truncate(size);
+
+            match codec.decode(&mut buf) {
+                Ok(Some(item)) => return Some(((item, addr), socket)),
+                Err(e) => log::warn!("Failed to decode packet: {}", e),
+                // `decode` does not return this variant
+                Ok(None) => log::warn!("Unable to decode packet"),
             }
         }
     })
