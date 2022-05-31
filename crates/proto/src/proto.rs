@@ -84,11 +84,13 @@ impl Forward {
         buf.extend_from_slice(&self.slot.to_be_bytes());
         buf.extend_from_slice(&self.flags.to_be_bytes());
 
-        match self.payload {
-            Payload::BytesMut(b) => buf.extend(b),
-            Payload::Bytes(b) => buf.extend(b),
-            Payload::Vec(b) => buf.extend(b),
-        }
+        let slice = match &self.payload {
+            Payload::BytesMut(b) => b.as_ref(),
+            Payload::Bytes(b) => b.as_ref(),
+            Payload::Vec(b) => b.as_slice(),
+        };
+
+        buf.extend_from_slice(slice);
     }
 
     pub fn decode(mut buf: BytesMut) -> Result<Self, DecodeError> {
