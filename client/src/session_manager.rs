@@ -46,9 +46,9 @@ pub struct SessionManager {
     pub virtual_tcp: TcpLayer,
     pub registry: NodesRegistry,
 
+    virtual_tcp_fast_lane: Rc<RefCell<HashSet<SocketAddr>>>,
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
-    forward_pass: Rc<RefCell<HashSet<SocketAddr>>>,
 }
 
 pub struct SessionManagerState {
@@ -82,9 +82,9 @@ impl SessionManager {
             sink: None,
             config: config.clone(),
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
+            virtual_tcp_fast_lane: Default::default(),
             registry: NodesRegistry::new(),
             guarded: Default::default(),
-            forward_pass: Default::default(),
             state: Arc::new(RwLock::new(SessionManagerState {
                 public_addr: None,
                 bind_addr: None,
@@ -406,6 +406,9 @@ impl SessionManager {
             let tx_u = state.forward_unreliable.remove(&node_id);
 
             if let Some(session) = state.p2p_sessions.remove(&node_id) {
+                self.virtual_tcp_fast_lane
+                    .borrow_mut()
+                    .remove(&session.remote);
                 state.nodes_addr.remove(&session.remote);
             }
 
@@ -422,14 +425,12 @@ impl SessionManager {
     pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
         log::info!("Closing session {} ({})", session.id, session.remote);
 
-        {
-            let mut pass = self.forward_pass.borrow_mut();
-            pass.remove(&session.remote);
-        }
+        self.virtual_tcp_fast_lane
+            .borrow_mut()
+            .remove(&session.remote);
 
         if let Some(node_id) = {
             let mut state = self.state.write().await;
-
             state.sessions.remove(&session.remote);
             state.nodes_addr.remove(&session.remote)
         } {
@@ -838,6 +839,11 @@ impl SessionManager {
                 .boxed_local()
             });
 
+        let fast_lane = self.virtual_tcp_fast_lane.clone();
+        session.on_drop(move || {
+            fast_lane.borrow_mut().clear();
+        });
+
         let endpoints = session.register_endpoints(vec![]).await?;
 
         // If there is any (correct) endpoint on the list, that means we have public IP.
@@ -1210,12 +1216,12 @@ impl Handler for SessionManager {
     fn on_forward(self, forward: Forward, from: SocketAddr) -> Option<LocalBoxFuture<'static, ()>> {
         let reliable = forward.is_reliable();
 
-        {
-            let pass = self.forward_pass.borrow();
-            if pass.contains(&from) {
-                self.virtual_tcp.receive_inject(forward.payload);
-                return None;
-            }
+        if reliable && {
+            let fast_lane = self.virtual_tcp_fast_lane.borrow();
+            fast_lane.contains(&from)
+        } {
+            self.virtual_tcp.inject(forward.payload);
+            return None;
         }
 
         let myself = self;
@@ -1269,11 +1275,7 @@ impl Handler for SessionManager {
                 myself.dispatch_unreliable(node.id, forward).await;
             }
 
-            {
-                let mut pass = myself.forward_pass.borrow_mut();
-                pass.insert(from);
-            }
-
+            myself.virtual_tcp_fast_lane.borrow_mut().insert(from);
             anyhow::Result::<()>::Ok(())
         }
         .map_err(|e| log::error!("On forward error: {}", e))

@@ -92,6 +92,7 @@ pub enum SocketEndpoint {
 }
 
 impl SocketEndpoint {
+    #[inline]
     pub fn ip_endpoint(&self) -> Result<IpEndpoint, Error> {
         match self {
             SocketEndpoint::Ip(endpoint) => Ok(*endpoint),
@@ -99,6 +100,7 @@ impl SocketEndpoint {
         }
     }
 
+    #[inline]
     pub fn is_specified(&self) -> bool {
         match self {
             Self::Ip(ip) => ip.is_specified(),

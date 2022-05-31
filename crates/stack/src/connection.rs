@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::future::Future;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
@@ -82,6 +83,11 @@ impl ConnectionMeta {
             remote,
         }
     }
+
+    #[inline]
+    pub fn to_socket_addr(&self) -> SocketAddr {
+        SocketAddr::from((self.local.addr, self.local.port))
+    }
 }
 
 impl From<ConnectionMeta> for SocketDesc {
@@ -91,6 +97,12 @@ impl From<ConnectionMeta> for SocketDesc {
             local: c.local.into(),
             remote: c.remote.into(),
         }
+    }
+}
+
+impl<'a> From<&'a ConnectionMeta> for SocketEndpoint {
+    fn from(c: &'a ConnectionMeta) -> Self {
+        SocketEndpoint::Ip(c.local)
     }
 }
 
