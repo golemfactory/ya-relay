@@ -36,12 +36,20 @@ pub async fn udp_bind(addr: &url::Url) -> anyhow::Result<(InStream, OutStream, S
 
 pub fn udp_stream(socket: RecvHalf) -> impl Stream<Item = (PacketKind, SocketAddr)> {
     stream::unfold(socket, |mut socket| async {
-        let mut codec = Codec::default();
-        let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
+        const MAX_SIZE: usize = MAX_PACKET_SIZE as usize;
 
+        let mut codec = Codec::default();
+        let mut buf = BytesMut::with_capacity(MAX_SIZE);
         // looping till Some is returned to avoid server shutdown (as None triggers server shutdown)
         loop {
-            buf.resize(MAX_PACKET_SIZE as usize, 0);
+            if buf.capacity() == MAX_SIZE {
+                // reverts `truncate` only if capacity remained the same
+                unsafe {
+                    buf.set_len(MAX_SIZE);
+                }
+            } else {
+                buf.resize(MAX_SIZE, 0);
+            }
 
             let (size, addr) = match socket.recv_from(&mut buf).await {
                 Ok((size, addr)) => (size, addr),
