@@ -3,7 +3,6 @@ use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::ops::Mul;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use futures::future::{Either, LocalBoxFuture};
@@ -259,24 +258,12 @@ impl Network {
 
     /// Polls the inner network stack
     pub fn poll(&self) {
-        let mut sent = 0;
-        let mut received = 0;
-
-        loop {
-            if let Err(err) = self.stack.poll() {
-                log::warn!("{}: stack poll error: {}", *self.name, err);
-            }
-
-            let (ingress, loop_received) = self.process_ingress();
-            let (egress, loop_sent) = self.process_egress();
-
-            sent += loop_sent;
-            received += loop_received;
-
-            if !egress && !ingress {
-                break;
-            }
+        if let Err(err) = self.stack.poll() {
+            log::warn!("{}: stack poll error: {}", *self.name, err);
         }
+
+        let received = self.process_ingress();
+        let sent = self.process_egress();
 
         self.poller.adjust_strategy(sent, received);
     }
@@ -293,67 +280,64 @@ impl Network {
         self.egress.receiver()
     }
 
-    fn process_ingress(&self) -> (bool, usize) {
-        static COUNTER: AtomicUsize = AtomicUsize::new(0);
-
-        let mut processed = false;
+    fn process_ingress(&self) -> usize {
         let mut received = 0;
 
         let iface_rfc = self.stack.iface();
         let mut iface = iface_rfc.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
-        let mut rebind = self.bindings.borrow().clone();
+        let mut rebind = Vec::new();
 
         for (handle, socket) in iface.sockets_mut() {
-            let mut desc = SocketDesc {
-                protocol: socket.protocol(),
-                local: socket.local_endpoint(),
-                remote: socket.remote_endpoint(),
-            };
-
             if socket.is_closed() {
-                match { self.handles.borrow().get(&handle).cloned() } {
+                let meta = match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
                         remove.push((meta, handle));
                         if let Ok(desc) = meta.try_into() {
                             events.push(IngressEvent::Disconnected { desc })
                         }
+
+                        meta
                     }
                     None => {
-                        if !desc.local.is_specified() {
-                            // skip; the socket is initializing
-                            continue;
-                        }
-                        if let Ok(meta) = desc.try_into() {
-                            log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
-                            remove.push((meta, handle));
-                            events.push(IngressEvent::Disconnected { desc });
-                        }
+                        let desc = socket.desc();
+                        let meta = match desc.try_into() {
+                            // skip uninitialized sockets
+                            Ok(meta) if desc.local.is_specified() => meta,
+                            _ => continue,
+                        };
+
+                        log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
+                        remove.push((meta, handle));
+                        events.push(IngressEvent::Disconnected { desc });
+
+                        meta
                     }
                 };
+
+                let bindings = self.bindings.borrow();
+                let entry = (meta.protocol, SocketEndpoint::from(&meta));
+                if bindings.contains(&entry) {
+                    rebind.push(entry);
+                }
                 continue;
             }
 
-            if !desc.remote.is_specified() {
-                rebind.remove(&(desc.protocol, desc.local));
-            }
+            let mut desc = socket.desc();
 
             while socket.can_recv() {
                 let (remote, payload) = match socket.recv() {
-                    Ok(Some(tuple)) => {
-                        processed = true;
-                        tuple
-                    }
+                    Ok(Some(tuple)) => tuple,
                     Ok(None) => break,
                     Err(err) => {
                         log::trace!("{}: ingress packet error: {}", self.name, err);
-                        processed = true;
                         continue;
                     }
                 };
 
                 desc.remote = remote.into();
+
                 if let Ok(meta) = desc.try_into() {
                     if !self.is_connected(&meta) {
                         self.add_connection(Connection { handle, meta });
@@ -365,20 +349,21 @@ impl Network {
 
                 received += 1;
                 self.stack.on_received(&desc, payload.len());
-
-                let no = COUNTER.fetch_add(1, Ordering::Relaxed);
-                events.push(IngressEvent::Packet { desc, payload, no });
+                events.push(IngressEvent::Packet { desc, payload });
             }
         }
 
         drop(iface);
+
         remove.into_iter().for_each(|(meta, handle)| {
             self.remove_connection(&meta, handle);
         });
 
-        for (p, ep) in rebind {
-            if let Err(e) = self.bind(p, ep) {
-                log::trace!("{}: ingress: cannot bind {} {:?}: {}", self.name, p, ep, e);
+        if !rebind.is_empty() {
+            for (p, ep) in rebind {
+                if let Err(e) = self.bind(p, ep) {
+                    log::trace!("{}: ingress: cannot bind {} {:?}: {}", self.name, p, ep, e);
+                }
             }
         }
 
@@ -395,11 +380,10 @@ impl Network {
             }
         }
 
-        (processed, received)
+        received
     }
 
-    fn process_egress(&self) -> (bool, usize) {
-        let mut processed = false;
+    fn process_egress(&self) -> usize {
         let mut sent = 0;
 
         let iface_rfc = self.stack.iface();
@@ -408,8 +392,6 @@ impl Network {
         let is_tun = device.is_tun();
 
         while let Some(data) = device.next_phy_tx() {
-            processed = true;
-
             match {
                 if is_tun {
                     EgressEvent::from_ip_packet(data)
@@ -436,7 +418,7 @@ impl Network {
             }
         }
 
-        (processed, sent)
+        sent
     }
 }
 
@@ -447,11 +429,7 @@ pub enum IngressEvent {
     /// Disconnection from a bound endpoint
     Disconnected { desc: SocketDesc },
     /// Bound endpoint packet
-    Packet {
-        desc: SocketDesc,
-        payload: Vec<u8>,
-        no: usize,
-    },
+    Packet { desc: SocketDesc, payload: Vec<u8> },
 }
 
 #[derive(Clone, Debug)]
@@ -541,6 +519,7 @@ struct StackSender {
 }
 
 impl StackSender {
+    #[inline]
     pub fn send<'a>(&self, data: Vec<u8>, conn: Connection) -> Result<ProcessedFuture<'a>> {
         let mut sender = {
             let inner = self.inner.borrow();
@@ -636,9 +615,9 @@ impl Default for StackPollerStrategy {
 }
 
 impl StackPollerStrategy {
-    const MIN_INTERVAL: Duration = Duration::from_micros(1);
-    const DEFAULT_INTERVAL: Duration = Duration::from_millis(750);
-    const DEFAULT_FACTOR: u8 = 2;
+    const MIN_INTERVAL: Duration = Duration::from_millis(750);
+    const DEFAULT_INTERVAL: Duration = Duration::from_millis(1500);
+    const DEFAULT_FACTOR: u8 = 3;
 
     fn at(&self) -> Instant {
         match self {
