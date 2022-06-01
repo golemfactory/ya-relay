@@ -254,11 +254,13 @@ impl<'a> Stack<'a> {
         Send::new(data.into(), conn, self.iface.clone(), f)
     }
 
+    #[inline]
     pub fn receive<B: Into<Vec<u8>>>(&self, data: B) {
         let mut iface = self.iface.borrow_mut();
         iface.device_mut().phy_rx(data.into());
     }
 
+    #[inline]
     pub fn poll(&self) -> Result<()> {
         let mut iface = self.iface.borrow_mut();
         iface

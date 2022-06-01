@@ -1,8 +1,10 @@
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
+use std::cell::RefCell;
 use std::convert::TryInto;
 use std::fmt;
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
@@ -19,6 +21,7 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub type SessionResult<T> = Result<T, SessionError>;
+pub type DropHandler = Box<dyn FnOnce()>;
 
 /// Udp connection to other Node. It is either peer-to-peer connection
 /// or central server session. Implements functions for sending
@@ -31,6 +34,7 @@ pub struct Session {
 
     sink: OutStream,
     pub(crate) dispatcher: Dispatcher,
+    pub(crate) drop_handler: Rc<RefCell<Option<DropHandler>>>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -62,6 +66,7 @@ impl Session {
             sink,
             created: Instant::now(),
             dispatcher: Dispatcher::default(),
+            drop_handler: Default::default(),
         })
     }
 
@@ -219,6 +224,14 @@ impl Session {
     pub async fn close(&self) -> anyhow::Result<()> {
         self.disconnect().await
     }
+
+    /// Add a function that will be executed on session drop
+    pub fn on_drop<F>(&self, f: F)
+    where
+        F: FnOnce() + 'static,
+    {
+        self.drop_handler.borrow_mut().replace(Box::new(f));
+    }
 }
 
 impl Session {
@@ -255,6 +268,7 @@ impl Session {
         self.dispatcher.clone().response::<T>(request_id, timeout)
     }
 
+    #[inline]
     pub async fn send(&self, packet: impl Into<codec::PacketKind>) -> anyhow::Result<()> {
         let mut sink = self.sink.clone();
         Ok(sink.send((packet.into(), self.remote)).await?)
@@ -264,6 +278,11 @@ impl Session {
 impl Drop for Session {
     fn drop(&mut self) {
         log::trace!("Dropping Session {} ({}).", self.id, self.remote);
+
+        let on_drop = self.drop_handler.borrow_mut().take();
+        if let Some(f) = on_drop {
+            f()
+        }
     }
 }
 

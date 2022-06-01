@@ -93,7 +93,7 @@ impl EndpointsChecker {
         Ok(endpoints)
     }
 
-    fn incorrect_packet(packet_type: &str, from: SocketAddr) -> LocalBoxFuture<()> {
+    fn incorrect_packet(packet_type: &str, from: SocketAddr) {
         log::warn!(
             "{} packet received on Socket for discovering endpoints (from {}). \
             Correct client implementation shouldn't send this. This could be either bug \
@@ -101,7 +101,6 @@ impl EndpointsChecker {
             packet_type,
             from,
         );
-        Box::pin(futures::future::ready(()))
     }
 }
 
@@ -126,8 +125,9 @@ impl Handler for EndpointsChecker {
         _session_id: Vec<u8>,
         _control: proto::Control,
         from: SocketAddr,
-    ) -> LocalBoxFuture<'static, ()> {
-        Self::incorrect_packet("Control", from)
+    ) -> Option<LocalBoxFuture<'static, ()>> {
+        Self::incorrect_packet("Control", from);
+        None
     }
 
     #[inline]
@@ -136,12 +136,18 @@ impl Handler for EndpointsChecker {
         _session_id: Vec<u8>,
         _request: proto::Request,
         from: SocketAddr,
-    ) -> LocalBoxFuture<'static, ()> {
-        Self::incorrect_packet("Request", from)
+    ) -> Option<LocalBoxFuture<'static, ()>> {
+        Self::incorrect_packet("Request", from);
+        None
     }
 
     #[inline]
-    fn on_forward(self, _forward: proto::Forward, from: SocketAddr) -> LocalBoxFuture<'static, ()> {
-        Self::incorrect_packet("Forward", from)
+    fn on_forward(
+        self,
+        _forward: proto::Forward,
+        from: SocketAddr,
+    ) -> Option<LocalBoxFuture<'static, ()>> {
+        Self::incorrect_packet("Forward", from);
+        None
     }
 }
