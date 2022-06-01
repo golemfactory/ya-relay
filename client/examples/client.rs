@@ -43,7 +43,7 @@ pub struct FindNode {
     node_id: NodeId,
 }
 
-#[actix_rt::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(

@@ -18,10 +18,11 @@ num-traits = "0.2"
 rand = { version = "0.8", features = ["std"] }
 smoltcp = "0.8"
 thiserror = "1.0"
-tokio = { version = "0.2", features = ["rt-core", "rt-util", "stream", "time"] }
+tokio = { version = "1", features = ["time", "rt"] }
+tokio-stream = "0.1"
 
 [dev-dependencies]
 anyhow = "1.0"
 hex = "0.4"
 sha3 = "0.8"
-tokio = { version = "0.2", features = ["macros", "rt-core", "rt-util", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "sync", "time"] }

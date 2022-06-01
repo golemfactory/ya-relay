@@ -7,6 +7,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_client::client::Forwarded;
 use ya_relay_client::testing::forwarding_utils::spawn_receive;
@@ -56,7 +57,7 @@ async fn test_forward_unreliable() -> anyhow::Result<()> {
     tx1.send(vec![1u8]).await?;
     tx2.send(vec![2u8]).await?;
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(received1.load(SeqCst));
     assert!(received2.load(SeqCst));
@@ -104,7 +105,7 @@ async fn test_forward_reliable() -> anyhow::Result<()> {
     tx1.send(vec![1u8]).await?;
     tx2.send(vec![2u8]).await?;
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(received1.load(SeqCst));
     assert!(received2.load(SeqCst));
@@ -150,7 +151,7 @@ async fn test_p2p_unreliable() -> anyhow::Result<()> {
     tx1.send(vec![1u8]).await?;
     tx2.send(vec![2u8]).await?;
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(received1.load(SeqCst));
     assert!(received2.load(SeqCst));
@@ -195,7 +196,7 @@ async fn test_p2p_reliable() -> anyhow::Result<()> {
     tx1.send(vec![1u8]).await?;
     tx2.send(vec![2u8]).await?;
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     assert!(received1.load(SeqCst));
     assert!(received2.load(SeqCst));
@@ -233,14 +234,15 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
         tokio::task::spawn_local({
             let received = received.clone();
             async move {
-                rx.for_each(|item| {
-                    let received = received.clone();
-                    async move {
-                        let last_val = received.clone().fetch_add(item.payload.len(), SeqCst);
-                        println!("{} received {:?} last_val: {}", label, item, last_val + 1);
-                    }
-                })
-                .await;
+                UnboundedReceiverStream::new(rx)
+                    .for_each(|item| {
+                        let received = received.clone();
+                        async move {
+                            let last_val = received.clone().fetch_add(item.payload.len(), SeqCst);
+                            println!("{} received {:?} last_val: {}", label, item, last_val + 1);
+                        }
+                    })
+                    .await;
             }
         });
     }
@@ -255,11 +257,11 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
         tx1.send(big_payload.clone()).await?;
         send_cnt += big_payload.len();
     }
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
     let rec_cnt = received2.load(SeqCst);
     println!("Send counter: {}, Received counter: {}", send_cnt, rec_cnt);
     let _pausd_receive_count = rec_cnt;
-    tokio::time::delay_for(Duration::from_secs(10)).await;
+    tokio::time::sleep(Duration::from_secs(10)).await;
     let rec_cnt = received2.load(SeqCst);
     println!("Send counter: {}, Received counter: {}", send_cnt, rec_cnt);
     // It's hard to define exact value, as this test may catch

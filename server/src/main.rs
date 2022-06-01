@@ -27,7 +27,6 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Config::from_args();
-
     let server = Server::bind_udp(args).await?;
     server.run().await
 }

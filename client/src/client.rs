@@ -161,7 +161,7 @@ impl Client {
         let this = self.clone();
         let ping_handle = spawn_local_abortable(async move {
             loop {
-                tokio::time::delay_for(this.config.ping_measure_interval).await;
+                tokio::time::sleep(this.config.ping_measure_interval).await;
                 this.ping_sessions().await;
             }
         });

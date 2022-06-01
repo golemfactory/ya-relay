@@ -160,14 +160,14 @@ impl Network {
 
         async move {
             let pending = futures::future::join_all(futs);
-            let timeout = tokio::time::delay_for(timeout);
+            let timeout = tokio::time::sleep(timeout).boxed_local();
 
             if let Either::Right((_, pending)) = futures::future::select(pending, timeout).await {
                 handles.into_iter().for_each(|h| net.stack.abort(h));
                 net.poll();
 
-                let timeout = tokio::time::delay_for(Duration::from_millis(500));
-                let _ = futures::future::select(pending, timeout).await;
+                let timeout = tokio::time::sleep(Duration::from_millis(500));
+                let _ = futures::future::select(pending, timeout.boxed_local()).await;
             }
         }
         .boxed_local()
@@ -569,7 +569,7 @@ impl StackPoller {
             let handle = spawn_local(async move {
                 loop {
                     let delay = poller.interval();
-                    tokio::time::delay_for(delay).await;
+                    tokio::time::sleep(delay).await;
                     poller.net.borrow().as_ref().unwrap().poll();
                 }
             });
@@ -724,6 +724,7 @@ mod tests {
     use smoltcp::phy::Medium;
     use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
     use tokio::task::spawn_local;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
     use crate::{Connection, IngressEvent, Network, NetworkConfig, Protocol, Stack};
@@ -911,28 +912,32 @@ mod tests {
         // net 1
         // inject egress packets from net 2 into net 1 rx buffer
         net_inject(
-            net2.egress_receiver()
-                .unwrap()
+            UnboundedReceiverStream::new(net2.egress_receiver().unwrap())
                 .map(|e| e.payload.into_vec()),
             net1.clone(),
         );
         // process net 1 events
         let (tx, rx) = mpsc::channel(1);
-        net_receive(tx, net1.ingress_receiver().unwrap());
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net1.ingress_receiver().unwrap()),
+        );
         // future for calculating checksum from data received by net 1
         let consume1 = consume_data(rx, total);
 
         // net 2
         // inject egress packets from net 1 into net 2 rx buffer
         net_inject(
-            net1.egress_receiver()
-                .unwrap()
+            UnboundedReceiverStream::new(net1.egress_receiver().unwrap())
                 .map(|e| e.payload.into_vec()),
             net2.clone(),
         );
         // process net 2 events
         let (tx, rx) = mpsc::channel(1);
-        net_receive(tx, net2.ingress_receiver().unwrap());
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net2.ingress_receiver().unwrap()),
+        );
         // future for calculating checksum from data received by net 2
         let consume2 = consume_data(rx, total);
 

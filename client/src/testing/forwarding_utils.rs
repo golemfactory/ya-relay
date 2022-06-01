@@ -5,6 +5,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use crate::client::ForwardSender;
 use crate::Client;
@@ -24,14 +25,15 @@ pub fn spawn_receive<T: std::fmt::Debug + 'static>(
     tokio::task::spawn_local({
         let received = received;
         async move {
-            rx.for_each(|item| {
-                let received = received.clone();
-                async move {
-                    println!("{} received {:?}", label, item);
-                    received.clone().store(true, SeqCst)
-                }
-            })
-            .await;
+            UnboundedReceiverStream::new(rx)
+                .for_each(|item| {
+                    let received = received.clone();
+                    async move {
+                        println!("{} received {:?}", label, item);
+                        received.clone().store(true, SeqCst)
+                    }
+                })
+                .await;
         }
     });
 }
@@ -79,7 +81,7 @@ pub async fn check_forwarding(
 
     tx.send(vec![1u8]).await?;
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     if !received.load(SeqCst) {
         bail!("Data not received.")
@@ -106,7 +108,7 @@ pub async fn check_broadcast(
 
     sender_client.broadcast(vec![1u8], nodes_count).await?;
 
-    tokio::time::delay_for(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     if !received.load(SeqCst) {
         bail!("Data not received.")

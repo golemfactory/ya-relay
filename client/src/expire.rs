@@ -40,7 +40,7 @@ pub async fn track_sessions_expiration(layer: SessionManager) {
             "Next sessions cleanup: {:?}",
             first_to_expiring.saturating_duration_since(Instant::now())
         );
-        tokio::time::delay_until(first_to_expiring).await;
+        tokio::time::sleep_until(first_to_expiring).await;
     }
 }
 
