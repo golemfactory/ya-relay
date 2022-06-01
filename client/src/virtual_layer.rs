@@ -214,10 +214,13 @@ impl TcpLayer {
                 "[VirtualTcp] Incoming message from new Node [{}]. Adding connection.",
                 node.id
             );
-
             self.add_virt_node(node).await.ok();
         }
+        self.inject(payload);
+    }
 
+    #[inline]
+    pub fn inject(&self, payload: Payload) {
         self.net.receive(payload.into_vec());
         self.net.poll();
     }

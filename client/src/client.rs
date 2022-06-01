@@ -450,7 +450,7 @@ impl ClientBuilder {
                 .unwrap_or_else(|| Duration::from_secs(25)),
             tcp_config: NetworkConfig {
                 max_transmission_unit: mtu,
-                buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(32),
+                buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(96),
             },
             pcap_path,
             ping_measure_interval: Duration::from_secs(300),

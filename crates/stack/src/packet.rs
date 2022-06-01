@@ -263,7 +263,7 @@ impl<'a> PeekPacket<'a> for IpV4Packet<'a> {
         let len = ntoh_u16(&data[IpV4Field::TOTAL_LEN]).unwrap() as usize;
         let payload_off = Self::read_header_len(data);
 
-        if data_len < len || len < payload_off {
+        if len < payload_off {
             return Err(Error::PacketMalformed("IPv4: payload too short".into()));
         }
         Ok(())
