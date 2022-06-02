@@ -21,7 +21,7 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
-use ya_relay_proto::proto::{Forward, RequestId};
+use ya_relay_proto::proto::{Forward, RequestId, SlotId};
 use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
@@ -46,7 +46,7 @@ pub struct SessionManager {
     pub virtual_tcp: TcpLayer,
     pub registry: NodesRegistry,
 
-    virtual_tcp_fast_lane: Rc<RefCell<HashSet<SocketAddr>>>,
+    virtual_tcp_fast_lane: Rc<RefCell<HashSet<(SocketAddr, SlotId)>>>,
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
 }
@@ -392,10 +392,12 @@ impl SessionManager {
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
-        log::trace!(
+        log::debug!(
             "Removing Node [{}] information. Stopping communication..",
             node_id
         );
+
+        self.virtual_tcp_fast_lane.borrow_mut().clear();
 
         self.registry.remove_node(node_id).await.ok();
         self.virtual_tcp.remove_node(node_id).await.ok();
@@ -406,9 +408,6 @@ impl SessionManager {
             let tx_u = state.forward_unreliable.remove(&node_id);
 
             if let Some(session) = state.p2p_sessions.remove(&node_id) {
-                self.virtual_tcp_fast_lane
-                    .borrow_mut()
-                    .remove(&session.remote);
                 state.nodes_addr.remove(&session.remote);
             }
 
@@ -424,10 +423,6 @@ impl SessionManager {
 
     pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
         log::info!("Closing session {} ({})", session.id, session.remote);
-
-        self.virtual_tcp_fast_lane
-            .borrow_mut()
-            .remove(&session.remote);
 
         if let Some(node_id) = {
             let mut state = self.state.write().await;
@@ -1215,10 +1210,11 @@ impl Handler for SessionManager {
 
     fn on_forward(self, forward: Forward, from: SocketAddr) -> Option<LocalBoxFuture<'static, ()>> {
         let reliable = forward.is_reliable();
+        let slot = forward.slot;
 
         if reliable && {
             let fast_lane = self.virtual_tcp_fast_lane.borrow();
-            fast_lane.contains(&from)
+            fast_lane.contains(&(from, slot))
         } {
             self.virtual_tcp.inject(forward.payload);
             return None;
@@ -1233,7 +1229,7 @@ impl Handler for SessionManager {
                 from
             );
 
-            let node = if forward.slot == 0 {
+            let node = if slot == 0 {
                 // Direct message from other Node.
                 match { myself.state.read().await.nodes_addr.get(&from).cloned() } {
                     Some(id) => myself.registry.resolve_node(id).await?,
@@ -1249,16 +1245,16 @@ impl Handler for SessionManager {
                 }
             } else {
                 // Messages forwarded through relay server or other relay Node.
-                match myself.registry.resolve_slot(forward.slot).await {
+                match myself.registry.resolve_slot(slot).await {
                     Ok(node) => node,
                     Err(_) => {
                         log::debug!(
                             "Forwarding from unknown Node (slot {}). Resolving..",
-                            forward.slot
+                            slot
                         );
 
                         let session = myself.server_session().await?;
-                        let node = session.find_slot(forward.slot).await?;
+                        let node = session.find_slot(slot).await?;
                         let ident = Identity::try_from(&node)?;
 
                         log::debug!("Establishing connection to Node {} (slot {})", ident.node_id, node.slot);
@@ -1271,11 +1267,11 @@ impl Handler for SessionManager {
 
             if reliable {
                 myself.virtual_tcp.receive(node, forward.payload).await;
+                myself.virtual_tcp_fast_lane.borrow_mut().insert((from, slot));
             } else {
                 myself.dispatch_unreliable(node.id, forward).await;
             }
 
-            myself.virtual_tcp_fast_lane.borrow_mut().insert(from);
             anyhow::Result::<()>::Ok(())
         }
         .map_err(|e| log::error!("On forward error: {}", e))

@@ -281,8 +281,7 @@ fn print_table(headers: &[&str], values: Vec<Vec<String>>, table_format: TableFo
     let _ = table.printstd();
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(
         "RUST_LOG",
@@ -337,4 +336,10 @@ async fn main() -> anyhow::Result<()> {
     client.shutdown().await?;
 
     Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    let local_set = tokio::task::LocalSet::new();
+    local_set.run_until(run()).await
 }
