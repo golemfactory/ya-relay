@@ -76,7 +76,7 @@ impl GuardedSessions {
         } else {
             // If we are waiting for node to connect, we should already have entry
             // initialized by function `guard_initialization`. So this is programming error.
-            bail!("Programming error. Waiting for node to connect, without calling `guard_initialization` earlier.")
+            bail!("Programming error. Waiting for node [{node_id}] to connect, without calling `guard_initialization` earlier.")
         }
     }
 
