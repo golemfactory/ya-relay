@@ -616,6 +616,22 @@ impl SessionManager {
         );
     }
 
+    async fn filter_own_addresses(&self, endpoints: &[proto::Endpoint]) -> Vec<SocketAddr> {
+        let own_addrs: Vec<_> = {
+            let state = self.state.read().await;
+            vec![state.bind_addr, state.public_addr]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        endpoints
+            .iter()
+            .cloned()
+            .filter_map(|e| e.try_into().ok())
+            .filter(|a| !own_addrs.iter().any(|o| o == a))
+            .collect()
+    }
+
     async fn resolve(
         &self,
         node_id: &[u8],
@@ -624,33 +640,33 @@ impl SessionManager {
     ) -> anyhow::Result<NodeEntry> {
         let node_id: NodeId = node_id.try_into()?;
         if node_id == self.config.node_id {
-            bail!("remote id belongs to this node");
+            bail!("Remote id belongs to this node.");
         }
 
         // Check whether we are already connected to a node with this id
         if let Ok(entry) = self.registry.resolve_node(node_id).await {
+            log::debug!(
+                "Resolving Node [{}]. Returning already existing connection.",
+                node_id
+            );
             return Ok(entry);
         }
 
-        let own_addrs: Vec<_> = {
-            let state = self.state.read().await;
-            vec![state.bind_addr, state.public_addr]
-                .into_iter()
-                .flatten()
-                .collect()
-        };
-        let addrs: Vec<SocketAddr> = endpoints
-            .iter()
-            .cloned()
-            .filter_map(|e| e.try_into().ok())
-            .filter(|a| !own_addrs.iter().any(|o| o == a))
-            .collect();
+        let addrs: Vec<SocketAddr> = self.filter_own_addresses(endpoints).await;
 
         let lock = self.guarded.guard_initialization(node_id, &addrs).await;
         let _guard = lock.write().await;
 
         // Check whether we are already connected to a node with any of the addresses
-        self.assert_not_connected(&addrs).await?;
+        if let Err(_) = self.assert_not_connected(&addrs).await {
+            log::debug!(
+                "Resolving Node [{}]. Returning already existing connection.",
+                node_id
+            );
+
+            drop(_guard);
+            return self.registry.resolve_node(node_id).await;
+        }
 
         let this = self.clone();
         Ok(self
@@ -1257,7 +1273,7 @@ impl Handler for SessionManager {
                         let node = session.find_slot(slot).await?;
                         let ident = Identity::try_from(&node)?;
 
-                        log::debug!("Establishing connection to Node {} (slot {})", ident.node_id, node.slot);
+                        log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
                         myself
                             .resolve(ident.node_id.as_ref(), &node.endpoints, node.slot)
                             .await?

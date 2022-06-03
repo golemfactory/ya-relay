@@ -77,7 +77,7 @@ impl GuardedSessions {
         }
     }
 
-    pub async fn is_allowed_unguarded(&self, node_id: NodeId) -> bool {
+    pub async fn try_access_unguarded(&self, node_id: NodeId) -> bool {
         let state = self.state.read().await;
         if let Some(target) = state.by_node_id.get(&node_id) {
             target.wait_for_connection.swap(false, Ordering::SeqCst)

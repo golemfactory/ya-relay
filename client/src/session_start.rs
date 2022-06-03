@@ -98,7 +98,12 @@ impl StartingSessions {
             timeout(self.layer.config.incoming_session_timeout, async move {
                 // In case of ReverseConnection, we are awaiting incoming connection from
                 // other party
-                if this.guarded.is_allowed_unguarded(remote_id).await {
+                if this.guarded.try_access_unguarded(remote_id).await {
+                    log::debug!(
+                        "Node [{}] enters unguarded session initialization.",
+                        remote_id
+                    );
+
                     this.init_session_handler(
                         with, request_id, session_id, remote_id, request, receiver,
                     )
