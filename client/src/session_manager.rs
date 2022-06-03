@@ -726,45 +726,34 @@ impl SessionManager {
         addrs: Vec<SocketAddr>,
     ) -> SessionResult<Arc<Session>> {
         if addrs.is_empty() {
-            // We are trying to connect to Node without public IP. Trying to send
-            // ReverseConnection message, so Node will try to connect to us.
-            if self.get_public_addr().await.is_some() {
-                return Ok(self.try_reverse_connection(node_id).await?);
-            }
-
-            return Err(anyhow!(
-                "Node [{}] has no public endpoints. Not establishing p2p session",
-                node_id
-            )
-            .into());
+            log::debug!("Node [{node_id}] has no public endpoints.");
         }
 
+        // Try to connect to remote Node's public endpoints.
         for addr in addrs {
             match self.init_p2p_session(addr, node_id).await {
                 Err(SessionError::Retry(err)) => {
                     log::debug!(
-                        "Failed to establish p2p session with node [{}], address: {}. Error: {}",
-                        node_id,
-                        addr,
-                        err
+                        "Failed to establish p2p session with node [{node_id}], address: {addr}. Error: {err}"
                     )
                 }
                 result => return result,
             }
         }
 
-        Err(anyhow!(
-            "All attempts to establish direct session with node [{}] failed",
-            node_id
-        )
-        .into())
+        // We are trying to connect to Node without public IP. Trying to send
+        // ReverseConnection message, so Node will try to connect to us.
+        if self.get_public_addr().await.is_some() {
+            return Ok(self.try_reverse_connection(node_id).await?);
+        }
+
+        Err(anyhow!("All attempts to establish direct session with node [{node_id}] failed").into())
     }
 
     async fn try_reverse_connection(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
-        log::debug!(
-            "Request reverse connection. me={}, remote={}",
+        log::info!(
+            "Request reverse connection. me={}, remote={node_id}",
             self.config.node_id,
-            node_id
         );
 
         let mut awaiting = self.guarded.register_waiting_for_node(node_id).await?;
@@ -772,7 +761,7 @@ impl SessionManager {
         let server_session = self.server_session().await?;
         server_session.reverse_connection(node_id).await?;
 
-        log::trace!("ReverseConnection - Requested with node {}", &node_id);
+        log::debug!("ReverseConnection requested with node [{node_id}]");
 
         // We don't want to wait for connection finish, because we need longer timeout for this.
         // But if we won't receive any message from other Node, we would like to exit early,
@@ -793,22 +782,16 @@ impl SessionManager {
 
         match result {
             Ok(Ok(session)) => {
-                log::debug!("ReverseConnection - Got session with node. {}", &node_id);
+                log::info!("ReverseConnection - got session with node: [{node_id}]");
                 Ok(session)
             }
             Ok(Err(e)) => {
-                log::debug!(
-                    "ReverseConnection - failed to establish session with node. {}",
-                    &node_id
-                );
+                log::info!("ReverseConnection - failed to establish session with: [{node_id}]");
                 Err(e.into())
             }
             Err(_) => {
-                log::debug!("ReverseConnection - Direct session timed out. {}", &node_id);
-                bail!(
-                    "Not able to setup ReverseConnection within timeout with node {}",
-                    node_id
-                )
+                log::info!("ReverseConnection - waiting for session timed out. Node: [{node_id}]");
+                bail!("Not able to setup ReverseConnection within timeout with node: [{node_id}]")
             }
         }
     }
@@ -1098,8 +1081,6 @@ impl Handler for SessionManager {
         control: proto::Control,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        log::debug!("Received control packet from {}: {:?}", from, control);
-
         if let Some(kind) = control.kind {
             let fut = match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
@@ -1154,7 +1135,7 @@ impl Handler for SessionManager {
                     proto::control::Disconnected { by: Some(by) },
                 ) => {
                     async move {
-                        log::trace!("Got Disconnected! {:?}", by);
+                        log::debug!("Got Disconnected from {}", from);
 
                         if let Ok(node) = match by {
                             By::Slot(id) => self.registry.resolve_slot(id).await,
@@ -1183,7 +1164,7 @@ impl Handler for SessionManager {
                     .boxed_local()
                 }
                 _ => {
-                    log::trace!("Un-handled control packet: {:?}", kind);
+                    log::debug!("Un-handled control packet: {:?}", kind);
                     return None;
                 }
             };
