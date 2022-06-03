@@ -144,7 +144,7 @@ impl StartingSessions {
             Err(result)
         })
         .then(move |result| async move {
-            this2.guarded.stop_guarding(NodeId::default(), result).await;
+            this2.guarded.stop_guarding(remote_id, result).await;
         });
 
         {
