@@ -263,6 +263,17 @@ impl StartingSessions {
                 ..Default::default()
             };
 
+            // Register incoming session before we send final response.
+            // This way we will avoid race conditions, in case remote Node will attempt
+            // to immediately send us Forward packet.
+            let session = self
+                .layer
+                .add_incoming_session(with, session_id, node_id, identities)
+                .await
+                .map_err(|e| {
+                    SessionError::Drop(format!("Failed to add incoming session. {}", e))
+                })?;
+
             tmp_session
                 .send(proto::Packet::response(
                     request_id,
@@ -273,14 +284,6 @@ impl StartingSessions {
                 .await
                 .map_err(|_| {
                     SessionError::Drop("Failed to send challenge response.".to_string())
-                })?;
-
-            let session = self
-                .layer
-                .add_incoming_session(with, session_id, node_id, identities)
-                .await
-                .map_err(|e| {
-                    SessionError::Drop(format!("Failed to add incoming session. {}", e))
                 })?;
 
             log::info!(
