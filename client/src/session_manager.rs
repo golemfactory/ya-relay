@@ -790,7 +790,10 @@ impl SessionManager {
                 Err(e.into())
             }
             Err(_) => {
-                log::info!("ReverseConnection - waiting for session timed out. Node: [{node_id}]");
+                log::info!(
+                    "ReverseConnection - waiting for session timed out ({}). Node: [{node_id}]",
+                    humantime::format_duration(self.config.reverse_connection_real_timeout)
+                );
                 bail!("Not able to setup ReverseConnection within timeout with node: [{node_id}]")
             }
         }

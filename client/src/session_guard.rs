@@ -38,11 +38,14 @@ impl GuardedSessions {
     }
 
     pub async fn stop_guarding(&self, node_id: NodeId, result: SessionResult<Arc<Session>>) {
+        log::debug!("Stop guarding session initialization with: [{node_id}]");
+
         let mut state = self.state.write().await;
         if let Some(target) = state.find_by_id(node_id) {
             state.remove(&target);
-
             drop(state);
+
+            log::debug!("Sending session init finish notification for Node: {node_id}");
             target.notify_finish.send(result).ok();
         }
     }
