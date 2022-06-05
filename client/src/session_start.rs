@@ -274,6 +274,8 @@ impl StartingSessions {
                     SessionError::Drop(format!("Failed to add incoming session. {}", e))
                 })?;
 
+            // Temporarily pause forwarding from this node
+            tmp_session.forward_pause.enable();
             tmp_session
                 .send(proto::Packet::response(
                     request_id,
@@ -285,6 +287,10 @@ impl StartingSessions {
                 .map_err(|_| {
                     SessionError::Drop("Failed to send challenge response.".to_string())
                 })?;
+            // Await for forwarding to be resumed
+            if let Some(resumed) = tmp_session.forward_pause.next() {
+                let _ = resumed.await;
+            }
 
             log::info!(
                 "Incoming P2P session {} with Node: [{}], address: {} established.",

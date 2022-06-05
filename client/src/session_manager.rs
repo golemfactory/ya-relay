@@ -1,5 +1,4 @@
 use anyhow::{anyhow, bail};
-use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
@@ -33,8 +32,6 @@ use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
 use crate::virtual_layer::TcpLayer;
 
-const PAUSE_FWD_DELAY: i64 = 5;
-
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
 /// like `NodeId` or `SlotId`.
@@ -59,12 +56,12 @@ pub struct SessionManagerState {
     bind_addr: Option<SocketAddr>,
 
     pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
+    pub(crate) sessions_by_id: HashMap<SessionId, Arc<Session>>,
     pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
     pub(crate) nodes_identity: HashMap<NodeId, (NodeId, PublicKey)>,
 
     forward_reliable: HashMap<NodeId, ForwardSender>,
     forward_unreliable: HashMap<NodeId, ForwardSender>,
-    forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     p2p_sessions: HashMap<NodeId, Arc<Session>>,
     ingress_channel: Channel<Forwarded>,
@@ -89,11 +86,11 @@ impl SessionManager {
                 public_addr: None,
                 bind_addr: None,
                 sessions: Default::default(),
+                sessions_by_id: Default::default(),
                 nodes_addr: Default::default(),
                 nodes_identity: Default::default(),
                 forward_reliable: Default::default(),
                 forward_unreliable: Default::default(),
-                forward_paused_till: Arc::new(RwLock::new(Default::default())),
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
@@ -255,6 +252,13 @@ impl SessionManager {
             .add_session(addr, session_id, remote_id, identities)
             .await?;
 
+        tmp_session
+            .send(proto::Packet::control(
+                tmp_session.id.to_vec(),
+                ya_relay_proto::proto::control::ResumeForwarding { slot: 0 },
+            ))
+            .await?;
+
         log::trace!(
             "[{}] session {} established with address: {}",
             this_id,
@@ -304,11 +308,11 @@ impl SessionManager {
 
         let session = self.init_session(addr, false, None).await?;
 
-        self.state
-            .write()
-            .await
-            .sessions
-            .insert(addr, session.clone());
+        {
+            let mut state = self.state.write().await;
+            state.sessions.insert(addr, session.clone());
+            state.sessions_by_id.insert(session.id, session.clone());
+        }
 
         log::info!(
             "Established session {} with NET relay server ({})",
@@ -426,7 +430,9 @@ impl SessionManager {
 
         if let Some(node_id) = {
             let mut state = self.state.write().await;
-            state.sessions.remove(&session.remote);
+            if let Some(session) = state.sessions.remove(&session.remote) {
+                state.sessions_by_id.remove(&session.id);
+            }
             state.nodes_addr.remove(&session.remote)
         } {
             // We are closing p2p session with Node.
@@ -534,14 +540,10 @@ impl SessionManager {
         node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
-        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        let pause = node.session.forward_pause.clone();
         let session = node.session.clone();
 
-        while let Some(payload) = self
-            .virtual_tcp
-            .get_next_fwd_payload(&mut rx, paused_check.clone())
-            .await
-        {
+        while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
             log::trace!(
                 "Forwarding message to {} through {} (session id: {})",
                 node.id,
@@ -578,13 +580,9 @@ impl SessionManager {
         node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
-        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        let pause = node.session.forward_pause.clone();
 
-        while let Some(payload) = self
-            .virtual_tcp
-            .get_next_fwd_payload(&mut rx, paused_check.clone())
-            .await
-        {
+        while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
             log::trace!(
                 "Forwarding message (U) to {} through {} (session id: {})",
                 node.id,
@@ -658,7 +656,7 @@ impl SessionManager {
         let _guard = lock.write().await;
 
         // Check whether we are already connected to a node with any of the addresses
-        if let Err(_) = self.assert_not_connected(&addrs).await {
+        if self.assert_not_connected(&addrs).await.is_err() {
             log::debug!(
                 "Resolving Node [{}]. Returning already existing connection.",
                 node_id
@@ -1080,7 +1078,7 @@ impl Handler for SessionManager {
 
     fn on_control(
         self,
-        _session_id: Vec<u8>,
+        session_id: Vec<u8>,
         control: proto::Control,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
@@ -1114,26 +1112,60 @@ impl Handler for SessionManager {
                     });
                     return None;
                 }
-                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => async move {
-                    log::trace!("Got Pause! {:?}", message);
-                    let lock = {
-                        let state = self.state.read().await;
-                        state.forward_paused_till.clone()
+                ya_relay_proto::proto::control::Kind::PauseForwarding(_) => {
+                    let session_id = match SessionId::try_from(session_id) {
+                        Ok(id) => id,
+                        Err(_) => {
+                            log::trace!("Received a control packet with an invalid session id");
+                            return None;
+                        }
                     };
-                    lock.write()
-                        .await
-                        .replace(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY));
+                    async move {
+                        if let Some(session) = {
+                            let state = self.state.read().await;
+                            state.sessions_by_id.get(&session_id).cloned()
+                        } {
+                            if session.remote == from {
+                                log::trace!("Forwarding paused for session {:?}", session.id);
+                                session.pause_forwarding().await;
+                            } else {
+                                log::trace!(
+                                    "Invalid origin of a Pause control packet {:?} for session {}",
+                                    from,
+                                    session.id
+                                );
+                            }
+                        }
+                    }
+                    .boxed_local()
                 }
-                .boxed_local(),
-                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => async move {
-                    log::trace!("Got Resume! {:?}", message);
-                    let lock = {
-                        let state = self.state.read().await;
-                        state.forward_paused_till.clone()
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(_) => {
+                    let session_id = match SessionId::try_from(session_id) {
+                        Ok(id) => id,
+                        Err(_) => {
+                            log::trace!("Received a control packet with an invalid session id");
+                            return None;
+                        }
                     };
-                    lock.write().await.take();
+                    async move {
+                        if let Some(session) = {
+                            let state = self.state.read().await;
+                            state.sessions_by_id.get(&session_id).cloned()
+                        } {
+                            if session.remote == from {
+                                log::trace!("Forwarding resumed for session {:?}", session.id);
+                                session.resume_forwarding().await;
+                            } else {
+                                log::trace!(
+                                    "Invalid origin of a Resume control packet {:?} for session {}",
+                                    from,
+                                    session.id
+                                );
+                            }
+                        }
+                    }
+                    .boxed_local()
                 }
-                .boxed_local(),
                 ya_relay_proto::proto::control::Kind::Disconnected(
                     proto::control::Disconnected { by: Some(by) },
                 ) => {
@@ -1167,7 +1199,7 @@ impl Handler for SessionManager {
                     .boxed_local()
                 }
                 _ => {
-                    log::debug!("Un-handled control packet: {:?}", kind);
+                    log::debug!("Unhandled control packet: {:?}", kind);
                     return None;
                 }
             };
@@ -1285,6 +1317,9 @@ impl Handler for SessionManager {
 impl SessionManagerState {
     /// External function should acquire lock.
     pub fn add_session(&mut self, addr: SocketAddr, session: Arc<Session>) {
+        self.sessions_by_id
+            .entry(session.id)
+            .or_insert_with(|| session.clone());
         self.sessions.entry(addr).or_insert(session);
     }
 
