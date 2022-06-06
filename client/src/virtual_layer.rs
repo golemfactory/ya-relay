@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context};
-use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::StreamExt;
 use std::collections::HashMap;
@@ -13,6 +12,7 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
+use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
@@ -180,22 +180,11 @@ impl TcpLayer {
     pub async fn get_next_fwd_payload<T>(
         &self,
         rx: &mut mpsc::Receiver<T>,
-        forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
+        forward_pause: &Actuator,
     ) -> Option<T> {
-        let raw_date = {
-            // dont lock the state longer then needed.
-            *forward_paused_till.read().await
-        };
-        if let Some(date) = raw_date {
-            if let Ok(duration) = (date - Utc::now()).to_std() {
-                log::debug!("Receiver Paused!!! {:?}", duration);
-                tokio::time::sleep(duration).await;
-                log::trace!("Receiver Continues...");
-            }
-            (*forward_paused_till.write().await) = None;
-            log::debug!("reset date");
+        if let Some(resumed) = forward_pause.next() {
+            let _ = resumed.await;
         }
-        log::trace!("Waiting for data...");
         rx.next().await
     }
 

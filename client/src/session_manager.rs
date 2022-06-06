@@ -1,5 +1,4 @@
 use anyhow::{anyhow, bail};
-use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
@@ -33,8 +32,6 @@ use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
 use crate::virtual_layer::TcpLayer;
 
-const PAUSE_FWD_DELAY: i64 = 5;
-
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
 /// like `NodeId` or `SlotId`.
@@ -64,7 +61,6 @@ pub struct SessionManagerState {
 
     forward_reliable: HashMap<NodeId, ForwardSender>,
     forward_unreliable: HashMap<NodeId, ForwardSender>,
-    forward_paused_till: Arc<RwLock<Option<DateTime<Utc>>>>,
 
     p2p_sessions: HashMap<NodeId, Arc<Session>>,
     ingress_channel: Channel<Forwarded>,
@@ -93,7 +89,6 @@ impl SessionManager {
                 nodes_identity: Default::default(),
                 forward_reliable: Default::default(),
                 forward_unreliable: Default::default(),
-                forward_paused_till: Arc::new(RwLock::new(Default::default())),
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
@@ -255,6 +250,13 @@ impl SessionManager {
             .add_session(addr, session_id, remote_id, identities)
             .await?;
 
+        session
+            .send(proto::Packet::control(
+                session.id.to_vec(),
+                ya_relay_proto::proto::control::ResumeForwarding { slot: 0 },
+            ))
+            .await?;
+
         log::trace!(
             "[{}] session {} established with address: {}",
             this_id,
@@ -304,11 +306,10 @@ impl SessionManager {
 
         let session = self.init_session(addr, false, None).await?;
 
-        self.state
-            .write()
-            .await
-            .sessions
-            .insert(addr, session.clone());
+        {
+            let mut state = self.state.write().await;
+            state.sessions.insert(addr, session.clone());
+        }
 
         log::info!(
             "Established session {} with NET relay server ({})",
@@ -534,14 +535,10 @@ impl SessionManager {
         node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
-        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        let pause = node.session.forward_pause.clone();
         let session = node.session.clone();
 
-        while let Some(payload) = self
-            .virtual_tcp
-            .get_next_fwd_payload(&mut rx, paused_check.clone())
-            .await
-        {
+        while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
             log::trace!(
                 "Forwarding message to {} through {} (session id: {})",
                 node.id,
@@ -578,13 +575,9 @@ impl SessionManager {
         node: NodeEntry,
         mut rx: mpsc::Receiver<Vec<u8>>,
     ) {
-        let paused_check = { self.state.read().await.forward_paused_till.clone() };
+        let pause = node.session.forward_pause.clone();
 
-        while let Some(payload) = self
-            .virtual_tcp
-            .get_next_fwd_payload(&mut rx, paused_check.clone())
-            .await
-        {
+        while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
             log::trace!(
                 "Forwarding message (U) to {} through {} (session id: {})",
                 node.id,
@@ -658,7 +651,7 @@ impl SessionManager {
         let _guard = lock.write().await;
 
         // Check whether we are already connected to a node with any of the addresses
-        if let Err(_) = self.assert_not_connected(&addrs).await {
+        if self.assert_not_connected(&addrs).await.is_err() {
             log::debug!(
                 "Resolving Node [{}]. Returning already existing connection.",
                 node_id
@@ -1114,24 +1107,28 @@ impl Handler for SessionManager {
                     });
                     return None;
                 }
-                ya_relay_proto::proto::control::Kind::PauseForwarding(message) => async move {
-                    log::trace!("Got Pause! {:?}", message);
-                    let lock = {
-                        let state = self.state.read().await;
-                        state.forward_paused_till.clone()
-                    };
-                    lock.write()
-                        .await
-                        .replace(Utc::now() + chrono::Duration::seconds(PAUSE_FWD_DELAY));
+                ya_relay_proto::proto::control::Kind::PauseForwarding(_) => async move {
+                    match self.find_session(from).await {
+                        Some(session) => {
+                            log::debug!("Forwarding paused for session {}", session.id);
+                            session.pause_forwarding().await;
+                        }
+                        None => {
+                            log::warn!("Cannot pause forwarding: session with {} not found", from)
+                        }
+                    }
                 }
                 .boxed_local(),
-                ya_relay_proto::proto::control::Kind::ResumeForwarding(message) => async move {
-                    log::trace!("Got Resume! {:?}", message);
-                    let lock = {
-                        let state = self.state.read().await;
-                        state.forward_paused_till.clone()
-                    };
-                    lock.write().await.take();
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(_) => async move {
+                    match self.find_session(from).await {
+                        Some(session) => {
+                            log::debug!("Forwarding resumed for session {}", session.id);
+                            session.resume_forwarding().await;
+                        }
+                        None => {
+                            log::warn!("Cannot resume forwarding: session with {} not found", from)
+                        }
+                    }
                 }
                 .boxed_local(),
                 ya_relay_proto::proto::control::Kind::Disconnected(
@@ -1167,7 +1164,7 @@ impl Handler for SessionManager {
                     .boxed_local()
                 }
                 _ => {
-                    log::debug!("Un-handled control packet: {:?}", kind);
+                    log::debug!("Unhandled control packet: {:?}", kind);
                     return None;
                 }
             };
