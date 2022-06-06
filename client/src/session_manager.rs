@@ -636,30 +636,24 @@ impl SessionManager {
             bail!("Remote id belongs to this node.");
         }
 
-        // Check whether we are already connected to a node with this id
-        if let Ok(entry) = self.registry.resolve_node(node_id).await {
-            log::debug!(
-                "Resolving Node [{}]. Returning already existing connection.",
-                node_id
-            );
-            return Ok(entry);
-        }
-
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(endpoints).await;
 
         let lock = self.guarded.guard_initialization(node_id, &addrs).await;
         let _guard = lock.write().await;
 
-        // Check whether we are already connected to a node with any of the addresses
-        if self.assert_not_connected(&addrs).await.is_err() {
-            log::debug!(
-                "Resolving Node [{}]. Returning already existing connection.",
-                node_id
-            );
-
-            drop(_guard);
-            return self.registry.resolve_node(node_id).await;
+        // Check whether we are already connected to a node with this id
+        if let Ok(entry) = self.registry.resolve_node(node_id).await {
+            log::debug!("Resolving Node [{node_id}]. Returning already existing connection.");
+            return Ok(entry);
         }
+
+        // // Check whether we are already connected to a node with any of the addresses
+        // if self.assert_not_connected(&addrs).await.is_err() {
+        //     log::debug!("Resolving Node [{node_id}]. Returning already existing connection.");
+        //
+        //     drop(_guard);
+        //     return self.registry.resolve_node(node_id).await;
+        // }
 
         let this = self.clone();
         Ok(self
@@ -698,9 +692,7 @@ impl SessionManager {
 
         if resolved_slot != 0 {
             log::info!(
-                "Using relay Server to forward packets to [{}] (slot {})",
-                node_id,
-                resolved_slot
+                "Using relay Server to forward packets to [{node_id}] (slot {resolved_slot})"
             );
         }
 
@@ -737,7 +729,12 @@ impl SessionManager {
         // We are trying to connect to Node without public IP. Trying to send
         // ReverseConnection message, so Node will try to connect to us.
         if self.get_public_addr().await.is_some() {
-            return Ok(self.try_reverse_connection(node_id).await?);
+            match self.try_reverse_connection(node_id).await {
+                Err(e) => {
+                    log::info!("Reverse connection failed: {e}");
+                }
+                Ok(session) => return Ok(session),
+            }
         }
 
         Err(anyhow!("All attempts to establish direct session with node [{node_id}] failed").into())

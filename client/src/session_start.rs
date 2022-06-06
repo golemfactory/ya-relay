@@ -290,17 +290,14 @@ impl StartingSessions {
             // Await for forwarding to be resumed
             if let Some(resumed) = session.forward_pause.next() {
                 log::debug!(
-                    "Session {} is awaiting a ResumeForwarding message",
-                    session_id
+                    "Session {session_id} (node = {node_id}) is awaiting a ResumeForwarding message",
+
                 );
                 let _ = resumed.await;
             }
 
             log::info!(
-                "Incoming P2P session {} with Node: [{}], address: {} established.",
-                session_id,
-                node_id,
-                with
+                "Incoming P2P session {session_id} with Node: [{node_id}], address: {with} established."
             );
 
             // Send ping to measure response time.
