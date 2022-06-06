@@ -11,6 +11,7 @@ use tokio::time::{Duration, Instant};
 use crate::dispatch::{Dispatched, Dispatcher};
 
 use ya_relay_core::session::SessionId;
+use ya_relay_core::sync::Actuator;
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};
@@ -35,6 +36,7 @@ pub struct Session {
     sink: OutStream,
     pub(crate) dispatcher: Dispatcher,
     pub(crate) drop_handler: Rc<RefCell<Option<DropHandler>>>,
+    pub(crate) forward_pause: Actuator,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -67,6 +69,7 @@ impl Session {
             created: Instant::now(),
             dispatcher: Dispatcher::default(),
             drop_handler: Default::default(),
+            forward_pause: Default::default(),
         })
     }
 
@@ -217,6 +220,16 @@ impl Session {
             },
         );
         self.send(control_packet).await
+    }
+
+    #[inline]
+    pub async fn pause_forwarding(&self) {
+        self.forward_pause.enable();
+    }
+
+    #[inline]
+    pub async fn resume_forwarding(&self) {
+        self.forward_pause.disable();
     }
 
     /// Will send `Disconnect` message to other Node, to close end Session

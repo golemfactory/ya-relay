@@ -224,6 +224,7 @@ impl Network {
             return;
         }
         self.stack.remove(meta, handle);
+        self.handles.borrow_mut().remove(&handle);
         self.connections.borrow_mut().remove(meta);
     }
 

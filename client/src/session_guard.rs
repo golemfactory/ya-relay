@@ -38,11 +38,14 @@ impl GuardedSessions {
     }
 
     pub async fn stop_guarding(&self, node_id: NodeId, result: SessionResult<Arc<Session>>) {
+        log::debug!("Stop guarding session initialization with: [{node_id}]");
+
         let mut state = self.state.write().await;
         if let Some(target) = state.find_by_id(node_id) {
             state.remove(&target);
-
             drop(state);
+
+            log::debug!("Sending session init finish notification for Node: {node_id}");
             target.notify_finish.send(result).ok();
         }
     }
@@ -73,11 +76,11 @@ impl GuardedSessions {
         } else {
             // If we are waiting for node to connect, we should already have entry
             // initialized by function `guard_initialization`. So this is programming error.
-            bail!("Programming error. Waiting for node to connect, without calling `guard_initialization` earlier.")
+            bail!("Programming error. Waiting for node [{node_id}] to connect, without calling `guard_initialization` earlier.")
         }
     }
 
-    pub async fn is_allowed_unguarded(&self, node_id: NodeId) -> bool {
+    pub async fn try_access_unguarded(&self, node_id: NodeId) -> bool {
         let state = self.state.read().await;
         if let Some(target) = state.by_node_id.get(&node_id) {
             target.wait_for_connection.swap(false, Ordering::SeqCst)
