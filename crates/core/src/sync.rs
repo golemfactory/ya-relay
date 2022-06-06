@@ -15,8 +15,8 @@ pub struct Actuator {
 impl Actuator {
     #[inline]
     pub fn next(&self) -> Option<BoxFuture<'static, ()>> {
-        self.is_enabled()
-            .then(|| self.state.lock().unwrap().future())
+        let state = self.state.lock().unwrap();
+        self.is_enabled().then(|| state.future())
     }
 
     #[inline]
@@ -26,18 +26,19 @@ impl Actuator {
 
     #[inline]
     pub fn enable(&self) {
-        self.is_enabled().not().then(|| self.reset(true));
+        let _state = self.state.lock().unwrap();
+        if self.is_enabled().not() {
+            self.enabled.store(true, Ordering::SeqCst);
+        }
     }
 
     #[inline]
     pub fn disable(&self) {
-        self.is_enabled().then(|| self.reset(false));
-    }
-
-    fn reset(&self, to: bool) {
         let mut state = self.state.lock().unwrap();
-        *state = State::default();
-        self.enabled.store(to, Ordering::SeqCst);
+        if self.is_enabled() {
+            *state = State::default();
+            self.enabled.store(false, Ordering::SeqCst);
+        }
     }
 }
 
