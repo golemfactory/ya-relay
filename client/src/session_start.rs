@@ -275,8 +275,8 @@ impl StartingSessions {
                 })?;
 
             // Temporarily pause forwarding from this node
-            tmp_session.forward_pause.enable();
-            tmp_session
+            session.forward_pause.enable();
+            session
                 .send(proto::Packet::response(
                     request_id,
                     session_id.to_vec(),
@@ -288,7 +288,11 @@ impl StartingSessions {
                     SessionError::Drop("Failed to send challenge response.".to_string())
                 })?;
             // Await for forwarding to be resumed
-            if let Some(resumed) = tmp_session.forward_pause.next() {
+            if let Some(resumed) = session.forward_pause.next() {
+                log::debug!(
+                    "Session {} is awaiting a ResumeForwarding message",
+                    session_id
+                );
                 let _ = resumed.await;
             }
 

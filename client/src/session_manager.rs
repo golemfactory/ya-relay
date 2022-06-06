@@ -56,7 +56,6 @@ pub struct SessionManagerState {
     bind_addr: Option<SocketAddr>,
 
     pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
-    pub(crate) sessions_by_id: HashMap<SessionId, Arc<Session>>,
     pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
     pub(crate) nodes_identity: HashMap<NodeId, (NodeId, PublicKey)>,
 
@@ -86,7 +85,6 @@ impl SessionManager {
                 public_addr: None,
                 bind_addr: None,
                 sessions: Default::default(),
-                sessions_by_id: Default::default(),
                 nodes_addr: Default::default(),
                 nodes_identity: Default::default(),
                 forward_reliable: Default::default(),
@@ -252,9 +250,9 @@ impl SessionManager {
             .add_session(addr, session_id, remote_id, identities)
             .await?;
 
-        tmp_session
+        session
             .send(proto::Packet::control(
-                tmp_session.id.to_vec(),
+                session.id.to_vec(),
                 ya_relay_proto::proto::control::ResumeForwarding { slot: 0 },
             ))
             .await?;
@@ -311,7 +309,6 @@ impl SessionManager {
         {
             let mut state = self.state.write().await;
             state.sessions.insert(addr, session.clone());
-            state.sessions_by_id.insert(session.id, session.clone());
         }
 
         log::info!(
@@ -430,9 +427,7 @@ impl SessionManager {
 
         if let Some(node_id) = {
             let mut state = self.state.write().await;
-            if let Some(session) = state.sessions.remove(&session.remote) {
-                state.sessions_by_id.remove(&session.id);
-            }
+            state.sessions.remove(&session.remote);
             state.nodes_addr.remove(&session.remote)
         } {
             // We are closing p2p session with Node.
@@ -1078,7 +1073,7 @@ impl Handler for SessionManager {
 
     fn on_control(
         self,
-        session_id: Vec<u8>,
+        _session_id: Vec<u8>,
         control: proto::Control,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
@@ -1112,60 +1107,30 @@ impl Handler for SessionManager {
                     });
                     return None;
                 }
-                ya_relay_proto::proto::control::Kind::PauseForwarding(_) => {
-                    let session_id = match SessionId::try_from(session_id) {
-                        Ok(id) => id,
-                        Err(_) => {
-                            log::trace!("Received a control packet with an invalid session id");
-                            return None;
+                ya_relay_proto::proto::control::Kind::PauseForwarding(_) => async move {
+                    match self.find_session(from).await {
+                        Some(session) => {
+                            log::debug!("Forwarding paused for session {}", session.id);
+                            session.pause_forwarding().await;
                         }
-                    };
-                    async move {
-                        if let Some(session) = {
-                            let state = self.state.read().await;
-                            state.sessions_by_id.get(&session_id).cloned()
-                        } {
-                            if session.remote == from {
-                                log::trace!("Forwarding paused for session {:?}", session.id);
-                                session.pause_forwarding().await;
-                            } else {
-                                log::trace!(
-                                    "Invalid origin of a Pause control packet {:?} for session {}",
-                                    from,
-                                    session.id
-                                );
-                            }
+                        None => {
+                            log::warn!("Cannot pause forwarding: session with {} not found", from)
                         }
                     }
-                    .boxed_local()
                 }
-                ya_relay_proto::proto::control::Kind::ResumeForwarding(_) => {
-                    let session_id = match SessionId::try_from(session_id) {
-                        Ok(id) => id,
-                        Err(_) => {
-                            log::trace!("Received a control packet with an invalid session id");
-                            return None;
+                .boxed_local(),
+                ya_relay_proto::proto::control::Kind::ResumeForwarding(_) => async move {
+                    match self.find_session(from).await {
+                        Some(session) => {
+                            log::debug!("Forwarding resumed for session {}", session.id);
+                            session.resume_forwarding().await;
                         }
-                    };
-                    async move {
-                        if let Some(session) = {
-                            let state = self.state.read().await;
-                            state.sessions_by_id.get(&session_id).cloned()
-                        } {
-                            if session.remote == from {
-                                log::trace!("Forwarding resumed for session {:?}", session.id);
-                                session.resume_forwarding().await;
-                            } else {
-                                log::trace!(
-                                    "Invalid origin of a Resume control packet {:?} for session {}",
-                                    from,
-                                    session.id
-                                );
-                            }
+                        None => {
+                            log::warn!("Cannot resume forwarding: session with {} not found", from)
                         }
                     }
-                    .boxed_local()
                 }
+                .boxed_local(),
                 ya_relay_proto::proto::control::Kind::Disconnected(
                     proto::control::Disconnected { by: Some(by) },
                 ) => {
@@ -1317,9 +1282,6 @@ impl Handler for SessionManager {
 impl SessionManagerState {
     /// External function should acquire lock.
     pub fn add_session(&mut self, addr: SocketAddr, session: Arc<Session>) {
-        self.sessions_by_id
-            .entry(session.id)
-            .or_insert_with(|| session.clone());
         self.sessions.entry(addr).or_insert(session);
     }
 
