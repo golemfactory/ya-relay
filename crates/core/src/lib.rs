@@ -4,6 +4,7 @@ pub mod error;
 pub mod identity;
 pub mod key;
 pub mod session;
+pub mod sync;
 pub mod udp_stream;
 pub mod utils;
 

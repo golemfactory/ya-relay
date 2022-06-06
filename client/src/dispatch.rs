@@ -72,9 +72,13 @@ async fn dispatch_response<H>(
     // TODO: We don't handle errors without packet kind here.
     match response.kind {
         Some(kind) => match handler.dispatcher(from).await {
-            Some(dispatcher) => {
-                dispatcher.dispatch_response(response.request_id, session_id, response.code, kind)
-            }
+            Some(dispatcher) => dispatcher.dispatch_response(
+                from,
+                response.request_id,
+                session_id,
+                response.code,
+                kind,
+            ),
             None => log::warn!("Unexpected response from {}: {:?}", from, kind),
         },
         None => log::debug!("Empty response kind from: {}", from),
@@ -235,6 +239,7 @@ impl Dispatcher {
     /// Awakes futures awaiting packet variants of `proto::response::Kind`
     pub fn dispatch_response(
         &self,
+        from: SocketAddr,
         request_id: RequestId,
         session_id: Vec<u8>,
         code: i32,
@@ -250,11 +255,11 @@ impl Dispatcher {
                     })
                     .is_err()
                 {
-                    log::warn!("Unable to dispatch response: listener is closed");
+                    log::warn!("Unable to dispatch response from {from}: listener is closed");
                 }
             }
             None => log::warn!(
-                "Unable to dispatch response: listener does not exist. {:?}",
+                "Unable to dispatch response from {from}: listener does not exist. {:?}",
                 kind
             ),
         };

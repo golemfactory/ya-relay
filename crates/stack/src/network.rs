@@ -39,7 +39,7 @@ pub struct Network {
     pub stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
-    bindings: Rc<RefCell<HashSet<(Protocol, SocketEndpoint)>>>,
+    bindings: Rc<RefCell<HashSet<SocketHandle>>>,
     connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
     handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
     ingress: Channel<IngressEvent>,
@@ -89,15 +89,15 @@ impl Network {
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
         let handle = self.stack.bind(protocol, endpoint)?;
-        self.bindings.borrow_mut().insert((protocol, endpoint));
+        self.bindings.borrow_mut().insert(handle);
         Ok(handle)
     }
 
     /// Stop listening on a local endpoint
     pub fn unbind(&self, protocol: Protocol, endpoint: impl Into<SocketEndpoint>) -> Result<()> {
         let endpoint = endpoint.into();
-        self.stack.unbind(protocol, endpoint)?;
-        self.bindings.borrow_mut().remove(&(protocol, endpoint));
+        let handle = self.stack.unbind(protocol, endpoint)?;
+        self.bindings.borrow_mut().remove(&handle);
         Ok(())
     }
 
@@ -224,6 +224,7 @@ impl Network {
             return;
         }
         self.stack.remove(meta, handle);
+        self.handles.borrow_mut().remove(&handle);
         self.connections.borrow_mut().remove(meta);
     }
 
@@ -285,46 +286,36 @@ impl Network {
 
         let iface_rfc = self.stack.iface();
         let mut iface = iface_rfc.borrow_mut();
+        let mut bindings = self.bindings.borrow_mut();
         let mut events = Vec::new();
         let mut remove = Vec::new();
-        let mut rebind = Vec::new();
+        let mut rebind = None;
 
         for (handle, socket) in iface.sockets_mut() {
+            let mut desc = socket.desc();
+
             if socket.is_closed() {
-                let meta = match { self.handles.borrow().get(&handle).copied() } {
+                match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
+                        log::trace!("{}: closing socket: {:?} / {:?}", self.name, desc, meta);
+
                         remove.push((meta, handle));
                         if let Ok(desc) = meta.try_into() {
                             events.push(IngressEvent::Disconnected { desc })
                         }
-
-                        meta
                     }
-                    None => {
-                        let desc = socket.desc();
-                        let meta = match desc.try_into() {
-                            // skip uninitialized sockets
-                            Ok(meta) if desc.local.is_specified() => meta,
-                            _ => continue,
-                        };
+                    None if desc.local.is_specified() => {
+                        log::trace!("{}: closing socket: {:?}", self.name, desc);
 
-                        log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
-                        remove.push((meta, handle));
-                        events.push(IngressEvent::Disconnected { desc });
-
-                        meta
+                        if let Ok(meta) = desc.try_into() {
+                            log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
+                            remove.push((meta, handle));
+                            events.push(IngressEvent::Disconnected { desc });
+                        }
                     }
+                    _ => (),
                 };
-
-                let bindings = self.bindings.borrow();
-                let entry = (meta.protocol, SocketEndpoint::from(&meta));
-                if bindings.contains(&entry) {
-                    rebind.push(entry);
-                }
-                continue;
             }
-
-            let mut desc = socket.desc();
 
             while socket.can_recv() {
                 let (remote, payload) = match socket.recv() {
@@ -336,6 +327,7 @@ impl Network {
                     }
                 };
 
+                received += 1;
                 desc.remote = remote.into();
 
                 if let Ok(meta) = desc.try_into() {
@@ -345,27 +337,25 @@ impl Network {
                     }
                 }
 
-                log::trace!("{}: ingress {} B IP packet", self.name, payload.len());
+                log::trace!("{}: ingress {} B packet", self.name, payload.len());
 
-                received += 1;
                 self.stack.on_received(&desc, payload.len());
                 events.push(IngressEvent::Packet { desc, payload });
             }
+
+            if bindings.contains(&handle) && socket.remote_endpoint().is_specified() {
+                bindings.remove(&handle);
+                rebind = Some((socket.protocol(), socket.local_endpoint()));
+                break;
+            }
         }
 
+        drop(bindings);
         drop(iface);
 
         remove.into_iter().for_each(|(meta, handle)| {
             self.remove_connection(&meta, handle);
         });
-
-        if !rebind.is_empty() {
-            for (p, ep) in rebind {
-                if let Err(e) = self.bind(p, ep) {
-                    log::trace!("{}: ingress: cannot bind {} {:?}: {}", self.name, p, ep, e);
-                }
-            }
-        }
 
         if !events.is_empty() {
             let ingress_tx = self.ingress.tx.clone();
@@ -380,7 +370,15 @@ impl Network {
             }
         }
 
-        received
+        match rebind {
+            Some((p, ep)) => {
+                if let Err(e) = self.bind(p, ep) {
+                    log::warn!("{}: cannot bind socket {} {:?}: {}", self.name, p, ep, e);
+                }
+                self.process_ingress() + received
+            }
+            None => received,
+        }
     }
 
     fn process_egress(&self) -> usize {
@@ -615,22 +613,25 @@ impl Default for StackPollerStrategy {
 }
 
 impl StackPollerStrategy {
-    const MIN_INTERVAL: Duration = Duration::from_millis(750);
+    const MIN_INTERVAL: Duration = Duration::from_millis(10);
     const DEFAULT_INTERVAL: Duration = Duration::from_millis(1500);
     const DEFAULT_FACTOR: u8 = 3;
 
+    #[inline]
     fn at(&self) -> Instant {
         match self {
             Self::Default { at, .. } | Self::Adaptive { at, .. } => *at,
         }
     }
 
+    #[inline]
     fn interval(&self) -> Duration {
         match self {
             Self::Default { current, .. } | Self::Adaptive { current, .. } => *current,
         }
     }
 
+    #[inline]
     fn adjust(&mut self, sent: usize, received: usize) {
         if sent > 0 || received > 0 {
             self.speed_up();

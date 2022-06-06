@@ -98,7 +98,12 @@ impl StartingSessions {
             timeout(self.layer.config.incoming_session_timeout, async move {
                 // In case of ReverseConnection, we are awaiting incoming connection from
                 // other party
-                if this.guarded.is_allowed_unguarded(remote_id).await {
+                if this.guarded.try_access_unguarded(remote_id).await {
+                    log::debug!(
+                        "Node [{}] enters unguarded session initialization.",
+                        remote_id
+                    );
+
                     this.init_session_handler(
                         with, request_id, session_id, remote_id, request, receiver,
                     )
@@ -139,7 +144,7 @@ impl StartingSessions {
             Err(result)
         })
         .then(move |result| async move {
-            this2.guarded.stop_guarding(NodeId::default(), result).await;
+            this2.guarded.stop_guarding(remote_id, result).await;
         });
 
         {
@@ -258,7 +263,20 @@ impl StartingSessions {
                 ..Default::default()
             };
 
-            tmp_session
+            // Register incoming session before we send final response.
+            // This way we will avoid race conditions, in case remote Node will attempt
+            // to immediately send us Forward packet.
+            let session = self
+                .layer
+                .add_incoming_session(with, session_id, node_id, identities)
+                .await
+                .map_err(|e| {
+                    SessionError::Drop(format!("Failed to add incoming session. {}", e))
+                })?;
+
+            // Temporarily pause forwarding from this node
+            session.forward_pause.enable();
+            session
                 .send(proto::Packet::response(
                     request_id,
                     session_id.to_vec(),
@@ -269,14 +287,14 @@ impl StartingSessions {
                 .map_err(|_| {
                     SessionError::Drop("Failed to send challenge response.".to_string())
                 })?;
-
-            let session = self
-                .layer
-                .add_incoming_session(with, session_id, node_id, identities)
-                .await
-                .map_err(|e| {
-                    SessionError::Drop(format!("Failed to add incoming session. {}", e))
-                })?;
+            // Await for forwarding to be resumed
+            if let Some(resumed) = session.forward_pause.next() {
+                log::debug!(
+                    "Session {} is awaiting a ResumeForwarding message",
+                    session_id
+                );
+                let _ = resumed.await;
+            }
 
             log::info!(
                 "Incoming P2P session {} with Node: [{}], address: {} established.",
