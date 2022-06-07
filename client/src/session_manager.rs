@@ -636,6 +636,8 @@ impl SessionManager {
             bail!("Remote id belongs to this node.");
         }
 
+        log::debug!("Resolving [{node_id}], slot = {slot}");
+
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(endpoints).await;
 
         let lock = self.guarded.guard_initialization(node_id, &addrs).await;
@@ -692,7 +694,7 @@ impl SessionManager {
 
                 // In this case only we don't have slot id, so we can't establish relayed connection.
                 // It happens mostly if we are trying to establish connection in response to ReverseConnection.
-                if try_reverse {
+                if !try_reverse {
                     return Err(anyhow!("Failed to establish p2p connection with [{node_id}] and relay Server won't be used, since slot = 0.").into());
                 }
 
@@ -1096,12 +1098,13 @@ impl Handler for SessionManager {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
                     let myself = self;
                     tokio::task::spawn_local(async move {
+                        let node_id = NodeId::try_from(&message.node_id)
+                            .ok()
+                            .map(|id| id.to_string())
+                            .unwrap_or(format!("{:?}", message.node_id));
+
                         log::info!(
-                            "Got ReverseConnection message. node={}, endpoints={:?}",
-                            NodeId::try_from(&message.node_id)
-                                .ok()
-                                .map(|id| id.to_string())
-                                .unwrap_or(format!("{:?}", message.node_id)),
+                            "Got ReverseConnection message. node={node_id}, endpoints={:?}",
                             message.endpoints
                         );
 
@@ -1115,9 +1118,7 @@ impl Handler for SessionManager {
                             .await
                         {
                             Err(e) => log::warn!(
-                                "Failed to resolve reverse connection. node_id={:?} error={}",
-                                message.node_id,
-                                e
+                                "Failed to resolve reverse connection. node_id={node_id} error={e}"
                             ),
                             Ok(_) => log::trace!("ReverseConnection succeeded: {:?}", message),
                         };
