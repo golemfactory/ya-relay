@@ -669,9 +669,16 @@ impl SessionManager {
         addrs: Vec<SocketAddr>,
         slot: u32,
     ) -> SessionResult<NodeEntry> {
+        // If requested slot == 0, than we are responding to ReverseConnection,
+        // so we shouldn't try to send it ourselves.
+        let try_reverse = slot != 0;
+
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
-        let (session, resolved_slot) = match self.try_direct_session(node_id, addrs).await {
+        let (session, resolved_slot) = match self
+            .try_direct_session(node_id, addrs, try_reverse)
+            .await
+        {
             // If we send packets directly, slot will be always 0.
             Ok(session) => (session, 0),
             // Fatal error, cease further communication
@@ -685,7 +692,7 @@ impl SessionManager {
 
                 // In this case only we don't have slot id, so we can't establish relayed connection.
                 // It happens mostly if we are trying to establish connection in response to ReverseConnection.
-                if slot == 0 {
+                if try_reverse {
                     return Err(anyhow!("Failed to establish p2p connection with [{node_id}] and relay Server won't be used, since slot = 0.").into());
                 }
 
@@ -718,6 +725,7 @@ impl SessionManager {
         &self,
         node_id: NodeId,
         addrs: Vec<SocketAddr>,
+        try_reverse_connection: bool,
     ) -> SessionResult<Arc<Session>> {
         if addrs.is_empty() {
             log::debug!("Node [{node_id}] has no public endpoints.");
@@ -737,7 +745,7 @@ impl SessionManager {
 
         // We are trying to connect to Node without public IP. Trying to send
         // ReverseConnection message, so Node will try to connect to us.
-        if self.get_public_addr().await.is_some() {
+        if self.get_public_addr().await.is_some() && try_reverse_connection {
             match self.try_reverse_connection(node_id).await {
                 Err(e) => {
                     log::info!("Reverse connection with [{node_id}] failed: {e}");
