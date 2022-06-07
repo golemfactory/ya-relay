@@ -109,6 +109,15 @@ impl NodesRegistry {
     }
 }
 
+impl NodeEntry {
+    pub fn is_p2p(&self) -> bool {
+        match self.slot {
+            0 => true,
+            _ => false,
+        }
+    }
+}
+
 impl NodeRegistryState {
     fn resolve_slot(&self, slot: SlotId) -> anyhow::Result<NodeEntry> {
         let node_id = self

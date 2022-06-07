@@ -643,17 +643,13 @@ impl SessionManager {
 
         // Check whether we are already connected to a node with this id
         if let Ok(entry) = self.registry.resolve_node(node_id).await {
-            log::debug!("Resolving Node [{node_id}]. Returning already existing connection.");
+            let session_type = match entry.is_p2p() {
+                true => "p2p",
+                false => "relay",
+            };
+            log::debug!("Resolving Node [{node_id}]. Returning already existing connection (session = {} ({session_type})).", entry.session.id);
             return Ok(entry);
         }
-
-        // // Check whether we are already connected to a node with any of the addresses
-        // if self.assert_not_connected(&addrs).await.is_err() {
-        //     log::debug!("Resolving Node [{node_id}]. Returning already existing connection.");
-        //
-        //     drop(_guard);
-        //     return self.registry.resolve_node(node_id).await;
-        // }
 
         let this = self.clone();
         Ok(self
@@ -686,6 +682,13 @@ impl SessionManager {
             // Recoverable error, continue
             Err(SessionError::Retry(e)) => {
                 log::info!("{}", e);
+
+                // In this case only we don't have slot id, so we can't establish relayed connection.
+                // It happens mostly if we are trying to establish connection in response to ReverseConnection.
+                if slot == 0 {
+                    return Err(anyhow!("Failed to establish p2p connection with [{node_id}] and relay Server won't be used, since slot = 0.").into());
+                }
+
                 (self.server_session().await?, slot)
             }
         };
@@ -695,6 +698,12 @@ impl SessionManager {
                 "Using relay Server to forward packets to [{node_id}] (slot {resolved_slot})"
             );
         }
+
+        log::debug!(
+            "Adding node [{node_id}] session ({} - {}), resolved slot = {resolved_slot}, requested slot = {slot}",
+            session.id,
+            session.remote
+        );
 
         let node = self
             .registry
@@ -731,7 +740,7 @@ impl SessionManager {
         if self.get_public_addr().await.is_some() {
             match self.try_reverse_connection(node_id).await {
                 Err(e) => {
-                    log::info!("Reverse connection failed: {e}");
+                    log::info!("Reverse connection with [{node_id}] failed: {e}");
                 }
                 Ok(session) => return Ok(session),
             }
@@ -1080,8 +1089,11 @@ impl Handler for SessionManager {
                     let myself = self;
                     tokio::task::spawn_local(async move {
                         log::info!(
-                            "Got ReverseConnection message. node={:?}, endpoints={:?}",
-                            message.node_id,
+                            "Got ReverseConnection message. node={}, endpoints={:?}",
+                            NodeId::try_from(&message.node_id)
+                                .ok()
+                                .map(|id| id.to_string())
+                                .unwrap_or(format!("{:?}", message.node_id)),
                             message.endpoints
                         );
 

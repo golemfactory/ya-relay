@@ -232,7 +232,8 @@ impl Client {
         let neighbours = self
             .sessions
             .server_session()
-            .await?
+            .await
+            .map_err(|e| anyhow!("Error establishing session with relay: {e}"))?
             .neighbours(count)
             .await?;
 
@@ -306,7 +307,10 @@ impl Client {
     }
 
     pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
-        let node_ids = self.neighbours(count).await?;
+        let node_ids = self
+            .neighbours(count)
+            .await
+            .map_err(|e| anyhow!("Unable to query neighbors: {e}"))?;
 
         log::debug!("Broadcasting message to {} node(s)", node_ids.len());
 
