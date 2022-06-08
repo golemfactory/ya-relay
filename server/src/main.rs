@@ -1,4 +1,5 @@
 use ya_relay_server::config::Config;
+use ya_relay_server::metrics::register_metrics;
 use ya_relay_server::server::Server;
 
 use chrono::Local;
@@ -27,6 +28,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let args = Config::from_args();
+
+    register_metrics(args.metrics_export_interval);
+
     let server = Server::bind_udp(args).await?;
     server.run().await
 }

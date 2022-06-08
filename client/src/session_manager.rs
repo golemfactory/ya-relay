@@ -649,7 +649,7 @@ impl SessionManager {
                 true => "p2p",
                 false => "relay",
             };
-            log::debug!("Resolving Node [{node_id}]. Returning already existing connection (session = {} ({session_type})).", entry.session.id);
+            log::debug!("Resolving Node [{node_id}]. Returning already existing connection (session = {} ({session_type}), slot = {}).", entry.session.id, entry.slot);
             return Ok(entry);
         }
 
@@ -692,7 +692,7 @@ impl SessionManager {
             Err(SessionError::Retry(e)) => {
                 log::info!("{}", e);
 
-                // In this case only we don't have slot id, so we can't establish relayed connection.
+                // In this case we don't have slot id, so we can't establish relayed connection.
                 // It happens mostly if we are trying to establish connection in response to ReverseConnection.
                 if !try_reverse {
                     return Err(anyhow!("Failed to establish p2p connection with [{node_id}] and relay Server won't be used, since slot = 0.").into());

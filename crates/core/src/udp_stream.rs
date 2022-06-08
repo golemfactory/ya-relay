@@ -1,4 +1,5 @@
 use anyhow::bail;
+use chrono::Utc;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use std::net::SocketAddr;
@@ -17,7 +18,8 @@ pub const MTU_ENV_VAR: &str = "YA_NET_MTU";
 pub const DEFAULT_MTU: usize = 1500;
 pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 1280;
 
-pub type InStream = Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr)>>>;
+pub type InStream =
+    Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr, chrono::DateTime<chrono::Utc>)>>>;
 pub type OutStream = mpsc::Sender<(PacketKind, SocketAddr)>;
 
 pub async fn udp_bind(addr: &url::Url) -> anyhow::Result<(InStream, OutStream, SocketAddr)> {
@@ -32,7 +34,9 @@ pub async fn udp_bind(addr: &url::Url) -> anyhow::Result<(InStream, OutStream, S
     Ok((stream, sink, addr))
 }
 
-pub fn udp_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (PacketKind, SocketAddr)> {
+pub fn udp_stream(
+    socket: Arc<UdpSocket>,
+) -> impl Stream<Item = (PacketKind, SocketAddr, chrono::DateTime<chrono::Utc>)> {
     stream::unfold(socket, |socket| async {
         const MAX_SIZE: usize = MAX_PACKET_SIZE as usize;
 
@@ -49,8 +53,8 @@ pub fn udp_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (PacketKind, Soc
                 buf.resize(MAX_SIZE, 0);
             }
 
-            let (size, addr) = match socket.recv_from(&mut buf).await {
-                Ok((size, addr)) => (size, addr),
+            let (size, addr, timestamp) = match socket.recv_from(&mut buf).await {
+                Ok((size, addr)) => (size, addr, Utc::now()),
                 Err(e) => {
                     log::warn!("UDP socket error: {}", e);
                     continue;
@@ -60,7 +64,7 @@ pub fn udp_stream(socket: Arc<UdpSocket>) -> impl Stream<Item = (PacketKind, Soc
             buf.truncate(size);
 
             match codec.decode(&mut buf) {
-                Ok(Some(item)) => return Some(((item, addr), socket)),
+                Ok(Some(item)) => return Some(((item, addr, timestamp), socket)),
                 Err(e) => log::warn!("Failed to decode packet: {}", e),
                 // `decode` does not return this variant
                 Ok(None) => log::warn!("Unable to decode packet"),
