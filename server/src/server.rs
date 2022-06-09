@@ -4,7 +4,7 @@ use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
 use governor::{NegativeMultiDecision, Quota, RateLimiter};
-use metrics::{counter, value};
+use metrics::{counter, timing, value};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
@@ -387,6 +387,8 @@ impl Server {
         from: SocketAddr,
         params: proto::request::Neighbours,
     ) -> ServerResult<()> {
+        let start = Utc::now();
+
         let nodes = {
             self.state
                 .read()
@@ -420,6 +422,10 @@ impl Server {
             params.count,
             from,
             session_id
+        );
+        timing!(
+            "ya-relay.packet.neighborhood.processing-time",
+            elapsed_metric(start)
         );
         Ok(())
     }
@@ -878,7 +884,7 @@ impl Server {
         tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
         while let Some((packet, addr, timestamp)) = input.next().await {
-            counter!("packets.incoming", 1);
+            counter!("ya-relay.packets.incoming", 1);
 
             let request_id = PacketKind::request_id(&packet);
             let session_id = PacketKind::session_id(&packet);
@@ -897,8 +903,11 @@ impl Server {
                 }
             };
 
-            value!("packets.response_time", elapsed_metric(timestamp));
-            value!("packets.processing_time", elapsed_metric(dispatching_start));
+            value!("ya-relay.packets.response-time", elapsed_metric(timestamp));
+            value!(
+                "ya-relay.packets.processing-time",
+                elapsed_metric(dispatching_start)
+            );
         }
 
         log::info!("Server stopped.");

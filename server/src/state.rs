@@ -1,5 +1,6 @@
 use chrono::Utc;
 use itertools::Itertools;
+use metrics::counter;
 use std::collections::HashMap;
 use std::ops::Sub;
 
@@ -51,6 +52,8 @@ impl NodesState {
         node.info.slot = slot;
 
         self.slots[slot as usize] = Slot::Some(node);
+
+        counter!("ya-relay.sessions.created", 1);
     }
 
     pub fn neighbours(&self, id: SessionId, count: u32) -> ServerResult<Vec<NodeSession>> {
@@ -142,6 +145,8 @@ impl NodesState {
             self.sessions.remove(&session.session);
             self.nodes.remove(&session.info.node_id());
             self.slots[slot as usize] = Slot::Purgatory(session.clone());
+
+            counter!("ya-relay.sessions.removed", 1);
         }
     }
 
@@ -241,6 +246,7 @@ where
     pub fn purge(&mut self) {
         if let Slot::Purgatory(_) = self {
             *self = Slot::Free;
+            counter!("ya-relay.sessions.purged", 1);
         }
     }
 }

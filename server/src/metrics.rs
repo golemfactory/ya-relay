@@ -1,3 +1,4 @@
+use metrics::counter;
 use metrics_exporter_log::LogExporter;
 use metrics_runtime::{observers::YamlBuilder, Receiver};
 use std::time::Duration;
@@ -23,4 +24,8 @@ pub fn register_metrics(interval: Duration) {
             exporter.turn();
         }
     });
+
+    counter!("ya-relay.sessions.purged", 0);
+    counter!("ya-relay.sessions.created", 0);
+    counter!("ya-relay.sessions.removed", 0);
 }
