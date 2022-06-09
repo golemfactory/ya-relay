@@ -290,8 +290,7 @@ impl StartingSessions {
             // Await for forwarding to be resumed
             if let Some(resumed) = session.forward_pause.next() {
                 log::debug!(
-                    "Session {session_id} (node = {node_id}) is awaiting a ResumeForwarding message",
-
+                    "Session {session_id} (node = {node_id}) is awaiting a ResumeForwarding message"
                 );
                 let _ = resumed.await;
             }
