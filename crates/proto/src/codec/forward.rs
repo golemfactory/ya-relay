@@ -181,6 +181,7 @@ where
 const PREFIX_SIZE: usize = size_of::<u32>();
 
 fn encode(payload: impl Into<Payload>) -> Vec<u8> {
+    // FIXME: handle Payload variants instead of converting to vec
     let mut vec = payload.into().into_vec();
     let len = vec.len() as u32;
     vec.reserve(PREFIX_SIZE);

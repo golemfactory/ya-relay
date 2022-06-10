@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::SlotId;
+use ya_relay_proto::proto::{SlotId, FORWARD_SLOT_ID};
 
 use crate::session::Session;
 
@@ -20,26 +20,18 @@ pub struct NodeEntry {
 }
 
 /// Keeps track of Nodes information, for which we asked relay server.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct NodesRegistry {
     state: Arc<RwLock<NodeRegistryState>>,
 }
 
+#[derive(Default)]
 struct NodeRegistryState {
     nodes: HashMap<NodeId, NodeEntry>,
     slots: HashMap<SlotId, NodeId>,
 }
 
 impl NodesRegistry {
-    pub fn new() -> NodesRegistry {
-        NodesRegistry {
-            state: Arc::new(RwLock::new(NodeRegistryState {
-                nodes: Default::default(),
-                slots: Default::default(),
-            })),
-        }
-    }
-
     pub async fn add_node(
         &self,
         node_id: NodeId,
@@ -57,8 +49,7 @@ impl NodesRegistry {
             let mut state = self.state.write().await;
             state.nodes.insert(node_id, node.clone());
 
-            // Slot 0 is special number for p2p session.
-            if slot != 0 {
+            if slot != FORWARD_SLOT_ID {
                 state.slots.insert(slot, node_id);
             }
             node
@@ -70,7 +61,7 @@ impl NodesRegistry {
     }
 
     pub async fn add_slot_for_node(&self, node_id: NodeId, slot: SlotId) {
-        if slot != 0 {
+        if slot != FORWARD_SLOT_ID {
             let mut state = self.state.write().await;
             state.slots.insert(slot, node_id);
         }
@@ -110,19 +101,18 @@ impl NodesRegistry {
 }
 
 impl NodeEntry {
+    #[inline]
     pub fn is_p2p(&self) -> bool {
-        matches!(self.slot, 0)
+        self.slot == FORWARD_SLOT_ID
     }
 }
 
 impl NodeRegistryState {
     fn resolve_slot(&self, slot: SlotId) -> anyhow::Result<NodeEntry> {
-        let node_id = self
-            .slots
+        self.slots
             .get(&slot)
-            .cloned()
-            .ok_or_else(|| anyhow!("NodeEntry for slot {} not found.", slot))?;
-        self.resolve_node(node_id)
+            .and_then(|id| self.resolve_node(*id).ok())
+            .ok_or_else(|| anyhow!("NodeEntry for slot {} not found.", slot))
     }
 
     fn resolve_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {
@@ -130,11 +120,5 @@ impl NodeRegistryState {
             .get(&node)
             .cloned()
             .ok_or_else(|| anyhow!("NodeEntry for node id {} not found.", node))
-    }
-}
-
-impl Default for NodesRegistry {
-    fn default() -> Self {
-        Self::new()
     }
 }

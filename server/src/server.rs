@@ -1,9 +1,10 @@
 use anyhow::anyhow;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
 use governor::{NegativeMultiDecision, Quota, RateLimiter};
+use metrics::{counter, timing, value};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
@@ -386,6 +387,8 @@ impl Server {
         from: SocketAddr,
         params: proto::request::Neighbours,
     ) -> ServerResult<()> {
+        let start = Utc::now();
+
         let nodes = {
             self.state
                 .read()
@@ -419,6 +422,10 @@ impl Server {
             params.count,
             from,
             session_id
+        );
+        timing!(
+            "ya-relay.packet.neighborhood.processing-time",
+            elapsed_metric(start)
         );
         Ok(())
     }
@@ -876,24 +883,31 @@ impl Server {
         tokio::task::spawn_local(async move { server_session_cleaner.session_cleaner().await });
         tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
-        while let Some((packet, addr)) = input.next().await {
+        while let Some((packet, addr, timestamp)) = input.next().await {
+            counter!("ya-relay.packets.incoming", 1);
+
             let request_id = PacketKind::request_id(&packet);
             let session_id = PacketKind::session_id(&packet);
-            let error = match server.dispatch(addr, packet).await {
-                Ok(_) => continue,
-                Err(e) => e,
+
+            let dispatching_start = Utc::now();
+
+            if let Err(error) = server.dispatch(addr, packet).await {
+                log::error!(
+                    "Packet dispatch failed (request={request_id:?}, from={addr}). {error}"
+                );
+
+                if let Some(request_id) = request_id {
+                    server
+                        .error_response(request_id, session_id, &addr, error)
+                        .await;
+                }
             };
 
-            log::error!(
-                "Packet dispatch failed (request={:?}). {}",
-                request_id,
-                error
+            value!("ya-relay.packets.response-time", elapsed_metric(timestamp));
+            value!(
+                "ya-relay.packets.processing-time",
+                elapsed_metric(dispatching_start)
             );
-            if let Some(request_id) = request_id {
-                server
-                    .error_response(request_id, session_id, &addr, error)
-                    .await;
-            }
         }
 
         log::info!("Server stopped.");
@@ -960,4 +974,11 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryptions,
     }
+}
+
+fn elapsed_metric(since: DateTime<Utc>) -> u64 {
+    (Utc::now() - since)
+        .num_microseconds()
+        .map(|t| t as u64)
+        .unwrap_or(u64::MAX)
 }

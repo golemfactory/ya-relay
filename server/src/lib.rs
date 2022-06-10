@@ -1,4 +1,5 @@
 pub mod config;
+pub mod metrics;
 mod public_endpoints;
 pub mod server;
 mod state;
