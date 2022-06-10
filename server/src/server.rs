@@ -1,9 +1,10 @@
 use anyhow::anyhow;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
 use governor::{NegativeMultiDecision, Quota, RateLimiter};
+use metrics::{counter, timing, value};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
@@ -76,8 +77,19 @@ impl Server {
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
 
                 let node = match { self.state.read().await.nodes.get_by_session(id) } {
-                    None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
+                    None => {
+                        return match kind {
+                            Some(proto::packet::Kind::Request(request)) => {
+                                self.clone().establish_session(id, from, request).await
+                            }
+                            Some(proto::packet::Kind::Control(proto::Control {
+                                kind: Some(proto::control::Kind::Disconnected { .. }),
+                                ..
+                            })) => Ok(()),
+                            _ => unknown_session(id),
+                        };
+                    }
                 };
 
                 match kind {
@@ -317,7 +329,7 @@ impl Server {
         let response = proto::Packet::response(
             request_id,
             session_id.to_vec(),
-            proto::StatusCode::Ok,
+            StatusCode::Ok,
             proto::response::Register { endpoints },
         );
 
@@ -343,7 +355,7 @@ impl Server {
             proto::Packet::response(
                 request_id,
                 session_id.to_vec(),
-                proto::StatusCode::Ok,
+                StatusCode::Ok,
                 proto::response::Pong {},
             ),
             &from,
@@ -386,6 +398,8 @@ impl Server {
         from: SocketAddr,
         params: proto::request::Neighbours,
     ) -> ServerResult<()> {
+        let start = Utc::now();
+
         let nodes = {
             self.state
                 .read()
@@ -404,7 +418,7 @@ impl Server {
             proto::Packet::response(
                 request_id,
                 session_id.to_vec(),
-                proto::StatusCode::Ok,
+                StatusCode::Ok,
                 proto::response::Neighbours { nodes },
             ),
             &from,
@@ -419,6 +433,10 @@ impl Server {
             params.count,
             from,
             session_id
+        );
+        timing!(
+            "ya-relay.packet.neighborhood.processing-time",
+            elapsed_metric(start)
         );
         Ok(())
     }
@@ -528,7 +546,7 @@ impl Server {
         let node = to_node_response(node_info, public_key);
 
         self.send_to(
-            proto::Packet::response(request_id, session_id.to_vec(), proto::StatusCode::Ok, node),
+            proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, node),
             &from,
         )
         .await
@@ -583,7 +601,7 @@ impl Server {
         self,
         id: SessionId,
         _from: SocketAddr,
-        packet: Option<proto::packet::Kind>,
+        request: proto::Request,
     ) -> ServerResult<()> {
         let mut sender = {
             match { self.state.read().await.starting_session.get(&id).cloned() } {
@@ -592,12 +610,6 @@ impl Server {
             }
         };
 
-        let request = match packet {
-            Some(proto::packet::Kind::Request(request)) => request,
-            _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
-        };
-
-        //
         tokio::task::spawn_local(async move {
             let _ = sender.send(request).await.map_err(|_| {
                 log::warn!(
@@ -617,12 +629,8 @@ impl Server {
         mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
         let (packet, raw_challenge) = challenge::prepare_challenge_response();
-        let challenge = proto::Packet::response(
-            request_id,
-            session_id.to_vec(),
-            proto::StatusCode::Ok,
-            packet,
-        );
+        let challenge =
+            proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, packet);
 
         self.send_to(challenge, &with)
             .await
@@ -673,7 +681,7 @@ impl Server {
                     proto::Packet::response(
                         request_id,
                         session_id.to_vec(),
-                        proto::StatusCode::Ok,
+                        StatusCode::Ok,
                         proto::response::Session::default(),
                     ),
                     &with,
@@ -689,7 +697,7 @@ impl Server {
 
                 node
             }
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Session".to_string()).into()),
+            _ => return invalid_packet(session_id, "Session"),
         };
 
         loop {
@@ -727,11 +735,7 @@ impl Server {
                     kind: Some(proto::request::Kind::Ping(_)),
                     ..
                 }) => continue,
-                _ => {
-                    return Err(
-                        BadRequest::InvalidPacket(session_id, "Register".to_string()).into(),
-                    );
-                }
+                _ => return invalid_packet(session_id, "Register"),
             };
         }
         Ok(())
@@ -876,24 +880,31 @@ impl Server {
         tokio::task::spawn_local(async move { server_session_cleaner.session_cleaner().await });
         tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
-        while let Some((packet, addr)) = input.next().await {
+        while let Some((packet, addr, timestamp)) = input.next().await {
+            counter!("ya-relay.packets.incoming", 1);
+
             let request_id = PacketKind::request_id(&packet);
             let session_id = PacketKind::session_id(&packet);
-            let error = match server.dispatch(addr, packet).await {
-                Ok(_) => continue,
-                Err(e) => e,
+
+            let dispatching_start = Utc::now();
+
+            if let Err(error) = server.dispatch(addr, packet).await {
+                log::error!(
+                    "Packet dispatch failed (request={request_id:?}, from={addr}). {error}"
+                );
+
+                if let Some(request_id) = request_id {
+                    server
+                        .error_response(request_id, session_id, &addr, error)
+                        .await;
+                }
             };
 
-            log::error!(
-                "Packet dispatch failed (request={:?}). {}",
-                request_id,
-                error
+            value!("ya-relay.packets.response-time", elapsed_metric(timestamp));
+            value!(
+                "ya-relay.packets.processing-time",
+                elapsed_metric(dispatching_start)
             );
-            if let Some(request_id) = request_id {
-                server
-                    .error_response(request_id, session_id, &addr, error)
-                    .await;
-            }
         }
 
         log::info!("Server stopped.");
@@ -921,24 +932,19 @@ impl Server {
     }
 }
 
-pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, proto::StatusCode> {
+pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, StatusCode> {
     match packet {
         PacketKind::Packet(proto::Packet {
             kind: Some(proto::packet::Kind::Response(proto::Response { kind, code, .. })),
             ..
         }) => match kind {
-            None => {
-                Err(proto::StatusCode::from_i32(code as i32).ok_or(proto::StatusCode::Undefined)?)
-            }
-            Some(response) => {
-                match proto::StatusCode::from_i32(code as i32) {
-                    Some(proto::StatusCode::Ok) => Ok(response),
-                    _ => Err(proto::StatusCode::from_i32(code as i32)
-                        .ok_or(proto::StatusCode::Undefined)?),
-                }
-            }
+            None => Err(StatusCode::from_i32(code as i32).ok_or(StatusCode::Undefined)?),
+            Some(response) => match StatusCode::from_i32(code as i32) {
+                Some(StatusCode::Ok) => Ok(response),
+                _ => Err(StatusCode::from_i32(code as i32).ok_or(StatusCode::Undefined)?),
+            },
         },
-        _ => Err(proto::StatusCode::Undefined),
+        _ => Err(StatusCode::Undefined),
     }
 }
 
@@ -960,4 +966,21 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryptions,
     }
+}
+
+fn elapsed_metric(since: DateTime<Utc>) -> u64 {
+    (Utc::now() - since)
+        .num_microseconds()
+        .map(|t| t as u64)
+        .unwrap_or(u64::MAX)
+}
+
+#[inline]
+fn unknown_session<T>(session_id: SessionId) -> ServerResult<T> {
+    Err(Unauthorized::SessionNotFound(session_id).into())
+}
+
+#[inline]
+fn invalid_packet<T>(session_id: SessionId, expected: impl ToString) -> ServerResult<T> {
+    Err(BadRequest::InvalidPacket(session_id, expected.to_string()).into())
 }

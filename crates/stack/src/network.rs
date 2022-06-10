@@ -297,20 +297,28 @@ impl Network {
             if socket.is_closed() {
                 match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
-                        log::trace!("{}: closing socket: {:?} / {:?}", self.name, desc, meta);
+                        log::debug!("{}: closing socket: {:?} / {:?}", self.name, desc, meta);
 
                         remove.push((meta, handle));
                         if let Ok(desc) = meta.try_into() {
                             events.push(IngressEvent::Disconnected { desc })
+                        } else {
+                            log::debug!(
+                                "{}: unable to convert socket metadata {:?}",
+                                self.name,
+                                desc
+                            );
                         }
                     }
                     None if desc.local.is_specified() => {
-                        log::trace!("{}: closing socket: {:?}", self.name, desc);
+                        log::debug!("{}: closing socket: {:?}", self.name, desc);
 
                         if let Ok(meta) = desc.try_into() {
-                            log::trace!("{}: removing unregistered socket {:?}", self.name, desc);
+                            log::debug!("{}: removing unregistered socket {:?}", self.name, desc);
                             remove.push((meta, handle));
                             events.push(IngressEvent::Disconnected { desc });
+                        } else {
+                            log::debug!("{}: unknown socket {:?}", self.name, desc);
                         }
                     }
                     _ => (),
@@ -322,7 +330,7 @@ impl Network {
                     Ok(Some(tuple)) => tuple,
                     Ok(None) => break,
                     Err(err) => {
-                        log::trace!("{}: ingress packet error: {}", self.name, err);
+                        log::debug!("{}: ingress packet error: {}", self.name, err);
                         continue;
                     }
                 };
@@ -361,7 +369,7 @@ impl Network {
             let ingress_tx = self.ingress.tx.clone();
             for event in events {
                 if ingress_tx.send(event).is_err() {
-                    log::trace!(
+                    log::debug!(
                         "{}: ingress channel closed, unable to receive packets",
                         self.name
                     );

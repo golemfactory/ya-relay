@@ -23,9 +23,9 @@ type ResponseSender = Sender<Dispatched<proto::response::Kind>>;
 pub async fn dispatch<H, S>(handler: H, mut stream: S)
 where
     H: Handler + Clone + 'static,
-    S: Stream<Item = (codec::PacketKind, SocketAddr)> + Unpin,
+    S: Stream<Item = (codec::PacketKind, SocketAddr, chrono::DateTime<chrono::Utc>)> + Unpin,
 {
-    while let Some((packet, from)) = stream.next().await {
+    while let Some((packet, from, _timestamp)) = stream.next().await {
         let handler = handler.clone();
         if let Some(dispatcher) = handler.dispatcher(from).await {
             dispatcher.update_seen();

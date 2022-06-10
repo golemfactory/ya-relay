@@ -19,6 +19,8 @@ pub struct Config {
     pub forwarder_rate_limit: u32,
     #[structopt(long, env, parse(try_from_str = humantime::parse_duration), default_value = "1s")]
     pub forwarder_resume_interval: Duration,
+    #[structopt(long, env, parse(try_from_str = humantime::parse_duration), default_value = "15s")]
+    pub metrics_export_interval: Duration,
 }
 
 pub fn parse_humantime_to_chrono(s: &str) -> Result<chrono::Duration, anyhow::Error> {

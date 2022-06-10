@@ -58,9 +58,12 @@ struct TcpLayerState {
 }
 
 impl VirtNode {
-    pub fn try_new(id: &[u8], session: Arc<Session>, session_slot: SlotId) -> anyhow::Result<Self> {
-        let id = id.into();
-        let ip = IpAddress::from(to_ipv6(&id));
+    pub fn try_new(
+        id: NodeId,
+        session: Arc<Session>,
+        session_slot: SlotId,
+    ) -> anyhow::Result<Self> {
+        let ip = IpAddress::from(to_ipv6(id.into_array()));
         let endpoint = (ip, TCP_BIND_PORT).into();
 
         Ok(Self {
@@ -119,7 +122,7 @@ impl TcpLayer {
     }
 
     pub async fn add_virt_node(&self, node: NodeEntry) -> anyhow::Result<VirtNode> {
-        let node = VirtNode::try_new(&node.id.into_array(), node.session, node.slot)?;
+        let node = VirtNode::try_new(node.id, node.session, node.slot)?;
         {
             let mut state = self.state.write().await;
             let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
@@ -159,11 +162,8 @@ impl TcpLayer {
             node.session.id
         );
 
-        let conn_lock = node.conn_lock.clone();
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
-
-        let _guard = conn_lock.write().await;
         Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
     }
 

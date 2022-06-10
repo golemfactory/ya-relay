@@ -20,7 +20,7 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
-use ya_relay_proto::proto::{Forward, RequestId, SlotId};
+use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
 use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
@@ -79,7 +79,7 @@ impl SessionManager {
             config: config.clone(),
             virtual_tcp: TcpLayer::new(config, ingress.clone()),
             virtual_tcp_fast_lane: Default::default(),
-            registry: NodesRegistry::new(),
+            registry: NodesRegistry::default(),
             guarded: Default::default(),
             state: Arc::new(RwLock::new(SessionManagerState {
                 public_addr: None,
@@ -160,7 +160,7 @@ impl SessionManager {
         &self,
         addr: SocketAddr,
         challenge: bool,
-        remote_id: Option<NodeId>,
+        node_id: Option<NodeId>,
     ) -> SessionResult<Arc<Session>> {
         let this_id = self.config.node_id;
 
@@ -180,7 +180,7 @@ impl SessionManager {
         // Default NodeId in case of relay server.
         // TODO: consider giving relay server proper NodeId.
         self.guarded
-            .notify_first_message(remote_id.unwrap_or_default())
+            .notify_first_message(node_id.unwrap_or_default())
             .await;
 
         let session_id = SessionId::try_from(response.session_id.clone())?;
@@ -230,21 +230,30 @@ impl SessionManager {
                     &raw_challenge,
                     CHALLENGE_DIFFICULTY,
                     response.packet.challenge_resp,
-                    remote_id,
+                    node_id,
                 )
             } else {
-                Ok((Default::default(), Default::default()))
+                Ok(Default::default())
             }
         } {
             Ok(tuple) => tuple,
             Err(err) => {
                 let _ = tmp_session.disconnect().await;
                 return Err(SessionError::Drop(format!(
-                    "{} while initializing session with {}",
-                    err, addr
+                    "{err} while initializing session with {addr}"
                 )));
             }
         };
+
+        if let Some(expected_id) = node_id {
+            // Validate remote NodeId
+            if remote_id != expected_id && !identities.iter().any(|i| i.node_id == expected_id) {
+                let _ = tmp_session.disconnect().await;
+                return Err(SessionError::Drop(format!(
+                    "remote node id mismatch: {expected_id} vs {remote_id} (response)",
+                )));
+            }
+        }
 
         let session = self
             .add_session(addr, session_id, remote_id, identities)
@@ -253,7 +262,7 @@ impl SessionManager {
         session
             .send(proto::Packet::control(
                 session.id.to_vec(),
-                ya_relay_proto::proto::control::ResumeForwarding { slot: 0 },
+                ya_relay_proto::proto::control::ResumeForwarding::default(),
             ))
             .await?;
 
@@ -370,8 +379,10 @@ impl SessionManager {
     ) -> anyhow::Result<Arc<Session>> {
         let session = Session::new(addr, id, self.out_stream()?);
 
-        // Incoming sessions are always p2p sessions, so we use slot=0.
-        self.registry.add_node(node_id, session.clone(), 0).await;
+        // Incoming sessions are always p2p sessions, so we use slot FORWARD_SLOT_ID.
+        self.registry
+            .add_node(node_id, session.clone(), FORWARD_SLOT_ID)
+            .await;
         {
             let mut state = self.state.write().await;
 
@@ -399,7 +410,6 @@ impl SessionManager {
         );
 
         self.virtual_tcp_fast_lane.borrow_mut().clear();
-
         self.registry.remove_node(node_id).await.ok();
         self.virtual_tcp.remove_node(node_id).await.ok();
 
@@ -484,25 +494,42 @@ impl SessionManager {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
         let node = self.registry.resolve_node(node_id).await?;
-        let (conn, tx, rx) = {
+        let tx = {
             match {
                 let state = self.state.read().await;
                 state.forward_reliable.get(&node_id).cloned()
             } {
-                Some(tx) => return Ok(tx),
+                Some(tx) => tx,
                 None => {
+                    self.virtual_tcp_fast_lane.borrow_mut().clear();
+
+                    let conn_lock = node.conn_lock.clone();
+                    let (_guard, was_locked) = match conn_lock.try_write() {
+                        Ok(guard) => (guard, false),
+                        Err(_) => (conn_lock.write().await, true),
+                    };
+
+                    if was_locked {
+                        if let Some(tx) = {
+                            let state = self.state.read().await;
+                            state.forward_reliable.get(&node_id).cloned()
+                        } {
+                            return Ok(tx);
+                        }
+                    }
+
                     let conn = self.virtual_tcp.connect(node.clone()).await?;
                     let (tx, rx) = mpsc::channel(1);
-                    {
-                        let mut state = self.state.write().await;
-                        state.forward_reliable.insert(node_id, tx.clone());
-                    }
-                    (conn, tx, rx)
+                    tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
+
+                    let mut state = self.state.write().await;
+                    state.forward_reliable.insert(node_id, tx.clone());
+
+                    tx
                 }
             }
         };
 
-        tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
         Ok(tx)
     }
 
@@ -547,7 +574,7 @@ impl SessionManager {
             );
 
             if let Err(err) = self.virtual_tcp.send(payload, connection).await {
-                log::trace!(
+                log::debug!(
                     "[{}] forward to {} through {} (session id: {}) failed: {}",
                     self.config.node_id,
                     node.id,
@@ -559,14 +586,14 @@ impl SessionManager {
             }
         }
 
-        self.remove_node(node.id).await;
-        rx.close();
-
-        log::trace!(
+        log::debug!(
             "[{}] forward: disconnected from: {}",
             node.id,
             session.remote
         );
+
+        rx.close();
+        let _ = self.close_session(node.session.clone()).await;
     }
 
     async fn forward_unreliable_handler(
@@ -587,7 +614,7 @@ impl SessionManager {
 
             let forward = Forward::unreliable(session.id, node.slot, payload);
             if let Err(error) = session.send(forward).await {
-                log::trace!(
+                log::debug!(
                     "[{}] forward (U) to {} through {} (session id: {}) failed: {}",
                     self.config.node_id,
                     node.id,
@@ -599,14 +626,14 @@ impl SessionManager {
             }
         }
 
-        self.remove_node(node.id).await;
-        rx.close();
-
-        log::trace!(
+        log::debug!(
             "[{}] forward (U): disconnected from: {}",
             node.id,
             session.remote
         );
+
+        rx.close();
+        self.remove_node(node.id).await;
     }
 
     async fn filter_own_addresses(&self, endpoints: &[proto::Endpoint]) -> Vec<SocketAddr> {
@@ -636,6 +663,8 @@ impl SessionManager {
             bail!("Remote id belongs to this node.");
         }
 
+        log::debug!("Resolving [{node_id}], slot = {slot}");
+
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(endpoints).await;
 
         let lock = self.guarded.guard_initialization(node_id, &addrs).await;
@@ -643,17 +672,13 @@ impl SessionManager {
 
         // Check whether we are already connected to a node with this id
         if let Ok(entry) = self.registry.resolve_node(node_id).await {
-            log::debug!("Resolving Node [{node_id}]. Returning already existing connection.");
+            let session_type = match entry.is_p2p() {
+                true => "p2p",
+                false => "relay",
+            };
+            log::debug!("Resolving Node [{node_id}]. Returning already existing connection (session = {} ({session_type}), slot = {}).", entry.session.id, entry.slot);
             return Ok(entry);
         }
-
-        // // Check whether we are already connected to a node with any of the addresses
-        // if self.assert_not_connected(&addrs).await.is_err() {
-        //     log::debug!("Resolving Node [{node_id}]. Returning already existing connection.");
-        //
-        //     drop(_guard);
-        //     return self.registry.resolve_node(node_id).await;
-        // }
 
         let this = self.clone();
         Ok(self
@@ -673,11 +698,18 @@ impl SessionManager {
         addrs: Vec<SocketAddr>,
         slot: u32,
     ) -> SessionResult<NodeEntry> {
+        // If requested slot == FORWARD_SLOT_ID, than we are responding to ReverseConnection,
+        // so we shouldn't try to send it ourselves.
+        let try_reverse = slot != FORWARD_SLOT_ID;
+
         // If node has public IP, we can establish direct session with him
         // instead of forwarding messages through relay.
-        let (session, resolved_slot) = match self.try_direct_session(node_id, addrs).await {
-            // If we send packets directly, slot will be always 0.
-            Ok(session) => (session, 0),
+        let (session, resolved_slot) = match self
+            .try_direct_session(node_id, addrs, try_reverse)
+            .await
+        {
+            // If we send packets directly, we use FORWARD_SLOT_ID.
+            Ok(session) => (session, FORWARD_SLOT_ID),
             // Fatal error, cease further communication
             Err(SessionError::Drop(e)) => {
                 log::warn!("{}", e);
@@ -686,15 +718,28 @@ impl SessionManager {
             // Recoverable error, continue
             Err(SessionError::Retry(e)) => {
                 log::info!("{}", e);
+
+                // In this case we don't have slot id, so we can't establish relayed connection.
+                // It happens mostly if we are trying to establish connection in response to ReverseConnection.
+                if !try_reverse {
+                    return Err(anyhow!("Failed to establish p2p connection with [{node_id}] and relay Server won't be used, since slot = {FORWARD_SLOT_ID}.").into());
+                }
+
                 (self.server_session().await?, slot)
             }
         };
 
-        if resolved_slot != 0 {
+        if resolved_slot != FORWARD_SLOT_ID {
             log::info!(
                 "Using relay Server to forward packets to [{node_id}] (slot {resolved_slot})"
             );
         }
+
+        log::debug!(
+            "Adding node [{node_id}] session ({} - {}), resolved slot = {resolved_slot}, requested slot = {slot}",
+            session.id,
+            session.remote
+        );
 
         let node = self
             .registry
@@ -709,6 +754,7 @@ impl SessionManager {
         &self,
         node_id: NodeId,
         addrs: Vec<SocketAddr>,
+        try_reverse_connection: bool,
     ) -> SessionResult<Arc<Session>> {
         if addrs.is_empty() {
             log::debug!("Node [{node_id}] has no public endpoints.");
@@ -728,11 +774,9 @@ impl SessionManager {
 
         // We are trying to connect to Node without public IP. Trying to send
         // ReverseConnection message, so Node will try to connect to us.
-        if self.get_public_addr().await.is_some() {
+        if try_reverse_connection && self.get_public_addr().await.is_some() {
             match self.try_reverse_connection(node_id).await {
-                Err(e) => {
-                    log::info!("Reverse connection failed: {e}");
-                }
+                Err(e) => log::info!("Reverse connection with [{node_id}] failed: {e}"),
                 Ok(session) => return Ok(session),
             }
         }
@@ -791,9 +835,10 @@ impl SessionManager {
 
     pub async fn server_session(&self) -> anyhow::Result<Arc<Session>> {
         // A little bit dirty hack, that we give default NodeId (0x00) for relay server.
+        let remote_id = NodeId::default();
         let lock = self
             .guarded
-            .guard_initialization(NodeId::default(), &[self.config.srv_addr])
+            .guard_initialization(remote_id, &[self.config.srv_addr])
             .await;
 
         let this = self.clone();
@@ -806,9 +851,7 @@ impl SessionManager {
 
             self.init_server_session(self.config.srv_addr)
                 .then(move |result| async move {
-                    this.guarded
-                        .stop_guarding(NodeId::default(), result.clone())
-                        .await;
+                    this.guarded.stop_guarding(remote_id, result.clone()).await;
                     result
                 })
                 .await?
@@ -1079,9 +1122,13 @@ impl Handler for SessionManager {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
                     let myself = self;
                     tokio::task::spawn_local(async move {
+                        let node_id = NodeId::try_from(&message.node_id)
+                            .ok()
+                            .map(|id| id.to_string())
+                            .unwrap_or(format!("{:?}", message.node_id));
+
                         log::info!(
-                            "Got ReverseConnection message. node={:?}, endpoints={:?}",
-                            message.node_id,
+                            "Got ReverseConnection message. node={node_id}, endpoints={:?}",
                             message.endpoints
                         );
 
@@ -1091,13 +1138,11 @@ impl Handler for SessionManager {
                         }
 
                         match myself
-                            .resolve(&message.node_id, &message.endpoints, 0)
+                            .resolve(&message.node_id, &message.endpoints, FORWARD_SLOT_ID)
                             .await
                         {
                             Err(e) => log::warn!(
-                                "Failed to resolve reverse connection. node_id={:?} error={}",
-                                message.node_id,
-                                e
+                                "Failed to resolve reverse connection. node_id={node_id} error={e}"
                             ),
                             Ok(_) => log::trace!("ReverseConnection succeeded: {:?}", message),
                         };
@@ -1223,7 +1268,7 @@ impl Handler for SessionManager {
                 from
             );
 
-            let node = if slot == 0 {
+            let node = if slot == FORWARD_SLOT_ID {
                 // Direct message from other Node.
                 match { myself.state.read().await.nodes_addr.get(&from).cloned() } {
                     Some(id) => myself.registry.resolve_node(id).await?,
