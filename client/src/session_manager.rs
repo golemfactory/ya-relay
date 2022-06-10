@@ -499,25 +499,42 @@ impl SessionManager {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
         let node = self.registry.resolve_node(node_id).await?;
-        let (conn, tx, rx) = {
+        let tx = {
             match {
                 let state = self.state.read().await;
                 state.forward_reliable.get(&node_id).cloned()
             } {
-                Some(tx) => return Ok(tx),
+                Some(tx) => tx,
                 None => {
+                    self.virtual_tcp_fast_lane.borrow_mut().clear();
+
+                    let conn_lock = node.conn_lock.clone();
+                    let (_guard, was_locked) = match conn_lock.try_write() {
+                        Ok(guard) => (guard, false),
+                        Err(_) => (conn_lock.write().await, true),
+                    };
+
+                    if was_locked {
+                        if let Some(tx) = {
+                            let state = self.state.read().await;
+                            state.forward_reliable.get(&node_id).cloned()
+                        } {
+                            return Ok(tx);
+                        }
+                    }
+
                     let conn = self.virtual_tcp.connect(node.clone()).await?;
                     let (tx, rx) = mpsc::channel(1);
-                    {
-                        let mut state = self.state.write().await;
-                        state.forward_reliable.insert(node_id, tx.clone());
-                    }
-                    (conn, tx, rx)
+                    tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
+
+                    let mut state = self.state.write().await;
+                    state.forward_reliable.insert(node_id, tx.clone());
+
+                    tx
                 }
             }
         };
 
-        tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
         Ok(tx)
     }
 
