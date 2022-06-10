@@ -77,8 +77,22 @@ impl Server {
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
 
                 let node = match { self.state.read().await.nodes.get_by_session(id) } {
-                    None => return self.clone().establish_session(id, from, kind).await,
                     Some(node) => node,
+                    None => {
+                        return match kind {
+                            Some(proto::packet::Kind::Request(request)) => {
+                                self.clone().establish_session(id, from, request).await
+                            }
+                            Some(proto::packet::Kind::Control(proto::Control {
+                                kind: Some(kind),
+                                ..
+                            })) => match kind {
+                                proto::control::Kind::Disconnected { .. } => Ok(()),
+                                _ => unknown_session(id),
+                            },
+                            _ => unknown_session(id),
+                        };
+                    }
                 };
 
                 match kind {
@@ -318,7 +332,7 @@ impl Server {
         let response = proto::Packet::response(
             request_id,
             session_id.to_vec(),
-            proto::StatusCode::Ok,
+            StatusCode::Ok,
             proto::response::Register { endpoints },
         );
 
@@ -344,7 +358,7 @@ impl Server {
             proto::Packet::response(
                 request_id,
                 session_id.to_vec(),
-                proto::StatusCode::Ok,
+                StatusCode::Ok,
                 proto::response::Pong {},
             ),
             &from,
@@ -407,7 +421,7 @@ impl Server {
             proto::Packet::response(
                 request_id,
                 session_id.to_vec(),
-                proto::StatusCode::Ok,
+                StatusCode::Ok,
                 proto::response::Neighbours { nodes },
             ),
             &from,
@@ -535,7 +549,7 @@ impl Server {
         let node = to_node_response(node_info, public_key);
 
         self.send_to(
-            proto::Packet::response(request_id, session_id.to_vec(), proto::StatusCode::Ok, node),
+            proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, node),
             &from,
         )
         .await
@@ -590,7 +604,7 @@ impl Server {
         self,
         id: SessionId,
         _from: SocketAddr,
-        packet: Option<proto::packet::Kind>,
+        request: proto::Request,
     ) -> ServerResult<()> {
         let mut sender = {
             match { self.state.read().await.starting_session.get(&id).cloned() } {
@@ -599,12 +613,6 @@ impl Server {
             }
         };
 
-        let request = match packet {
-            Some(proto::packet::Kind::Request(request)) => request,
-            _ => return Err(BadRequest::InvalidPacket(id, "Request".to_string()).into()),
-        };
-
-        //
         tokio::task::spawn_local(async move {
             let _ = sender.send(request).await.map_err(|_| {
                 log::warn!(
@@ -624,12 +632,8 @@ impl Server {
         mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
         let (packet, raw_challenge) = challenge::prepare_challenge_response();
-        let challenge = proto::Packet::response(
-            request_id,
-            session_id.to_vec(),
-            proto::StatusCode::Ok,
-            packet,
-        );
+        let challenge =
+            proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, packet);
 
         self.send_to(challenge, &with)
             .await
@@ -680,7 +684,7 @@ impl Server {
                     proto::Packet::response(
                         request_id,
                         session_id.to_vec(),
-                        proto::StatusCode::Ok,
+                        StatusCode::Ok,
                         proto::response::Session::default(),
                     ),
                     &with,
@@ -696,7 +700,7 @@ impl Server {
 
                 node
             }
-            _ => return Err(BadRequest::InvalidPacket(session_id, "Session".to_string()).into()),
+            _ => return invalid_packet(session_id, "Session"),
         };
 
         loop {
@@ -734,11 +738,7 @@ impl Server {
                     kind: Some(proto::request::Kind::Ping(_)),
                     ..
                 }) => continue,
-                _ => {
-                    return Err(
-                        BadRequest::InvalidPacket(session_id, "Register".to_string()).into(),
-                    );
-                }
+                _ => return invalid_packet(session_id, "Register"),
             };
         }
         Ok(())
@@ -935,24 +935,19 @@ impl Server {
     }
 }
 
-pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, proto::StatusCode> {
+pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, StatusCode> {
     match packet {
         PacketKind::Packet(proto::Packet {
             kind: Some(proto::packet::Kind::Response(proto::Response { kind, code, .. })),
             ..
         }) => match kind {
-            None => {
-                Err(proto::StatusCode::from_i32(code as i32).ok_or(proto::StatusCode::Undefined)?)
-            }
-            Some(response) => {
-                match proto::StatusCode::from_i32(code as i32) {
-                    Some(proto::StatusCode::Ok) => Ok(response),
-                    _ => Err(proto::StatusCode::from_i32(code as i32)
-                        .ok_or(proto::StatusCode::Undefined)?),
-                }
-            }
+            None => Err(StatusCode::from_i32(code as i32).ok_or(StatusCode::Undefined)?),
+            Some(response) => match StatusCode::from_i32(code as i32) {
+                Some(StatusCode::Ok) => Ok(response),
+                _ => Err(StatusCode::from_i32(code as i32).ok_or(StatusCode::Undefined)?),
+            },
         },
-        _ => Err(proto::StatusCode::Undefined),
+        _ => Err(StatusCode::Undefined),
     }
 }
 
@@ -981,4 +976,14 @@ fn elapsed_metric(since: DateTime<Utc>) -> u64 {
         .num_microseconds()
         .map(|t| t as u64)
         .unwrap_or(u64::MAX)
+}
+
+#[inline]
+fn unknown_session<T>(session_id: SessionId) -> ServerResult<T> {
+    Err(Unauthorized::SessionNotFound(session_id).into())
+}
+
+#[inline]
+fn invalid_packet<T>(session_id: SessionId, expected: impl ToString) -> ServerResult<T> {
+    Err(BadRequest::InvalidPacket(session_id, expected.to_string()).into())
 }

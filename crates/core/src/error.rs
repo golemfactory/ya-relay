@@ -33,8 +33,6 @@ pub enum Undefined {}
 
 #[derive(thiserror::Error, Clone, Debug)]
 pub enum BadRequest {
-    #[error("Session [{0}] not found.")]
-    SessionNotFound(SessionId),
     #[error("No SessionId.")]
     NoSessionId,
     #[error("Invalid NodeId.")]
