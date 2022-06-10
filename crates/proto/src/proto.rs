@@ -15,6 +15,7 @@ use crate::codec::DecodeError;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 
+pub const FORWARD_SLOT_ID: SlotId = 0;
 pub const FORWARD_TAG: u32 = 1;
 pub const MAX_TAG_SIZE: usize = 5;
 pub const SESSION_ID_SIZE: usize = 16;
@@ -146,7 +147,7 @@ fn write_payload_fmt(f: &mut std::fmt::Formatter<'_>, buf: impl AsRef<[u8]>) -> 
     }
 }
 
-#[derive(Debug, Clone, From, Eq, PartialEq)]
+#[derive(Debug, Clone, From)]
 pub enum Payload {
     BytesMut(BytesMut),
     Bytes(Bytes),
@@ -215,7 +216,7 @@ impl Payload {
 
 impl Default for Payload {
     fn default() -> Self {
-        Self::BytesMut(Default::default())
+        Self::Vec(Default::default())
     }
 }
 
@@ -237,7 +238,13 @@ impl AsRef<[u8]> for Payload {
 
 impl FromIterator<u8> for Payload {
     fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
-        Self::BytesMut(BytesMut::from_iter(iter))
+        Self::Vec(Vec::from_iter(iter))
+    }
+}
+
+impl PartialEq<Payload> for Payload {
+    fn eq(&self, other: &Payload) -> bool {
+        self.as_ref() == other.as_ref()
     }
 }
 
@@ -258,6 +265,8 @@ impl PartialEq<Payload> for Vec<u8> {
         self.as_slice() == other.as_ref()
     }
 }
+
+impl Eq for Payload {}
 
 impl Packet {
     pub fn request(session_id: Vec<u8>, kind: impl Into<request::Kind>) -> Self {
