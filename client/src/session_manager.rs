@@ -247,12 +247,7 @@ impl SessionManager {
 
         if let Some(expected_id) = node_id {
             // Validate remote NodeId
-            if remote_id != expected_id
-                && identities
-                    .iter()
-                    .find(|i| i.node_id == expected_id)
-                    .is_none()
-            {
+            if remote_id != expected_id && !identities.iter().any(|i| i.node_id == expected_id) {
                 let _ = tmp_session.disconnect().await;
                 return Err(SessionError::Drop(format!(
                     "remote node id mismatch: {expected_id} vs {remote_id} (response)",
