@@ -84,12 +84,9 @@ impl Server {
                                 self.clone().establish_session(id, from, request).await
                             }
                             Some(proto::packet::Kind::Control(proto::Control {
-                                kind: Some(kind),
+                                kind: Some(proto::control::Kind::Disconnected { .. }),
                                 ..
-                            })) => match kind {
-                                proto::control::Kind::Disconnected { .. } => Ok(()),
-                                _ => unknown_session(id),
-                            },
+                            })) => Ok(()),
                             _ => unknown_session(id),
                         };
                     }
