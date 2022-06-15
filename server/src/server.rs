@@ -4,7 +4,7 @@ use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
 use governor::{NegativeMultiDecision, Quota, RateLimiter};
-use metrics::{counter, timing, value};
+use metrics::{counter, histogram};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
@@ -434,7 +434,7 @@ impl Server {
             from,
             session_id
         );
-        timing!(
+        histogram!(
             "ya-relay.packet.neighborhood.processing-time",
             elapsed_metric(start)
         );
@@ -900,8 +900,8 @@ impl Server {
                 }
             };
 
-            value!("ya-relay.packets.response-time", elapsed_metric(timestamp));
-            value!(
+            histogram!("ya-relay.packets.response-time", elapsed_metric(timestamp));
+            histogram!(
                 "ya-relay.packets.processing-time",
                 elapsed_metric(dispatching_start)
             );
@@ -968,11 +968,11 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
     }
 }
 
-fn elapsed_metric(since: DateTime<Utc>) -> u64 {
+fn elapsed_metric(since: DateTime<Utc>) -> f64 {
     (Utc::now() - since)
         .num_microseconds()
-        .map(|t| t as u64)
-        .unwrap_or(u64::MAX)
+        .map(|t| t as f64)
+        .unwrap_or(f64::MAX)
 }
 
 #[inline]

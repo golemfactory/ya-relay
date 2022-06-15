@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Config::from_args();
 
-    register_metrics(args.metrics_export_interval);
+    register_metrics(args.metrics_scrape_addr);
 
     let server = Server::bind_udp(args).await?;
     server.run().await

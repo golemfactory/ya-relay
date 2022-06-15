@@ -29,9 +29,8 @@ governor = "0.3.2"
 humantime = "2.1"
 itertools = "0.10.1"
 log = "0.4"
-metrics = "0.12"
-metrics-runtime = "0.13"
-metrics-exporter-log = "0.4"
+metrics = "0.19"
+metrics-exporter-prometheus = { version = "0.10", features = ["http-listener"] }
 rand = { version = "0.8", features = ["std"] }
 structopt = "0.3"
 thiserror = "1.0"
