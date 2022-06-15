@@ -154,16 +154,16 @@ impl Session {
         let packet = proto::request::Ping {};
         let ping_ts = Instant::now();
 
-        let ping = match self
+        let (ping, result) = match self
             .request::<proto::response::Pong>(packet.into(), self.id.to_vec(), DEFAULT_PING_TIMEOUT)
             .await
         {
-            Ok(_) => Instant::now() - ping_ts,
-            Err(_) => Instant::now() - self.dispatcher.last_seen(),
+            result @ Ok(_) => (Instant::now() - ping_ts, result),
+            result @ Err(_) => (Instant::now() - self.dispatcher.last_seen(), result),
         };
 
         self.dispatcher.update_ping(ping);
-        Ok(())
+        result.map(|_| ())
     }
 
     pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
