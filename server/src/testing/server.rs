@@ -68,7 +68,7 @@ pub fn test_default_config() -> Config {
         session_purge_timeout: chrono::Duration::seconds(600),
         forwarder_rate_limit: 2048,
         forwarder_resume_interval: Duration::from_secs(1),
-        metrics_export_interval: Duration::from_secs(1000),
+        metrics_scrape_addr: "127.0.0.1:9000".parse().unwrap(),
     }
 }
 
