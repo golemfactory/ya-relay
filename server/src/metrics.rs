@@ -9,7 +9,7 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
         ])
         .expect("Metrics initialization failure");
 
-    log::info!("Metrics http listener at {}", addr);
+    log::info!("Metrics http listener at {addr}");
     builder.install().expect("Metrics installation failure");
 
     register_counter!("ya-relay.packets.incoming.error");
@@ -22,6 +22,7 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
     register_counter!("ya-relay.session.establish.finished");
     register_counter!("ya-relay.session.establish.challenge.valid");
     register_counter!("ya-relay.session.establish.challenge.sent");
+    register_counter!("ya-relay.session.establish.register");
     register_counter!("ya-relay.session.establish.error");
 
     register_histogram!("ya-relay.packet.neighborhood.processing-time");

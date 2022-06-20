@@ -555,7 +555,7 @@ impl Server {
         let (sender, receiver) = mpsc::channel(1);
         let session_id = SessionId::generate();
 
-        log::info!("Initializing new session: {session_id}");
+        log::info!("Initializing new session: {session_id} with: {with}");
         counter!("ya-relay.session.establish.start", 1);
 
         {
@@ -631,7 +631,7 @@ impl Server {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::info!("Challenge sent to: {with}");
+        log::info!("Challenge sent to: {with}, session: {session_id}");
         counter!("ya-relay.session.establish.challenge.sent", 1);
 
         let node = match rc.next().await {
@@ -639,7 +639,7 @@ impl Server {
                 request_id,
                 kind: Some(proto::request::Kind::Session(session)),
             }) => {
-                log::info!("Got challenge from node: {with}");
+                log::info!("Got challenge from node: {with}, session: {session_id}");
 
                 // Validate the challenge
                 let (node_id, identities) =
@@ -685,7 +685,9 @@ impl Server {
                 .await
                 .map_err(|_| InternalError::Send)?;
 
-                log::info!("Session: {session_id}. Got valid challenge from node: {node_id}");
+                log::info!(
+                    "Session: {session_id} ({with}). Got valid challenge from node: {node_id}"
+                );
                 counter!("ya-relay.session.establish.challenge.valid", 1);
 
                 node
@@ -700,6 +702,7 @@ impl Server {
                     kind: Some(proto::request::Kind::Register(registration)),
                 }) => {
                     log::trace!("Got register from Node: [{with}] (request {request_id})");
+                    counter!("ya-relay.session.establish.register", 1);
 
                     let node_id = node.info.node_id();
                     let node = self
@@ -713,7 +716,7 @@ impl Server {
                         server.nodes.register(node);
                     }
 
-                    log::info!("Session: {session_id} established with Node: [{node_id}]");
+                    log::info!("Session: {session_id} established with Node: [{node_id}] ({with})");
                     counter!("ya-relay.session.establish.finished", 1);
                     break;
                 }
