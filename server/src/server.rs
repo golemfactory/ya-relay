@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
@@ -16,6 +16,7 @@ use url::Url;
 
 use crate::config::Config;
 use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use crate::metrics::elapsed_metric;
 use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
@@ -868,6 +869,11 @@ impl Server {
         while let Some((packet, addr, timestamp)) = input.next().await {
             counter!("ya-relay.packets.incoming", 1);
 
+            if server.drop_policy(&packet, timestamp) {
+                counter!("ya-relay.packets.dropped", 1);
+                continue;
+            }
+
             let request_id = PacketKind::request_id(&packet);
             let session_id = PacketKind::session_id(&packet);
 
@@ -952,13 +958,6 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryptions,
     }
-}
-
-fn elapsed_metric(since: DateTime<Utc>) -> f64 {
-    (Utc::now() - since)
-        .num_microseconds()
-        .map(|t| t as f64)
-        .unwrap_or(f64::MAX)
 }
 
 #[inline]

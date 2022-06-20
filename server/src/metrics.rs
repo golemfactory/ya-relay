@@ -1,3 +1,5 @@
+use chrono::{DateTime, Utc};
+
 use metrics::{describe_histogram, register_counter, register_histogram, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -44,4 +46,11 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
         Unit::Microseconds,
         "Time between receiving packet and finishing processing (responding if applicable)."
     );
+}
+
+pub fn elapsed_metric(since: DateTime<Utc>) -> f64 {
+    (Utc::now() - since)
+        .num_microseconds()
+        .map(|t| t as f64)
+        .unwrap_or(f64::MAX)
 }

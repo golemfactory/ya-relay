@@ -47,6 +47,18 @@ impl PacketKind {
             PacketKind::ForwardCtd(_) => vec![],
         }
     }
+
+    pub fn is_forward(&self) -> bool {
+        match &self {
+            PacketKind::Packet(_) => false,
+            PacketKind::Forward(_) => true,
+            PacketKind::ForwardCtd(_) => true,
+        }
+    }
+
+    pub fn is_protocol_packet(&self) -> bool {
+        !self.is_forward()
+    }
 }
 
 #[inline(always)]
