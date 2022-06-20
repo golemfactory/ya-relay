@@ -116,8 +116,7 @@ impl Server {
                     },
                     Some(proto::packet::Kind::Response(_)) => {
                         log::warn!(
-                            "Server shouldn't get Response packet. Sender: {}, node {}",
-                            from,
+                            "Server shouldn't get Response packet. Sender: {from}, node {}",
                             node.info.node_id(),
                         );
                     }
@@ -145,8 +144,6 @@ impl Server {
             let server = self.state.read().await;
 
             // Authorization: Sending Node must have established session.
-            // TODO: This operation has log(n) complexity. It wastes optimization in `get_by_slot`
-            //       which has O(1) complexity.
             let src_node = server
                 .nodes
                 .get_by_session(session_id)
@@ -180,8 +177,7 @@ impl Server {
                         .map_err(|_| InternalError::Send)?;
 
                     log::trace!(
-                        "Sent Disconnected [slot={}] message to Node: {}.",
-                        slot,
+                        "Sent Disconnected [slot={slot}] message to Node: {}.",
                         src_node.info.node_id()
                     );
 
