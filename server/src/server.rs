@@ -337,11 +337,7 @@ impl Server {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::debug!(
-            "Responding to Register from Node: [{}], address: {}",
-            node_id,
-            from
-        );
+        log::debug!("Responding to Register from Node: [{node_id}], address: {from}");
         Ok(session)
     }
 
@@ -463,8 +459,7 @@ impl Server {
             match { self.state.read().await.nodes.get_by_node_id(target_node_id) } {
                 None => {
                     return Err(InternalError::Generic(format!(
-                        "There is no session with node_id {}",
-                        target_node_id
+                        "There is no session with node_id {target_node_id}"
                     ))
                     .into())
                 }
@@ -552,13 +547,7 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::info!(
-            "Node [{}] info sent to (request: {}): {}",
-            node_id,
-            request_id,
-            from
-        );
-
+        log::info!("Node [{node_id}] info sent to (request: {request_id}): {from}");
         Ok(())
     }
 
@@ -566,7 +555,8 @@ impl Server {
         let (sender, receiver) = mpsc::channel(1);
         let session_id = SessionId::generate();
 
-        log::info!("Initializing new session: {}", session_id);
+        log::info!("Initializing new session: {session_id}");
+        counter!("ya-relay.session.establish.start", 1);
 
         {
             self.state
@@ -581,18 +571,26 @@ impl Server {
         // TODO: We should spawn in different thread, but it's impossible since
         //       `init_session` starts actor and tokio panics.
         tokio::task::spawn_local(async move {
+            let start_timestamp = Utc::now();
+
             if let Err(e) = self
                 .clone()
                 .init_session(with, request_id, session_id, receiver)
                 .await
             {
-                log::warn!("Error initializing session [{}], {}", session_id, e);
+                log::warn!("Error initializing session [{session_id}], {e}");
+                counter!("ya-relay.session.establish.error", 1);
 
                 // Establishing session failed.
                 self.error_response(request_id, session_id.to_vec(), &with, e)
                     .await;
                 self.cleanup_initialization(&session_id).await;
             }
+
+            histogram!(
+                "ya-relay.session.establish.time",
+                elapsed_metric(start_timestamp)
+            );
         });
         Ok(())
     }
@@ -612,10 +610,7 @@ impl Server {
 
         tokio::task::spawn_local(async move {
             let _ = sender.send(request).await.map_err(|_| {
-                log::warn!(
-                    "Establish session channel closed. Dropping packet for session [{}]",
-                    id
-                )
+                log::warn!("Establish session channel closed. Dropping packet for session [{id}]")
             });
         });
         Ok(())
@@ -636,14 +631,15 @@ impl Server {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::info!("Challenge sent to: {}", with);
+        log::info!("Challenge sent to: {with}");
+        counter!("ya-relay.session.establish.challenge.sent", 1);
 
         let node = match rc.next().await {
             Some(proto::Request {
                 request_id,
                 kind: Some(proto::request::Kind::Session(session)),
             }) => {
-                log::info!("Got challenge from node: {}", with);
+                log::info!("Got challenge from node: {with}");
 
                 // Validate the challenge
                 let (node_id, identities) =
@@ -689,11 +685,8 @@ impl Server {
                 .await
                 .map_err(|_| InternalError::Send)?;
 
-                log::info!(
-                    "Session: {}. Got valid challenge from node: {}",
-                    session_id,
-                    node_id
-                );
+                log::info!("Session: {session_id}. Got valid challenge from node: {node_id}");
+                counter!("ya-relay.session.establish.challenge.valid", 1);
 
                 node
             }
@@ -706,11 +699,7 @@ impl Server {
                     request_id,
                     kind: Some(proto::request::Kind::Register(registration)),
                 }) => {
-                    log::trace!(
-                        "Got register from Node: [{}] (request {})",
-                        with,
-                        request_id
-                    );
+                    log::trace!("Got register from Node: [{with}] (request {request_id})");
 
                     let node_id = node.info.node_id();
                     let node = self
@@ -724,11 +713,8 @@ impl Server {
                         server.nodes.register(node);
                     }
 
-                    log::info!(
-                        "Session: {} established with Node: [{}]",
-                        session_id,
-                        node_id
-                    );
+                    log::info!("Session: {session_id} established with Node: [{node_id}]");
+                    counter!("ya-relay.session.establish.finished", 1);
                     break;
                 }
                 Some(proto::Request {
@@ -898,6 +884,7 @@ impl Server {
                         .error_response(request_id, session_id, &addr, error)
                         .await;
                 }
+                counter!("ya-relay.packets.incoming.error", 1);
             };
 
             histogram!("ya-relay.packets.response-time", elapsed_metric(timestamp));
