@@ -23,6 +23,7 @@ use crate::state::NodesState;
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
+use ya_relay_core::utils::ResultExt;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
@@ -101,19 +102,44 @@ impl Server {
                         Kind::Session(_) => {}
                         Kind::Register(_) => {}
                         Kind::Node(params) => {
-                            self.node_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.node-info", 1);
+                            self.node_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.node-info.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.node-info.done", 1))?
                         }
                         Kind::Slot(params) => {
-                            self.slot_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.slot-info", 1);
+                            self.slot_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.slot-info.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.slot-info.done", 1))?
                         }
                         Kind::Neighbours(params) => {
+                            counter!("ya-relay.packet.neighborhood", 1);
                             self.neighbours_request(request_id, id, from, params)
-                                .await?
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.neighborhood.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.neighborhood.done", 1))?
                         }
                         Kind::ReverseConnection(params) => {
-                            self.reverse_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.reverse-connection", 1);
+                            self.reverse_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| {
+                                    counter!("ya-relay.packet.reverse-connection.done", 1)
+                                })
+                                .on_done(|_| {
+                                    counter!("ya-relay.packet.reverse-connection.done", 1)
+                                })?
                         }
-                        Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
+                        Kind::Ping(_) => {
+                            counter!("ya-relay.packet.ping", 1);
+                            self.ping_request(request_id, id, from)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.ping.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.ping.done", 1))?
+                        }
                     },
                     Some(proto::packet::Kind::Response(_)) => {
                         log::warn!(
@@ -122,13 +148,23 @@ impl Server {
                         );
                     }
                     Some(proto::packet::Kind::Control(packet)) => {
-                        self.control(id, packet, from).await?
+                        counter!("ya-relay.packet.disconnect", 1);
+                        self.control(id, packet, from)
+                            .await
+                            .on_error(|_| counter!("ya-relay.packet.disconnect.error", 1))
+                            .on_done(|_| counter!("ya-relay.packet.disconnect.done", 1))?
                     }
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
             }
 
-            PacketKind::Forward(forward) => self.forward(forward, from).await?,
+            PacketKind::Forward(forward) => {
+                counter!("ya-relay.packet.forward", 1);
+                self.forward(forward, from)
+                    .await
+                    .on_error(|_| counter!("ya-relay.packet.forward.error", 1))
+                    .on_done(|_| counter!("ya-relay.packet.forward.done", 1))?
+            }
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
