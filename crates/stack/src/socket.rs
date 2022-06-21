@@ -1,4 +1,5 @@
 use std::hash::{Hash, Hasher};
+use std::net::SocketAddr;
 
 use derive_more::From;
 use smoltcp::socket::*;
@@ -170,6 +171,12 @@ impl From<Option<IpEndpoint>> for SocketEndpoint {
             Some(endpoint) => Self::Ip(endpoint),
             None => Self::Other,
         }
+    }
+}
+
+impl From<SocketAddr> for SocketEndpoint {
+    fn from(addr: SocketAddr) -> Self {
+        Self::Ip(addr.into())
     }
 }
 
