@@ -83,10 +83,13 @@ impl Server {
                             Some(proto::packet::Kind::Request(request)) => {
                                 self.clone().establish_session(id, from, request).await
                             }
-                            Some(proto::packet::Kind::Control(proto::Control {
-                                kind: Some(proto::control::Kind::Disconnected { .. }),
-                                ..
-                            })) => Ok(()),
+                            Some(proto::packet::Kind::Control(proto::Control { kind })) => {
+                                match kind {
+                                    Some(proto::control::Kind::Disconnected { .. }) => Ok(()),
+                                    Some(proto::control::Kind::ResumeForwarding { .. }) => Ok(()),
+                                    _ => unknown_session(id),
+                                }
+                            }
                             _ => unknown_session(id),
                         };
                     }
