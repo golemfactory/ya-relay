@@ -37,7 +37,7 @@ pub trait ResultExt<T, E>: Sized {
 impl<T, E> ResultExt<T, E> for Result<T, E> {
     fn on_error<F: FnOnce(&E)>(self, op: F) -> Result<T, E> {
         if let Err(e) = &self {
-            op(&e);
+            op(e);
         }
         self
     }
