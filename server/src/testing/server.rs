@@ -69,6 +69,8 @@ pub fn test_default_config() -> Config {
         forwarder_rate_limit: 2048,
         forwarder_resume_interval: Duration::from_secs(1),
         metrics_scrape_addr: "127.0.0.1:9000".parse().unwrap(),
+        drop_packets_older: chrono::Duration::seconds(30),
+        drop_forward_packets_older: chrono::Duration::seconds(30),
     }
 }
 

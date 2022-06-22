@@ -65,9 +65,9 @@ pub fn udp_stream(
 
             match codec.decode(&mut buf) {
                 Ok(Some(item)) => return Some(((item, addr, timestamp), socket)),
-                Err(e) => log::warn!("Failed to decode packet: {}", e),
+                Err(e) => log::warn!("Failed to decode packet from: {addr}. Error: {}", e),
                 // `decode` does not return this variant
-                Ok(None) => log::warn!("Unable to decode packet"),
+                Ok(None) => log::warn!("Unable to decode packet of size: {size}, from: {addr}"),
             }
         }
     })

@@ -28,3 +28,22 @@ where
     tokio::task::spawn_local(Abortable::new(future, abort_registration));
     abort_handle
 }
+
+pub trait ResultExt<T, E>: Sized {
+    fn on_error<F: FnOnce(&E)>(self, op: F) -> Result<T, E>;
+    fn on_done<F: FnOnce(&Result<T, E>)>(self, op: F) -> Result<T, E>;
+}
+
+impl<T, E> ResultExt<T, E> for Result<T, E> {
+    fn on_error<F: FnOnce(&E)>(self, op: F) -> Result<T, E> {
+        if let Err(e) = &self {
+            op(&e);
+        }
+        self
+    }
+
+    fn on_done<F: FnOnce(&Result<T, E>)>(self, op: F) -> Result<T, E> {
+        op(&self);
+        self
+    }
+}

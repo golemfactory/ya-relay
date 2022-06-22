@@ -1,5 +1,5 @@
 use anyhow::anyhow;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
@@ -16,12 +16,14 @@ use url::Url;
 
 use crate::config::Config;
 use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use crate::metrics::elapsed_metric;
 use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
+use ya_relay_core::utils::ResultExt;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
@@ -100,19 +102,44 @@ impl Server {
                         Kind::Session(_) => {}
                         Kind::Register(_) => {}
                         Kind::Node(params) => {
-                            self.node_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.node-info", 1);
+                            self.node_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.node-info.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.node-info.done", 1))?
                         }
                         Kind::Slot(params) => {
-                            self.slot_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.slot-info", 1);
+                            self.slot_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.slot-info.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.slot-info.done", 1))?
                         }
                         Kind::Neighbours(params) => {
+                            counter!("ya-relay.packet.neighborhood", 1);
                             self.neighbours_request(request_id, id, from, params)
-                                .await?
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.neighborhood.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.neighborhood.done", 1))?
                         }
                         Kind::ReverseConnection(params) => {
-                            self.reverse_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.reverse-connection", 1);
+                            self.reverse_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| {
+                                    counter!("ya-relay.packet.reverse-connection.done", 1)
+                                })
+                                .on_done(|_| {
+                                    counter!("ya-relay.packet.reverse-connection.done", 1)
+                                })?
                         }
-                        Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
+                        Kind::Ping(_) => {
+                            counter!("ya-relay.packet.ping", 1);
+                            self.ping_request(request_id, id, from)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.ping.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.ping.done", 1))?
+                        }
                     },
                     Some(proto::packet::Kind::Response(_)) => {
                         log::warn!(
@@ -121,13 +148,23 @@ impl Server {
                         );
                     }
                     Some(proto::packet::Kind::Control(packet)) => {
-                        self.control(id, packet, from).await?
+                        counter!("ya-relay.packet.disconnect", 1);
+                        self.control(id, packet, from)
+                            .await
+                            .on_error(|_| counter!("ya-relay.packet.disconnect.error", 1))
+                            .on_done(|_| counter!("ya-relay.packet.disconnect.done", 1))?
                     }
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
             }
 
-            PacketKind::Forward(forward) => self.forward(forward, from).await?,
+            PacketKind::Forward(forward) => {
+                counter!("ya-relay.packet.forward", 1);
+                self.forward(forward, from)
+                    .await
+                    .on_error(|_| counter!("ya-relay.packet.forward.error", 1))
+                    .on_done(|_| counter!("ya-relay.packet.forward.done", 1))?
+            }
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
@@ -868,6 +905,11 @@ impl Server {
         while let Some((packet, addr, timestamp)) = input.next().await {
             counter!("ya-relay.packets.incoming", 1);
 
+            if server.drop_policy(&packet, timestamp) {
+                counter!("ya-relay.packets.dropped", 1);
+                continue;
+            }
+
             let request_id = PacketKind::request_id(&packet);
             let session_id = PacketKind::session_id(&packet);
 
@@ -952,13 +994,6 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryptions,
     }
-}
-
-fn elapsed_metric(since: DateTime<Utc>) -> f64 {
-    (Utc::now() - since)
-        .num_microseconds()
-        .map(|t| t as f64)
-        .unwrap_or(f64::MAX)
 }
 
 #[inline]
