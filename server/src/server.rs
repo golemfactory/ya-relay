@@ -1,15 +1,17 @@
-use anyhow::anyhow;
-use chrono::{DateTime, Utc};
-use futures::channel::mpsc;
-use futures::{SinkExt, StreamExt};
-use governor::clock::{Clock, DefaultClock, QuantaInstant};
-use governor::{NegativeMultiDecision, Quota, RateLimiter};
-use metrics::{counter, histogram};
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::anyhow;
+use chrono::{DateTime, Utc};
+use futures::channel::mpsc;
+use futures::{SinkExt, StreamExt, TryFutureExt};
+use governor::clock::{Clock, DefaultClock, QuantaInstant};
+use governor::{NegativeMultiDecision, Quota, RateLimiter};
+use metrics::{counter, histogram};
 use tokio::sync::RwLock;
 use tokio::time;
 use url::Url;
@@ -866,10 +868,13 @@ impl Server {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
+        const DISPATCH_TIMEOUT: Duration = Duration::from_millis(3000);
+        const DISPATCH_TASK_COUNT: usize = 8;
+
         let server = self.clone();
         let server_session_cleaner = self.clone();
         let server_forward_resumer = self.clone();
-        let mut input = {
+        let input = {
             self.state
                 .write()
                 .await
@@ -880,32 +885,39 @@ impl Server {
         tokio::task::spawn_local(async move { server_session_cleaner.session_cleaner().await });
         tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
-        while let Some((packet, addr, timestamp)) = input.next().await {
-            counter!("ya-relay.packets.incoming", 1);
+        input
+            .map(|(packet, addr, timestamp)| {
+                let server = server.clone();
+                let request_id = PacketKind::request_id(&packet);
+                let session_id = PacketKind::session_id(&packet);
 
-            let request_id = PacketKind::request_id(&packet);
-            let session_id = PacketKind::session_id(&packet);
+                let fut = async move {
+                    counter!("ya-relay.packets.incoming", 1);
+                    let start = Utc::now();
 
-            let dispatching_start = Utc::now();
+                    if let Err(error) = server.dispatch(addr, packet).await {
+                        log::error!(
+                            "Packet dispatch failed (request={request_id:?}, from={addr}). {error}"
+                        );
 
-            if let Err(error) = server.dispatch(addr, packet).await {
-                log::error!(
-                    "Packet dispatch failed (request={request_id:?}, from={addr}). {error}"
-                );
+                        if let Some(request_id) = request_id {
+                            server
+                                .error_response(request_id, session_id, &addr, error)
+                                .await;
+                        }
+                    };
 
-                if let Some(request_id) = request_id {
-                    server
-                        .error_response(request_id, session_id, &addr, error)
-                        .await;
-                }
-            };
+                    histogram!("ya-relay.packets.processing-time", elapsed_metric(start));
+                    histogram!("ya-relay.packets.response-time", elapsed_metric(timestamp));
+                };
 
-            histogram!("ya-relay.packets.response-time", elapsed_metric(timestamp));
-            histogram!(
-                "ya-relay.packets.processing-time",
-                elapsed_metric(dispatching_start)
-            );
-        }
+                tokio::time::timeout(DISPATCH_TIMEOUT, fut).inspect_err(move |_| {
+                    log::error!("Packet dispatch timed out (request={request_id:?}, from={addr})")
+                })
+            })
+            .buffered(DISPATCH_TASK_COUNT)
+            .for_each(|_| futures::future::ready(()))
+            .await;
 
         log::info!("Server stopped.");
         Ok(())
