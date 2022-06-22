@@ -14,12 +14,15 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
     log::info!("Metrics http listener at {addr}");
     builder.install().expect("Metrics installation failure");
 
-    register_counter!("ya-relay.packets.incoming.error");
-    register_counter!("ya-relay.packets.incoming");
-    register_counter!("ya-relay.packets.dropped");
-    register_counter!("ya-relay.sessions.created");
-    register_counter!("ya-relay.sessions.purged");
-    register_counter!("ya-relay.sessions.removed");
+    register_counter!("ya-relay.packet.incoming.error");
+    register_counter!("ya-relay.packet.incoming");
+    register_counter!("ya-relay.packet.dropped");
+    register_counter!("ya-relay.session.created");
+    register_counter!("ya-relay.session.purged");
+    register_counter!("ya-relay.session.removed");
+
+    register_counter!("ya-relay-core.packet.incoming.size");
+    register_counter!("ya-relay-core.packet.outgoing.size");
 
     register_counter!("ya-relay.packet.neighborhood");
     register_counter!("ya-relay.packet.node-info");
@@ -54,8 +57,8 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
     register_counter!("ya-relay.session.establish.register");
     register_counter!("ya-relay.session.establish.error");
 
-    register_histogram!("ya-relay.packets.processing-time");
-    register_histogram!("ya-relay.packets.response-time");
+    register_histogram!("ya-relay.packet.processing-time");
+    register_histogram!("ya-relay.packet.response-time");
 
     describe_histogram!(
         "ya-relay.packet.neighborhood.processing-time",

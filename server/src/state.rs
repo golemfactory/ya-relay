@@ -53,7 +53,7 @@ impl NodesState {
 
         self.slots[slot as usize] = Slot::Some(node);
 
-        counter!("ya-relay.sessions.created", 1);
+        counter!("ya-relay.session.created", 1);
     }
 
     pub fn neighbours(&self, id: SessionId, count: u32) -> ServerResult<Vec<NodeSession>> {
@@ -146,7 +146,7 @@ impl NodesState {
             self.nodes.remove(&session.info.node_id());
             self.slots[slot as usize] = Slot::Purgatory(session.clone());
 
-            counter!("ya-relay.sessions.removed", 1);
+            counter!("ya-relay.session.removed", 1);
         }
     }
 
@@ -246,7 +246,7 @@ where
     pub fn purge(&mut self) {
         if let Slot::Purgatory(_) = self {
             *self = Slot::Free;
-            counter!("ya-relay.sessions.purged", 1);
+            counter!("ya-relay.session.purged", 1);
         }
     }
 }

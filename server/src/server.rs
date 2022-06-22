@@ -903,10 +903,10 @@ impl Server {
         tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
         while let Some((packet, addr, timestamp)) = input.next().await {
-            counter!("ya-relay.packets.incoming", 1);
+            counter!("ya-relay.packet.incoming", 1);
 
             if server.drop_policy(&packet, timestamp) {
-                counter!("ya-relay.packets.dropped", 1);
+                counter!("ya-relay.packet.dropped", 1);
                 continue;
             }
 
@@ -925,12 +925,12 @@ impl Server {
                         .error_response(request_id, session_id, &addr, error)
                         .await;
                 }
-                counter!("ya-relay.packets.incoming.error", 1);
+                counter!("ya-relay.packet.incoming.error", 1);
             };
 
-            histogram!("ya-relay.packets.response-time", elapsed_metric(timestamp));
+            histogram!("ya-relay.packet.response-time", elapsed_metric(timestamp));
             histogram!(
-                "ya-relay.packets.processing-time",
+                "ya-relay.packet.processing-time",
                 elapsed_metric(dispatching_start)
             );
         }

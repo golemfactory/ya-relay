@@ -2,6 +2,7 @@ use anyhow::bail;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::prelude::*;
+use metrics::counter;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -62,6 +63,7 @@ pub fn udp_stream(
             };
 
             buf.truncate(size);
+            counter!("ya-relay-core.packet.incoming.size", buf.len() as u64);
 
             match codec.decode(&mut buf) {
                 Ok(Some(item)) => return Some(((item, addr, timestamp), socket)),
@@ -94,6 +96,8 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
                         buf.len()
                     );
                 }
+
+                counter!("ya-relay-core.packet.outgoing.size", buf.len() as u64);
                 socket.send_to(&buf, &target).await
             } {
                 log::warn!("Error sending packet: {e}");
