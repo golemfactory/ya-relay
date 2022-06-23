@@ -942,7 +942,8 @@ impl Server {
                 };
 
                 tokio::time::timeout(DISPATCH_TIMEOUT, fut).inspect_err(move |_| {
-                    log::error!("Packet dispatch timed out (request={request_id:?}, from={addr})")
+                    counter!("ya-relay.packet.timeout", 1);
+                    log::error!("Packet dispatch timed out (request={request_id:?}, from={addr})");
                 })
             })
             .buffered(DISPATCH_TASK_COUNT)
