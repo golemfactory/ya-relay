@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt, TryFutureExt};
 use governor::clock::{Clock, DefaultClock, QuantaInstant};
@@ -18,12 +18,14 @@ use url::Url;
 
 use crate::config::Config;
 use crate::error::{BadRequest, Error, InternalError, NotFound, ServerResult, Unauthorized};
+use crate::metrics::elapsed_metric;
 use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
+use ya_relay_core::utils::ResultExt;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
@@ -102,35 +104,69 @@ impl Server {
                         Kind::Session(_) => {}
                         Kind::Register(_) => {}
                         Kind::Node(params) => {
-                            self.node_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.node-info", 1);
+                            self.node_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.node-info.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.node-info.done", 1))?
                         }
                         Kind::Slot(params) => {
-                            self.slot_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.slot-info", 1);
+                            self.slot_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.slot-info.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.slot-info.done", 1))?
                         }
                         Kind::Neighbours(params) => {
+                            counter!("ya-relay.packet.neighborhood", 1);
                             self.neighbours_request(request_id, id, from, params)
-                                .await?
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.neighborhood.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.neighborhood.done", 1))?
                         }
                         Kind::ReverseConnection(params) => {
-                            self.reverse_request(request_id, id, from, params).await?
+                            counter!("ya-relay.packet.reverse-connection", 1);
+                            self.reverse_request(request_id, id, from, params)
+                                .await
+                                .on_error(|_| {
+                                    counter!("ya-relay.packet.reverse-connection.done", 1)
+                                })
+                                .on_done(|_| {
+                                    counter!("ya-relay.packet.reverse-connection.done", 1)
+                                })?
                         }
-                        Kind::Ping(_) => self.ping_request(request_id, id, from).await?,
+                        Kind::Ping(_) => {
+                            counter!("ya-relay.packet.ping", 1);
+                            self.ping_request(request_id, id, from)
+                                .await
+                                .on_error(|_| counter!("ya-relay.packet.ping.error", 1))
+                                .on_done(|_| counter!("ya-relay.packet.ping.done", 1))?
+                        }
                     },
                     Some(proto::packet::Kind::Response(_)) => {
                         log::warn!(
-                            "Server shouldn't get Response packet. Sender: {}, node {}",
-                            from,
+                            "Server shouldn't get Response packet. Sender: {from}, node {}",
                             node.info.node_id(),
                         );
                     }
                     Some(proto::packet::Kind::Control(packet)) => {
-                        self.control(id, packet, from).await?
+                        counter!("ya-relay.packet.disconnect", 1);
+                        self.control(id, packet, from)
+                            .await
+                            .on_error(|_| counter!("ya-relay.packet.disconnect.error", 1))
+                            .on_done(|_| counter!("ya-relay.packet.disconnect.done", 1))?
                     }
                     _ => log::info!("Packet kind: None from: {}", from),
                 }
             }
 
-            PacketKind::Forward(forward) => self.forward(forward, from).await?,
+            PacketKind::Forward(forward) => {
+                counter!("ya-relay.packet.forward", 1);
+                self.forward(forward, from)
+                    .await
+                    .on_error(|_| counter!("ya-relay.packet.forward.error", 1))
+                    .on_done(|_| counter!("ya-relay.packet.forward.done", 1))?
+            }
             PacketKind::ForwardCtd(_) => {
                 log::info!("ForwardCtd packet from: {}", from)
             }
@@ -147,8 +183,6 @@ impl Server {
             let server = self.state.read().await;
 
             // Authorization: Sending Node must have established session.
-            // TODO: This operation has log(n) complexity. It wastes optimization in `get_by_slot`
-            //       which has O(1) complexity.
             let src_node = server
                 .nodes
                 .get_by_session(session_id)
@@ -182,8 +216,7 @@ impl Server {
                         .map_err(|_| InternalError::Send)?;
 
                     log::trace!(
-                        "Sent Disconnected [slot={}] message to Node: {}.",
-                        slot,
+                        "Sent Disconnected [slot={slot}] message to Node: {}.",
                         src_node.info.node_id()
                     );
 
@@ -339,11 +372,7 @@ impl Server {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::debug!(
-            "Responding to Register from Node: [{}], address: {}",
-            node_id,
-            from
-        );
+        log::debug!("Responding to Register from Node: [{node_id}], address: {from}");
         Ok(session)
     }
 
@@ -465,8 +494,7 @@ impl Server {
             match { self.state.read().await.nodes.get_by_node_id(target_node_id) } {
                 None => {
                     return Err(InternalError::Generic(format!(
-                        "There is no session with node_id {}",
-                        target_node_id
+                        "There is no session with node_id {target_node_id}"
                     ))
                     .into())
                 }
@@ -554,13 +582,7 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::info!(
-            "Node [{}] info sent to (request: {}): {}",
-            node_id,
-            request_id,
-            from
-        );
-
+        log::info!("Node [{node_id}] info sent to (request: {request_id}): {from}");
         Ok(())
     }
 
@@ -568,7 +590,8 @@ impl Server {
         let (sender, receiver) = mpsc::channel(1);
         let session_id = SessionId::generate();
 
-        log::info!("Initializing new session: {}", session_id);
+        log::info!("Initializing new session: {session_id} with: {with}");
+        counter!("ya-relay.session.establish.start", 1);
 
         {
             self.state
@@ -583,18 +606,26 @@ impl Server {
         // TODO: We should spawn in different thread, but it's impossible since
         //       `init_session` starts actor and tokio panics.
         tokio::task::spawn_local(async move {
+            let start_timestamp = Utc::now();
+
             if let Err(e) = self
                 .clone()
                 .init_session(with, request_id, session_id, receiver)
                 .await
             {
-                log::warn!("Error initializing session [{}], {}", session_id, e);
+                log::warn!("Error initializing session [{session_id}], {e}");
+                counter!("ya-relay.session.establish.error", 1);
 
                 // Establishing session failed.
                 self.error_response(request_id, session_id.to_vec(), &with, e)
                     .await;
                 self.cleanup_initialization(&session_id).await;
             }
+
+            histogram!(
+                "ya-relay.session.establish.time",
+                elapsed_metric(start_timestamp)
+            );
         });
         Ok(())
     }
@@ -614,10 +645,7 @@ impl Server {
 
         tokio::task::spawn_local(async move {
             let _ = sender.send(request).await.map_err(|_| {
-                log::warn!(
-                    "Establish session channel closed. Dropping packet for session [{}]",
-                    id
-                )
+                log::warn!("Establish session channel closed. Dropping packet for session [{id}]")
             });
         });
         Ok(())
@@ -638,14 +666,15 @@ impl Server {
             .await
             .map_err(|_| InternalError::Send)?;
 
-        log::info!("Challenge sent to: {}", with);
+        log::info!("Challenge sent to: {with}, session: {session_id}");
+        counter!("ya-relay.session.establish.challenge.sent", 1);
 
         let node = match rc.next().await {
             Some(proto::Request {
                 request_id,
                 kind: Some(proto::request::Kind::Session(session)),
             }) => {
-                log::info!("Got challenge from node: {}", with);
+                log::info!("Got challenge from node: {with}, session: {session_id}");
 
                 // Validate the challenge
                 let (node_id, identities) =
@@ -692,10 +721,9 @@ impl Server {
                 .map_err(|_| InternalError::Send)?;
 
                 log::info!(
-                    "Session: {}. Got valid challenge from node: {}",
-                    session_id,
-                    node_id
+                    "Session: {session_id} ({with}). Got valid challenge from node: {node_id}"
                 );
+                counter!("ya-relay.session.establish.challenge.valid", 1);
 
                 node
             }
@@ -708,11 +736,8 @@ impl Server {
                     request_id,
                     kind: Some(proto::request::Kind::Register(registration)),
                 }) => {
-                    log::trace!(
-                        "Got register from Node: [{}] (request {})",
-                        with,
-                        request_id
-                    );
+                    log::trace!("Got register from Node: [{with}] (request {request_id})");
+                    counter!("ya-relay.session.establish.register", 1);
 
                     let node_id = node.info.node_id();
                     let node = self
@@ -726,11 +751,8 @@ impl Server {
                         server.nodes.register(node);
                     }
 
-                    log::info!(
-                        "Session: {} established with Node: [{}]",
-                        session_id,
-                        node_id
-                    );
+                    log::info!("Session: {session_id} established with Node: [{node_id}] ({with})");
+                    counter!("ya-relay.session.establish.finished", 1);
                     break;
                 }
                 Some(proto::Request {
@@ -892,7 +914,13 @@ impl Server {
                 let session_id = PacketKind::session_id(&packet);
 
                 let fut = async move {
-                    counter!("ya-relay.packets.incoming", 1);
+                    counter!("ya-relay.packet.incoming", 1);
+
+                    if server.drop_policy(&packet, timestamp) {
+                        counter!("ya-relay.packet.dropped", 1);
+                        return Ok::<_, ()>(());
+                    }
+
                     let start = Utc::now();
 
                     if let Err(error) = server.dispatch(addr, packet).await {
@@ -907,8 +935,10 @@ impl Server {
                         }
                     };
 
-                    histogram!("ya-relay.packets.processing-time", elapsed_metric(start));
-                    histogram!("ya-relay.packets.response-time", elapsed_metric(timestamp));
+                    histogram!("ya-relay.packet.response-time", elapsed_metric(timestamp));
+                    histogram!("ya-relay.packet.processing-time", elapsed_metric(start));
+
+                    Ok(())
                 };
 
                 tokio::time::timeout(DISPATCH_TIMEOUT, fut).inspect_err(move |_| {
@@ -978,13 +1008,6 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryptions,
     }
-}
-
-fn elapsed_metric(since: DateTime<Utc>) -> f64 {
-    (Utc::now() - since)
-        .num_microseconds()
-        .map(|t| t as f64)
-        .unwrap_or(f64::MAX)
 }
 
 #[inline]

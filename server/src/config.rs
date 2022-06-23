@@ -21,6 +21,10 @@ pub struct Config {
     pub forwarder_resume_interval: Duration,
     #[structopt(long, env, default_value = "127.0.0.1:9000")]
     pub metrics_scrape_addr: std::net::SocketAddr,
+    #[structopt(long, env, parse(try_from_str = parse_humantime_to_chrono), default_value = "2s")]
+    pub drop_packets_older: chrono::Duration,
+    #[structopt(long, env, parse(try_from_str = parse_humantime_to_chrono), default_value = "500ms")]
+    pub drop_forward_packets_older: chrono::Duration,
 }
 
 pub fn parse_humantime_to_chrono(s: &str) -> Result<chrono::Duration, anyhow::Error> {
