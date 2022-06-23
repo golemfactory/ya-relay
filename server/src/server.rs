@@ -778,9 +778,16 @@ impl Server {
         loop {
             interval.tick().await;
             let s = self.clone();
+            let start = Utc::now();
+
             log::trace!("Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
             log::trace!("Session cleanup complete");
+
+            histogram!(
+                "ya-relay.session.cleaner.processing-time",
+                elapsed_metric(start)
+            );
         }
     }
 
@@ -796,7 +803,14 @@ impl Server {
         let mut interval = time::interval(self.config.forwarder_resume_interval);
         loop {
             interval.tick().await;
+            let start = Utc::now();
+
             self.check_resume_forwarding().await;
+
+            histogram!(
+                "ya-relay.forwarding-limiter.processing-time",
+                elapsed_metric(start)
+            );
         }
     }
 
@@ -918,6 +932,9 @@ impl Server {
 
                     if server.drop_policy(&packet, timestamp) {
                         counter!("ya-relay.packet.dropped", 1);
+                        log::debug!(
+                            "Packet from {addr} waited too long in queue ({timestamp}), dropping"
+                        );
                         return Ok::<_, ()>(());
                     }
 
@@ -933,6 +950,7 @@ impl Server {
                                 .error_response(request_id, session_id, &addr, error)
                                 .await;
                         }
+                        counter!("ya-relay.packet.incoming.error", 1);
                     };
 
                     histogram!("ya-relay.packet.response-time", elapsed_metric(timestamp));
