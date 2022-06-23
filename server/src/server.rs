@@ -907,6 +907,7 @@ impl Server {
 
             if server.drop_policy(&packet, timestamp) {
                 counter!("ya-relay.packet.dropped", 1);
+                log::debug!("Packet from {addr} waited to long in queue ({timestamp}). Dropping..");
                 continue;
             }
 
