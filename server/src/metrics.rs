@@ -60,6 +60,9 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
     register_histogram!("ya-relay.packet.processing-time");
     register_histogram!("ya-relay.packet.response-time");
 
+    register_histogram!("ya-relay.session.cleaner.processing-time");
+    register_histogram!("ya-relay.forwarding-limiter.processing-time");
+
     describe_histogram!(
         "ya-relay.packet.neighborhood.processing-time",
         Unit::Microseconds,

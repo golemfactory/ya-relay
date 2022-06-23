@@ -776,9 +776,16 @@ impl Server {
         loop {
             interval.tick().await;
             let s = self.clone();
+            let start = Utc::now();
+
             log::trace!("Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
             log::trace!("Session cleanup complete");
+
+            histogram!(
+                "ya-relay.session.cleaner.processing-time",
+                elapsed_metric(start)
+            );
         }
     }
 
@@ -794,7 +801,14 @@ impl Server {
         let mut interval = time::interval(self.config.forwarder_resume_interval);
         loop {
             interval.tick().await;
+            let start = Utc::now();
+
             self.check_resume_forwarding().await;
+
+            histogram!(
+                "ya-relay.forwarding-limiter.processing-time",
+                elapsed_metric(start)
+            );
         }
     }
 
