@@ -890,7 +890,7 @@ impl Server {
     }
 
     pub async fn run(self) -> anyhow::Result<()> {
-        const DISPATCH_TIMEOUT: Duration = Duration::from_millis(3000);
+        const DISPATCH_TIMEOUT: Duration = Duration::from_millis(3500);
         const DISPATCH_TASK_COUNT: usize = 8;
 
         let server = self.clone();
