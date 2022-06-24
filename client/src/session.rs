@@ -17,7 +17,6 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};
 use ya_relay_proto::{codec, proto};
 
-const REGISTER_REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -87,7 +86,7 @@ impl Session {
             .request::<proto::response::Register>(
                 proto::request::Register { endpoints }.into(),
                 self.id.to_vec(),
-                REGISTER_REQUEST_TIMEOUT,
+                DEFAULT_REQUEST_TIMEOUT,
             )
             .await?
             .packet;

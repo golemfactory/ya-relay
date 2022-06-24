@@ -17,6 +17,7 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
     register_counter!("ya-relay.packet.incoming.error");
     register_counter!("ya-relay.packet.incoming");
     register_counter!("ya-relay.packet.dropped");
+    register_counter!("ya-relay.packet.timeout");
     register_counter!("ya-relay.session.created");
     register_counter!("ya-relay.session.purged");
     register_counter!("ya-relay.session.removed");
