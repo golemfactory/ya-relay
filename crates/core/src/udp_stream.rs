@@ -2,6 +2,7 @@ use anyhow::bail;
 use chrono::Utc;
 use futures::channel::mpsc;
 use futures::prelude::*;
+use metrics::counter;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -62,19 +63,20 @@ pub fn udp_stream(
             };
 
             buf.truncate(size);
+            counter!("ya-relay-core.packet.incoming.size", buf.len() as u64);
 
             match codec.decode(&mut buf) {
                 Ok(Some(item)) => return Some(((item, addr, timestamp), socket)),
-                Err(e) => log::warn!("Failed to decode packet: {}", e),
+                Err(e) => log::warn!("Failed to decode packet from: {addr}. Error: {}", e),
                 // `decode` does not return this variant
-                Ok(None) => log::warn!("Unable to decode packet"),
+                Ok(None) => log::warn!("Unable to decode packet of size: {size}, from: {addr}"),
             }
         }
     })
 }
 
 pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKind, SocketAddr)>> {
-    let (tx, mut rx) = mpsc::channel(20);
+    let (tx, mut rx) = mpsc::channel(100);
 
     tokio::task::spawn_local(async move {
         let mut codec = Codec::default();
@@ -86,19 +88,19 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
             buf.clear();
 
             if let Err(e) = codec.encode(packet, &mut buf) {
-                log::warn!("Error encoding packet: {}", e);
+                log::warn!("Error encoding packet for: {target}. Error: {e}");
             } else if let Err(e) = {
                 if buf.len() > max_size {
                     log::warn!(
-                        "Sending packet of size {} > {} B (soft max) to {}",
-                        buf.len(),
-                        max_size,
-                        target
+                        "Sending packet of size {} > {max_size} B (soft max) to {target}",
+                        buf.len()
                     );
                 }
+
+                counter!("ya-relay-core.packet.outgoing.size", buf.len() as u64);
                 socket.send_to(&buf, &target).await
             } {
-                log::warn!("Error sending packet: {}", e);
+                log::warn!("Error sending packet: {e}");
             }
         }
     });
