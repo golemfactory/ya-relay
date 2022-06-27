@@ -82,7 +82,7 @@ impl LastSeen {
     }
 
     pub fn time(&self) -> DateTime<Utc> {
-        self.last_seen.lock().unwrap().clone()
+        *self.last_seen.lock().unwrap()
     }
 }
 
