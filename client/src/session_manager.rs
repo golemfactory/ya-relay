@@ -313,7 +313,10 @@ impl SessionManager {
     async fn init_server_session(&self, addr: SocketAddr) -> SessionResult<Arc<Session>> {
         log::info!("Initializing session with NET relay server at: {}", addr);
 
-        let session = self.init_session(addr, false, None).await?;
+        let session = self
+            .init_session(addr, false, None)
+            .await
+            .map_err(|e| anyhow!("Failed to init relay server session: {e}"))?;
 
         {
             let mut state = self.state.write().await;
@@ -321,9 +324,8 @@ impl SessionManager {
         }
 
         log::info!(
-            "Established session {} with NET relay server ({})",
+            "Established session {} with NET relay server ({addr})",
             session.id,
-            addr
         );
 
         Ok(session)
@@ -468,15 +470,23 @@ impl SessionManager {
         }
 
         // get node info
-        let server_session = self.server_session().await?;
-        let node = server_session.find_node(node_id).await?;
-        let ident = Identity::try_from(&node)?;
+        let server_session = self
+            .server_session()
+            .await
+            .map_err(|e| anyhow!("Failed to get relay server session: {e}"))?;
+        let node = server_session
+            .find_node(node_id)
+            .await
+            .map_err(|e| anyhow!("Failed to find Node on relay server: {e}"))?;
+        let ident = Identity::try_from(&node)
+            .map_err(|e| anyhow!("Unable to get identity from Node info: {e}"))?;
 
         // Find node on server. p2p session will be established, if possible. Otherwise
         // communication will be forwarder through relay server.
         Ok(self
             .resolve(ident.node_id.as_ref(), &node.endpoints, node.slot)
-            .await?
+            .await
+            .map_err(|e| anyhow!("Failed to resolve session: {e}"))?
             .session)
     }
 
