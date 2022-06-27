@@ -7,7 +7,7 @@ use rand::Rng;
 use std::convert::TryFrom;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::identity::Identity;
 use ya_client_model::NodeId;
@@ -49,14 +49,41 @@ impl NodeInfo {
 }
 
 #[derive(Clone)]
+pub struct LastSeen {
+    last_seen: Arc<Mutex<DateTime<Utc>>>,
+}
+
+#[derive(Clone)]
 pub struct NodeSession {
     pub info: NodeInfo,
 
     /// Address from which Session was initialized
     pub address: SocketAddr,
     pub session: SessionId,
-    pub last_seen: DateTime<Utc>,
+    pub last_seen: LastSeen,
     pub forwarding_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
+}
+
+impl From<DateTime<Utc>> for LastSeen {
+    fn from(datetime: DateTime<Utc>) -> Self {
+        LastSeen {
+            last_seen: Arc::new(Mutex::new(datetime)),
+        }
+    }
+}
+
+impl LastSeen {
+    pub fn now() -> LastSeen {
+        LastSeen::from(Utc::now())
+    }
+
+    pub fn update(&self, datetime: DateTime<Utc>) {
+        *self.last_seen.lock().unwrap() = datetime
+    }
+
+    pub fn time(&self) -> DateTime<Utc> {
+        self.last_seen.lock().unwrap().clone()
+    }
 }
 
 impl TryFrom<Vec<u8>> for SessionId {

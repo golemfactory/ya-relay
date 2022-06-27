@@ -23,7 +23,7 @@ use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
+use ya_relay_core::session::{LastSeen, NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_core::utils::ResultExt;
 use ya_relay_proto::codec::PacketKind;
@@ -60,7 +60,7 @@ impl Server {
         if !session_id.is_empty() {
             let id = SessionId::try_from(session_id.clone())
                 .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
-            let mut server = self.state.write().await;
+            let server = self.state.read().await;
             let _ = server.nodes.update_seen(id);
         }
 
@@ -704,7 +704,7 @@ impl Server {
                     info,
                     address: with,
                     session: session_id,
-                    last_seen: Utc::now(),
+                    last_seen: LastSeen::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
                         NonZeroU32::new(self.config.forwarder_rate_limit).ok_or_else(|| {
                             InternalError::RateLimiterInit(format!(
@@ -1030,7 +1030,7 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
             .into_iter()
             .map(proto::Endpoint::from)
             .collect(),
-        seen_ts: node_info.last_seen.timestamp() as u32,
+        seen_ts: node_info.last_seen.time().timestamp() as u32,
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryptions,
     }
