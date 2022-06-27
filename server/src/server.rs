@@ -182,6 +182,11 @@ impl Server {
         let session_id = SessionId::from(packet.session_id);
         let slot = packet.slot;
 
+        counter!(
+            "ya-relay.packet.forward.incoming.size",
+            packet.payload.len() as u64
+        );
+
         let (src_node, dest_node) = {
             let server = self.state.read().await;
 
@@ -239,17 +244,11 @@ impl Server {
                     // the query was invalid as the rate limit parameters can never accommodate the
                     // number of cells queried for.
                     log::warn!(
-                        "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
-                        cells,
-                        &from
+                        "Rate limited packet dropped. Exceeds limit. size: {cells}, from: {from}"
                     );
                 }
                 NegativeMultiDecision::BatchNonConforming(cells, retry_at) => {
-                    log::debug!(
-                        "Rate limited packet. size: {}, retry_at: {}",
-                        cells,
-                        retry_at
-                    );
+                    log::debug!("Rate limited packet. size: {cells}, retry_at: {retry_at}");
                     {
                         let mut server = self.state.write().await;
                         server.resume_forwarding.insert((
@@ -280,6 +279,11 @@ impl Server {
             src_node.info.node_id(),
             dest_node.info.node_id(),
             packet.payload.len(),
+        );
+
+        counter!(
+            "ya-relay.packet.forward.outgoing.size",
+            packet.payload.len() as u64
         );
 
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
