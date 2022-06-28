@@ -107,7 +107,7 @@ impl NodesState {
             .filter_map(|slot| {
                 if let Slot::Some(ns) = slot {
                     let deadline = Utc::now().sub(timeout);
-                    if ns.last_seen > deadline {
+                    if ns.last_seen.time() > deadline {
                         return None;
                     }
                     log::debug!(
@@ -127,7 +127,7 @@ impl NodesState {
         let deadline = Utc::now().sub(purge_timeout);
         for slot in &mut self.slots {
             if let Slot::Purgatory(session) = slot {
-                if session.last_seen < deadline {
+                if session.last_seen.time() < deadline {
                     log::debug!(
                         "Purging not active session with node_id: {}, session_id: {}",
                         session.info.node_id(),
@@ -150,11 +150,11 @@ impl NodesState {
         }
     }
 
-    pub fn update_seen(&mut self, id: SessionId) -> ServerResult<()> {
+    pub fn update_seen(&self, id: SessionId) -> ServerResult<()> {
         match self.sessions.get(&id) {
             None => return Err(Unauthorized::SessionNotFound(id).into()),
-            Some(&slot) => match self.slots.get_mut(slot as usize) {
-                Some(Slot::Some(node)) => node.last_seen = Utc::now(),
+            Some(&slot) => match self.slots.get(slot as usize) {
+                Some(Slot::Some(node)) => node.last_seen.update(Utc::now()),
                 _ => return Err(InternalError::GettingSessionInfo(id).into()),
             },
         };

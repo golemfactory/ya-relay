@@ -23,7 +23,7 @@ use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{NodeInfo, NodeSession, SessionId};
+use ya_relay_core::session::{LastSeen, NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_core::utils::ResultExt;
 use ya_relay_proto::codec::PacketKind;
@@ -60,7 +60,7 @@ impl Server {
         if !session_id.is_empty() {
             let id = SessionId::try_from(session_id.clone())
                 .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
-            let mut server = self.state.write().await;
+            let server = self.state.read().await;
             let _ = server.nodes.update_seen(id);
         }
 
@@ -182,6 +182,11 @@ impl Server {
         let session_id = SessionId::from(packet.session_id);
         let slot = packet.slot;
 
+        counter!(
+            "ya-relay.packet.forward.incoming.size",
+            packet.payload.len() as u64
+        );
+
         let (src_node, dest_node) = {
             let server = self.state.read().await;
 
@@ -239,17 +244,11 @@ impl Server {
                     // the query was invalid as the rate limit parameters can never accommodate the
                     // number of cells queried for.
                     log::warn!(
-                        "Rate limited packet dropped. Exceeds limit. size: {}, from: {}",
-                        cells,
-                        &from
+                        "Rate limited packet dropped. Exceeds limit. size: {cells}, from: {from}"
                     );
                 }
                 NegativeMultiDecision::BatchNonConforming(cells, retry_at) => {
-                    log::debug!(
-                        "Rate limited packet. size: {}, retry_at: {}",
-                        cells,
-                        retry_at
-                    );
+                    log::debug!("Rate limited packet. size: {cells}, retry_at: {retry_at}");
                     {
                         let mut server = self.state.write().await;
                         server.resume_forwarding.insert((
@@ -280,6 +279,11 @@ impl Server {
             src_node.info.node_id(),
             dest_node.info.node_id(),
             packet.payload.len(),
+        );
+
+        counter!(
+            "ya-relay.packet.forward.outgoing.size",
+            packet.payload.len() as u64
         );
 
         self.send_to(PacketKind::Forward(packet), &dest_node.address)
@@ -700,7 +704,7 @@ impl Server {
                     info,
                     address: with,
                     session: session_id,
-                    last_seen: Utc::now(),
+                    last_seen: LastSeen::now(),
                     forwarding_limiter: Arc::new(RateLimiter::direct(Quota::per_second(
                         NonZeroU32::new(self.config.forwarder_rate_limit).ok_or_else(|| {
                             InternalError::RateLimiterInit(format!(
@@ -1026,7 +1030,7 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
             .into_iter()
             .map(proto::Endpoint::from)
             .collect(),
-        seen_ts: node_info.last_seen.timestamp() as u32,
+        seen_ts: node_info.last_seen.time().timestamp() as u32,
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryptions,
     }

@@ -49,6 +49,9 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
     register_counter!("ya-relay.packet.disconnect.error");
     register_counter!("ya-relay.packet.forward.error");
 
+    register_counter!("ya-relay.packet.forward.incoming.size");
+    register_counter!("ya-relay.packet.forward.outgoing.size");
+
     register_histogram!("ya-relay.packet.neighborhood.processing-time");
 
     register_counter!("ya-relay.session.establish.start");
