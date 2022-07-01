@@ -2,6 +2,7 @@ use anyhow::{anyhow, bail};
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
+use metrics::timing;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
@@ -9,6 +10,7 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::{Crypto, CryptoProvider, PublicKey};
@@ -576,8 +578,10 @@ impl SessionManager {
         let session = node.session.clone();
 
         while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
+            let start = Instant::now();
             log::trace!(
-                "Forwarding message to {} through {} (session id: {})",
+                "Forwarding message ({} B) to {} through {} (session id: {})",
+                payload.len(),
                 node.id,
                 session.remote,
                 session.id
@@ -594,6 +598,12 @@ impl SessionManager {
                 );
                 break;
             }
+
+            timing!(
+                "ya-relay-client.reliable.egress.time",
+                start,
+                Instant::now()
+            );
         }
 
         log::debug!(

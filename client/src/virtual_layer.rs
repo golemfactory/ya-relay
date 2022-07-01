@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context};
 use futures::channel::mpsc;
 use futures::StreamExt;
+use metrics::timing;
 use std::collections::HashMap;
 use std::io::Write;
 use std::net::Ipv6Addr;
@@ -9,6 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::RwLock;
+use tokio::time::Instant;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
@@ -243,6 +245,8 @@ impl TcpLayer {
             .for_each(move |event| {
                 let myself = self.clone();
                 async move {
+                    let start = Instant::now();
+
                     let (desc, payload) = match event {
                         IngressEvent::InboundConnection { desc } => {
                             log::trace!(
@@ -317,6 +321,12 @@ impl TcpLayer {
                                     payload_len
                                 );
                             }
+
+                            timing!(
+                                "ya-relay-client.virtual.ingress.time",
+                                start,
+                                Instant::now()
+                            );
                         }
                         _ => log::trace!(
                             "[{}] ingress router: unknown remote address {}",
@@ -334,6 +344,8 @@ impl TcpLayer {
             .for_each(move |egress| {
                 let myself = self.clone();
                 async move {
+                    let start = Instant::now();
+
                     let node = match {
                         let state = myself.state.read().await;
                         state.nodes.get(&egress.remote).cloned()
@@ -349,6 +361,9 @@ impl TcpLayer {
                         }
                     };
 
+                    let payload_len = egress.payload.len();
+                    let send_start = Instant::now();
+
                     let forward = Forward::new(node.session.id, node.session_slot, egress.payload);
                     if let Err(error) = node.session.send(forward).await {
                         log::trace!(
@@ -357,7 +372,20 @@ impl TcpLayer {
                             node.id,
                             error
                         );
+                    } else {
+                        log::trace!(
+                            "[{}] egress router: forwarded {} B",
+                            myself.net_id(),
+                            payload_len
+                        );
                     }
+
+                    timing!("ya-relay-client.virtual.egress.time", start, Instant::now());
+                    timing!(
+                        "ya-relay-client.virtual.egress.session-send.time",
+                        send_start,
+                        Instant::now()
+                    );
                 }
             })
             .await
