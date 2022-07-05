@@ -8,12 +8,32 @@ use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::{Error, Protocol};
 
+pub const ENV_VAR_TCP_TIMEOUT: &str = "YA_NET_TCP_TIMEOUT_MS";
+pub const ENV_VAR_TCP_KEEP_ALIVE: &str = "YA_NET_TCP_KEEP_ALIVE_MS";
+pub const ENV_VAR_TCP_ACK_DELAY: &str = "YA_NET_TCP_ACK_DELAY_MS";
+pub const ENV_VAR_TCP_NAGLE: &str = "YA_NET_TCP_ACK_DELAY";
+
 pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
 pub const TCP_DISCONN_TIMEOUT: Duration = Duration::from_secs(2);
-const TCP_TIMEOUT: Duration = Duration::from_secs(120);
-const TCP_KEEP_ALIVE: Duration = Duration::from_secs(30);
-const TCP_ACK_DELAY: Duration = Duration::from_millis(10);
-const TCP_NAGLE_ENABLED: bool = false;
+const META_STORAGE_SIZE: usize = 1024;
+
+lazy_static::lazy_static! {
+    pub static ref TCP_NAGLE_ENABLED: bool = env_opt(ENV_VAR_TCP_NAGLE, |v| v != 0)
+        .flatten()
+        .unwrap_or(false);
+    pub static ref TCP_TIMEOUT: Option<Duration> = env_opt(ENV_VAR_TCP_TIMEOUT, Duration::from_millis)
+        .unwrap_or(Some(Duration::from_secs(120)));
+    pub static ref TCP_KEEP_ALIVE: Option<Duration> = env_opt(ENV_VAR_TCP_KEEP_ALIVE, Duration::from_millis)
+        .unwrap_or(Some(Duration::from_secs(30)));
+    pub static ref TCP_ACK_DELAY: Option<Duration> = env_opt(ENV_VAR_TCP_ACK_DELAY, Duration::from_millis)
+        .unwrap_or(Some(Duration::from_millis(40)));
+}
+
+fn env_opt<T, F: FnOnce(u64) -> T>(var: &str, f: F) -> Option<Option<T>> {
+    std::env::var(var)
+        .ok()
+        .map(|v| v.parse::<u64>().map(f).ok())
+}
 
 /// Socket quintuplet
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
@@ -341,44 +361,159 @@ pub trait TcpSocketExt {
 
 impl<'a> TcpSocketExt for TcpSocket<'a> {
     fn set_defaults(&mut self) {
-        self.set_nagle_enabled(TCP_NAGLE_ENABLED);
-        self.set_timeout(Some(TCP_TIMEOUT));
-        self.set_keep_alive(Some(TCP_KEEP_ALIVE));
-        self.set_ack_delay(Some(TCP_ACK_DELAY));
+        self.set_nagle_enabled(*TCP_NAGLE_ENABLED);
+        self.set_timeout(*TCP_TIMEOUT);
+        self.set_keep_alive(*TCP_KEEP_ALIVE);
+        self.set_ack_delay(*TCP_ACK_DELAY);
     }
 }
 
-pub fn tcp_socket<'a>(mtu: usize, buf_multiplier: usize) -> TcpSocket<'a> {
-    let rx_buf = TcpSocketBuffer::new(vec![0; mtu * buf_multiplier]);
-    let tx_buf = TcpSocketBuffer::new(vec![0; mtu * buf_multiplier]);
+#[derive(Clone, Copy, Debug)]
+pub struct SocketMemory {
+    pub tx: Memory,
+    pub rx: Memory,
+}
+
+impl SocketMemory {
+    pub fn default_tcp() -> Self {
+        Self {
+            rx: Memory::default_tcp_rx(),
+            tx: Memory::default_tcp_tx(),
+        }
+    }
+
+    pub fn default_udp() -> Self {
+        Self {
+            rx: Memory::default_udp_rx(),
+            tx: Memory::default_udp_tx(),
+        }
+    }
+
+    pub fn default_icmp() -> Self {
+        Self::default_udp()
+    }
+
+    pub fn default_raw() -> Self {
+        Self::default_tcp()
+    }
+}
+
+/// Buffer size bounds used in auto tuning.
+/// Currently, only `max` is used; other values are reserved for future use
+#[derive(Clone, Copy, Debug)]
+pub struct Memory {
+    min: usize,
+    default: usize,
+    max: usize,
+}
+
+impl Memory {
+    pub fn new(min: usize, default: usize, max: usize) -> Result<Self, Error> {
+        if default < min || default > max {
+            return Err(Error::Other(format!(
+                "Invalid memory bounds: {min} <= {default} <= {max}",
+            )));
+        }
+        Ok(Self { min, default, max })
+    }
+
+    pub fn set_min(&mut self, min: usize) -> Result<(), Error> {
+        if min > self.default {
+            return Err(Error::Other(format!(
+                "Invalid min memory bound: {min} <= {}",
+                self.default
+            )));
+        }
+
+        self.min = min;
+        Ok(())
+    }
+
+    pub fn set_default(&mut self, default: usize) -> Result<(), Error> {
+        if default < self.min || default > self.max {
+            return Err(Error::Other(format!(
+                "Invalid default memory size: {} <= {default} <= {}",
+                self.min, self.max,
+            )));
+        }
+
+        self.default = default;
+        Ok(())
+    }
+
+    pub fn set_max(&mut self, max: usize) -> Result<(), Error> {
+        if max < self.default {
+            return Err(Error::Other(format!(
+                "Invalid max memory bound: {} <= {max}",
+                self.default
+            )));
+        }
+
+        self.max = max;
+        Ok(())
+    }
+
+    pub fn default_tcp_rx() -> Self {
+        // 5.15.0-39-generic #42-Ubuntu SMP
+        // net.ipv4.tcp_rmem = 4096	131072	6291456
+        Self::new(4 * 1024, 128 * 1024, 4 * 1024 * 1024).expect("Invalid TCP recv buffer bounds")
+    }
+
+    pub fn default_tcp_tx() -> Self {
+        // 5.15.0-39-generic #42-Ubuntu SMP
+        // net.ipv4.tcp_wmem = 4096	16384	4194304
+        Self::new(4 * 1024, 16 * 1024, 128 * 1024).expect("Invalid TCP send buffer bounds")
+    }
+
+    pub fn default_udp_rx() -> Self {
+        // 5.15.0-39-generic #42-Ubuntu SMP
+        // net.ipv4.udp_mem = 763233	1017647	1526466
+        // net.ipv4.udp_rmem_min = 4096
+        Self::new(10 * 1024, 128 * 1024, 1490 * 1024).expect("Invalid UDP recv buffer bounds")
+    }
+
+    pub fn default_udp_tx() -> Self {
+        // 5.15.0-39-generic #42-Ubuntu SMP
+        // net.ipv4.udp_mem = 763233	1017647	1526466
+        // net.ipv4.udp_wmem_min = 4096
+        Self::new(10 * 1024, 128 * 1024, 1490 * 1024).expect("Invalid UDP send buffer bounds")
+    }
+}
+
+pub fn tcp_socket<'a>(rx_mem: Memory, tx_mem: Memory) -> TcpSocket<'a> {
+    let rx_buf = TcpSocketBuffer::new(vec![0; rx_mem.max]);
+    let tx_buf = TcpSocketBuffer::new(vec![0; tx_mem.max]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
     socket.set_defaults();
     socket
 }
 
-pub fn udp_socket<'a>(mtu: usize, buf_multiplier: usize) -> UdpSocket<'a> {
-    let rx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
-    let tx_buf = UdpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+pub fn udp_socket<'a>(rx_mem: Memory, tx_mem: Memory) -> UdpSocket<'a> {
+    let rx_buf = UdpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(rx_mem.max));
+    let tx_buf = UdpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(tx_mem.max));
     UdpSocket::new(rx_buf, tx_buf)
 }
 
-pub fn icmp_socket<'a>(mtu: usize, buf_multiplier: usize) -> IcmpSocket<'a> {
-    let rx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
-    let tx_buf = IcmpSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+pub fn icmp_socket<'a>(rx_mem: Memory, tx_mem: Memory) -> IcmpSocket<'a> {
+    let rx_buf =
+        IcmpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(rx_mem.max));
+    let tx_buf =
+        IcmpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(tx_mem.max));
     IcmpSocket::new(rx_buf, tx_buf)
 }
 
 pub fn raw_socket<'a>(
     ip_version: IpVersion,
     ip_protocol: IpProtocol,
-    mtu: usize,
-    buf_multiplier: usize,
+    rx_mem: Memory,
+    tx_mem: Memory,
 ) -> RawSocket<'a> {
-    let rx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
-    let tx_buf = RawSocketBuffer::new(meta_storage(mtu), payload_storage(mtu * buf_multiplier));
+    let rx_buf = RawSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(rx_mem.max));
+    let tx_buf = RawSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(tx_mem.max));
     RawSocket::new(ip_version, ip_protocol, rx_buf, tx_buf)
 }
 
+#[inline]
 fn meta_storage<H: Clone>(size: usize) -> Vec<PacketMetadata<H>> {
     vec![PacketMetadata::EMPTY; size]
 }

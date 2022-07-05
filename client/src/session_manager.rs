@@ -77,7 +77,7 @@ impl SessionManager {
         SessionManager {
             sink: None,
             config: config.clone(),
-            virtual_tcp: TcpLayer::new(config, ingress.clone()),
+            virtual_tcp: TcpLayer::new(&config.node_pub_key, &config.stack_config, &ingress),
             virtual_tcp_fast_lane: Default::default(),
             registry: NodesRegistry::default(),
             guarded: Default::default(),

@@ -17,7 +17,6 @@ use crate::utils::parse_udp_url;
 
 pub const MTU_ENV_VAR: &str = "YA_NET_MTU";
 pub const DEFAULT_MTU: usize = 1500;
-pub const DEFAULT_MAX_PAYLOAD_SIZE: usize = 1280;
 
 pub type InStream =
     Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr, chrono::DateTime<chrono::Utc>)>>>;

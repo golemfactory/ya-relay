@@ -46,9 +46,12 @@ struct Cli {
     /// Private key password
     #[structopt(short = "p", long, env = "CLIENT_KEY_PASSWORD", parse(from_str = Protected::from))]
     key_password: Option<Protected>,
-    /// Socket buffer multiplier
-    #[structopt(short = "b", env = "YA_NET_BUF_MULTIPLIER")]
-    socket_buf_multiplier: Option<usize>,
+    /// Set max TCP receive buffer size
+    #[structopt(long, env = "YA_NET_TCP_MAX_RECV_BUF_SIZE")]
+    tcp_max_recv_buf_size: Option<usize>,
+    /// Set max TCP send buffer size
+    #[structopt(long, env = "YA_NET_TCP_MAX_SEND_BUF_SIZE")]
+    tcp_max_send_buf_size: Option<usize>,
     /// Sent chunk size
     #[structopt(short = "c", long, default_value = "65536")]
     chunk_size: usize,
@@ -288,7 +291,7 @@ async fn run() -> anyhow::Result<()> {
         std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,smoltcp=info".to_string()),
     );
 
-    let cli = Cli::from_args();
+    let cli: Cli = Cli::from_args();
     let mut builder = if let Some(ref key_file) = cli.key_file {
         let password = cli.key_password.clone();
         let secret = load_or_generate(key_file, password);
@@ -299,8 +302,11 @@ async fn run() -> anyhow::Result<()> {
         ClientBuilder::from_url(cli.relay).listen(cli.listen)
     };
 
-    if let Some(multiplier) = cli.socket_buf_multiplier {
-        builder = builder.virtual_tcp_buffer_size_multiplier(multiplier);
+    if let Some(max) = cli.tcp_max_recv_buf_size {
+        builder = builder.tcp_max_recv_buffer_size(max)?;
+    }
+    if let Some(max) = cli.tcp_max_send_buf_size {
+        builder = builder.tcp_max_send_buffer_size(max)?;
     }
 
     let mut client = builder.build().await?;

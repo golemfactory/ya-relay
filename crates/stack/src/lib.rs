@@ -16,7 +16,7 @@ pub use device::CaptureDevice;
 pub use error::Error;
 pub use metrics::{Average, ChannelMetrics, Ewma, Metrics, TimeWindow};
 pub use network::{
-    Channel, EgressEvent, EgressReceiver, IngressEvent, IngressReceiver, Network, NetworkConfig,
+    Channel, EgressEvent, EgressReceiver, IngressEvent, IngressReceiver, Network, StackConfig,
 };
 pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;

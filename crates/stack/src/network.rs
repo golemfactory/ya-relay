@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
 use std::ops::Mul;
+use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -18,24 +19,42 @@ use crate::packet::{
     ip_ntoh, ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket, TcpPacket, UdpPacket,
 };
 use crate::protocol::Protocol;
-use crate::socket::{SocketDesc, SocketEndpoint, SocketExt, SocketState};
+use crate::socket::{SocketDesc, SocketEndpoint, SocketExt, SocketMemory, SocketState};
 use crate::stack::Stack;
 use crate::{ChannelMetrics, Error, Result};
+
+pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
 
 pub type IngressReceiver = UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = UnboundedReceiver<EgressEvent>;
 
 #[derive(Clone)]
-pub struct NetworkConfig {
+pub struct StackConfig {
+    pub pcap_path: Option<PathBuf>,
     pub max_transmission_unit: usize,
-    /// Size of TCP send and receive buffer as multiply of MTU.
-    pub buffer_size_multiplier: usize,
+    pub tcp_mem: SocketMemory,
+    pub udp_mem: SocketMemory,
+    pub icmp_mem: SocketMemory,
+    pub raw_mem: SocketMemory,
+}
+
+impl Default for StackConfig {
+    fn default() -> Self {
+        Self {
+            pcap_path: std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from),
+            max_transmission_unit: 1400,
+            tcp_mem: SocketMemory::default_tcp(),
+            udp_mem: SocketMemory::default_udp(),
+            icmp_mem: SocketMemory::default_icmp(),
+            raw_mem: SocketMemory::default_raw(),
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct Network {
     pub name: Rc<String>,
-    pub config: Rc<NetworkConfig>,
+    pub config: Rc<StackConfig>,
     pub stack: Stack<'static>,
     sender: StackSender,
     poller: StackPoller,
@@ -48,7 +67,7 @@ pub struct Network {
 
 impl Network {
     /// Creates a new Network instance
-    pub fn new(name: impl ToString, config: Rc<NetworkConfig>, stack: Stack<'static>) -> Self {
+    pub fn new(name: impl ToString, config: Rc<StackConfig>, stack: Stack<'static>) -> Self {
         let network = Self {
             name: Rc::new(name.to_string()),
             config,
@@ -749,11 +768,11 @@ mod tests {
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
-    use crate::{Connection, IngressEvent, Network, NetworkConfig, Protocol, Stack};
+    use crate::{Connection, IngressEvent, Network, Protocol, Stack, StackConfig};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
-    fn new_network(medium: Medium, ip: IpAddress, config: NetworkConfig) -> Network {
+    fn new_network(medium: Medium, ip: IpAddress, config: StackConfig) -> Network {
         let config = Rc::new(config);
         let cidr = IpCidr::new(ip.into(), 16);
         let route = match ip {
@@ -909,16 +928,15 @@ mod tests {
     /// Generate, send and receive data across 2 network instances
     async fn net_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
         const MTU: usize = 65535;
-        const BUF_MULTIPLIER: usize = 32;
 
         println!(">> exchanging {} B in {} B chunks", total, chunk_size);
 
         let ip1 = Ipv4Address::new(10, 0, 0, 1);
         let ip2 = Ipv4Address::new(10, 0, 0, 2);
 
-        let config = NetworkConfig {
+        let config = StackConfig {
             max_transmission_unit: MTU,
-            buffer_size_multiplier: BUF_MULTIPLIER,
+            ..Default::default()
         };
 
         let net1 = new_network(medium, ip1.into(), config.clone());
