@@ -5,11 +5,12 @@ use std::ops::Mul;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
-use futures::{Future, FutureExt, StreamExt};
+use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
 use smoltcp::iface::SocketHandle;
 use smoltcp::wire::IpEndpoint;
-use tokio::sync::mpsc;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::{spawn_local, JoinHandle};
 
 use crate::connection::{Connection, ConnectionMeta};
@@ -17,13 +18,12 @@ use crate::packet::{
     ip_ntoh, ArpField, ArpPacket, EtherFrame, IpPacket, PeekPacket, TcpPacket, UdpPacket,
 };
 use crate::protocol::Protocol;
-use crate::queue::{ProcessedFuture, Queue};
 use crate::socket::{SocketDesc, SocketEndpoint, SocketExt, SocketState};
 use crate::stack::Stack;
 use crate::{ChannelMetrics, Error, Result};
 
-pub type IngressReceiver = mpsc::UnboundedReceiver<IngressEvent>;
-pub type EgressReceiver = mpsc::UnboundedReceiver<EgressEvent>;
+pub type IngressReceiver = UnboundedReceiver<IngressEvent>;
+pub type EgressReceiver = UnboundedReceiver<EgressEvent>;
 
 #[derive(Clone)]
 pub struct NetworkConfig {
@@ -62,6 +62,7 @@ impl Network {
             egress: Default::default(),
         };
 
+        network.sender.net.borrow_mut().replace(network.clone());
         network.poller.net.borrow_mut().replace(network.clone());
         network
     }
@@ -226,6 +227,7 @@ impl Network {
         self.stack.remove(meta, handle);
         self.handles.borrow_mut().remove(&handle);
         self.connections.borrow_mut().remove(meta);
+        self.sender.remove(&handle);
     }
 
     /// Inject send data into the stack
@@ -234,7 +236,7 @@ impl Network {
         &self,
         data: impl Into<Vec<u8>>,
         connection: Connection,
-    ) -> Result<ProcessedFuture<'a>> {
+    ) -> impl Future<Output = Result<()>> + 'a {
         self.sender.send(data.into(), connection)
     }
 
@@ -245,16 +247,7 @@ impl Network {
     }
 
     pub fn spawn_local(&self) {
-        let net = self.clone();
-        let stack = self.stack.clone();
-
         self.poller.clone().spawn();
-        self.sender.spawn_local(move |vec, conn| {
-            let net = net.clone();
-            let stack = stack.clone();
-
-            async move { stack.send(vec, conn, move || net.poll()).await }
-        });
     }
 
     /// Polls the inner network stack
@@ -523,44 +516,63 @@ impl EgressEvent {
 #[derive(Clone, Default)]
 struct StackSender {
     inner: Rc<RefCell<StackSenderInner>>,
+    net: Rc<RefCell<Option<Network>>>,
 }
 
 impl StackSender {
     #[inline]
-    pub fn send<'a>(&self, data: Vec<u8>, conn: Connection) -> Result<ProcessedFuture<'a>> {
+    pub fn send<'a>(
+        &self,
+        data: Vec<u8>,
+        conn: Connection,
+    ) -> impl Future<Output = Result<()>> + 'a {
         let mut sender = {
-            let inner = self.inner.borrow();
-            inner.queue.sender()
+            match {
+                let inner = self.inner.borrow();
+                inner.map.get(&conn.handle).cloned()
+            } {
+                Some(sender) => sender,
+                None => self.spawn(conn.handle),
+            }
         };
-        sender.send((data, conn))
+
+        async move { sender.send((data, conn)).map_err(Error::from).await }
     }
 
-    pub fn spawn_local<H, F>(&self, mut handler: H)
-    where
-        H: FnMut(Vec<u8>, Connection) -> F + 'static,
-        F: Future<Output = Result<()>> + 'static,
-    {
-        let mut inner = self.inner.borrow_mut();
+    fn spawn(&self, handle: SocketHandle) -> mpsc::Sender<(Vec<u8>, Connection)> {
+        let net = self.net.borrow().clone().expect("Network not initialized");
+        let (tx, rx) = mpsc::channel(1);
 
-        if let Some(rx) = inner.queue.receiver() {
-            let handle = spawn_local(async move {
-                rx.for_each(|((vec, conn), tx)| {
-                    let fut = handler(vec, conn);
-                    async move {
-                        let _ = tx.send(fut.await);
-                    }
-                })
-                .await;
+        spawn_local(async move {
+            rx.for_each(|(vec, conn)| {
+                let net = net.clone();
+                let stack = net.stack.clone();
+                async move {
+                    let _ = stack.send(vec, conn, move || net.poll()).await;
+                }
+            })
+            .await;
+        });
+
+        let mut inner = self.inner.borrow_mut();
+        inner.map.insert(handle, tx.clone());
+
+        tx
+    }
+
+    pub fn remove(&self, handle: &SocketHandle) {
+        let mut inner = self.inner.borrow_mut();
+        if let Some(mut tx) = inner.map.remove(handle) {
+            spawn_local(async move {
+                let _ = tx.close().await;
             });
-            inner.handle.replace(handle);
         }
     }
 }
 
 #[derive(Default)]
 struct StackSenderInner {
-    queue: Queue<(Vec<u8>, Connection)>,
-    handle: Option<JoinHandle<()>>,
+    map: HashMap<SocketHandle, mpsc::Sender<(Vec<u8>, Connection)>>,
 }
 
 #[derive(Clone, Default)]
@@ -701,19 +713,19 @@ impl StackPollerStrategy {
 
 #[derive(Clone)]
 pub struct Channel<T> {
-    pub tx: mpsc::UnboundedSender<T>,
-    rx: Rc<RefCell<Option<mpsc::UnboundedReceiver<T>>>>,
+    pub tx: UnboundedSender<T>,
+    rx: Rc<RefCell<Option<UnboundedReceiver<T>>>>,
 }
 
 impl<T> Channel<T> {
-    pub fn receiver(&self) -> Option<mpsc::UnboundedReceiver<T>> {
+    pub fn receiver(&self) -> Option<UnboundedReceiver<T>> {
         self.rx.borrow_mut().take()
     }
 }
 
 impl<T> Default for Channel<T> {
     fn default() -> Self {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = unbounded_channel();
         Self {
             tx,
             rx: Rc::new(RefCell::new(Some(rx))),
@@ -858,7 +870,6 @@ mod tests {
             rx.for_each(|vec| async {
                 let _ = net
                     .send(vec, conn)
-                    .unwrap_or_else(|e| Box::pin(futures::future::err(e)))
                     .await
                     .map_err(|e| eprintln!("failed to send packet: {}", e));
             })

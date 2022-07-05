@@ -292,7 +292,7 @@ impl StartingSessions {
                 log::debug!(
                     "Session {session_id} (node = {node_id}) is awaiting a ResumeForwarding message"
                 );
-                let _ = resumed.await;
+                resumed.await;
             }
 
             log::info!(

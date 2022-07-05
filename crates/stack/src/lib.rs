@@ -8,7 +8,6 @@ pub mod packet;
 mod patch_smoltcp;
 mod port;
 mod protocol;
-mod queue;
 pub mod socket;
 mod stack;
 

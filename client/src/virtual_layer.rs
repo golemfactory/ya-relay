@@ -183,7 +183,7 @@ impl TcpLayer {
         forward_pause: &Actuator,
     ) -> Option<T> {
         if let Some(resumed) = forward_pause.next() {
-            let _ = resumed.await;
+            resumed.await;
         }
         rx.next().await
     }
@@ -194,7 +194,7 @@ impl TcpLayer {
         data: impl Into<Vec<u8>>,
         connection: Connection,
     ) -> anyhow::Result<()> {
-        Ok(self.net.send(data, connection)?.await?)
+        Ok(self.net.send(data, connection).await?)
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
