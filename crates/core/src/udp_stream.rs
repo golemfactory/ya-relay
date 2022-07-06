@@ -3,9 +3,11 @@ use chrono::Utc;
 use futures::channel::mpsc;
 use futures::prelude::*;
 use metrics::counter;
+use metrics_old::timing;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio_util::codec::{Decoder, Encoder};
 
@@ -38,7 +40,9 @@ pub async fn udp_bind(addr: &url::Url) -> anyhow::Result<(InStream, OutStream, S
 pub fn udp_stream(
     socket: Arc<UdpSocket>,
 ) -> impl Stream<Item = (PacketKind, SocketAddr, chrono::DateTime<chrono::Utc>)> {
-    stream::unfold(socket, |socket| async {
+    let (mut tx, rx) = mpsc::channel(20);
+
+    tokio::task::spawn_local(async move {
         const MAX_SIZE: usize = MAX_PACKET_SIZE as usize;
 
         let mut codec = Codec::default();
@@ -66,24 +70,37 @@ pub fn udp_stream(
             counter!("ya-relay-core.packet.incoming.size", buf.len() as u64);
 
             match codec.decode(&mut buf) {
-                Ok(Some(item)) => return Some(((item, addr, timestamp), socket)),
+                Ok(Some(item)) => {
+                    tx.send((item, addr, timestamp)).await.ok();
+                }
                 Err(e) => log::warn!("Failed to decode packet from: {addr}. Error: {}", e),
                 // `decode` does not return this variant
                 Ok(None) => log::warn!("Unable to decode packet of size: {size}, from: {addr}"),
             }
         }
-    })
+    });
+    return rx;
 }
 
 pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKind, SocketAddr)>> {
-    let (tx, mut rx) = mpsc::channel(100);
+    let (tx, mut rx) = mpsc::channel(10);
 
     tokio::task::spawn_local(async move {
         let mut codec = Codec::default();
         let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
         let max_size = resolve_max_payload_size().await.unwrap();
 
+        let mut last_iter_time = Instant::now();
+
         while let Some((packet, target)) = rx.next().await {
+            timing!(
+                "ya-relay-client.udp-idle.egress.time",
+                last_iter_time,
+                Instant::now()
+            );
+
+            let start = Instant::now();
+
             // Reusing the buffer, clear existing contents
             buf.clear();
 
@@ -97,11 +114,20 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
                     );
                 }
 
+                let send_start = Instant::now();
+
                 counter!("ya-relay-core.packet.outgoing.size", buf.len() as u64);
-                socket.send_to(&buf, &target).await
+                let result = socket.send_to(&buf, &target).await;
+
+                let end = Instant::now();
+                timing!("ya-relay-client.udp.egress.time", start, end);
+                timing!("ya-relay-client.udp-send.egress.time", send_start, end);
+                result
             } {
                 log::warn!("Error sending packet: {e}");
             }
+
+            last_iter_time = Instant::now();
         }
     });
 

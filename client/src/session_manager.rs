@@ -576,8 +576,15 @@ impl SessionManager {
     ) {
         let pause = node.session.forward_pause.clone();
         let session = node.session.clone();
+        let mut last_iter_time = Instant::now();
 
         while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
+            timing!(
+                "ya-relay-client.reliable.egress.idle.time",
+                last_iter_time,
+                Instant::now()
+            );
+
             let start = Instant::now();
             log::trace!(
                 "Forwarding message ({} B) to {} through {} (session id: {})",
@@ -604,6 +611,8 @@ impl SessionManager {
                 start,
                 Instant::now()
             );
+
+            last_iter_time = Instant::now();
         }
 
         log::debug!(

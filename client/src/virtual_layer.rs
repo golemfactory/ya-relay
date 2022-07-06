@@ -380,11 +380,12 @@ impl TcpLayer {
                         );
                     }
 
-                    timing!("ya-relay-client.virtual.egress.time", start, Instant::now());
+                    let end = Instant::now();
+                    timing!("ya-relay-client.virtual.egress.time", start, end);
                     timing!(
                         "ya-relay-client.virtual.egress.session-send.time",
                         send_start,
-                        Instant::now()
+                        end
                     );
                 }
             })
