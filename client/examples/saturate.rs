@@ -13,6 +13,8 @@ use prettytable::format::consts::FORMAT_BOX_CHARS;
 use prettytable::format::TableFormat;
 use prettytable::{Attr, Cell, Row, Table};
 use structopt::{clap, StructOpt};
+use tokio::fs::OpenOptions;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -40,6 +42,9 @@ struct Cli {
         default_value = "udp://52.17.188.4:7477"
     )]
     relay: url::Url,
+    /// Name used log / csv filenames
+    #[structopt(short, long)]
+    name: Option<String>,
     /// Private key file
     #[structopt(short = "f", long, env = "CLIENT_KEY_FILE")]
     key_file: Option<String>,
@@ -56,8 +61,12 @@ struct Cli {
     #[structopt(short = "c", long, default_value = "65536")]
     chunk_size: usize,
     /// Print state every N seconds
-    #[structopt(long, parse(try_from_str = humantime::parse_duration), default_value = "1s")]
+    #[structopt(long, parse(try_from_str = humantime::parse_duration), default_value = "250ms")]
     interval: Duration,
+    /// Log / CSV output directory
+    #[structopt(short = "d", long)]
+    work_dir: Option<PathBuf>,
+
     #[structopt(subcommand)]
     command: Command,
 }
@@ -66,9 +75,16 @@ struct Cli {
 #[structopt(rename_all = "kebab-case")]
 enum Command {
     /// Await for connections
-    Listen {},
+    Listen {
+        #[structopt(short, long, parse(try_from_str = humantime::parse_duration))]
+        sample: Option<Duration>,
+    },
     /// Connect to node
-    Connect { node_id: String },
+    Connect {
+        node_id: String,
+        #[structopt(short, long, parse(try_from_str = humantime::parse_duration))]
+        time: Option<Duration>,
+    },
 }
 
 #[derive(Clone, Copy, Default)]
@@ -172,8 +188,7 @@ fn send(
                 break;
             }
 
-            let data = vec![1; chunk_size];
-            if let Err(e) = sender.send(data).await {
+            if let Err(e) = sender.send(vec![1; chunk_size]).await {
                 state.set_err(anyhow!(e)).await;
                 break;
             }
@@ -256,6 +271,55 @@ async fn print_state(node_id: NodeId, state: State, delay: Duration) {
     let _ = futures::future::select(print, cc).await;
 }
 
+async fn sample_state(node_id: NodeId, state: State, delay: Duration, time: Duration) {
+    let deadline = Instant::now() + time;
+    let csv_file = state.log_file.with_extension("csv");
+    let mut output = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&csv_file)
+        .await
+        .expect("Unable to open the CSV file");
+
+    print!("\x1B[2J\x1B[1;1H");
+    println!("node:\t {}", node_id);
+    println!("log:\t {}", state.log_file.display());
+    println!("csv:\t {}", csv_file.display());
+
+    loop {
+        let values: Vec<Vec<String>> = {
+            let inner = state.inner.read().await;
+            inner
+                .iter()
+                .map(|(node_id, stats)| {
+                    let time =
+                        Duration::from_secs_f32((Instant::now() - stats.started).as_secs_f32());
+                    vec![
+                        time.as_secs_f32().to_string(),
+                        node_id.to_string(),
+                        (stats.reliable.rx as u64).to_string(),
+                        (stats.reliable.rx_total as u64).to_string(),
+                    ]
+                })
+                .collect()
+        };
+
+        for value in values {
+            output.write(value.join(",").as_bytes()).await.unwrap();
+            output.write(b"\n").await.unwrap();
+        }
+
+        if Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(delay).await;
+    }
+
+    let _ = output.flush().await;
+    println!("... done.");
+}
+
 #[inline]
 fn bytesize_per_second(value: u64) -> String {
     format!("{} /s", bytesize::to_string(value as u64, false))
@@ -312,32 +376,59 @@ async fn run() -> anyhow::Result<()> {
     let mut client = builder.build().await?;
     let node_id = client.node_id();
 
+    let name = match cli.name {
+        Some(name) => name,
+        None => format!("ya-relay-saturate-{}.log", node_id),
+    };
+    let work_dir = match cli.work_dir {
+        Some(dir) => dir,
+        None => std::env::temp_dir(),
+    };
+
+    tokio::fs::create_dir_all(&work_dir)
+        .await
+        .expect("Failed to create working directory");
+    let log_file = work_dir.join(format!("{}.log", name));
+
     let chunk_size = 1_usize.max(cli.chunk_size);
-    let log_file = std::env::temp_dir().join(format!("ya-relay-saturate-{}.log", node_id));
     let state = State::new(chunk_size, log_file.clone());
     simple_logging::log_to_file(log_file.clone(), LevelFilter::Info)?;
 
     let address = client.bind_addr().await?;
     let receiver = client.forward_receiver().await.unwrap();
-    tokio::task::spawn_local(receive(receiver, state.clone()));
+    tokio::task::spawn(receive(receiver, state.clone()));
 
     let _ = client.sessions.server_session().await?;
     println!("Client {} is listening on {}", node_id, address);
 
     match cli.command {
-        Command::Listen {} => {
+        Command::Listen { sample } => {
             println!("Awaiting incoming connections");
+
+            if let Some(sample) = sample {
+                sample_state(node_id, state.clone(), cli.interval, sample).await;
+            } else {
+                tokio::task::spawn(print_state(node_id, state.clone(), cli.interval));
+                let _ = tokio::signal::ctrl_c().await;
+            }
         }
-        Command::Connect { node_id } => {
+        Command::Connect { node_id, time } => {
             println!("Connecting to {}", node_id);
 
             let node_id = NodeId::from_str(node_id.as_str()).context("Invalid NodeId")?;
             let sender = client.forward(node_id).await?;
-            tokio::task::spawn(send(sender, node_id, state.clone()));
+
+            tokio::task::spawn(print_state(node_id, state.clone(), cli.interval));
+
+            if let Some(time) = time {
+                let _ = tokio::time::timeout(time, send(sender, node_id, state.clone())).await;
+            } else {
+                tokio::task::spawn(send(sender, node_id, state.clone()));
+                let _ = tokio::signal::ctrl_c().await;
+            }
         }
     }
 
-    print_state(node_id, state.clone(), cli.interval).await;
     state.print_err().await;
     client.shutdown().await?;
 
