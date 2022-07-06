@@ -22,7 +22,6 @@ use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
 use ya_relay_stack::*;
 
-use crate::client::ClientConfig;
 use crate::client::Forwarded;
 use crate::registry::NodeEntry;
 use crate::session::Session;
@@ -76,21 +75,17 @@ impl VirtNode {
 }
 
 impl TcpLayer {
-    pub fn new(config: Arc<ClientConfig>, ingress: Channel<Forwarded>) -> TcpLayer {
+    pub fn new(key: &PublicKey, config: &StackConfig, ingress: &Channel<Forwarded>) -> TcpLayer {
         let pcap = config.pcap_path.clone().map(|p| match pcap_writer(p) {
             Ok(pcap) => pcap,
             Err(err) => panic!("{}", err),
         });
-        let net = default_network(
-            config.node_pub_key.clone(),
-            Rc::new(config.tcp_config.clone()),
-            pcap,
-        );
+        let net = default_network(key.clone(), Rc::new(config.clone()), pcap);
 
         TcpLayer {
             net,
             state: Arc::new(RwLock::new(TcpLayerState {
-                ingress,
+                ingress: ingress.clone(),
                 nodes: Default::default(),
                 ips: Default::default(),
             })),
@@ -420,7 +415,7 @@ fn pcap_writer(path: PathBuf) -> anyhow::Result<Box<dyn Write>> {
 
 fn default_network(
     key: PublicKey,
-    config: Rc<NetworkConfig>,
+    config: Rc<StackConfig>,
     pcap: Option<Box<dyn Write>>,
 ) -> Network {
     let address = key.address();

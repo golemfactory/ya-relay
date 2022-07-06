@@ -2,7 +2,6 @@ use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::iter::zip;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -23,7 +22,7 @@ use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
 use ya_relay_core::utils::{parse_udp_url, spawn_local_abortable};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
-use ya_relay_stack::{ChannelMetrics, NetworkConfig, SocketDesc, SocketState};
+use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState, StackConfig};
 
 use crate::session::SessionDesc;
 use crate::session_manager::SessionManager;
@@ -31,7 +30,6 @@ use crate::session_manager::SessionManager;
 pub type ForwardSender = mpsc::Sender<Vec<u8>>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
-pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
 const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone)]
@@ -43,8 +41,7 @@ pub struct ClientConfig {
     pub srv_addr: SocketAddr,
     pub auto_connect: bool,
     pub session_expiration: Duration,
-    pub tcp_config: NetworkConfig,
-    pub pcap_path: Option<PathBuf>,
+    pub stack_config: StackConfig,
     pub ping_measure_interval: Duration,
 
     pub session_request_timeout: Duration,
@@ -61,7 +58,7 @@ pub struct ClientBuilder {
     crypto: Option<Rc<dyn CryptoProvider>>,
     auto_connect: bool,
     session_expiration: Option<Duration>,
-    vtcp_buffer_size: Option<usize>,
+    stack_config: StackConfig,
 }
 
 #[derive(Clone)]
@@ -400,7 +397,7 @@ impl ClientBuilder {
             crypto: None,
             auto_connect: false,
             session_expiration: None,
-            vtcp_buffer_size: None,
+            stack_config: Default::default(),
         }
     }
 
@@ -424,12 +421,27 @@ impl ClientBuilder {
         self
     }
 
-    pub fn virtual_tcp_buffer_size_multiplier(mut self, multiplier: usize) -> Self {
-        self.vtcp_buffer_size = Some(multiplier);
-        self
+    pub fn tcp_max_recv_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
+        self.stack_config.tcp_mem.rx.set_max(max)?;
+        Ok(self)
     }
 
-    pub async fn build(self) -> anyhow::Result<Client> {
+    pub fn tcp_max_send_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
+        self.stack_config.tcp_mem.tx.set_max(max)?;
+        Ok(self)
+    }
+
+    pub fn udp_max_recv_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
+        self.stack_config.udp_mem.rx.set_max(max)?;
+        Ok(self)
+    }
+
+    pub fn udp_max_send_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
+        self.stack_config.udp_mem.tx.set_max(max)?;
+        Ok(self)
+    }
+
+    pub async fn build(mut self) -> anyhow::Result<Client> {
         let bind_url = self
             .bind_url
             .unwrap_or_else(|| Url::parse("udp://0.0.0.0:0").unwrap());
@@ -439,8 +451,9 @@ impl ClientBuilder {
 
         let default_id = crypto.default_id().await?;
         let default_pub_key = crypto.get(default_id).await?.public_key().await?;
-        let mtu = resolve_max_payload_overhead_size(MAX_TAG_SIZE + Forward::header_size()).await?;
-        let pcap_path = std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from);
+
+        self.stack_config.max_transmission_unit =
+            resolve_max_payload_overhead_size(MAX_TAG_SIZE + Forward::header_size()).await?;
 
         let mut client = Client::new(ClientConfig {
             node_id: default_id,
@@ -452,11 +465,7 @@ impl ClientBuilder {
             session_expiration: self
                 .session_expiration
                 .unwrap_or_else(|| Duration::from_secs(25)),
-            tcp_config: NetworkConfig {
-                max_transmission_unit: mtu,
-                buffer_size_multiplier: self.vtcp_buffer_size.unwrap_or(96),
-            },
-            pcap_path,
+            stack_config: self.stack_config,
             ping_measure_interval: Duration::from_secs(300),
             session_request_timeout: Duration::from_millis(3000),
             challenge_request_timeout: Duration::from_millis(8000),
