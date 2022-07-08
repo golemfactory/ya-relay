@@ -1,10 +1,10 @@
 use std::time::Duration;
-use url::Url;
 
 use ya_relay_client::testing::forwarding_utils::{
     check_broadcast, check_forwarding, spawn_receive_for_client, Mode,
 };
 use ya_relay_client::ClientBuilder;
+use ya_relay_core::utils::to_udp_url;
 use ya_relay_server::testing::server::{
     init_test_server, init_test_server_with_config, test_default_config,
 };
@@ -52,7 +52,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
 
     // Start client on the same port as previously.
     let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto)
         .connect()
         .expire_session_after(Duration::from_secs(2))
@@ -86,7 +86,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
 
     // Start client on the same port as previously.
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto)
         .connect()
         .expire_session_after(Duration::from_secs(2))
@@ -148,7 +148,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
 
     // Start client on the same port as previously.
     let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
         .connect()
         .expire_session_after(Duration::from_secs(2))
@@ -180,7 +180,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
 
     // Start client on the same port as previously.
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
         .connect()
         .expire_session_after(Duration::from_secs(2))
@@ -309,7 +309,7 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
 
     // Start client on the same port as previously.
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
         .connect()
         .expire_session_after(Duration::from_secs(2))
@@ -380,7 +380,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
 
     // Start client on the same port as previously.
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .listen(Url::parse(&format!("udp://{}:{}", addr2.ip(), addr2.port())).unwrap())
+        .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
         .connect()
         .expire_session_after(Duration::from_secs(2))

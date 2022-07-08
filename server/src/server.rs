@@ -25,7 +25,7 @@ use crate::state::NodesState;
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::session::{LastSeen, NodeInfo, NodeSession, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
-use ya_relay_core::utils::ResultExt;
+use ya_relay_core::utils::{to_udp_url, ResultExt};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
@@ -876,14 +876,14 @@ impl Server {
 
     pub async fn bind_udp(config: Config) -> anyhow::Result<Server> {
         let (input, output, addr) = udp_bind(&config.address).await?;
-        let url = Url::parse(&format!("udp://{}:{}", addr.ip(), addr.port()))?;
+        let url = to_udp_url(addr)?;
 
         Server::bind(config, url, input, output).await
     }
 
     pub async fn bind(
         config: Config,
-        addr: url::Url,
+        addr: Url,
         input: InStream,
         output: OutStream,
     ) -> anyhow::Result<Server> {
