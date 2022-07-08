@@ -1,6 +1,8 @@
+use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
+
 use anyhow::Context;
 use futures::future::{AbortHandle, Abortable};
-use std::future::Future;
 
 pub use url::Url;
 
@@ -9,6 +11,14 @@ pub fn parse_udp_url(url: &Url) -> anyhow::Result<String> {
     let port = url.port().unwrap_or(*crate::DEFAULT_NET_PORT);
 
     Ok(format!("{}:{}", host, port))
+}
+
+pub fn to_udp_url(addr: SocketAddr) -> Result<Url, url::ParseError> {
+    let ip_str = match addr.ip() {
+        IpAddr::V4(ip4) => ip4.to_string(),
+        IpAddr::V6(ip6) => format!("[{}]", ip6),
+    };
+    Url::parse(&format!("udp://{}:{}", ip_str, addr.port()))
 }
 
 // Extract typed data from environment variable
