@@ -57,6 +57,7 @@ pub struct Network {
     pub name: Rc<String>,
     pub config: Rc<StackConfig>,
     pub stack: Stack<'static>,
+    is_tun: bool,
     sender: StackSender,
     poller: StackPoller,
     bindings: Rc<RefCell<HashSet<SocketHandle>>>,
@@ -69,10 +70,17 @@ pub struct Network {
 impl Network {
     /// Creates a new Network instance
     pub fn new(name: impl ToString, config: Rc<StackConfig>, stack: Stack<'static>) -> Self {
+        let is_tun = {
+            let iface_rfc = stack.iface();
+            let iface = iface_rfc.borrow();
+            iface.device().is_tun()
+        };
+
         let network = Self {
             name: Rc::new(name.to_string()),
             config,
             stack,
+            is_tun,
             sender: Default::default(),
             poller: Default::default(),
             bindings: Default::default(),
@@ -279,13 +287,13 @@ impl Network {
 
     /// Polls the inner network stack
     pub fn poll(&self) {
-        match self.stack.poll() {
-            Ok(true) => {
+        match (self.stack.poll(), self.is_tun) {
+            (Ok(true), _) | (Ok(_), false) => {
                 self.process_ingress();
                 self.process_egress();
             }
-            Ok(false) => (),
-            Err(err) => {
+            (Ok(false), _) => (),
+            (Err(err), _) => {
                 log::warn!("{}: stack poll error: {}", *self.name, err);
                 self.poll();
             }
