@@ -258,12 +258,15 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
-    pub fn poll(&self) -> Result<()> {
-        let mut iface = self.iface.borrow_mut();
-        iface
-            .poll(Instant::now())
-            .map_err(|e| Error::Other(e.to_string()))?;
-        Ok(())
+    pub fn poll(&self) -> Result<bool> {
+        match {
+            let mut iface = self.iface.borrow_mut();
+            iface.poll(Instant::now())
+        } {
+            Err(smoltcp::Error::Unrecognized) => self.poll(),
+            Err(err) => Err(Error::Other(err.to_string())),
+            Ok(val) => Ok(val),
+        }
     }
 }
 

@@ -1,10 +1,9 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::convert::{TryFrom, TryInto};
-use std::ops::Mul;
 use std::path::PathBuf;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
@@ -12,7 +11,8 @@ use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
 use smoltcp::iface::SocketHandle;
 use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
-use tokio::task::{spawn_local, JoinHandle};
+use tokio::task::spawn_local;
+use tokio::time::MissedTickBehavior;
 
 use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{
@@ -24,6 +24,7 @@ use crate::stack::Stack;
 use crate::{ChannelMetrics, Error, Result};
 
 pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
+pub const STACK_POLL_MS_ENV_VAR: &str = "YA_NET_STACK_POLL_MS";
 
 pub type IngressReceiver = UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = UnboundedReceiver<EgressEvent>;
@@ -266,19 +267,29 @@ impl Network {
     }
 
     pub fn spawn_local(&self) {
-        self.poller.clone().spawn();
+        let interval = std::env::var(STACK_POLL_MS_ENV_VAR)
+            .and_then(|s| s.parse::<u64>().map_err(|_| std::env::VarError::NotPresent))
+            .and_then(|v| match v {
+                0 => Err(std::env::VarError::NotPresent),
+                v => Ok(v),
+            })
+            .unwrap_or(250);
+        self.poller.clone().spawn(Duration::from_millis(interval));
     }
 
     /// Polls the inner network stack
     pub fn poll(&self) {
-        if let Err(err) = self.stack.poll() {
-            log::warn!("{}: stack poll error: {}", *self.name, err);
+        match self.stack.poll() {
+            Ok(true) => {
+                self.process_ingress();
+                self.process_egress();
+            }
+            Ok(false) => (),
+            Err(err) => {
+                log::warn!("{}: stack poll error: {}", *self.name, err);
+                self.poll();
+            }
         }
-
-        let received = self.process_ingress();
-        let sent = self.process_egress();
-
-        self.poller.adjust_strategy(sent, received);
     }
 
     /// Take the ingress traffic receive channel
@@ -596,137 +607,20 @@ struct StackSenderInner {
 
 #[derive(Clone, Default)]
 struct StackPoller {
-    inner: Rc<RefCell<StackPollerInner>>,
     net: Rc<RefCell<Option<Network>>>,
 }
 
 impl StackPoller {
-    pub fn spawn(&self) {
-        if self.inner.borrow().handle.is_none() {
-            let poller = self.clone();
-            let handle = spawn_local(async move {
-                loop {
-                    let delay = poller.interval();
-                    tokio::time::sleep(delay).await;
-                    poller.net.borrow().as_ref().unwrap().poll();
-                }
-            });
-            self.inner.borrow_mut().handle.replace(handle);
-        }
-    }
-
-    fn interval(&self) -> Duration {
-        self.inner.borrow().strategy.interval()
-    }
-
-    fn adjust_strategy(&self, sent: usize, received: usize) {
-        self.inner.borrow_mut().strategy.adjust(sent, received)
-    }
-}
-
-#[derive(Default)]
-struct StackPollerInner {
-    handle: Option<JoinHandle<()>>,
-    strategy: StackPollerStrategy,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum StackPollerStrategy {
-    Default {
-        at: Instant,
-        current: Duration,
-    },
-    Adaptive {
-        at: Instant,
-        current: Duration,
-        factor: u8,
-    },
-}
-
-impl Default for StackPollerStrategy {
-    fn default() -> Self {
-        Self::Default {
-            at: Instant::now(),
-            current: Self::DEFAULT_INTERVAL,
-        }
-    }
-}
-
-impl StackPollerStrategy {
-    const MIN_INTERVAL: Duration = Duration::from_millis(10);
-    const DEFAULT_INTERVAL: Duration = Duration::from_millis(1500);
-    const DEFAULT_FACTOR: u8 = 3;
-
-    #[inline]
-    fn at(&self) -> Instant {
-        match self {
-            Self::Default { at, .. } | Self::Adaptive { at, .. } => *at,
-        }
-    }
-
-    #[inline]
-    fn interval(&self) -> Duration {
-        match self {
-            Self::Default { current, .. } | Self::Adaptive { current, .. } => *current,
-        }
-    }
-
-    #[inline]
-    fn adjust(&mut self, sent: usize, received: usize) {
-        if sent > 0 || received > 0 {
-            self.speed_up();
-        } else {
-            self.slow_down();
-        }
-    }
-
-    fn speed_up(&mut self) {
-        let now = Instant::now();
-        let latent = self.at() + Self::DEFAULT_INTERVAL >= now;
-
-        match self {
-            Self::Default { current, .. } | Self::Adaptive { current, .. } => {
-                let now = Instant::now();
-                let factor = Self::DEFAULT_FACTOR;
-
-                let next = if latent {
-                    Self::MIN_INTERVAL
-                } else {
-                    Self::MIN_INTERVAL.max(current.div_f32(factor as f32))
-                };
-
-                *self = Self::Adaptive {
-                    at: now,
-                    current: next,
-                    factor,
-                }
+    pub fn spawn(&self, interval: Duration) {
+        let poller = self.clone();
+        spawn_local(async move {
+            let mut interval = tokio::time::interval(interval);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                poller.net.borrow().as_ref().unwrap().poll();
             }
-        };
-    }
-
-    fn slow_down(&mut self) {
-        match self {
-            Self::Default { .. } => {}
-            Self::Adaptive {
-                current, factor, ..
-            } => {
-                let now = Instant::now();
-                let next = Self::DEFAULT_INTERVAL.min(current.mul(*factor as u32));
-
-                if next == Self::DEFAULT_INTERVAL {
-                    *self = Self::Default {
-                        at: now,
-                        current: next,
-                    }
-                } else {
-                    *self = Self::Adaptive {
-                        at: now,
-                        current: next,
-                        factor: *factor,
-                    }
-                }
-            }
-        }
+        });
     }
 }
 
