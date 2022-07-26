@@ -25,6 +25,10 @@ use crate::{ChannelMetrics, Error, Result};
 
 pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
 pub const STACK_POLL_MS_ENV_VAR: &str = "YA_NET_STACK_POLL_MS";
+pub const STACK_POLL_SENT_ENV_VAR: &str = "YA_NET_STACK_POLL_SENT_BATCH";
+
+const DEFAULT_POLL_SENT_BATCH: usize = 16348;
+const MIN_STACK_POLL_SENT_BATCH: usize = 2048;
 
 pub type IngressReceiver = UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = UnboundedReceiver<EgressEvent>;
@@ -33,6 +37,7 @@ pub type EgressReceiver = UnboundedReceiver<EgressEvent>;
 pub struct StackConfig {
     pub pcap_path: Option<PathBuf>,
     pub max_transmission_unit: usize,
+    pub max_send_batch: usize,
     pub tcp_mem: SocketMemory,
     pub udp_mem: SocketMemory,
     pub icmp_mem: SocketMemory,
@@ -41,9 +46,17 @@ pub struct StackConfig {
 
 impl Default for StackConfig {
     fn default() -> Self {
+        let max_send_batch = std::env::var(STACK_POLL_SENT_ENV_VAR)
+            .and_then(|s| {
+                s.parse::<usize>()
+                    .map_err(|_| std::env::VarError::NotPresent)
+            })
+            .unwrap_or(DEFAULT_POLL_SENT_BATCH)
+            .max(MIN_STACK_POLL_SENT_BATCH);
         Self {
             pcap_path: std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from),
             max_transmission_unit: 1400,
+            max_send_batch,
             tcp_mem: SocketMemory::default_tcp(),
             udp_mem: SocketMemory::default_udp(),
             icmp_mem: SocketMemory::default_icmp(),
@@ -287,15 +300,21 @@ impl Network {
 
     /// Polls the inner network stack
     pub fn poll(&self) {
-        match (self.stack.poll(), self.is_tun) {
-            (Ok(true), _) | (Ok(_), false) => {
-                self.process_ingress();
-                self.process_egress();
-            }
-            (Ok(false), _) => (),
-            (Err(err), _) => {
-                log::warn!("{}: stack poll error: {}", *self.name, err);
-                self.poll();
+        loop {
+            let finished = match (self.stack.poll(), self.is_tun) {
+                (Ok(true), _) | (Ok(_), false) => {
+                    self.process_ingress();
+                    self.process_egress()
+                }
+                (Ok(false), _) => true,
+                (Err(err), _) => {
+                    log::warn!("{}: stack poll error: {}", *self.name, err);
+                    false
+                }
+            };
+
+            if finished {
+                break;
             }
         }
     }
@@ -421,7 +440,7 @@ impl Network {
         }
     }
 
-    fn process_egress(&self) -> usize {
+    fn process_egress(&self) -> bool {
         let mut sent = 0;
 
         let iface_rfc = self.stack.iface();
@@ -438,7 +457,7 @@ impl Network {
                 }
             } {
                 Ok(event) => {
-                    sent += 1;
+                    sent += event.payload.len();
 
                     if let Some((desc, size)) = event.desc.as_ref() {
                         self.stack.on_sent(desc, *size);
@@ -454,9 +473,13 @@ impl Network {
                 }
                 Err(err) => log::trace!("{}: egress packet error: {}", *self.name, err),
             }
+
+            if sent >= self.config.max_send_batch {
+                return false;
+            }
         }
 
-        sent
+        true
     }
 }
 
