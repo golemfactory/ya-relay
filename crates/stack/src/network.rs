@@ -299,7 +299,7 @@ impl Network {
     }
 
     /// Polls the inner network stack
-    pub fn poll(&self) -> bool {
+    pub fn poll(&self) {
         loop {
             let finished = match (self.stack.poll(), self.is_tun) {
                 (Ok(true), _) | (Ok(_), false) => {
@@ -309,7 +309,7 @@ impl Network {
                 (Ok(false), _) => true,
                 (Err(err), _) => {
                     log::warn!("{}: stack poll error: {}", *self.name, err);
-                    self.poll()
+                    false
                 }
             };
 
@@ -317,8 +317,6 @@ impl Network {
                 break;
             }
         }
-
-        true
     }
 
     /// Take the ingress traffic receive channel
@@ -611,11 +609,7 @@ impl StackSender {
                 let net = net.clone();
                 let stack = net.stack.clone();
                 async move {
-                    let _ = stack
-                        .send(vec, conn, move || {
-                            net.poll();
-                        })
-                        .await;
+                    let _ = stack.send(vec, conn, move || net.poll()).await;
                 }
             })
             .await;
