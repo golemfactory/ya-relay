@@ -126,6 +126,19 @@ impl Client {
             .collect()
     }
 
+    pub async fn find_node(
+        &self,
+        node_id: NodeId,
+    ) -> anyhow::Result<ya_relay_proto::proto::response::Node> {
+        let session = self.sessions.server_session().await?;
+        let find_node = session.find_node(node_id);
+
+        match tokio::time::timeout(Duration::from_secs(5), find_node).await {
+            Ok(result) => Ok(result?),
+            Err(_) => bail!("Node [{}] lookup timed out", node_id),
+        }
+    }
+
     #[inline]
     pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         self.sessions.virtual_tcp.sockets()
