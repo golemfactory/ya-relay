@@ -36,6 +36,7 @@ impl CaptureDevice {
     pub fn tap(mtu: usize) -> Self {
         Self {
             max_transmission_unit: mtu,
+            medium: phy::Medium::Ethernet,
             ..Default::default()
         }
     }

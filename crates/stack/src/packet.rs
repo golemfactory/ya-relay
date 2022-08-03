@@ -137,6 +137,11 @@ pub trait PeekPacket<'a> {
     fn packet(data: &'a [u8]) -> Self;
 }
 
+pub trait PeekPacketMut<'a> {
+    fn peek(data: &'a [u8]) -> Result<(), Error>;
+    fn packet(data: &'a mut [u8]) -> Self;
+}
+
 pub enum IpPacket<'a> {
     V4(IpV4Packet<'a>),
     V6(IpV6Packet<'a>),
@@ -531,13 +536,28 @@ pub struct ArpPacketMut<'a> {
 }
 
 impl<'a> ArpPacketMut<'a> {
+    #[inline(always)]
+    pub fn get_field(&self, field: Field) -> &[u8] {
+        &self.inner[field]
+    }
+
     pub fn set_field(&mut self, field: Field, value: &[u8]) {
-        let value = &value[..field.end];
+        let value = &value[..field.len()];
         self.inner[field].copy_from_slice(value);
     }
 
     pub fn freeze(self) -> ArpPacket<'a> {
         ArpPacket { inner: self.inner }
+    }
+}
+
+impl<'a> PeekPacketMut<'a> for ArpPacketMut<'a> {
+    fn peek(data: &'a [u8]) -> Result<(), Error> {
+        ArpPacket::peek(data)
+    }
+
+    fn packet(data: &'a mut [u8]) -> Self {
+        Self { inner: data }
     }
 }
 
