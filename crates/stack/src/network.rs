@@ -442,6 +442,7 @@ impl Network {
 
     fn process_egress(&self) -> bool {
         let mut sent = 0;
+        let mut finished = true;
 
         let iface_rfc = self.stack.iface();
         let mut iface = iface_rfc.borrow_mut();
@@ -475,11 +476,12 @@ impl Network {
             }
 
             if sent >= self.config.max_send_batch {
-                return false;
+                finished = false;
+                continue;
             }
         }
 
-        true
+        finished
     }
 }
 
