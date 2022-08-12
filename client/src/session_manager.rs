@@ -30,7 +30,7 @@ use crate::registry::{NodeEntry, NodesRegistry};
 use crate::session::{Session, SessionError, SessionResult};
 use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
-use crate::virtual_layer::TcpLayer;
+use crate::virtual_layer::{PortType, TcpLayer};
 
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
@@ -61,6 +61,7 @@ pub struct SessionManagerState {
 
     forward_reliable: HashMap<NodeId, ForwardSender>,
     forward_unreliable: HashMap<NodeId, ForwardSender>,
+    forward_transfer: HashMap<NodeId, ForwardSender>,
 
     p2p_sessions: HashMap<NodeId, Arc<Session>>,
     ingress_channel: Channel<Forwarded>,
@@ -89,6 +90,7 @@ impl SessionManager {
                 nodes_identity: Default::default(),
                 forward_reliable: Default::default(),
                 forward_unreliable: Default::default(),
+                forward_transfer: Default::default(),
                 p2p_sessions: Default::default(),
                 ingress_channel: ingress,
                 starting_sessions: None,
@@ -419,6 +421,7 @@ impl SessionManager {
             let mut state = self.state.write().await;
             let tx_r = state.forward_reliable.remove(&node_id);
             let tx_u = state.forward_unreliable.remove(&node_id);
+            let tx_t = state.forward_transfer.remove(&node_id);
 
             if let Some(session) = state.p2p_sessions.remove(&node_id) {
                 state.nodes_addr.remove(&session.remote);
@@ -429,6 +432,10 @@ impl SessionManager {
                 tx.close().await.ok();
             }
             if let Some(mut tx) = tx_u {
+                tx.close().await.ok();
+            }
+
+            if let Some(mut tx) = tx_t {
                 tx.close().await.ok();
             }
         }
@@ -528,12 +535,65 @@ impl SessionManager {
                         }
                     }
 
-                    let conn = self.virtual_tcp.connect(node.clone()).await?;
+                    let conn = self
+                        .virtual_tcp
+                        .connect(node.clone(), PortType::Messages)
+                        .await?;
                     let (tx, rx) = mpsc::channel(1);
                     tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
 
                     let mut state = self.state.write().await;
                     state.forward_reliable.insert(node_id, tx.clone());
+
+                    tx
+                }
+            }
+        };
+
+        Ok(tx)
+    }
+
+    pub async fn forward_transfer(
+        &self,
+        _session: Arc<Session>,
+        node_id: NodeId,
+    ) -> anyhow::Result<ForwardSender> {
+        // TODO: Use `_session` parameter. We can allow using other session, than default.
+
+        let node = self.registry.resolve_node(node_id).await?;
+        let tx = {
+            match {
+                let state = self.state.read().await;
+                state.forward_transfer.get(&node_id).cloned()
+            } {
+                Some(tx) => tx,
+                None => {
+                    self.virtual_tcp_fast_lane.borrow_mut().clear();
+
+                    let conn_lock = node.conn_lock.clone();
+                    let (_guard, was_locked) = match conn_lock.try_write() {
+                        Ok(guard) => (guard, false),
+                        Err(_) => (conn_lock.write().await, true),
+                    };
+
+                    if was_locked {
+                        if let Some(tx) = {
+                            let state = self.state.read().await;
+                            state.forward_transfer.get(&node_id).cloned()
+                        } {
+                            return Ok(tx);
+                        }
+                    }
+
+                    let conn = self
+                        .virtual_tcp
+                        .connect(node.clone(), PortType::Transfer)
+                        .await?;
+                    let (tx, rx) = mpsc::channel(1);
+                    tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
+
+                    let mut state = self.state.write().await;
+                    state.forward_transfer.insert(node_id, tx.clone());
 
                     tx
                 }

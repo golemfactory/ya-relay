@@ -205,6 +205,26 @@ impl Client {
         self.sessions.forward(session, node_id).await
     }
 
+    pub async fn forward_transfer(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+        let node_id = match self.sessions.alias(&node_id).await {
+            Some(target_id) => {
+                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
+                target_id
+            }
+            None => node_id,
+        };
+
+        log::trace!(
+            "Forward transfer channel from [{}] to [{}]",
+            self.config.node_id,
+            node_id
+        );
+
+        // Establish session here, if it didn't existed.
+        let session = self.sessions.optimal_session(node_id).await?;
+        self.sessions.forward_transfer(session, node_id).await
+    }
+
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         let node_id = match self.sessions.alias(&node_id).await {
             Some(target_id) => {
