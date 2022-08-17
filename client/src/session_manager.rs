@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::{Crypto, CryptoProvider, PublicKey};
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::SessionId;
+use ya_relay_core::session::{SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
@@ -1069,7 +1069,7 @@ impl SessionManager {
         };
 
         let payload = Forwarded {
-            reliable: false,
+            reliable: TransportType::Unreliable,
             node_id,
             payload: forward.payload.into_vec(),
         };

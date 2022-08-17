@@ -14,6 +14,13 @@ use ya_client_model::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::SESSION_ID_SIZE;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::Display)]
+pub enum TransportType {
+    Unreliable,
+    Reliable,
+    Transfer,
+}
+
 #[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq, Ord)]
 pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],

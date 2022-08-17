@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
+use ya_relay_core::session::TransportType;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 
@@ -279,8 +280,10 @@ impl TcpLayer {
                         return;
                     }
 
-                    let remote_address = match desc.remote {
-                        SocketEndpoint::Ip(endpoint) => endpoint.addr,
+                    let (remote_address, local_port) = match (desc.remote, desc.local) {
+                        (SocketEndpoint::Ip(remote), SocketEndpoint::Ip(local)) => {
+                            (remote.addr, local.port)
+                        }
                         _ => {
                             log::trace!(
                                 "[{}] ingress router: remote endpoint {:?} is not supported",
@@ -301,7 +304,10 @@ impl TcpLayer {
                     } {
                         Some((node_id, tx)) => {
                             let payload = Forwarded {
-                                reliable: true,
+                                reliable: match PortType::from(local_port) {
+                                    PortType::Messages => TransportType::Reliable,
+                                    PortType::Transfer => TransportType::Transfer,
+                                },
                                 node_id,
                                 payload,
                             };
@@ -450,4 +456,16 @@ fn default_network(
     );
 
     Network::new(name, config.clone(), Stack::new(iface, config))
+}
+
+impl From<u16> for PortType {
+    fn from(port: u16) -> Self {
+        if port == PortType::Messages as u16 {
+            PortType::Messages
+        } else if port == PortType::Transfer as u16 {
+            PortType::Transfer
+        } else {
+            PortType::Messages
+        }
+    }
 }
