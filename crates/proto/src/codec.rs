@@ -115,7 +115,7 @@ pub(self) fn read_bytes_inner(
 
 #[inline]
 fn peek_tag(buf: &[u8]) -> Result<Option<u32>, DecodeError> {
-    let tag = match buf.get(0) {
+    let tag = match buf.first() {
         Some(tag) => *tag,
         None => return Ok(None),
     };
@@ -129,7 +129,7 @@ fn peek_tag(buf: &[u8]) -> Result<Option<u32>, DecodeError> {
 // See prost::encoding::decode_varint_slice
 #[inline]
 pub(crate) fn peek_size(buf: &[u8]) -> Result<(usize, usize), DecodeError> {
-    let mut b: u8 = *buf.get(0).ok_or(DecodeError::PrefixTooShort)?;
+    let mut b: u8 = *buf.first().ok_or(DecodeError::PrefixTooShort)?;
     let mut part0: u32 = u32::from(b);
     if b < 0x80 {
         return Ok((part0 as usize, 1));
