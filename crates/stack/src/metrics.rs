@@ -1,4 +1,4 @@
-use std::ops::{Add, Mul, Sub};
+use std::ops::{Add, AddAssign, Div, Mul, Sub};
 use std::time::{Duration, Instant};
 
 use num_traits::{One, Zero};
@@ -187,6 +187,77 @@ where
         self.total = self.total.clone().add(value.clone());
         self.average.push(value);
         self.updated = time;
+    }
+}
+
+impl<V, A> Add for TimeWindow<V, A>
+where
+    V: Zero + Add<Output = V> + AddAssign + PartialEq + Clone,
+    A: Average<V> + Add<Output = A>,
+{
+    type Output = TimeWindow<V, A>;
+
+    fn add(mut self, mut rhs: TimeWindow<V, A>) -> TimeWindow<V, A> {
+        // This condition should be met, but I don't want to panic.
+        //assert_eq!(self.size, rhs.size);
+
+        let timestamp = *std::cmp::max(&self.updated, &rhs.updated);
+
+        self.advance(timestamp);
+        rhs.advance(timestamp);
+
+        self.updated = timestamp;
+        self.acc += rhs.acc;
+        self.total += rhs.total;
+        // It uses `Add<Output = V>` operator, which doesn't have to execute simple addition,
+        // but it could be more complicated logic.
+        self.average = self.average + rhs.average;
+
+        self
+    }
+}
+
+impl<T> Add for Ewma<T>
+where
+    T: Add<Output = T> + AddAssign + Div<f32, Output = T> + Clone,
+{
+    type Output = Ewma<T>;
+
+    fn add(mut self, rhs: Self) -> Self::Output {
+        // These conditions should be met, but I don't want to panic.
+        //assert_eq!(self.one_min_alpha, rhs.one_min_alpha);
+        //assert_eq!(self.alpha, rhs.alpha);
+
+        self.value = match (self.value, rhs.value) {
+            (Some(val1), Some(val2)) => Some((val1 + val2) / 2.0f32),
+            (Some(val1), None) => Some(val1),
+            (None, Some(val2)) => Some(val2),
+            (None, None) => None,
+        };
+        self
+    }
+}
+
+impl Add for Metrics {
+    type Output = Metrics;
+
+    fn add(mut self, rhs: Self) -> Self::Output {
+        self.long = self.long + rhs.long;
+        self.mid = self.mid + rhs.mid;
+        self.short = self.short + rhs.short;
+
+        self
+    }
+}
+
+impl Add for ChannelMetrics {
+    type Output = ChannelMetrics;
+
+    fn add(mut self, rhs: Self) -> Self::Output {
+        self.rx = self.rx + rhs.rx;
+        self.tx = self.tx + rhs.tx;
+
+        self
     }
 }
 

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::iter::zip;
 use std::net::SocketAddr;
@@ -143,6 +143,38 @@ impl Client {
     #[inline]
     pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         self.sessions.virtual_tcp.sockets()
+    }
+
+    #[inline]
+    pub async fn session_metrics(&self) -> HashMap<NodeId, ChannelMetrics> {
+        let mut session_metrics = HashMap::new();
+
+        let sessions = self.sessions.sessions().await;
+        let sockets = self.sessions.virtual_tcp.sockets();
+        for session in sessions {
+            let node_id = match self.remote_id(&session.remote).await {
+                Some(node_id) => node_id,
+                None => continue,
+            };
+
+            let virt_node = match self.sessions.virtual_tcp.resolve_node(node_id).await {
+                Ok(virt_node) => virt_node,
+                Err(_) => continue,
+            };
+
+            sockets
+                .iter()
+                .filter_map(|(desc, metrics)| {
+                    desc.remote
+                        .ip_endpoint()
+                        .ok()
+                        .filter(|endpoint| endpoint.addr == virt_node.endpoint.addr)
+                        .map(|_| metrics.clone().inner_mut().clone())
+                })
+                .reduce(|acc, item| acc + item)
+                .and_then(|metrics| session_metrics.insert(node_id, metrics));
+        }
+        session_metrics
     }
 
     #[inline]

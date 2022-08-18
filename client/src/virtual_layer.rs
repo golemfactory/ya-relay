@@ -167,7 +167,7 @@ impl TcpLayer {
 
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
-        let endpoint = IpEndpoint::new(node.endpoint.addr.clone(), port as u16);
+        let endpoint = IpEndpoint::new(node.endpoint.addr, port as u16);
 
         Ok(self.net.connect(endpoint, TCP_CONN_TIMEOUT).await?)
     }
