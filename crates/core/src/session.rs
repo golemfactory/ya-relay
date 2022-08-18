@@ -26,7 +26,7 @@ pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub protocol: proto::Protocol,
     pub address: SocketAddr,
