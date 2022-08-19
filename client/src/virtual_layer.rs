@@ -304,7 +304,7 @@ impl TcpLayer {
                     } {
                         Some((node_id, tx)) => {
                             let payload = Forwarded {
-                                reliable: match PortType::from(local_port) {
+                                transport: match PortType::from(local_port) {
                                     PortType::Messages => TransportType::Reliable,
                                     PortType::Transfer => TransportType::Transfer,
                                 },

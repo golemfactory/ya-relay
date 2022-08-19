@@ -155,7 +155,7 @@ fn receive(receiver: ForwardReceiver, state: State) -> impl Future<Output = ()> 
         async move {
             let mut inner = state.inner.write().await;
             let node_stats = inner.entry(fwd.node_id.to_string()).or_default();
-            let stats = if fwd.reliable == TransportType::Unreliable {
+            let stats = if fwd.transport == TransportType::Unreliable {
                 &mut node_stats.unreliable
             } else {
                 &mut node_stats.reliable

@@ -568,7 +568,7 @@ pub(crate) struct Neighbourhood {
 
 #[derive(Clone, Debug)]
 pub struct Forwarded {
-    pub reliable: TransportType,
+    pub transport: TransportType,
     pub node_id: NodeId,
     pub payload: Vec<u8>,
 }

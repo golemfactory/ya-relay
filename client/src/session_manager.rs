@@ -1069,7 +1069,7 @@ impl SessionManager {
         };
 
         let payload = Forwarded {
-            reliable: TransportType::Unreliable,
+            transport: TransportType::Unreliable,
             node_id,
             payload: forward.payload.into_vec(),
         };
