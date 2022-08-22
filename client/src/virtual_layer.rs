@@ -12,6 +12,7 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
+use ya_relay_core::session::TransportType;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 
@@ -27,8 +28,12 @@ use crate::registry::NodeEntry;
 use crate::session::Session;
 use crate::ForwardReceiver;
 
-const TCP_BIND_PORT: u16 = 1;
 const IPV6_DEFAULT_CIDR: u8 = 0;
+
+pub enum PortType {
+    Messages = 1,
+    Transfer = 2,
+}
 
 /// Information about virtual node in TCP network built over UDP protocol.
 #[derive(Clone)]
@@ -63,7 +68,7 @@ impl VirtNode {
         session_slot: SlotId,
     ) -> anyhow::Result<Self> {
         let ip = IpAddress::from(to_ipv6(id.into_array()));
-        let endpoint = (ip, TCP_BIND_PORT).into();
+        let endpoint = (ip, PortType::Messages as u16).into();
 
         Ok(Self {
             id,
@@ -101,10 +106,13 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
-        let virt_endpoint: IpEndpoint = (to_ipv6(&our_id), TCP_BIND_PORT).into();
+        let virt_endpoint: IpEndpoint = (to_ipv6(&our_id), PortType::Messages as u16).into();
+        let virt_transfer_endpoint: IpEndpoint =
+            (to_ipv6(&our_id), PortType::Transfer as u16).into();
 
         self.net.spawn_local();
         self.net.bind(Protocol::Tcp, virt_endpoint)?;
+        self.net.bind(Protocol::Tcp, virt_transfer_endpoint)?;
 
         self.spawn_ingress_router().await?;
         self.spawn_egress_router().await?;
@@ -150,7 +158,7 @@ impl TcpLayer {
     }
 
     /// Connects to other Node and returns `Connection` for sending data.
-    pub async fn connect(&self, node: NodeEntry) -> anyhow::Result<Connection> {
+    pub async fn connect(&self, node: NodeEntry, port: PortType) -> anyhow::Result<Connection> {
         log::debug!(
             "[VirtualTcp] Connecting to node [{}] using session {}.",
             node.id,
@@ -159,7 +167,9 @@ impl TcpLayer {
 
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
-        Ok(self.net.connect(node.endpoint, TCP_CONN_TIMEOUT).await?)
+        let endpoint = IpEndpoint::new(node.endpoint.addr, port as u16);
+
+        Ok(self.net.connect(endpoint, TCP_CONN_TIMEOUT).await?)
     }
 
     #[inline]
@@ -270,8 +280,10 @@ impl TcpLayer {
                         return;
                     }
 
-                    let remote_address = match desc.remote {
-                        SocketEndpoint::Ip(endpoint) => endpoint.addr,
+                    let (remote_address, local_port) = match (desc.remote, desc.local) {
+                        (SocketEndpoint::Ip(remote), SocketEndpoint::Ip(local)) => {
+                            (remote.addr, local.port)
+                        }
                         _ => {
                             log::trace!(
                                 "[{}] ingress router: remote endpoint {:?} is not supported",
@@ -292,7 +304,10 @@ impl TcpLayer {
                     } {
                         Some((node_id, tx)) => {
                             let payload = Forwarded {
-                                reliable: true,
+                                transport: match PortType::from(local_port) {
+                                    PortType::Messages => TransportType::Reliable,
+                                    PortType::Transfer => TransportType::Transfer,
+                                },
                                 node_id,
                                 payload,
                             };
@@ -441,4 +456,16 @@ fn default_network(
     );
 
     Network::new(name, config.clone(), Stack::new(iface, config))
+}
+
+impl From<u16> for PortType {
+    fn from(port: u16) -> Self {
+        if port == PortType::Messages as u16 {
+            PortType::Messages
+        } else if port == PortType::Transfer as u16 {
+            PortType::Transfer
+        } else {
+            PortType::Messages
+        }
+    }
 }

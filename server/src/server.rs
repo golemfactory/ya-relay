@@ -132,7 +132,7 @@ impl Server {
                             self.reverse_request(request_id, id, from, params)
                                 .await
                                 .on_error(|_| {
-                                    counter!("ya-relay.packet.reverse-connection.done", 1)
+                                    counter!("ya-relay.packet.reverse-connection.error", 1)
                                 })
                                 .on_done(|_| {
                                     counter!("ya-relay.packet.reverse-connection.done", 1)

@@ -22,6 +22,7 @@ use ya_relay_client::client::ForwardSender;
 use ya_relay_client::{ClientBuilder, ForwardReceiver};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
+use ya_relay_core::session::TransportType;
 use ya_relay_core::NodeId;
 
 #[derive(StructOpt)]
@@ -154,10 +155,10 @@ fn receive(receiver: ForwardReceiver, state: State) -> impl Future<Output = ()> 
         async move {
             let mut inner = state.inner.write().await;
             let node_stats = inner.entry(fwd.node_id.to_string()).or_default();
-            let stats = if fwd.reliable {
-                &mut node_stats.reliable
-            } else {
+            let stats = if fwd.transport == TransportType::Unreliable {
                 &mut node_stats.unreliable
+            } else {
+                &mut node_stats.reliable
             };
 
             let now = Instant::now();

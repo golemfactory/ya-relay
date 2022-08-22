@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::iter::zip;
 use std::net::SocketAddr;
@@ -18,6 +18,7 @@ use url::Url;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::identity::Identity;
+use ya_relay_core::session::TransportType;
 use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
 use ya_relay_core::utils::{parse_udp_url, spawn_local_abortable};
 use ya_relay_core::NodeId;
@@ -145,6 +146,38 @@ impl Client {
     }
 
     #[inline]
+    pub async fn session_metrics(&self) -> HashMap<NodeId, ChannelMetrics> {
+        let mut session_metrics = HashMap::new();
+
+        let sessions = self.sessions.sessions().await;
+        let sockets = self.sessions.virtual_tcp.sockets();
+        for session in sessions {
+            let node_id = match self.remote_id(&session.remote).await {
+                Some(node_id) => node_id,
+                None => continue,
+            };
+
+            let virt_node = match self.sessions.virtual_tcp.resolve_node(node_id).await {
+                Ok(virt_node) => virt_node,
+                Err(_) => continue,
+            };
+
+            sockets
+                .iter()
+                .filter_map(|(desc, metrics)| {
+                    desc.remote
+                        .ip_endpoint()
+                        .ok()
+                        .filter(|endpoint| endpoint.addr == virt_node.endpoint.addr)
+                        .map(|_| metrics.clone().inner_mut().clone())
+                })
+                .reduce(|acc, item| acc + item)
+                .and_then(|metrics| session_metrics.insert(node_id, metrics));
+        }
+        session_metrics
+    }
+
+    #[inline]
     pub fn metrics(&self) -> ChannelMetrics {
         self.sessions.virtual_tcp.metrics()
     }
@@ -203,6 +236,26 @@ impl Client {
         // Establish session here, if it didn't existed.
         let session = self.sessions.optimal_session(node_id).await?;
         self.sessions.forward(session, node_id).await
+    }
+
+    pub async fn forward_transfer(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+        let node_id = match self.sessions.alias(&node_id).await {
+            Some(target_id) => {
+                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
+                target_id
+            }
+            None => node_id,
+        };
+
+        log::trace!(
+            "Forward transfer channel from [{}] to [{}]",
+            self.config.node_id,
+            node_id
+        );
+
+        // Establish session here, if it didn't existed.
+        let session = self.sessions.optimal_session(node_id).await?;
+        self.sessions.forward_transfer(session, node_id).await
     }
 
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
@@ -515,7 +568,7 @@ pub(crate) struct Neighbourhood {
 
 #[derive(Clone, Debug)]
 pub struct Forwarded {
-    pub reliable: bool,
+    pub transport: TransportType,
     pub node_id: NodeId,
     pub payload: Vec<u8>,
 }
