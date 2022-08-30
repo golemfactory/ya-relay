@@ -111,6 +111,8 @@ async fn test_find_node_by_alias_private_ip() -> anyhow::Result<()> {
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(received2.load(SeqCst));
 
+    received2.store(false, SeqCst);
+
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
     tx1.send(vec![1u8]).await?;
 

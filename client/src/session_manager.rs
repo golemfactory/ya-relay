@@ -402,14 +402,14 @@ impl SessionManager {
         Ok(session)
     }
 
-    pub async fn resolve_node(&self, node_id: NodeId) -> anyhow::Result<NodeEntry> {
+    pub async fn get_node(&self, node_id: NodeId) -> anyhow::Result<NodeEntry> {
         let default_id = {
             let state = self.state.read().await;
             state.node_default_id.get(&node_id).copied()
         }
         .unwrap_or(node_id);
 
-        self.registry.resolve_node(default_id).await
+        self.registry.get_node(default_id).await
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
@@ -482,11 +482,11 @@ impl SessionManager {
 
     pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
         // Maybe we already have optimal session resolved.
-        if let Ok(node) = self.resolve_node(node_id).await {
+        if let Ok(node) = self.get_node(node_id).await {
             return Ok(node.session);
         }
 
-        // get node info
+        // query node information on the server
         let server_session = self
             .server_session()
             .await
@@ -498,7 +498,18 @@ impl SessionManager {
         let ident = Identity::try_from(&node)
             .map_err(|e| anyhow!("Unable to get identity from Node info: {e}"))?;
 
-        // Find node on server. p2p session will be established, if possible. Otherwise
+        let identities = node
+            .identities
+            .iter()
+            .map(Identity::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !identities.is_empty() {
+            let mut state = self.state.write().await;
+            state.add_identities(ident.node_id, identities);
+        }
+
+        // p2p session will be established, if possible. Otherwise
         // communication will be forwarder through relay server.
         Ok(self
             .resolve(ident.node_id.as_ref(), &node.endpoints, node.slot)
@@ -520,7 +531,7 @@ impl SessionManager {
     ) -> anyhow::Result<ForwardSender> {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
-        let node = self.resolve_node(node_id).await?;
+        let node = self.get_node(node_id).await?;
         let tx = {
             match {
                 let state = self.state.read().await;
@@ -570,7 +581,7 @@ impl SessionManager {
     ) -> anyhow::Result<ForwardSender> {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
-        let node = self.resolve_node(node_id).await?;
+        let node = self.get_node(node_id).await?;
         let tx = {
             match {
                 let state = self.state.read().await;
@@ -618,7 +629,7 @@ impl SessionManager {
         session: Arc<Session>,
         node_id: NodeId,
     ) -> anyhow::Result<ForwardSender> {
-        let node = self.resolve_node(node_id).await?;
+        let node = self.get_node(node_id).await?;
 
         let (tx, rx) = {
             let mut state = self.state.write().await;
@@ -751,7 +762,7 @@ impl SessionManager {
         let _guard = lock.write().await;
 
         // Check whether we are already connected to a node with this id
-        if let Ok(entry) = self.resolve_node(node_id).await {
+        if let Ok(entry) = self.get_node(node_id).await {
             let session_type = match entry.is_p2p() {
                 true => "p2p",
                 false => "relay",
@@ -1260,9 +1271,9 @@ impl Handler for SessionManager {
                         log::debug!("Got Disconnected from {}", from);
 
                         if let Ok(node) = match by {
-                            By::Slot(id) => self.registry.resolve_slot(id).await,
+                            By::Slot(id) => self.registry.get_node_by_slot(id).await,
                             By::NodeId(id) if NodeId::try_from(&id).is_ok() => {
-                                self.resolve_node(NodeId::try_from(&id).unwrap()).await
+                                self.get_node(NodeId::try_from(&id).unwrap()).await
                             }
                             // We will disconnect session responsible for sending message. Doesn't matter
                             // what id was sent.
@@ -1349,7 +1360,7 @@ impl Handler for SessionManager {
             let node = if slot == FORWARD_SLOT_ID {
                 // Direct message from other Node.
                 match { myself.state.read().await.nodes_addr.get(&from).cloned() } {
-                    Some(id) => myself.resolve_node(id).await?,
+                    Some(id) => myself.get_node(id).await?,
                     None => {
                         // In this case we can't establish session, because we don't have
                         // neither NodeId nor SlotId.
@@ -1362,7 +1373,7 @@ impl Handler for SessionManager {
                 }
             } else {
                 // Messages forwarded through relay server or other relay Node.
-                match myself.registry.resolve_slot(slot).await {
+                match myself.registry.get_node_by_slot(slot).await {
                     Ok(node) => node,
                     Err(_) => {
                         log::debug!(

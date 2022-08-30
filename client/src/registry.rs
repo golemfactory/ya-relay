@@ -80,15 +80,15 @@ impl NodesRegistry {
     }
 
     #[inline]
-    pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {
+    pub async fn get_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {
         let state = self.state.read().await;
-        state.resolve_node(node)
+        state.get_node(node)
     }
 
     #[inline]
-    pub async fn resolve_slot(&self, slot: SlotId) -> anyhow::Result<NodeEntry> {
+    pub async fn get_node_by_slot(&self, slot: SlotId) -> anyhow::Result<NodeEntry> {
         let state = self.state.read().await;
-        state.resolve_slot(slot)
+        state.get_node_by_slot(slot)
     }
 
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
@@ -108,14 +108,14 @@ impl NodeEntry {
 }
 
 impl NodeRegistryState {
-    fn resolve_slot(&self, slot: SlotId) -> anyhow::Result<NodeEntry> {
+    fn get_node_by_slot(&self, slot: SlotId) -> anyhow::Result<NodeEntry> {
         self.slots
             .get(&slot)
-            .and_then(|id| self.resolve_node(*id).ok())
+            .and_then(|id| self.get_node(*id).ok())
             .ok_or_else(|| anyhow!("NodeEntry for slot {} not found.", slot))
     }
 
-    fn resolve_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {
+    fn get_node(&self, node: NodeId) -> anyhow::Result<NodeEntry> {
         self.nodes
             .get(&node)
             .cloned()
