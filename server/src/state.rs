@@ -48,6 +48,9 @@ impl NodesState {
 
         self.sessions.insert(node.session, slot);
         self.nodes.insert(node.info.node_id(), slot);
+        for ident in node.info.identities.iter() {
+            self.nodes.insert(ident.node_id, slot);
+        }
 
         node.info.slot = slot;
 
@@ -144,6 +147,10 @@ impl NodesState {
         if let Slot::Some(session) = &self.slots[slot as usize] {
             self.sessions.remove(&session.session);
             self.nodes.remove(&session.info.node_id());
+            for ident in session.info.identities.iter() {
+                self.nodes.remove(&ident.node_id);
+            }
+
             self.slots[slot as usize] = Slot::Purgatory(session.clone());
 
             counter!("ya-relay.session.removed", 1);
