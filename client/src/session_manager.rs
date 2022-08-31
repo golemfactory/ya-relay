@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
-use ya_relay_core::crypto::{Crypto, CryptoProvider, PublicKey};
+use ya_relay_core::crypto::{Crypto, CryptoProvider};
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::{SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
@@ -48,6 +48,7 @@ pub struct SessionManager {
     state: Arc<RwLock<SessionManagerState>>,
 }
 
+#[derive(Default)]
 pub struct SessionManagerState {
     /// If address is None after registering endpoints on Server, that means
     /// we don't have public IP.
@@ -57,7 +58,8 @@ pub struct SessionManagerState {
 
     pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
     pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
-    pub(crate) nodes_identity: HashMap<NodeId, (NodeId, PublicKey)>,
+    node_aliases: HashMap<NodeId, Vec<Identity>>,
+    node_default_id: HashMap<NodeId, NodeId>,
 
     forward_reliable: HashMap<NodeId, ForwardSender>,
     forward_unreliable: HashMap<NodeId, ForwardSender>,
@@ -74,28 +76,21 @@ pub struct SessionManagerState {
 
 impl SessionManager {
     pub fn new(config: Arc<ClientConfig>) -> SessionManager {
-        let ingress = Channel::<Forwarded>::default();
+        let state = SessionManagerState::default();
+        let virtual_tcp = TcpLayer::new(
+            &config.node_pub_key,
+            &config.stack_config,
+            &state.ingress_channel,
+        );
+
         SessionManager {
             sink: None,
-            config: config.clone(),
-            virtual_tcp: TcpLayer::new(&config.node_pub_key, &config.stack_config, &ingress),
+            config,
+            virtual_tcp,
             virtual_tcp_fast_lane: Default::default(),
             registry: NodesRegistry::default(),
             guarded: Default::default(),
-            state: Arc::new(RwLock::new(SessionManagerState {
-                public_addr: None,
-                bind_addr: None,
-                sessions: Default::default(),
-                nodes_addr: Default::default(),
-                nodes_identity: Default::default(),
-                forward_reliable: Default::default(),
-                forward_unreliable: Default::default(),
-                forward_transfer: Default::default(),
-                p2p_sessions: Default::default(),
-                ingress_channel: ingress,
-                starting_sessions: None,
-                handles: vec![],
-            })),
+            state: Arc::new(RwLock::new(state)),
         }
     }
 
@@ -140,7 +135,7 @@ impl SessionManager {
 
     pub async fn alias(&self, node_id: &NodeId) -> Option<NodeId> {
         let state = self.state.read().await;
-        state.nodes_identity.get(node_id).map(|(id, _)| *id)
+        state.node_default_id.get(node_id).copied()
     }
 
     pub async fn is_p2p(&self, node_id: &NodeId) -> bool {
@@ -152,7 +147,7 @@ impl SessionManager {
         let unique_nodes = self.registry.list_nodes().await;
 
         let state = self.state.read().await;
-        let mut ids = state.nodes_identity.keys().cloned().collect::<Vec<_>>();
+        let mut ids = state.node_default_id.keys().cloned().collect::<Vec<_>>();
 
         ids.extend(unique_nodes.into_iter());
         ids
@@ -407,11 +402,26 @@ impl SessionManager {
         Ok(session)
     }
 
+    pub async fn get_node(&self, node_id: NodeId) -> anyhow::Result<NodeEntry> {
+        let default_id = {
+            let state = self.state.read().await;
+            state.node_default_id.get(&node_id).copied()
+        }
+        .unwrap_or(node_id);
+
+        self.registry.get_node(default_id).await
+    }
+
     pub async fn remove_node(&self, node_id: NodeId) {
         log::debug!(
             "Removing Node [{}] information. Stopping communication..",
             node_id
         );
+
+        {
+            let mut state = self.state.write().await;
+            state.remove_identities(node_id);
+        }
 
         self.virtual_tcp_fast_lane.borrow_mut().clear();
         self.registry.remove_node(node_id).await.ok();
@@ -472,11 +482,11 @@ impl SessionManager {
 
     pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
         // Maybe we already have optimal session resolved.
-        if let Ok(node) = self.registry.resolve_node(node_id).await {
+        if let Ok(node) = self.get_node(node_id).await {
             return Ok(node.session);
         }
 
-        // get node info
+        // query node information on the server
         let server_session = self
             .server_session()
             .await
@@ -488,7 +498,18 @@ impl SessionManager {
         let ident = Identity::try_from(&node)
             .map_err(|e| anyhow!("Unable to get identity from Node info: {e}"))?;
 
-        // Find node on server. p2p session will be established, if possible. Otherwise
+        let identities = node
+            .identities
+            .iter()
+            .map(Identity::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        if !identities.is_empty() {
+            let mut state = self.state.write().await;
+            state.add_identities(ident.node_id, identities);
+        }
+
+        // p2p session will be established, if possible. Otherwise
         // communication will be forwarder through relay server.
         Ok(self
             .resolve(ident.node_id.as_ref(), &node.endpoints, node.slot)
@@ -510,7 +531,7 @@ impl SessionManager {
     ) -> anyhow::Result<ForwardSender> {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
-        let node = self.registry.resolve_node(node_id).await?;
+        let node = self.get_node(node_id).await?;
         let tx = {
             match {
                 let state = self.state.read().await;
@@ -560,7 +581,7 @@ impl SessionManager {
     ) -> anyhow::Result<ForwardSender> {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
-        let node = self.registry.resolve_node(node_id).await?;
+        let node = self.get_node(node_id).await?;
         let tx = {
             match {
                 let state = self.state.read().await;
@@ -608,7 +629,7 @@ impl SessionManager {
         session: Arc<Session>,
         node_id: NodeId,
     ) -> anyhow::Result<ForwardSender> {
-        let node = self.registry.resolve_node(node_id).await?;
+        let node = self.get_node(node_id).await?;
 
         let (tx, rx) = {
             let mut state = self.state.write().await;
@@ -741,7 +762,7 @@ impl SessionManager {
         let _guard = lock.write().await;
 
         // Check whether we are already connected to a node with this id
-        if let Ok(entry) = self.registry.resolve_node(node_id).await {
+        if let Ok(entry) = self.get_node(node_id).await {
             let session_type = match entry.is_p2p() {
                 true => "p2p",
                 false => "relay",
@@ -981,7 +1002,7 @@ impl SessionManager {
         // Fail if we're already connected to the remote address
         for addr in addrs.iter() {
             if state.nodes_addr.contains_key(addr) {
-                anyhow::bail!("already connected to {}", addr);
+                bail!("already connected to {}", addr);
             }
         }
 
@@ -1250,11 +1271,9 @@ impl Handler for SessionManager {
                         log::debug!("Got Disconnected from {}", from);
 
                         if let Ok(node) = match by {
-                            By::Slot(id) => self.registry.resolve_slot(id).await,
+                            By::Slot(id) => self.registry.get_node_by_slot(id).await,
                             By::NodeId(id) if NodeId::try_from(&id).is_ok() => {
-                                self.registry
-                                    .resolve_node(NodeId::try_from(&id).unwrap())
-                                    .await
+                                self.get_node(NodeId::try_from(&id).unwrap()).await
                             }
                             // We will disconnect session responsible for sending message. Doesn't matter
                             // what id was sent.
@@ -1341,7 +1360,7 @@ impl Handler for SessionManager {
             let node = if slot == FORWARD_SLOT_ID {
                 // Direct message from other Node.
                 match { myself.state.read().await.nodes_addr.get(&from).cloned() } {
-                    Some(id) => myself.registry.resolve_node(id).await?,
+                    Some(id) => myself.get_node(id).await?,
                     None => {
                         // In this case we can't establish session, because we don't have
                         // neither NodeId nor SlotId.
@@ -1354,7 +1373,7 @@ impl Handler for SessionManager {
                 }
             } else {
                 // Messages forwarded through relay server or other relay Node.
-                match myself.registry.resolve_slot(slot).await {
+                match myself.registry.get_node_by_slot(slot).await {
                     Ok(node) => node,
                     Err(_) => {
                         log::debug!(
@@ -1402,12 +1421,30 @@ impl SessionManagerState {
         node_id: NodeId,
         identities: impl IntoIterator<Item = Identity>,
     ) {
-        identities
+        let identities = identities
             .into_iter()
             .filter(|ident| ident.node_id != node_id)
-            .for_each(|ident| {
-                self.nodes_identity
-                    .insert(ident.node_id, (node_id, ident.public_key));
-            })
+            .collect::<Vec<_>>();
+
+        identities.iter().for_each(|ident| {
+            self.node_default_id.insert(ident.node_id, node_id);
+        });
+        self.node_aliases.insert(node_id, identities);
+    }
+
+    pub fn remove_identities(&mut self, node_id: NodeId) {
+        match self.node_default_id.remove(&node_id) {
+            Some(id) => self
+                .node_aliases
+                .remove(&id)
+                .unwrap_or_default()
+                .into_iter()
+                .for_each(|ident| {
+                    self.node_default_id.remove(&ident.node_id);
+                }),
+            None => {
+                self.node_aliases.remove(&node_id);
+            }
+        }
     }
 }
