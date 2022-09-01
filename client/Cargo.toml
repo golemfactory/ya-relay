@@ -26,6 +26,8 @@ url = "2.1"
 [dev-dependencies]
 bytesize = "1.1"
 dotenv = "0.15"
+csv = "1"
+hex = "0.4.3"
 humantime = "2.1"
 prettytable-rs = "0.8"
 simple-logging = "2.0"
