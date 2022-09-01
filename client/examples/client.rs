@@ -1,4 +1,3 @@
-use env_logger;
 use structopt::{clap, StructOpt};
 
 use ya_relay_client::ClientBuilder;
@@ -43,8 +42,7 @@ pub struct FindNode {
     node_id: NodeId,
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> anyhow::Result<()> {
+async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(
         "RUST_LOG",
@@ -85,4 +83,10 @@ async fn main() -> anyhow::Result<()> {
     };
 
     Ok(())
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    let local_set = tokio::task::LocalSet::new();
+    local_set.run_until(run()).await
 }
