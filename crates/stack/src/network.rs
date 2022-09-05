@@ -26,9 +26,12 @@ use crate::{ChannelMetrics, Error, Result};
 pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
 pub const STACK_POLL_MS_ENV_VAR: &str = "YA_NET_STACK_POLL_MS";
 pub const STACK_POLL_SENT_ENV_VAR: &str = "YA_NET_STACK_POLL_SENT_BATCH";
+pub const STACK_POLL_RECV_ENV_VAR: &str = "YA_NET_STACK_POLL_RECV_BATCH";
 
 const DEFAULT_POLL_SENT_BATCH: usize = 16348;
+const DEFAULT_POLL_RECV_BATCH: usize = 32768;
 const MIN_STACK_POLL_SENT_BATCH: usize = 2048;
+const MIN_STACK_POLL_RECV_BATCH: usize = 4096;
 
 pub type IngressReceiver = UnboundedReceiver<IngressEvent>;
 pub type EgressReceiver = UnboundedReceiver<EgressEvent>;
@@ -38,6 +41,7 @@ pub struct StackConfig {
     pub pcap_path: Option<PathBuf>,
     pub max_transmission_unit: usize,
     pub max_send_batch: usize,
+    pub max_recv_batch: usize,
     pub tcp_mem: SocketMemory,
     pub udp_mem: SocketMemory,
     pub icmp_mem: SocketMemory,
@@ -53,10 +57,20 @@ impl Default for StackConfig {
             })
             .unwrap_or(DEFAULT_POLL_SENT_BATCH)
             .max(MIN_STACK_POLL_SENT_BATCH);
+
+        let max_recv_batch = std::env::var(STACK_POLL_RECV_ENV_VAR)
+            .and_then(|s| {
+                s.parse::<usize>()
+                    .map_err(|_| std::env::VarError::NotPresent)
+            })
+            .unwrap_or(DEFAULT_POLL_RECV_BATCH)
+            .max(MIN_STACK_POLL_RECV_BATCH);
+
         Self {
             pcap_path: std::env::var(PCAP_FILE_ENV_VAR).ok().map(PathBuf::from),
             max_transmission_unit: 1400,
             max_send_batch,
+            max_recv_batch,
             tcp_mem: SocketMemory::default_tcp(),
             udp_mem: SocketMemory::default_udp(),
             icmp_mem: SocketMemory::default_icmp(),
@@ -302,10 +316,7 @@ impl Network {
     pub fn poll(&self) {
         loop {
             let finished = match (self.stack.poll(), self.is_tun) {
-                (Ok(true), _) | (Ok(_), false) => {
-                    self.process_ingress();
-                    self.process_egress()
-                }
+                (Ok(true), _) | (Ok(_), false) => self.process_ingress() && self.process_egress(),
                 (Ok(false), _) => true,
                 (Err(err), _) => {
                     log::warn!("{}: stack poll error: {}", *self.name, err);
@@ -331,8 +342,8 @@ impl Network {
         self.egress.receiver()
     }
 
-    fn process_ingress(&self) -> usize {
-        let mut received = 0;
+    fn process_ingress(&self) -> bool {
+        let mut finished = true;
 
         let iface_rfc = self.stack.iface();
         let mut iface = iface_rfc.borrow_mut();
@@ -375,6 +386,8 @@ impl Network {
                 };
             }
 
+            let mut received = 0;
+
             while socket.can_recv() {
                 let (remote, payload) = match socket.recv() {
                     Ok(Some(tuple)) => tuple,
@@ -385,7 +398,9 @@ impl Network {
                     }
                 };
 
-                received += 1;
+                let len = payload.len();
+
+                received += len;
                 desc.remote = remote.into();
 
                 if let Ok(meta) = desc.try_into() {
@@ -395,15 +410,22 @@ impl Network {
                     }
                 }
 
-                log::trace!("{}: ingress {} B packet", self.name, payload.len());
+                log::trace!("{}: ingress {} B packet", self.name, len);
 
-                self.stack.on_received(&desc, payload.len());
+                self.stack.on_received(&desc, len);
                 events.push(IngressEvent::Packet { desc, payload });
+
+                if received >= self.config.max_recv_batch {
+                    finished = false;
+                    break;
+                }
             }
 
             if bindings.contains(&handle) && socket.remote_endpoint().is_specified() {
                 bindings.remove(&handle);
                 rebind = Some((socket.protocol(), socket.local_endpoint()));
+
+                finished = false;
                 break;
             }
         }
@@ -428,16 +450,15 @@ impl Network {
             }
         }
 
-        match rebind {
-            Some((p, ep)) => {
-                if let Err(e) = self.bind(p, ep) {
-                    log::warn!("{}: cannot bind socket {} {:?}: {}", self.name, p, ep, e);
-                }
-                let _ = self.stack.poll();
-                self.process_ingress() + received
+        if let Some((p, ep)) = rebind {
+            if let Err(e) = self.bind(p, ep) {
+                log::warn!("{}: cannot bind socket {} {:?}: {}", self.name, p, ep, e);
             }
-            None => received,
+            let _ = self.stack.poll();
+            return self.process_ingress();
         }
+
+        finished
     }
 
     fn process_egress(&self) -> bool {

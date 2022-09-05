@@ -189,10 +189,10 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
 
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
-    let _keep = check_forwarding(&client1, &client2, marker2.clone(), Mode::Unreliable)
+    let _keep2 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Unreliable)
         .await
         .unwrap();
-    let _keep = check_forwarding(&client2, &client1, marker1.clone(), Mode::Unreliable)
+    let _keep1 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Unreliable)
         .await
         .unwrap();
 

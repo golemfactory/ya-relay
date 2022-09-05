@@ -452,6 +452,25 @@ impl SessionManager {
     }
 
     pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
+        if session.remote == self.config.srv_addr {
+            return Ok(());
+        }
+
+        if let Some(node_id) = {
+            let state = self.state.read().await;
+            state.nodes_addr.get(&session.remote).copied()
+        } {
+            if self.is_p2p(&node_id).await {
+                self.drop_session(session).await?;
+            } else {
+                self.remove_node(node_id).await;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn drop_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
         log::info!("Closing session {} ({})", session.id, session.remote);
 
         if let Some(node_id) = {
@@ -980,7 +999,7 @@ impl SessionManager {
 
     pub(crate) async fn drop_server_session(&self) -> bool {
         if let Some(session) = self.get_server_session().await {
-            let _ = self.close_session(session).await;
+            let _ = self.drop_session(session).await;
             return true;
         }
         false
@@ -1028,7 +1047,7 @@ impl SessionManager {
         // Close sessions simultaneously, otherwise shutdown could last too long.
         let sessions = self.sessions().await;
         futures::future::join_all(sessions.into_iter().map(|session| {
-            self.close_session(session.clone()).map_err(move |err| {
+            self.drop_session(session.clone()).map_err(move |err| {
                 log::warn!(
                     "Failed to close session {} ({}). {}",
                     session.id,
@@ -1047,6 +1066,8 @@ impl SessionManager {
         }
 
         self.guarded.shutdown().await;
+        self.drop_server_session().await;
+
         Ok(())
     }
 
