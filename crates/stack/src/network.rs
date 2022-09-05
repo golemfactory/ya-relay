@@ -454,6 +454,8 @@ impl Network {
             if let Err(e) = self.bind(p, ep) {
                 log::warn!("{}: cannot bind socket {} {:?}: {}", self.name, p, ep, e);
             }
+            let _ = self.stack.poll();
+            return self.process_ingress();
         }
 
         finished

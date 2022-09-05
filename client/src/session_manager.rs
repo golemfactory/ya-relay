@@ -1047,7 +1047,7 @@ impl SessionManager {
         // Close sessions simultaneously, otherwise shutdown could last too long.
         let sessions = self.sessions().await;
         futures::future::join_all(sessions.into_iter().map(|session| {
-            self.close_session(session.clone()).map_err(move |err| {
+            self.drop_session(session.clone()).map_err(move |err| {
                 log::warn!(
                     "Failed to close session {} ({}). {}",
                     session.id,
@@ -1066,6 +1066,8 @@ impl SessionManager {
         }
 
         self.guarded.shutdown().await;
+        self.drop_server_session().await;
+
         Ok(())
     }
 
