@@ -11,7 +11,7 @@ description= "Golem relay base functionality"
 
 [dependencies]
 ya-relay-stack = { version = "0.4", path = "../stack" }
-ya-relay-proto = { version = "0.3", path = "../proto" }
+ya-relay-proto = { version = "0.4", path = "../proto" }
 
 ya-client-model = "0.5"
 
