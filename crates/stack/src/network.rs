@@ -58,7 +58,7 @@ impl Default for StackConfig {
             .unwrap_or(DEFAULT_POLL_SENT_BATCH)
             .max(MIN_STACK_POLL_SENT_BATCH);
 
-        let max_recv_batch = std::env::var(STACK_POLL_SENT_ENV_VAR)
+        let max_recv_batch = std::env::var(STACK_POLL_RECV_ENV_VAR)
             .and_then(|s| {
                 s.parse::<usize>()
                     .map_err(|_| std::env::VarError::NotPresent)
