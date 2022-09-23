@@ -27,7 +27,8 @@ where
 {
     while let Some((packet, from, _timestamp)) = stream.next().await {
         let handler = handler.clone();
-        if let Some(dispatcher) = handler.dispatcher(from).await {
+        let dispatcher = handler.dispatcher(from).await;
+        if let Some(ref dispatcher) = dispatcher {
             dispatcher.update_seen();
         }
 
@@ -47,7 +48,20 @@ where
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Response(response) => {
-                    spawn_local(dispatch_response(session_id, response, from, handler));
+                    match response.kind {
+                        Some(kind) => match dispatcher {
+                            Some(dispatcher) => dispatcher.dispatch_response(
+                                from,
+                                response.request_id,
+                                session_id,
+                                response.code,
+                                kind,
+                            ),
+                            None => log::warn!("Unexpected response from {}: {:?}", from, kind),
+                        },
+                        // TODO: Handle empty packet kind here
+                        None => log::debug!("Empty response kind from: {}", from),
+                    }
                 }
             },
             codec::PacketKind::Forward(forward) => {
@@ -58,31 +72,6 @@ where
     }
 
     log::info!("Client stopped");
-}
-
-#[inline(always)]
-async fn dispatch_response<H>(
-    session_id: Vec<u8>,
-    response: proto::Response,
-    from: SocketAddr,
-    handler: H,
-) where
-    H: Handler,
-{
-    // TODO: We don't handle errors without packet kind here.
-    match response.kind {
-        Some(kind) => match handler.dispatcher(from).await {
-            Some(dispatcher) => dispatcher.dispatch_response(
-                from,
-                response.request_id,
-                session_id,
-                response.code,
-                kind,
-            ),
-            None => log::warn!("Unexpected response from {}: {:?}", from, kind),
-        },
-        None => log::debug!("Empty response kind from: {}", from),
-    }
 }
 
 /// Handles incoming packets. Used exclusively by the `dispatch` function
