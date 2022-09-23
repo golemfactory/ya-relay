@@ -23,6 +23,8 @@ use crate::socket::{SocketDesc, SocketEndpoint, SocketExt, SocketMemory, SocketS
 use crate::stack::Stack;
 use crate::{ChannelMetrics, Error, Result};
 
+use ya_relay_util::Payload;
+
 pub const PCAP_FILE_ENV_VAR: &str = "YA_NET_PCAP_FILE";
 pub const STACK_POLL_MS_ENV_VAR: &str = "YA_NET_STACK_POLL_MS";
 pub const STACK_POLL_SENT_ENV_VAR: &str = "YA_NET_STACK_POLL_SENT_BATCH";
@@ -289,7 +291,7 @@ impl Network {
     #[inline(always)]
     pub fn send<'a>(
         &self,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<Payload>,
         connection: Connection,
     ) -> impl Future<Output = Result<()>> + 'a {
         self.sender.send(data.into(), connection)
@@ -297,7 +299,7 @@ impl Network {
 
     /// Inject received data into the stack
     #[inline(always)]
-    pub fn receive(&self, data: impl Into<Vec<u8>>) {
+    pub fn receive(&self, data: impl Into<Payload>) {
         self.stack.receive(data)
     }
 
@@ -607,7 +609,7 @@ impl StackSender {
     #[inline]
     pub fn send<'a>(
         &self,
-        data: Vec<u8>,
+        data: Payload,
         conn: Connection,
     ) -> impl Future<Output = Result<()>> + 'a {
         let mut sender = {
@@ -623,7 +625,7 @@ impl StackSender {
         async move { sender.send((data, conn)).map_err(Error::from).await }
     }
 
-    fn spawn(&self, handle: SocketHandle) -> mpsc::Sender<(Vec<u8>, Connection)> {
+    fn spawn(&self, handle: SocketHandle) -> mpsc::Sender<(Payload, Connection)> {
         let net = self.net.borrow().clone().expect("Network not initialized");
         let (tx, rx) = mpsc::channel(1);
 
@@ -656,7 +658,7 @@ impl StackSender {
 
 #[derive(Default)]
 struct StackSenderInner {
-    map: HashMap<SocketHandle, mpsc::Sender<(Vec<u8>, Connection)>>,
+    map: HashMap<SocketHandle, mpsc::Sender<(Payload, Connection)>>,
 }
 
 #[derive(Clone, Default)]

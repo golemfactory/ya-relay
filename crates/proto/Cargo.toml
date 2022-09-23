@@ -1,6 +1,6 @@
 [package]
 name = "ya-relay-proto"
-version = "0.4.0"
+version = "0.4.1"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
 homepage = "https://github.com/golemfactory/ya-relay/crates/proto"
@@ -13,6 +13,8 @@ default = ["codec"]
 codec = ["futures", "tokio", "tokio-util", "bytes", "derive_more", "thiserror"]
 
 [dependencies]
+ya-relay-util = { version = "0.1", path = "../util" }
+
 prost = "0.10"
 rand = "0.8"
 

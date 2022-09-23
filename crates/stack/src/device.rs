@@ -7,12 +7,14 @@ use smoltcp::time;
 
 use crate::metrics::ChannelMetrics;
 
+use ya_relay_util::Payload;
+
 type Pcap = RefCell<Box<dyn phy::PcapSink>>;
 
 /// Network device capable of injecting and extracting packets
 pub struct CaptureDevice {
     tx_queue: VecDeque<Vec<u8>>,
-    rx_queue: VecDeque<Vec<u8>>,
+    rx_queue: VecDeque<Payload>,
     medium: phy::Medium,
     max_transmission_unit: usize,
     pcap: Option<Pcap>,
@@ -88,8 +90,8 @@ impl CaptureDevice {
     }
 
     #[inline]
-    pub fn phy_rx(&mut self, data: Vec<u8>) {
-        self.rx_queue.push_back(data);
+    pub fn phy_rx(&mut self, data: impl Into<Payload>) {
+        self.rx_queue.push_back(data.into());
     }
 
     #[inline]
@@ -137,7 +139,7 @@ impl<'a> phy::Device<'a> for CaptureDevice {
 
 /// Receipt token
 pub struct RxToken<'a> {
-    buffer: Vec<u8>,
+    buffer: Payload,
     pcap: &'a Option<Pcap>,
     metrics: Rc<RefCell<ChannelMetrics>>,
 }
@@ -147,7 +149,7 @@ impl<'a> phy::RxToken for RxToken<'a> {
     where
         F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
     {
-        let result = f(&mut self.buffer);
+        let result = f(self.buffer.as_mut());
 
         {
             let mut metrics = self.metrics.borrow_mut();

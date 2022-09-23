@@ -54,7 +54,7 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
     println!("forwarder setup");
 
-    tx1.send(vec![1u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
     println!("message send");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -74,7 +74,7 @@ async fn test_reverse_connection() -> anyhow::Result<()> {
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
     println!("forwarder setup");
 
-    tx2.send(vec![2u8]).await?;
+    tx2.send(vec![2u8].into()).await?;
     println!("message send");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -126,7 +126,7 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
     println!("forwarder setup");
 
-    tx1.send(vec![1u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
     println!("message send");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -146,7 +146,7 @@ async fn test_reverse_connection_fail_both_private() -> anyhow::Result<()> {
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
     println!("forwarder setup");
 
-    tx2.send(vec![2u8]).await?;
+    tx2.send(vec![2u8].into()).await?;
     println!("message send");
     tokio::time::sleep(Duration::from_millis(100)).await;
 

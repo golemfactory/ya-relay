@@ -54,8 +54,8 @@ async fn test_forward_unreliable() -> anyhow::Result<()> {
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
 
-    tx1.send(vec![1u8]).await?;
-    tx2.send(vec![2u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -102,8 +102,8 @@ async fn test_forward_reliable() -> anyhow::Result<()> {
     let mut tx1 = client1.forward(client2.node_id()).await.unwrap();
     let mut tx2 = client2.forward(client1.node_id()).await.unwrap();
 
-    tx1.send(vec![1u8]).await?;
-    tx2.send(vec![2u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -148,8 +148,8 @@ async fn test_p2p_unreliable() -> anyhow::Result<()> {
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
 
-    tx1.send(vec![1u8]).await?;
-    tx2.send(vec![2u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -193,8 +193,8 @@ async fn test_p2p_reliable() -> anyhow::Result<()> {
     let mut tx1 = client1.forward(client2.node_id()).await?;
     let mut tx2 = client2.forward(client1.node_id()).await?;
 
-    tx1.send(vec![1u8]).await?;
-    tx2.send(vec![2u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -254,7 +254,7 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     let mut send_cnt = 0;
     for i in 0..iterations {
         println!("Send 255. iter: {}", i);
-        tx1.send(big_payload.clone()).await?;
+        tx1.send(big_payload.clone().into()).await?;
         send_cnt += big_payload.len();
     }
     tokio::time::sleep(Duration::from_millis(100)).await;
