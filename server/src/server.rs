@@ -971,7 +971,7 @@ impl Server {
                     log::error!("Packet dispatch timed out (request={request_id:?}, from={addr})");
                 })
             })
-            .buffered(DISPATCH_TASK_COUNT)
+            .buffer_unordered(DISPATCH_TASK_COUNT)
             .for_each(|_| futures::future::ready(()))
             .await;
 
