@@ -20,7 +20,7 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
-use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID, Payload};
+use ya_relay_proto::proto::{Forward, Payload, RequestId, SlotId, FORWARD_SLOT_ID};
 use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};

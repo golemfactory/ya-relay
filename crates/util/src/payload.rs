@@ -48,28 +48,26 @@ impl Payload {
     }
 
     pub fn prepend(&mut self, with: &[u8]) {
+        if with.is_empty() {
+            return;
+        }
+
         match self {
             Self::BytesMut(b) => {
-                if with.len() == 0 {
-                    return;
-                } else if b.len() == 0 {
+                if b.is_empty() {
                     b.extend(with);
                 } else {
                     let len = with.len();
                     b.extend(std::iter::repeat(0).take(len));
 
-                    for i in (0 .. b.len()).rev() {
-                        b[i] = if i >= len {
-                            b[i - len]
-                        } else {
-                            with[i]
-                        };
+                    for i in (0..b.len()).rev() {
+                        b[i] = if i >= len { b[i - len] } else { with[i] };
                     }
                 }
-            },
+            }
             Self::Vec(b) => {
                 b.splice(0..0, with.iter().copied());
-            },
+            }
         }
     }
 
@@ -155,7 +153,7 @@ impl IntoIterator for Payload {
     fn into_iter(self) -> Self::IntoIter {
         match self {
             Self::BytesMut(b) => IntoIter::BytesMut(b.into_iter()),
-            Self::Vec(v) => IntoIter::Vec(v.into_iter())
+            Self::Vec(v) => IntoIter::Vec(v.into_iter()),
         }
     }
 }
@@ -179,9 +177,9 @@ impl Iterator for IntoIter {
 
 #[cfg(test)]
 mod tests {
-    use std::iter::FromIterator;
-    use bytes::BytesMut;
     use super::Payload;
+    use bytes::BytesMut;
+    use std::iter::FromIterator;
 
     #[test]
     fn test_prepend() {
