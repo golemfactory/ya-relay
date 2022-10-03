@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
+use rand::seq::SliceRandom;
 use structopt::{clap, StructOpt};
 
 use ya_relay_client::{Client, ClientBuilder};
@@ -82,8 +83,7 @@ mod util {
             ClientBuilder::from_url(address)
         };
 
-        let client = builder.build().await?;
-        client.neighbours(0).await?;
+        let client = builder.connect().build().await?;
 
         Ok(client)
     }
@@ -241,6 +241,18 @@ mod load_test {
         data: Vec<DataPoint>,
     }
 
+    #[derive(Debug)]
+    struct PlanRunResult {
+        /// Total time taken by the plan execution
+        elapsed: Duration,
+        /// Fine-grained time spent on .awaiting requests
+        busy: Duration,
+        /// Number of dropped packets
+        dropped: usize,
+        /// Connection status
+        connection_valid: bool,
+    }
+
     impl Measurements {
         fn new() -> Self {
             Measurements { data: Vec::new() }
@@ -293,23 +305,43 @@ mod load_test {
     async fn run_plan_on_client(
         request_delay: Option<f32>,
         client: &Client,
-        plan: &TaskPlan,
-    ) -> anyhow::Result<Duration> {
+        plan: TaskPlan,
+    ) -> PlanRunResult {
         let start = Instant::now();
+        let mut busy = Duration::from_secs_f32(0.0);
 
         let mut start_limiter = Instant::now();
+        let mut dropped = 0;
+        let mut connection_valid = true;
+
         for Task { request, count } in &plan.tasks {
             for _ in 0..*count {
                 limit_rate(&mut start_limiter, request_delay).await;
+
+                let req_start = Instant::now();
                 match request {
                     Request::FindNode => {
-                        client.find_node(client.node_id()).await?;
+                        let resp = client.find_node(client.node_id()).await;
+                        if let Err(e) = resp {
+                            dropped += 1;
+                            if !e.to_string().contains("timed out") {
+                                connection_valid = false;
+                            }
+                        } else {
+                            busy += req_start.elapsed();
+                        }
                     }
                     Request::Neighbours(n) => {
-                        client.neighbours(*n).await?;
+                        let resp = client.neighbours(*n).await;
+                        if let Err(_e) = resp {
+                            dropped += 1;
+                        } else {
+                            busy += req_start.elapsed();
+                        }
                     }
                     Request::Ping => {
                         client.ping_sessions().await;
+                        busy += req_start.elapsed();
                     }
                 }
             }
@@ -317,7 +349,12 @@ mod load_test {
 
         let elapsed = Instant::now() - start;
 
-        Ok(elapsed)
+        PlanRunResult {
+            elapsed,
+            busy,
+            dropped,
+            connection_valid,
+        }
     }
 
     /// Plan tasks according to the user specification
@@ -360,28 +397,32 @@ mod load_test {
     async fn measure_load(args: &Options, load_cmd: &LoadCommand) -> anyhow::Result<Measurements> {
         let mut measurements = Measurements::new();
         let mut clients = Vec::new();
-        for target_connections in &load_cmd.connections {
+
+        for target_connections in load_cmd.connections.iter() {
             // Drop or create connections to reach the target
-            if *target_connections > clients.len() {
-                for _ in clients.len()..*target_connections {
-                    clients.push(util::establish_connection(args).await?);
+            let mut establish_errors = 0;
+            while *target_connections > clients.len() {
+                let to_establish = target_connections - clients.len();
+                let res = util::establish_connections(&mut clients, args, to_establish).await;
+                if res.is_err() {
+                    establish_errors += 1;
                 }
-            } else {
+            }
+
+            if *target_connections < clients.len() {
                 clients.resize_with(*target_connections, || panic!("logic error"));
             }
+
             log::info!("Established {} connections", clients.len());
+            log::info!("Failed connections: {}", establish_errors);
 
             let plan = plan_tasks(load_cmd);
             let all_requests = plan.count_requests();
 
             // Append a no-limit entry
-            let rate_limits = load_cmd
-                .rate_limits
-                .iter()
-                .map(Some)
-                .chain(std::iter::once(None));
+            let rate_limits = load_cmd.rate_limits.iter().map(Some).chain(None);
 
-            'delay_loop: for rate_limit in rate_limits {
+            for rate_limit in rate_limits {
                 // Map rate to a corresponding delay
                 let delay = rate_limit.map(|r| 1.0 / *r as f32);
 
@@ -394,30 +435,48 @@ mod load_test {
                 let mut futures = Vec::new();
                 for client in &clients {
                     let normalized_delay = delay.map(|t| t * clients.len() as f32);
-                    futures.push(run_plan_on_client(normalized_delay, client, &plan));
+                    let mut random_plan = plan.clone();
+                    random_plan.tasks.shuffle(&mut rand::thread_rng());
+                    futures.push(run_plan_on_client(normalized_delay, client, random_plan));
                 }
                 let results = join_all(futures.into_iter()).await;
 
                 // Process the results
                 let mut request_rates = Vec::new();
-                for res in results {
-                    let duration = match res {
-                        Ok(duration) => duration,
-                        Err(e) => {
-                            log::info!(
-                                "Coulnd't complete with rate limit {:?}\nerror: {}",
-                                delay,
-                                e.to_string()
-                            );
-                            measurements.push(clients.len() as u32, *rate_limit.unwrap_or(&0), 0.0);
-                            continue 'delay_loop;
-                        }
-                    };
-                    request_rates.push(all_requests as f32 / duration.as_secs_f32());
+                let mut busy_request_times = Vec::new();
+                let mut valid_mask = Vec::new();
+                let mut dropped_all = 0;
+                for PlanRunResult {
+                    elapsed,
+                    busy,
+                    dropped,
+                    connection_valid,
+                } in results.into_iter()
+                {
+                    request_rates.push(all_requests as f32 / elapsed.as_secs_f32());
+                    busy_request_times
+                        .push(busy.as_secs_f32() / all_requests as f32 / clients.len() as f32);
+                    dropped_all += dropped;
+                    valid_mask.push(connection_valid);
                 }
+
+                clients = clients
+                    .into_iter()
+                    .zip(valid_mask.into_iter())
+                    .filter(|(_client, mask)| *mask)
+                    .map(|(client, _mask)| client)
+                    .collect();
 
                 let total_rate: f32 = request_rates.iter().sum();
                 log::info!("Total requests / sec: {}.", total_rate);
+
+                let total_busy: f32 = busy_request_times.iter().sum();
+                log::info!("Average request-response delay: {}s", total_busy);
+
+                log::info!("Dropped packets: {}", dropped_all);
+
+                log::info!("Connections after filtering dropped: {}", clients.len());
+
                 measurements.push(clients.len() as u32, *rate_limit.unwrap_or(&0), total_rate);
             }
         }
