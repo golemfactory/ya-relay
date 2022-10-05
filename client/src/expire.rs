@@ -54,6 +54,11 @@ async fn close_sessions(layer: SessionManager, sessions: Vec<Arc<Session>>, expi
             session.remote
         );
 
+        if session.remote == layer.config.srv_addr {
+            let _ = layer.drop_server_session().await;
+            continue;
+        }
+
         layer
             .close_session(session.clone())
             .await
