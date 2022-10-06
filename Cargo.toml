@@ -8,3 +8,6 @@ lto = "thin"
 [profile.bench]
 opt-level = 3
 lto = "thin"
+
+[patch.crates-io]
+ya-relay-util = { path = "crates/util" }

@@ -16,6 +16,8 @@ use crate::socket::*;
 use crate::{port, StackConfig};
 use crate::{Error, Result};
 
+use ya_relay_util::Payload;
+
 #[derive(Clone)]
 pub struct Stack<'a> {
     iface: Rc<RefCell<CaptureInterface<'a>>>,
@@ -242,7 +244,7 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
-    pub fn send<B: Into<Vec<u8>>, F: Fn() + 'static>(
+    pub fn send<B: Into<Payload>, F: Fn() + 'static>(
         &self,
         data: B,
         conn: Connection,
@@ -252,7 +254,7 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
-    pub fn receive<B: Into<Vec<u8>>>(&self, data: B) {
+    pub fn receive<B: Into<Payload>>(&self, data: B) {
         let mut iface = self.iface.borrow_mut();
         iface.device_mut().phy_rx(data.into());
     }

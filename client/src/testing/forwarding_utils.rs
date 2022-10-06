@@ -79,7 +79,7 @@ pub async fn check_forwarding(
         receiver_client.node_id()
     );
 
-    tx.send(vec![1u8]).await?;
+    tx.send(vec![1u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 

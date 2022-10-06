@@ -1,17 +1,17 @@
 use anyhow::anyhow;
 use std::convert::TryFrom;
-use std::iter::FromIterator;
 use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 
-use bytes::{Bytes, BytesMut};
-use derive_more::From;
+use bytes::BytesMut;
 use prost::encoding::{decode_key, encode_key, WireType};
 
 use crate::codec::DecodeError;
+
+pub use ya_relay_util::Payload;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 
@@ -84,14 +84,7 @@ impl Forward {
         buf.extend_from_slice(&self.session_id);
         buf.extend_from_slice(&self.slot.to_be_bytes());
         buf.extend_from_slice(&self.flags.to_be_bytes());
-
-        let slice = match &self.payload {
-            Payload::BytesMut(b) => b.as_ref(),
-            Payload::Bytes(b) => b.as_ref(),
-            Payload::Vec(b) => b.as_slice(),
-        };
-
-        buf.extend_from_slice(slice);
+        buf.extend_from_slice(self.payload.as_ref());
     }
 
     pub fn decode(mut buf: BytesMut) -> Result<Self, DecodeError> {
@@ -146,127 +139,6 @@ fn write_payload_fmt(f: &mut std::fmt::Formatter<'_>, buf: impl AsRef<[u8]>) -> 
         write!(f, "{:02x?}", &buf)
     }
 }
-
-#[derive(Debug, Clone, From)]
-pub enum Payload {
-    BytesMut(BytesMut),
-    Bytes(Bytes),
-    Vec(Vec<u8>),
-}
-
-impl Payload {
-    pub fn len(&self) -> usize {
-        match self {
-            Self::BytesMut(b) => b.len(),
-            Self::Bytes(b) => b.len(),
-            Self::Vec(b) => b.len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        match self {
-            Self::BytesMut(b) => b.is_empty(),
-            Self::Bytes(b) => b.is_empty(),
-            Self::Vec(b) => b.is_empty(),
-        }
-    }
-
-    pub fn extend(&mut self, bytes: BytesMut) {
-        match std::mem::take(self) {
-            Self::BytesMut(mut b) => {
-                b.extend(bytes);
-                *self = Self::BytesMut(b);
-            }
-            Self::Bytes(b) => {
-                let mut b = BytesMut::from_iter(b.into_iter());
-                b.extend(bytes);
-                *self = Self::BytesMut(b);
-            }
-            Self::Vec(mut v) => {
-                v.extend(bytes.into_iter());
-                *self = Self::Vec(v);
-            }
-        }
-    }
-
-    pub fn freeze(self) -> Bytes {
-        match self {
-            Self::BytesMut(b) => b.freeze(),
-            Self::Bytes(b) => b,
-            Self::Vec(b) => Bytes::from(b),
-        }
-    }
-
-    pub fn into_vec(self) -> Vec<u8> {
-        match self {
-            Self::BytesMut(b) => Vec::from_iter(b.into_iter()),
-            Self::Bytes(b) => Vec::from_iter(b.into_iter()),
-            Self::Vec(b) => b,
-        }
-    }
-
-    pub fn into_bytes(self) -> BytesMut {
-        match self {
-            Self::BytesMut(b) => b,
-            Self::Bytes(b) => BytesMut::from_iter(b),
-            Self::Vec(b) => BytesMut::from_iter(b),
-        }
-    }
-}
-
-impl Default for Payload {
-    fn default() -> Self {
-        Self::Vec(Default::default())
-    }
-}
-
-impl From<Box<[u8]>> for Payload {
-    fn from(b: Box<[u8]>) -> Self {
-        Self::Vec(b.into_vec())
-    }
-}
-
-impl AsRef<[u8]> for Payload {
-    fn as_ref(&self) -> &[u8] {
-        match self {
-            Self::BytesMut(b) => b.as_ref(),
-            Self::Bytes(b) => b.as_ref(),
-            Self::Vec(b) => b.as_slice(),
-        }
-    }
-}
-
-impl FromIterator<u8> for Payload {
-    fn from_iter<T: IntoIterator<Item = u8>>(iter: T) -> Self {
-        Self::Vec(Vec::from_iter(iter))
-    }
-}
-
-impl PartialEq<Payload> for Payload {
-    fn eq(&self, other: &Payload) -> bool {
-        self.as_ref() == other.as_ref()
-    }
-}
-
-impl PartialEq<Payload> for Bytes {
-    fn eq(&self, other: &Payload) -> bool {
-        self.as_ref() == other.as_ref()
-    }
-}
-
-impl PartialEq<Payload> for BytesMut {
-    fn eq(&self, other: &Payload) -> bool {
-        self.as_ref() == other.as_ref()
-    }
-}
-
-impl PartialEq<Payload> for Vec<u8> {
-    fn eq(&self, other: &Payload) -> bool {
-        self.as_slice() == other.as_ref()
-    }
-}
-
-impl Eq for Payload {}
 
 impl Packet {
     pub fn request(session_id: Vec<u8>, kind: impl Into<request::Kind>) -> Self {

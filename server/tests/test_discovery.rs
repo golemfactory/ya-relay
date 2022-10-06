@@ -56,8 +56,8 @@ async fn test_find_node_by_alias() -> anyhow::Result<()> {
     let mut tx1 = client1.forward_unreliable(alias).await.unwrap();
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
 
-    tx1.send(vec![1u8]).await?;
-    tx2.send(vec![2u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -106,7 +106,7 @@ async fn test_find_node_by_alias_private_ip() -> anyhow::Result<()> {
     println!("Forwarding: unreliable");
 
     let mut tx1 = client1.forward_unreliable(alias).await.unwrap();
-    tx1.send(vec![1u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(received2.load(SeqCst));
@@ -114,7 +114,7 @@ async fn test_find_node_by_alias_private_ip() -> anyhow::Result<()> {
     received2.store(false, SeqCst);
 
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
-    tx1.send(vec![1u8]).await?;
+    tx1.send(vec![1u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(received2.load(SeqCst));

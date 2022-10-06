@@ -22,13 +22,13 @@ use ya_relay_core::session::TransportType;
 use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
 use ya_relay_core::utils::{parse_udp_url, spawn_local_abortable};
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{Forward, SlotId, MAX_TAG_SIZE};
+use ya_relay_proto::proto::{Forward, Payload, SlotId, MAX_TAG_SIZE};
 use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState, StackConfig};
 
 use crate::session::SessionDesc;
 use crate::session_manager::SessionManager;
 
-pub type ForwardSender = mpsc::Sender<Vec<u8>>;
+pub type ForwardSender = mpsc::Sender<Payload>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
 const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
@@ -388,7 +388,7 @@ impl Client {
 
                     match self.forward_unreliable(node_id).await {
                         Ok(mut forward) => {
-                            if forward.send(data).await.is_err() {
+                            if forward.send(data.into()).await.is_err() {
                                 bail!("Cannot broadcast to {}: channel closed", node_id);
                             }
                         }
@@ -570,7 +570,7 @@ pub(crate) struct Neighbourhood {
 pub struct Forwarded {
     pub transport: TransportType,
     pub node_id: NodeId,
-    pub payload: Vec<u8>,
+    pub payload: Payload,
 }
 
 #[derive(From, Clone)]

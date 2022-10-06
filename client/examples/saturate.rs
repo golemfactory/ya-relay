@@ -189,7 +189,7 @@ fn send(
                 break;
             }
 
-            if let Err(e) = sender.send(vec![1; chunk_size]).await {
+            if let Err(e) = sender.send(vec![1; chunk_size].into()).await {
                 state.set_err(anyhow!(e)).await;
                 break;
             }

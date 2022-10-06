@@ -2,7 +2,7 @@ use std::mem::size_of;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 use derive_more::From;
 use futures::{Sink, Stream};
 
@@ -12,7 +12,7 @@ use crate::proto::Payload;
 #[derive(From)]
 pub enum SinkKind<S, E>
 where
-    S: Sink<Vec<u8>, Error = E> + Unpin,
+    S: Sink<Payload, Error = E> + Unpin,
 {
     Sink(S),
     Prefixed(PrefixedSink<S, E>),
@@ -20,7 +20,7 @@ where
 
 impl<S, E> Clone for SinkKind<S, E>
 where
-    S: Sink<Vec<u8>, Error = E> + Clone + Unpin,
+    S: Sink<Payload, Error = E> + Clone + Unpin,
 {
     fn clone(&self) -> Self {
         match self {
@@ -32,7 +32,7 @@ where
 
 impl<S, E, P> Sink<P> for SinkKind<S, E>
 where
-    S: Sink<Vec<u8>, Error = E> + Unpin,
+    S: Sink<Payload, Error = E> + Unpin,
     Payload: From<P>,
 {
     type Error = E;
@@ -46,7 +46,7 @@ where
 
     fn start_send(self: Pin<&mut Self>, item: P) -> Result<(), Self::Error> {
         match self.get_mut() {
-            SinkKind::Sink(ref mut s) => Pin::new(s).start_send(Payload::from(item).into_vec()),
+            SinkKind::Sink(ref mut s) => Pin::new(s).start_send(item.into()),
             SinkKind::Prefixed(ref mut s) => Pin::new(s).start_send(item),
         }
     }
@@ -68,14 +68,14 @@ where
 
 pub struct PrefixedSink<S, E>
 where
-    S: Sink<Vec<u8>, Error = E> + Unpin,
+    S: Sink<Payload, Error = E> + Unpin,
 {
     sink: S,
 }
 
 impl<S, E> PrefixedSink<S, E>
 where
-    S: Sink<Vec<u8>, Error = E> + Unpin,
+    S: Sink<Payload, Error = E> + Unpin,
 {
     pub fn new(sink: S) -> Self {
         Self { sink }
@@ -84,7 +84,7 @@ where
 
 impl<S, E> Clone for PrefixedSink<S, E>
 where
-    S: Sink<Vec<u8>, Error = E> + Clone + Unpin,
+    S: Sink<Payload, Error = E> + Clone + Unpin,
 {
     fn clone(&self) -> Self {
         Self {
@@ -95,7 +95,7 @@ where
 
 impl<S, E, P> Sink<P> for PrefixedSink<S, E>
 where
-    S: Sink<Vec<u8>, Error = E> + Unpin,
+    S: Sink<Payload, Error = E> + Unpin,
     Payload: From<P>,
 {
     type Error = E;
@@ -120,7 +120,7 @@ where
 
 pub struct PrefixedStream<S>
 where
-    S: Stream<Item = Vec<u8>> + Unpin,
+    S: Stream<Item = Payload> + Unpin,
 {
     stream: S,
     buf: BytesMut,
@@ -128,7 +128,7 @@ where
 
 impl<S> PrefixedStream<S>
 where
-    S: Stream<Item = Vec<u8>> + Unpin,
+    S: Stream<Item = Payload> + Unpin,
 {
     pub fn new(stream: S) -> Self {
         Self {
@@ -140,7 +140,7 @@ where
 
 impl<S> PrefixedStream<S>
 where
-    S: Stream<Item = Vec<u8>> + Unpin,
+    S: Stream<Item = Payload> + Unpin,
 {
     #[inline(always)]
     fn maybe_wake(&mut self, cx: &mut Context<'_>) {
@@ -152,9 +152,9 @@ where
 
 impl<S> Stream for PrefixedStream<S>
 where
-    S: Stream<Item = Vec<u8>> + Unpin,
+    S: Stream<Item = Payload> + Unpin,
 {
-    type Item = Result<Bytes, Error>;
+    type Item = Result<BytesMut, Error>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         if !self.buf.is_empty() {
@@ -165,11 +165,11 @@ where
         }
 
         match Pin::new(&mut self.stream).poll_next(cx) {
-            Poll::Ready(Some(bytes)) => {
-                if bytes.is_empty() {
+            Poll::Ready(Some(payload)) => {
+                if payload.is_empty() {
                     return Poll::Ready(None);
                 }
-                self.buf.extend(bytes);
+                self.buf.extend(payload);
                 self.poll_next(cx)
             }
             Poll::Ready(None) => Poll::Ready(None),
@@ -180,16 +180,16 @@ where
 
 const PREFIX_SIZE: usize = size_of::<u32>();
 
-fn encode(payload: impl Into<Payload>) -> Vec<u8> {
+fn encode(data: impl Into<Payload>) -> Payload {
     // FIXME: handle Payload variants instead of converting to vec
-    let mut vec = payload.into().into_vec();
-    let len = vec.len() as u32;
-    vec.reserve(PREFIX_SIZE);
-    vec.splice(0..0, len.to_be_bytes());
-    vec
+    let mut payload = data.into();
+    let len = payload.len() as u32;
+    payload.reserve(PREFIX_SIZE);
+    payload.prepend(&len.to_be_bytes());
+    payload
 }
 
-fn decode(buf: &mut BytesMut) -> Result<Bytes, ()> {
+fn decode(buf: &mut BytesMut) -> Result<BytesMut, ()> {
     if buf.len() < PREFIX_SIZE {
         return Err(());
     }
@@ -202,7 +202,7 @@ fn decode(buf: &mut BytesMut) -> Result<Bytes, ()> {
     if buf.len() >= prefixed_length {
         buf.advance(PREFIX_SIZE);
         let bytes = buf.split_to(length);
-        Ok(bytes.freeze())
+        Ok(bytes)
     } else {
         Err(())
     }
@@ -219,7 +219,7 @@ mod tests {
 
     async fn forward(messages: Vec<Vec<u8>>, chunk_size: usize) -> Vec<Bytes> {
         let count = messages.len();
-        println!("{} messages of {} b chunk size", count, chunk_size);
+        println!("{count} messages of {chunk_size} B chunk size");
 
         let (tx_full, rx_full) = futures::channel::mpsc::channel(1);
         let (tx_parts, rx_parts) = futures::channel::mpsc::channel(1);
@@ -234,15 +234,15 @@ mod tests {
         });
         tokio::task::spawn(async move {
             let _ = rx_full
-                .flat_map(|b| futures::stream::iter(b.into_iter()).chunks(chunk_size))
-                .map(|v| Ok::<_, futures::channel::mpsc::SendError>(v))
+                .flat_map(|b| futures::stream::iter(b.into_vec().into_iter()).chunks(chunk_size))
+                .map(|v| Ok::<_, futures::channel::mpsc::SendError>(v.into()))
                 .forward(tx_parts)
                 .await;
         });
 
         let mut collected = Vec::with_capacity(count);
         while let Some(Ok(pkt)) = stream.next().await {
-            collected.push(pkt);
+            collected.push(pkt.into());
         }
         collected
     }

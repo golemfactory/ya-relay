@@ -15,6 +15,8 @@ use crate::patch_smoltcp::GetSocketSafe;
 use crate::socket::{SocketDesc, SocketEndpoint};
 use crate::{Error, Protocol, Result};
 
+use ya_relay_util::Payload;
+
 /// Virtual connection teardown reason
 #[derive(Copy, Clone, Debug)]
 pub enum DisconnectReason {
@@ -196,7 +198,7 @@ impl<'a> Future for Disconnect<'a> {
 
 /// Packet send future
 pub struct Send<'a> {
-    data: Vec<u8>,
+    data: Payload,
     offset: usize,
     connection: Connection,
     iface: Rc<RefCell<CaptureInterface<'a>>>,
@@ -206,7 +208,7 @@ pub struct Send<'a> {
 
 impl<'a> Send<'a> {
     pub fn new<F: Fn() + 'static>(
-        data: Vec<u8>,
+        data: Payload,
         connection: Connection,
         iface: Rc<RefCell<CaptureInterface<'a>>>,
         sent: F,
@@ -237,7 +239,7 @@ impl<'a> Future for Send<'a> {
                             Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                         };
                         socket.register_send_waker(cx.waker());
-                        socket.send_slice(&self.data[self.offset..])
+                        socket.send_slice(&self.data.as_ref()[self.offset..])
                     };
 
                     drop(iface);
@@ -262,7 +264,7 @@ impl<'a> Future for Send<'a> {
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(&self.data, conn.meta.remote)
+                    socket.send_slice(self.data.as_ref(), conn.meta.remote)
                 }
                 Protocol::Icmp | Protocol::Ipv6Icmp => {
                     let socket = match iface.get_socket_safe::<IcmpSocket>(conn.handle) {
@@ -270,7 +272,7 @@ impl<'a> Future for Send<'a> {
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(&self.data, conn.meta.remote.addr)
+                    socket.send_slice(self.data.as_ref(), conn.meta.remote.addr)
                 }
                 _ => {
                     let socket = match iface.get_socket_safe::<RawSocket>(conn.handle) {
@@ -278,7 +280,7 @@ impl<'a> Future for Send<'a> {
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(&self.data)
+                    socket.send_slice(self.data.as_ref())
                 }
             }
         };

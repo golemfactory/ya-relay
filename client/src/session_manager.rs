@@ -20,7 +20,7 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
-use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
+use ya_relay_proto::proto::{Forward, Payload, RequestId, SlotId, FORWARD_SLOT_ID};
 use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
@@ -670,7 +670,7 @@ impl SessionManager {
         self,
         connection: Connection,
         node: NodeEntry,
-        mut rx: mpsc::Receiver<Vec<u8>>,
+        mut rx: mpsc::Receiver<Payload>,
     ) {
         let pause = node.session.forward_pause.clone();
         let session = node.session.clone();
@@ -710,7 +710,7 @@ impl SessionManager {
         self,
         session: Arc<Session>,
         node: NodeEntry,
-        mut rx: mpsc::Receiver<Vec<u8>>,
+        mut rx: mpsc::Receiver<Payload>,
     ) {
         let pause = node.session.forward_pause.clone();
 
@@ -1113,7 +1113,7 @@ impl SessionManager {
         let payload = Forwarded {
             transport: TransportType::Unreliable,
             node_id,
-            payload: forward.payload.into_vec(),
+            payload: forward.payload,
         };
 
         if tx.send(payload).is_err() {

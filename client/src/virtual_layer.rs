@@ -196,7 +196,7 @@ impl TcpLayer {
     #[inline(always)]
     pub async fn send(
         &self,
-        data: impl Into<Vec<u8>>,
+        data: impl Into<Payload>,
         connection: Connection,
     ) -> anyhow::Result<()> {
         Ok(self.net.send(data, connection).await?)
@@ -215,7 +215,7 @@ impl TcpLayer {
 
     #[inline]
     pub fn inject(&self, payload: Payload) {
-        self.net.receive(payload.into_vec());
+        self.net.receive(payload);
         self.net.poll();
     }
 
@@ -303,16 +303,15 @@ impl TcpLayer {
                             .map(|node| (node.id, state.ingress.tx.clone()))
                     } {
                         Some((node_id, tx)) => {
+                            let payload_len = payload.len();
                             let payload = Forwarded {
                                 transport: match PortType::from(local_port) {
                                     PortType::Messages => TransportType::Reliable,
                                     PortType::Transfer => TransportType::Transfer,
                                 },
                                 node_id,
-                                payload,
+                                payload: payload.into(),
                             };
-
-                            let payload_len = payload.payload.len();
 
                             if tx.send(payload).is_err() {
                                 log::trace!(
