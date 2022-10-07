@@ -1423,7 +1423,7 @@ impl Handler for SessionManager {
 
             anyhow::Result::<()>::Ok(())
         }
-        .map_err(|e| log::error!("On forward error: {}", e))
+        .map_err(|e| log::debug!("On forward failed: {}", e))
         .map(|_| ());
 
         tokio::task::spawn_local(fut);
