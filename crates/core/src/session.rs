@@ -4,10 +4,11 @@ use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::RateLimiter;
 use rand::Rng;
+use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use crate::identity::Identity;
 use ya_client_model::NodeId;
@@ -61,6 +62,12 @@ pub struct LastSeen {
 }
 
 #[derive(Clone)]
+pub struct RequestHistory {
+    capacity: usize,
+    ids: Arc<RwLock<VecDeque<u64>>>,
+}
+
+#[derive(Clone)]
 pub struct NodeSession {
     pub info: NodeInfo,
 
@@ -69,6 +76,9 @@ pub struct NodeSession {
     pub session: SessionId,
     pub last_seen: LastSeen,
     pub forwarding_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
+
+    /// Request IDs of the last n requests
+    pub request_history: RequestHistory,
 }
 
 impl From<DateTime<Utc>> for LastSeen {
@@ -90,6 +100,29 @@ impl LastSeen {
 
     pub fn time(&self) -> DateTime<Utc> {
         *self.last_seen.lock().unwrap()
+    }
+}
+
+impl RequestHistory {
+    pub fn new(capacity: usize) -> Self {
+        RequestHistory {
+            capacity,
+            ids: Arc::new(RwLock::new(VecDeque::new())),
+        }
+    }
+
+    pub fn push(&self, request_id: u64) {
+        let mut ids = self.ids.write().unwrap();
+
+        if ids.len() == self.capacity {
+            ids.pop_front();
+        }
+
+        ids.push_back(request_id);
+    }
+
+    pub fn contains(&self, request_id: u64) -> bool {
+        self.ids.read().unwrap().contains(&request_id)
     }
 }
 

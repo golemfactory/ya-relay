@@ -23,7 +23,7 @@ use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{LastSeen, NodeInfo, NodeSession, SessionId};
+use ya_relay_core::session::{LastSeen, NodeInfo, NodeSession, RequestHistory, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_core::utils::{to_udp_url, ResultExt};
 use ya_relay_proto::codec::PacketKind;
@@ -59,9 +59,19 @@ impl Server {
         let session_id = PacketKind::session_id(&packet);
         if !session_id.is_empty() {
             let id = SessionId::try_from(session_id.clone())
-                .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
+                .map_err(|_| Unauthorized::InvalidSessionId(session_id.clone()))?;
             let server = self.state.read().await;
             let _ = server.nodes.update_seen(id);
+
+            // Retries on the client-side might cause multiple packets with the same
+            // request id to arrive, don't respond to any but the first one.
+            //
+            // This implementation may yield false negatives.
+            if let Some(req_id) = packet.request_id() {
+                if let Ok(true) = server.nodes.check_request_duplicate(id, req_id) {
+                    return Ok(());
+                }
+            }
         }
 
         match packet {
@@ -665,6 +675,8 @@ impl Server {
         session_id: SessionId,
         mut rc: mpsc::Receiver<proto::Request>,
     ) -> ServerResult<()> {
+        const REQ_DEDUPLICATE_BUF_SIZE: usize = 16;
+
         let (packet, raw_challenge) = challenge::prepare_challenge_response();
         let challenge =
             proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, packet);
@@ -713,6 +725,7 @@ impl Server {
                             ))
                         })?,
                     ))),
+                    request_history: RequestHistory::new(REQ_DEDUPLICATE_BUF_SIZE),
                 };
 
                 self.send_to(
@@ -912,7 +925,7 @@ impl Server {
 
     pub async fn run(self) -> anyhow::Result<()> {
         const DISPATCH_TIMEOUT: Duration = Duration::from_millis(3500);
-        const DISPATCH_TASK_COUNT: usize = 8;
+        const DISPATCH_TASK_COUNT: usize = 32;
 
         let server = self.clone();
         let server_session_cleaner = self.clone();
