@@ -3,6 +3,7 @@ use itertools::Itertools;
 use metrics::counter;
 use std::collections::HashMap;
 use std::ops::Sub;
+use ya_relay_client::proto::RequestId;
 
 use crate::error::{InternalError, ServerResult, Unauthorized};
 
@@ -166,6 +167,25 @@ impl NodesState {
             },
         };
         Ok(())
+    }
+
+    pub fn check_request_duplicate(
+        &self,
+        id: SessionId,
+        request_id: RequestId,
+    ) -> ServerResult<bool> {
+        match self.sessions.get(&id) {
+            None => Err(Unauthorized::SessionNotFound(id).into()),
+            Some(&slot) => match self.slots.get(slot as usize) {
+                Some(Slot::Some(node)) => {
+                    let result = node.request_history.contains(request_id);
+                    node.request_history.push(request_id);
+
+                    Ok(result)
+                }
+                _ => Err(InternalError::GettingSessionInfo(id).into()),
+            },
+        }
     }
 
     pub fn get_by_slot(&self, slot: u32) -> Option<NodeSession> {

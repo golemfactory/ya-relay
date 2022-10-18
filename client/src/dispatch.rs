@@ -57,7 +57,7 @@ where
                                 response.code,
                                 kind,
                             ),
-                            None => log::warn!("Unexpected response from {}: {:?}", from, kind),
+                            None => log::debug!("Unexpected response from {}: {:?}", from, kind),
                         },
                         // TODO: Handle empty packet kind here
                         None => log::debug!("Empty response kind from: {}", from),

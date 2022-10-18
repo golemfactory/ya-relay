@@ -257,14 +257,35 @@ impl Session {
         proto::response::Kind: TryInto<T, Error = ()>,
         T: 'static,
     {
-        let response = self.response::<T>(request.request_id, timeout);
+        const RETRIES: u32 = 4;
+
+        let response_fut = self.response::<T>(request.request_id, timeout);
         let packet = proto::Packet {
             session_id,
             kind: Some(proto::packet::Kind::Request(request)),
         };
-        self.send(packet).await?;
 
-        response.await
+        let retry_send = async {
+            loop {
+                if let Err(e) = self.send(packet.clone()).await {
+                    return e;
+                }
+                tokio::time::sleep(timeout / RETRIES).await;
+            }
+        };
+
+        // concurrently transmit multiple copies of the same request
+        // and await for a response for at least one. This is done to
+        // tackle UDP packet drops while containing the entire process
+        // to the outer timeout.
+        tokio::select! {
+            err = retry_send => {
+                Err(err)
+            },
+            response = response_fut => {
+                response
+            }
+        }
     }
 
     #[inline(always)]
