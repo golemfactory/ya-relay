@@ -186,7 +186,7 @@ impl Network {
             Self::add_connection_to(connection, &connections, &handles);
             Ok(connection)
         }
-        .boxed_local()
+            .boxed_local()
     }
 
     /// Close all TCP connections with a remote IP address
@@ -228,7 +228,7 @@ impl Network {
                 let _ = futures::future::select(pending, timeout.boxed_local()).await;
             }
         }
-        .boxed_local()
+            .boxed_local()
     }
 
     pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
@@ -293,7 +293,7 @@ impl Network {
         &self,
         data: impl Into<Payload>,
         connection: Connection,
-    ) -> impl Future<Output = Result<()>> + 'a {
+    ) -> impl Future<Output=Result<()>> + 'a {
         self.sender.send(data.into(), connection)
     }
 
@@ -611,7 +611,7 @@ impl StackSender {
         &self,
         data: Payload,
         conn: Connection,
-    ) -> impl Future<Output = Result<()>> + 'a {
+    ) -> impl Future<Output=Result<()>> + 'a {
         let mut sender = {
             match {
                 let inner = self.inner.borrow();
@@ -637,7 +637,7 @@ impl StackSender {
                     let _ = stack.send(vec, conn, move || net.poll()).await;
                 }
             })
-            .await;
+                .await;
         });
 
         let mut inner = self.inner.borrow_mut();
@@ -718,7 +718,7 @@ mod tests {
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
-    use crate::{Connection, IngressEvent, Network, Protocol, Stack, StackConfig};
+    use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -751,9 +751,9 @@ mod tests {
         total: usize,
         chunk_size: usize,
     ) -> oneshot::Receiver<anyhow::Result<(S, Vec<u8>)>>
-    where
-        S: Sink<Vec<u8>, Error = E> + Unpin + 'static,
-        E: Into<anyhow::Error>,
+        where
+            S: Sink<Vec<u8>, Error=E> + Unpin + 'static,
+            E: Into<anyhow::Error>,
     {
         let (dtx, drx) = oneshot::channel();
 
@@ -815,8 +815,8 @@ mod tests {
     }
 
     fn net_inject<S>(rx: S, net: Network)
-    where
-        S: Stream<Item = Vec<u8>> + 'static,
+        where
+            S: Stream<Item=Vec<u8>> + 'static,
     {
         spawn_local(async move {
             rx.for_each(|vec| {
@@ -826,13 +826,35 @@ mod tests {
                     net.poll();
                 }
             })
-            .await;
+                .await;
+        });
+    }
+
+    fn net_inject_2<S>(rx: S, net1: Network, net2: Network)
+        where
+            S: Stream<Item=EgressEvent> + 'static,
+    {
+        let ip1 = net1.stack.address().unwrap().address().as_bytes().to_vec().into_boxed_slice();
+        spawn_local(async move {
+            rx.for_each(|event| {
+                let net =
+                    if event.remote == ip1 {
+                        net1.clone()
+                    } else {
+                        net2.clone()
+                    };
+                async move {
+                    net.receive(event.payload);
+                    net.poll();
+                }
+            })
+                .await;
         });
     }
 
     fn net_send<S>(rx: S, net: Network, conn: Connection)
-    where
-        S: Stream<Item = Vec<u8>> + 'static,
+        where
+            S: Stream<Item=Vec<u8>> + 'static,
     {
         spawn_local(async move {
             let net = net.clone();
@@ -842,15 +864,15 @@ mod tests {
                     .await
                     .map_err(|e| eprintln!("failed to send packet: {}", e));
             })
-            .await;
+                .await;
         });
     }
 
     fn net_receive<Si, St, E>(tx: Si, rx: St)
-    where
-        Si: Sink<Vec<u8>, Error = E> + Clone + Unpin + 'static,
-        St: Stream<Item = IngressEvent> + 'static,
-        E: Into<anyhow::Error> + Debug,
+        where
+            Si: Sink<Vec<u8>, Error=E> + Clone + Unpin + 'static,
+            St: Stream<Item=IngressEvent> + 'static,
+            E: Into<anyhow::Error> + Debug,
     {
         spawn_local(async move {
             rx.for_each(move |event| {
@@ -871,7 +893,7 @@ mod tests {
                     }
                 }
             })
-            .await;
+                .await;
         });
     }
 
@@ -960,6 +982,97 @@ mod tests {
         Ok(())
     }
 
+    async fn net_exchange_2(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
+        const MTU: usize = 65535;
+
+        println!(">> exchanging {} B in {} B chunks", total, chunk_size);
+
+        let ip1 = Ipv4Address::new(10, 0, 0, 1);
+        let ip2 = Ipv4Address::new(10, 0, 0, 2);
+        let ip3 = Ipv4Address::new(10, 0, 0, 3);
+
+        let config = StackConfig {
+            max_transmission_unit: MTU,
+            ..Default::default()
+        };
+
+        let net1 = new_network(medium, ip1.into(), config.clone());
+        let net2 = new_network(medium, ip2.into(), config.clone());
+        let net3 = new_network(medium, ip3.into(), config.clone());
+
+        net1.spawn_local();
+        net2.spawn_local();
+        net3.spawn_local();
+
+        net1.bind(Protocol::Tcp, (ip1, 1))?;
+        net2.bind(Protocol::Tcp, (ip2, 1))?;
+        net3.bind(Protocol::Tcp, (ip3, 1))?;
+
+        // net 1
+        // inject egress packets from net 2 into net 1 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net2.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net1.clone(),
+        );
+        // inject egress packets from net 3 into net 1 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net3.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net1.clone(),
+        );
+        // process net 1 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net1.ingress_receiver().unwrap()),
+        );
+
+        let _consume1 = spawn_local(rx.for_each(|e| async move { println!("consumer 1: {e:?}") }));
+
+        // net 2
+        // inject egress packets from net 1 into net 2 or net 3 rx buffer
+        net_inject_2(
+            UnboundedReceiverStream::new(net1.egress_receiver().unwrap()),
+            net2.clone(),
+            net3.clone(),
+        );
+
+        // process net 2 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net2.ingress_receiver().unwrap()),
+        );
+
+        let _consume2 = spawn_local(rx.for_each(|e| async move { println!("consumer 2: {e:?}") }));
+
+
+        // process net 3 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net3.ingress_receiver().unwrap()),
+        );
+
+        let _consume3 = spawn_local(rx.for_each(|e| async move { println!("consumer 3: {e:?}") }));
+
+        let conn1 = net2.connect((ip1, 1), Duration::from_secs(3));
+        let conn2 = net3.connect((ip1, 1), Duration::from_secs(3));
+
+        net1.poll();
+        net2.poll();
+        net3.poll();
+
+
+        let (f1, f2) = futures::future::join(conn1, conn2).await;
+
+        f1.expect("Connection failed!");
+        f2.expect("Connection failed!");
+
+        Ok(())
+    }
+
     async fn spawn_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
         tokio::task::LocalSet::new()
             .run_until(tokio::time::timeout(
@@ -997,5 +1110,15 @@ mod tests {
     #[tokio::test]
     async fn tun_exchange() -> anyhow::Result<()> {
         spawn_exchange_scenarios(Medium::Ip).await
+    }
+
+    #[tokio::test]
+    async fn socket_re_binding() -> anyhow::Result<()> {
+        tokio::task::LocalSet::new()
+            .run_until(tokio::time::timeout(
+                EXCHANGE_TIMEOUT,
+                net_exchange_2(Medium::Ip, 0, 0),
+            ))
+            .await?
     }
 }
