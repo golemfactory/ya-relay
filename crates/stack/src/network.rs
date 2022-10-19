@@ -1047,7 +1047,6 @@ mod tests {
 
         let _consume2 = spawn_local(rx.for_each(|e| async move { println!("consumer 2: {e:?}") }));
 
-
         // process net 3 events
         let (tx, rx) = mpsc::channel(1);
         net_receive(
@@ -1064,11 +1063,75 @@ mod tests {
         net2.poll();
         net3.poll();
 
-
         let (f1, f2) = futures::future::join(conn1, conn2).await;
 
         f1.expect("Connection failed!");
         f2.expect("Connection failed!");
+
+        Ok(())
+    }
+
+    async fn net_exchange_3(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
+        const MTU: usize = 65535;
+
+        println!(">> exchanging {} B in {} B chunks", total, chunk_size);
+
+        let ip1 = Ipv4Address::new(10, 0, 0, 1);
+        let ip2 = Ipv4Address::new(10, 0, 0, 2);
+
+        let config = StackConfig {
+            max_transmission_unit: MTU,
+            ..Default::default()
+        };
+
+        let net1 = new_network(medium, ip1.into(), config.clone());
+        let net2 = new_network(medium, ip2.into(), config.clone());
+
+        net1.spawn_local();
+        net2.spawn_local();
+
+        net1.bind(Protocol::Tcp, (ip1, 1))?;
+        net2.bind(Protocol::Tcp, (ip2, 1))?;
+
+        // net 1
+        // inject egress packets from net 2 into net 1 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net2.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net1.clone(),
+        );
+
+        // process net 1 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net1.ingress_receiver().unwrap()),
+        );
+
+        let _consume1 = spawn_local(rx.for_each(|e| async move { println!("consumer 1: {e:?}") }));
+
+        // net 2
+        // inject egress packets from net 1 into net 2 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net1.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net2.clone(),
+        );
+
+        // process net 2 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net2.ingress_receiver().unwrap()),
+        );
+
+        let _consume2 = spawn_local(rx.for_each(|e| async move { println!("consumer 2: {e:?}") }));
+
+        for i in 2..=u16::MAX {
+            let conn = net2.connect((ip1, 1), Duration::from_secs(3)).await;
+            println!("{i}");
+            conn.expect("Connection failed");
+        }
 
         Ok(())
     }
@@ -1120,5 +1183,12 @@ mod tests {
                 net_exchange_2(Medium::Ip, 0, 0),
             ))
             .await?
+    }
+
+    #[tokio::test]
+    async fn socket_re_binding_2() -> anyhow::Result<()> {
+        tokio::task::LocalSet::new()
+            .run_until(net_exchange_3(Medium::Ip, 0, 0))
+            .await
     }
 }
