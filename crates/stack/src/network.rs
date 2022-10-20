@@ -982,7 +982,7 @@ mod tests {
         Ok(())
     }
 
-    async fn establish_single_conn(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
+    async fn re_bind(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
         const MTU: usize = 65535;
 
         println!(">> exchanging {} B in {} B chunks", total, chunk_size);
@@ -1172,24 +1172,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn socket_single_re_binding() -> anyhow::Result<()> {
+    async fn socket_re_binding() -> anyhow::Result<()> {
         tokio::task::LocalSet::new()
             .run_until(tokio::time::timeout(
                 EXCHANGE_TIMEOUT,
-                establish_single_conn(Medium::Ip, 0, 0),
+                re_bind(Medium::Ip, 0, 0),
             ))
             .await?
     }
 
     #[tokio::test]
-    async fn socket_multiple_re_binding() -> anyhow::Result<()> {
+    async fn multiple_conns() -> anyhow::Result<()> {
         tokio::task::LocalSet::new()
             .run_until(establish_multiple_conn(Medium::Ip, 0, 0, u16::MAX - 1))
             .await
     }
 
     #[tokio::test]
-    async fn socket_overload_re_binding() -> anyhow::Result<()> {
+    async fn overload_conns() -> anyhow::Result<()> {
         tokio::task::LocalSet::new()
             .run_until(establish_multiple_conn(Medium::Ip, 0, 0, u16::MAX))
             .await
