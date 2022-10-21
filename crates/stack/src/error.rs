@@ -3,7 +3,7 @@ use futures::channel::mpsc::SendError;
 use futures::channel::oneshot::Canceled;
 use std::net::{AddrParseError, IpAddr};
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, PartialEq, Eq)]
 pub enum Error {
     #[error("Invalid IP address: {0}")]
     IpAddr(#[from] AddrParseError),
