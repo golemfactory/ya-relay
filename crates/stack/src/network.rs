@@ -718,9 +718,7 @@ mod tests {
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
-    use crate::{
-        error, Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig,
-    };
+    use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1084,6 +1082,8 @@ mod tests {
         chunk_size: usize,
         conn_num: u16,
     ) -> anyhow::Result<()> {
+        use crate::error;
+
         const MTU: usize = 65535;
 
         println!(">> exchanging {} B in {} B chunks", total, chunk_size);
