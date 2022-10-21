@@ -718,7 +718,9 @@ mod tests {
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
-    use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};
+    use crate::{
+        error, Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig,
+    };
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -1075,6 +1077,7 @@ mod tests {
     }
 
     /// Establish given number of connections between single client and server
+    #[cfg(feature = "test-suite")]
     async fn establish_multiple_conn(
         medium: Medium,
         total: usize,
@@ -1140,12 +1143,13 @@ mod tests {
             let conn = net2.connect((ip1, 1), Duration::from_secs(3)).await;
             match conn {
                 Ok(_) => println!("Connection({i}) successful"),
-                Err(_) => {
+                Err(e) => {
                     if i != u16::MAX {
-                        println!("Connection failed!")
-                    } else {
-                        return Ok(());
-                    }
+                        panic!("Connection failed! Error: {}", e.to_string());
+                    };
+
+                    let expected = error::Error::Other("no ports available".into());
+                    assert_eq!(expected, e)
                 }
             }
         }
@@ -1204,7 +1208,7 @@ mod tests {
 
     // Test case where establishing a maximum number of connections (equal to 65 534 connections) does not fail.
     #[cfg(feature = "test-suite")]
-    #[tokio::test()]
+    #[tokio::test]
     async fn multiple_conn() -> anyhow::Result<()> {
         tokio::task::LocalSet::new()
             .run_until(establish_multiple_conn(Medium::Ip, 0, 0, u16::MAX - 1))
