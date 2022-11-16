@@ -31,8 +31,6 @@ use crate::session_manager::SessionManager;
 pub type ForwardSender = mpsc::Sender<Payload>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
-const NEIGHBOURHOOD_TTL: Duration = Duration::from_secs(300);
-
 #[derive(Clone)]
 pub struct ClientConfig {
     pub node_id: NodeId,
@@ -51,6 +49,7 @@ pub struct ClientConfig {
     pub reverse_connection_tmp_timeout: Duration,
     pub reverse_connection_real_timeout: Duration,
     pub incoming_session_timeout: Duration,
+    pub neighbourhood_ttl: Duration,
 }
 
 pub struct ClientBuilder {
@@ -284,7 +283,7 @@ impl Client {
             state.neighbours.clone()
         } {
             if neighbours.nodes.len() as u32 >= count
-                && neighbours.updated + NEIGHBOURHOOD_TTL > Instant::now()
+                && neighbours.updated + self.config.neighbourhood_ttl > Instant::now()
             {
                 return Ok(neighbours.nodes);
             }
@@ -324,6 +323,10 @@ impl Client {
         }
 
         Ok(nodes)
+    }
+
+    pub async fn invalidate_neighbourhood_cache(&self) {
+        self.state.write().await.neighbours = None;
     }
 
     async fn check_nodes_connection(
@@ -538,6 +541,7 @@ impl ClientBuilder {
             reverse_connection_tmp_timeout: Duration::from_secs(3),
             reverse_connection_real_timeout: Duration::from_secs(13),
             incoming_session_timeout: Duration::from_secs(16),
+            neighbourhood_ttl: Duration::from_secs(300),
         });
 
         client.spawn().await?;
