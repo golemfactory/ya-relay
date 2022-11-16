@@ -718,7 +718,7 @@ mod tests {
     use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
-    use crate::{Connection, IngressEvent, Network, Protocol, Stack, StackConfig};
+    use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};
 
     const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -823,6 +823,35 @@ mod tests {
                 let net = net.clone();
                 async move {
                     net.receive(vec);
+                    net.poll();
+                }
+            })
+            .await;
+        });
+    }
+
+    fn net_inject2<S>(rx: S, net1: Network, net2: Network)
+    where
+        S: Stream<Item = EgressEvent> + 'static,
+    {
+        let ip1 = net1
+            .stack
+            .address()
+            .unwrap()
+            .address()
+            .as_bytes()
+            .to_vec()
+            .into_boxed_slice();
+
+        spawn_local(async move {
+            rx.for_each(|event| {
+                let net = if event.remote == ip1 {
+                    net1.clone()
+                } else {
+                    net2.clone()
+                };
+                async move {
+                    net.receive(event.payload);
                     net.poll();
                 }
             })
@@ -960,6 +989,174 @@ mod tests {
         Ok(())
     }
 
+    async fn re_bind(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
+        const MTU: usize = 65535;
+
+        println!(">> exchanging {} B in {} B chunks", total, chunk_size);
+
+        let ip1 = Ipv4Address::new(10, 0, 0, 1);
+        let ip2 = Ipv4Address::new(10, 0, 0, 2);
+        let ip3 = Ipv4Address::new(10, 0, 0, 3);
+
+        let config = StackConfig {
+            max_transmission_unit: MTU,
+            ..Default::default()
+        };
+
+        let net1 = new_network(medium, ip1.into(), config.clone());
+        let net2 = new_network(medium, ip2.into(), config.clone());
+        let net3 = new_network(medium, ip3.into(), config.clone());
+
+        net1.spawn_local();
+        net2.spawn_local();
+        net3.spawn_local();
+
+        net1.bind(Protocol::Tcp, (ip1, 1))?;
+        net2.bind(Protocol::Tcp, (ip2, 1))?;
+        net3.bind(Protocol::Tcp, (ip3, 1))?;
+
+        // net 1
+        // inject egress packets from net 2 into net 1 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net2.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net1.clone(),
+        );
+        // inject egress packets from net 3 into net 1 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net3.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net1.clone(),
+        );
+        // process net 1 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net1.ingress_receiver().unwrap()),
+        );
+
+        let _consume1 = spawn_local(rx.for_each(|e| async move { println!("consumer 1: {e:?}") }));
+
+        // net 2
+        // inject egress packets from net 1 into net 2 or net 3 rx buffer
+        net_inject2(
+            UnboundedReceiverStream::new(net1.egress_receiver().unwrap()),
+            net2.clone(),
+            net3.clone(),
+        );
+
+        // process net 2 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net2.ingress_receiver().unwrap()),
+        );
+
+        let _consume2 = spawn_local(rx.for_each(|e| async move { println!("consumer 2: {e:?}") }));
+
+        // process net 3 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net3.ingress_receiver().unwrap()),
+        );
+
+        let _consume3 = spawn_local(rx.for_each(|e| async move { println!("consumer 3: {e:?}") }));
+
+        let conn1 = net2.connect((ip1, 1), Duration::from_secs(3));
+        let conn2 = net3.connect((ip1, 1), Duration::from_secs(3));
+
+        let (f1, f2) = futures::future::join(conn1, conn2).await;
+
+        f1.expect("Connection failed!");
+        f2.expect("Connection failed!");
+
+        Ok(())
+    }
+
+    /// Establish given number of connections between single client and server
+    #[cfg(feature = "test-suite")]
+    async fn establish_multiple_conn(
+        medium: Medium,
+        total: usize,
+        chunk_size: usize,
+        conn_num: u16,
+    ) -> anyhow::Result<()> {
+        use crate::error;
+
+        const MTU: usize = 65535;
+
+        println!(">> exchanging {} B in {} B chunks", total, chunk_size);
+
+        let ip1 = Ipv4Address::new(10, 0, 0, 1);
+        let ip2 = Ipv4Address::new(10, 0, 0, 2);
+
+        let config = StackConfig {
+            max_transmission_unit: MTU,
+            ..Default::default()
+        };
+
+        let net1 = new_network(medium, ip1.into(), config.clone());
+        let net2 = new_network(medium, ip2.into(), config.clone());
+
+        net1.spawn_local();
+        net2.spawn_local();
+
+        net1.bind(Protocol::Tcp, (ip1, 1))?;
+        net2.bind(Protocol::Tcp, (ip2, 1))?;
+
+        // net 1
+        // inject egress packets from net 2 into net 1 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net2.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net1.clone(),
+        );
+
+        // process net 1 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net1.ingress_receiver().unwrap()),
+        );
+
+        let _consume1 = spawn_local(rx.for_each(|e| async move { println!("consumer 1: {e:?}") }));
+
+        // net 2
+        // inject egress packets from net 1 into net 2 rx buffer
+        net_inject(
+            UnboundedReceiverStream::new(net1.egress_receiver().unwrap())
+                .map(|e| e.payload.into_vec()),
+            net2.clone(),
+        );
+
+        // process net 2 events
+        let (tx, rx) = mpsc::channel(1);
+        net_receive(
+            tx,
+            UnboundedReceiverStream::new(net2.ingress_receiver().unwrap()),
+        );
+
+        let _consume2 = spawn_local(rx.for_each(|e| async move { println!("consumer 2: {e:?}") }));
+
+        for i in 1..=conn_num {
+            let conn = net2.connect((ip1, 1), Duration::from_secs(3)).await;
+            match conn {
+                Ok(_) => println!("Connection({i}) successful"),
+                Err(e) => {
+                    if i != u16::MAX {
+                        panic!("Connection failed! Error: {}", e.to_string());
+                    };
+
+                    let expected = error::Error::Other("no ports available".into());
+                    assert_eq!(expected, e)
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     async fn spawn_exchange(medium: Medium, total: usize, chunk_size: usize) -> anyhow::Result<()> {
         tokio::task::LocalSet::new()
             .run_until(tokio::time::timeout(
@@ -997,5 +1194,33 @@ mod tests {
     #[tokio::test]
     async fn tun_exchange() -> anyhow::Result<()> {
         spawn_exchange_scenarios(Medium::Ip).await
+    }
+
+    #[tokio::test]
+    async fn socket_re_binding() -> anyhow::Result<()> {
+        tokio::task::LocalSet::new()
+            .run_until(tokio::time::timeout(
+                EXCHANGE_TIMEOUT,
+                re_bind(Medium::Ip, 0, 0),
+            ))
+            .await?
+    }
+
+    // Test case where establishing a maximum number of connections (equal to 65 534 connections) does not fail.
+    #[cfg(feature = "test-suite")]
+    #[tokio::test]
+    async fn multiple_conn() -> anyhow::Result<()> {
+        tokio::task::LocalSet::new()
+            .run_until(establish_multiple_conn(Medium::Ip, 0, 0, u16::MAX - 1))
+            .await
+    }
+
+    // Test case where establishing a new connection (above the number of 65 534 connections) results in the "no ports available" error.
+    #[cfg(feature = "test-suite")]
+    #[tokio::test]
+    async fn overload_conn() -> anyhow::Result<()> {
+        tokio::task::LocalSet::new()
+            .run_until(establish_multiple_conn(Medium::Ip, 0, 0, u16::MAX))
+            .await
     }
 }
