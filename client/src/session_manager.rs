@@ -3,11 +3,11 @@ use futures::channel::mpsc;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::RwLock;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
@@ -32,6 +32,8 @@ use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
 use crate::virtual_layer::{PortType, TcpLayer};
 
+type ReqFingerprint = (Vec<u8>, u64);
+
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
 /// like `NodeId` or `SlotId`.
@@ -46,6 +48,8 @@ pub struct SessionManager {
     virtual_tcp_fast_lane: Rc<RefCell<HashSet<(SocketAddr, SlotId)>>>,
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
+
+    processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
 }
 
 #[derive(Default)]
@@ -91,6 +95,7 @@ impl SessionManager {
             registry: NodesRegistry::default(),
             guarded: Default::default(),
             state: Arc::new(RwLock::new(state)),
+            processed_requests: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -151,6 +156,24 @@ impl SessionManager {
 
         ids.extend(unique_nodes.into_iter());
         ids
+    }
+
+    fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
+        const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
+
+        let mut processed_requests = self.processed_requests.lock().unwrap();
+        processed_requests.push_back((session_id, request_id));
+        if processed_requests.len() > REQ_DEDUPLICATE_BUF_SIZE {
+            processed_requests.pop_front();
+        }
+    }
+
+    fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
+        self.processed_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
     }
 
     async fn init_session(
@@ -1340,6 +1363,11 @@ impl Handler for SessionManager {
             } => (request_id, kind),
             _ => return None,
         };
+
+        if self.is_request_duplicate(&session_id, request_id) {
+            return None;
+        }
+        self.record_duplicate(session_id.clone(), request_id);
 
         let fut = match kind {
             proto::request::Kind::Ping(request) => {

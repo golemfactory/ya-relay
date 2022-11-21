@@ -50,12 +50,12 @@ impl<'a> Stack<'a> {
 
     pub fn add_address(&self, address: IpCidr) {
         let mut iface = self.iface.borrow_mut();
-        add_iface_address(&mut (*iface), address);
+        add_iface_address(&mut iface, address);
     }
 
     pub fn add_route(&self, net_ip: IpCidr, route: Route) {
         let mut iface = self.iface.borrow_mut();
-        add_iface_route(&mut (*iface), net_ip, route);
+        add_iface_route(&mut iface, net_ip, route);
     }
 
     #[inline]
