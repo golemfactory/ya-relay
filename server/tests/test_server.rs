@@ -26,11 +26,11 @@ async fn test_server_junks_received() -> anyhow::Result<()> {
     let marker1 = spawn_receive_for_client(&client1, "Client1").await?;
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
-    let _keep1 = check_broadcast(&client1, &client2, marker2.clone(), 2)
+    check_broadcast(&client1, &client2, marker2.clone(), 2)
         .await
         .unwrap();
 
-    let _keep2 = check_broadcast(&client2, &client1, marker1.clone(), 2)
+    check_broadcast(&client2, &client1, marker1.clone(), 2)
         .await
         .unwrap();
 

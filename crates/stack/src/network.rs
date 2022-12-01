@@ -724,7 +724,7 @@ mod tests {
 
     fn new_network(medium: Medium, ip: IpAddress, config: StackConfig) -> Network {
         let config = Rc::new(config);
-        let cidr = IpCidr::new(ip.into(), 16);
+        let cidr = IpCidr::new(ip, 16);
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
             IpAddress::Ipv6(ipv6) => Route::new_ipv6_gateway(ipv6),

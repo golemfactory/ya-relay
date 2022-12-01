@@ -106,9 +106,9 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
-        let virt_endpoint: IpEndpoint = (to_ipv6(&our_id), PortType::Messages as u16).into();
+        let virt_endpoint: IpEndpoint = (to_ipv6(our_id), PortType::Messages as u16).into();
         let virt_transfer_endpoint: IpEndpoint =
-            (to_ipv6(&our_id), PortType::Transfer as u16).into();
+            (to_ipv6(our_id), PortType::Transfer as u16).into();
 
         self.net.spawn_local();
         self.net.bind(Protocol::Tcp, virt_endpoint)?;

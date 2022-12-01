@@ -175,9 +175,9 @@ mod connections_test {
         fn save(&self, writer: impl std::io::Write) -> anyhow::Result<()> {
             let mut w = csv::Writer::from_writer(writer);
 
-            w.write_record(&["connections", "new-connections-rate"])?;
+            w.write_record(["connections", "new-connections-rate"])?;
             for data_point in &self.data {
-                w.write_record(&[
+                w.write_record([
                     &data_point.connections.to_string(),
                     &data_point.new_connections_rate.to_string(),
                 ])?;
@@ -340,9 +340,9 @@ mod load_test {
         fn save(&self, writer: impl std::io::Write) -> anyhow::Result<()> {
             let mut w = csv::Writer::from_writer(writer);
 
-            w.write_record(&["connections", "rate-limit", "rate"])?;
+            w.write_record(["connections", "rate-limit", "rate"])?;
             for data_point in &self.data {
-                w.write_record(&[
+                w.write_record([
                     &data_point.connections.to_string(),
                     &data_point.rate_limit.to_string(),
                     &data_point.rate.to_string(),
@@ -617,7 +617,7 @@ mod relaying {
         fn save(&self, writer: impl std::io::Write) -> anyhow::Result<()> {
             let mut w = csv::Writer::from_writer(writer);
 
-            w.write_record(&[
+            w.write_record([
                 "calls",
                 "dropped-calls",
                 "calls-per-second",
@@ -761,7 +761,7 @@ mod relaying {
     fn load_scenario(file: &Path) -> anyhow::Result<Vec<Record>> {
         log::info!("Loading scenarios from: {}", file.display());
 
-        let mut rdr = csv::Reader::from_reader(File::open(&file)?);
+        let mut rdr = csv::Reader::from_reader(File::open(file)?);
         rdr.deserialize()
             .map(|result| result.map_err(anyhow::Error::from))
             .collect::<Result<Vec<_>, _>>()
