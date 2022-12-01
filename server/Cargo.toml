@@ -1,6 +1,6 @@
 [package]
 name = "ya-relay-server"
-version = "0.2.1"
+version = "0.2.2"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
 
