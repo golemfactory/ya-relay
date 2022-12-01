@@ -20,8 +20,8 @@ pub use network::{
 };
 pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;
-pub use ya_smoltcp;
 pub use socket::{SocketDesc, SocketState};
 pub use stack::Stack;
+pub use ya_smoltcp;
 
 pub type Result<T> = std::result::Result<T, Error>;

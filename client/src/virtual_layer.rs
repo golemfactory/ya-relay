@@ -18,9 +18,9 @@ use ya_relay_core::NodeId;
 
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
+use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
 use ya_relay_stack::ya_smoltcp::iface::Route;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
-use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
 use ya_relay_stack::*;
 
 use crate::client::Forwarded;
