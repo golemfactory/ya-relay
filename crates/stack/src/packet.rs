@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use self::field::*;
-use smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
+use ya_smoltcp::wire::{IpAddress, Ipv4Address, Ipv6Address};
 use std::convert::TryFrom;
 use std::ops::Deref;
 

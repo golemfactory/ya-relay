@@ -8,8 +8,8 @@ use std::time::Duration;
 use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
-use smoltcp::iface::SocketHandle;
-use smoltcp::wire::IpEndpoint;
+use ya_smoltcp::iface::SocketHandle;
+use ya_smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::spawn_local;
 use tokio::time::MissedTickBehavior;
@@ -711,9 +711,9 @@ mod tests {
     use futures::channel::{mpsc, oneshot};
     use futures::{Sink, SinkExt, Stream, StreamExt};
     use sha3::Digest;
-    use smoltcp::iface::Route;
-    use smoltcp::phy::Medium;
-    use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
+    use ya_smoltcp::iface::Route;
+    use ya_smoltcp::phy::Medium;
+    use ya_smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
     use tokio::task::spawn_local;
     use tokio_stream::wrappers::UnboundedReceiverStream;
 

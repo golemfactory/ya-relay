@@ -6,9 +6,9 @@ use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
 
-use smoltcp::iface::SocketHandle;
-use smoltcp::socket::*;
-use smoltcp::wire::IpEndpoint;
+use ya_smoltcp::iface::SocketHandle;
+use ya_smoltcp::socket::*;
+use ya_smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
 use crate::patch_smoltcp::GetSocketSafe;
@@ -254,7 +254,7 @@ impl<'a> Future for Send<'a> {
                                 Poll::Pending
                             }
                         }
-                        Err(smoltcp::Error::Exhausted) => Poll::Pending,
+                        Err(ya_smoltcp::Error::Exhausted) => Poll::Pending,
                         Err(err) => Poll::Ready(Err(Error::Other(err.to_string()))),
                     };
                 }

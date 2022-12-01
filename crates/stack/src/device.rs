@@ -2,8 +2,8 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
-use smoltcp::phy;
-use smoltcp::time;
+use ya_smoltcp::phy;
+use ya_smoltcp::time;
 
 use crate::metrics::ChannelMetrics;
 
@@ -145,9 +145,9 @@ pub struct RxToken<'a> {
 }
 
 impl<'a> phy::RxToken for RxToken<'a> {
-    fn consume<R, F>(mut self, timestamp: time::Instant, f: F) -> smoltcp::Result<R>
+    fn consume<R, F>(mut self, timestamp: time::Instant, f: F) -> ya_smoltcp::Result<R>
     where
-        F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
+        F: FnOnce(&mut [u8]) -> ya_smoltcp::Result<R>,
     {
         let result = f(self.buffer.as_mut());
 
@@ -172,9 +172,9 @@ pub struct TxToken<'a> {
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
-    fn consume<R, F>(self, timestamp: time::Instant, len: usize, f: F) -> smoltcp::Result<R>
+    fn consume<R, F>(self, timestamp: time::Instant, len: usize, f: F) -> ya_smoltcp::Result<R>
     where
-        F: FnOnce(&mut [u8]) -> smoltcp::Result<R>,
+        F: FnOnce(&mut [u8]) -> ya_smoltcp::Result<R>,
     {
         let mut buffer = vec![0; len];
         buffer.resize(len, 0);

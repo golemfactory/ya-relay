@@ -20,7 +20,7 @@ pub use network::{
 };
 pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;
-pub use smoltcp;
+pub use ya_smoltcp;
 pub use socket::{SocketDesc, SocketState};
 pub use stack::Stack;
 
