@@ -1,10 +1,10 @@
 use std::hash::{Hash, Hasher};
 
 use derive_more::From;
-use smoltcp::socket::*;
-use smoltcp::storage::PacketMetadata;
-use smoltcp::time::Duration;
-use smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
+use ya_smoltcp::socket::*;
+use ya_smoltcp::storage::PacketMetadata;
+use ya_smoltcp::time::Duration;
+use ya_smoltcp::wire::{IpAddress, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::{Error, Protocol};
 
@@ -216,7 +216,7 @@ pub trait SocketExt {
     fn close(&mut self);
 
     fn can_recv(&self) -> bool;
-    fn recv(&mut self) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, smoltcp::Error>;
+    fn recv(&mut self) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, ya_smoltcp::Error>;
 
     fn can_send(&self) -> bool;
     fn send_capacity(&self) -> usize;
@@ -280,7 +280,7 @@ impl<'a> SocketExt for Socket<'a> {
         }
     }
 
-    fn recv(&mut self) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, smoltcp::Error> {
+    fn recv(&mut self) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, ya_smoltcp::Error> {
         let result = match self {
             Self::Tcp(tcp) => tcp
                 .recv(|bytes| (bytes.len(), bytes.to_vec()))
@@ -294,12 +294,12 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Raw(raw) => raw
                 .recv()
                 .map(|bytes| (IpEndpoint::default(), bytes.to_vec())),
-            Self::Dhcpv4(_) => Err(smoltcp::Error::Exhausted),
+            Self::Dhcpv4(_) => Err(ya_smoltcp::Error::Exhausted),
         };
 
         match result {
             Ok(tuple) => Ok(Some(tuple)),
-            Err(smoltcp::Error::Exhausted) => Ok(None),
+            Err(ya_smoltcp::Error::Exhausted) => Ok(None),
             Err(err) => Err(err),
         }
     }

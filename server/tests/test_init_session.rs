@@ -51,7 +51,7 @@ async fn test_request_with_invalid_session() -> anyhow::Result<()> {
 
     // Change session id to invalid.
     let mut session_id = session_id.to_vec();
-    session_id[0] = session_id[0] + 1;
+    session_id[0] += 1;
     let session_id = SessionId::try_from(session_id)?;
 
     let session = Session::new(session.remote, session_id, client.sessions.out_stream()?);

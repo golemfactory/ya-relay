@@ -111,7 +111,7 @@ async fn test_broadcast() -> anyhow::Result<()> {
 
     fn spawn_receive(received: Rc<AtomicUsize>, rx: mpsc::UnboundedReceiver<Forwarded>) {
         tokio::task::spawn_local({
-            let received = received.clone();
+            let received = received;
             async move {
                 UnboundedReceiverStream::new(rx)
                     .for_each(|item| {
@@ -138,7 +138,7 @@ async fn test_broadcast() -> anyhow::Result<()> {
         spawn_receive(counter, rx);
     }
 
-    let data = vec![1 as u8];
+    let data = vec![1_u8];
     broadcasting_client
         .broadcast(data, NEIGHBOURHOOD_SIZE)
         .await?;

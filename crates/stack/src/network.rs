@@ -8,11 +8,11 @@ use std::time::Duration;
 use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
-use smoltcp::iface::SocketHandle;
-use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::spawn_local;
 use tokio::time::MissedTickBehavior;
+use ya_smoltcp::iface::SocketHandle;
+use ya_smoltcp::wire::IpEndpoint;
 
 use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{
@@ -711,11 +711,11 @@ mod tests {
     use futures::channel::{mpsc, oneshot};
     use futures::{Sink, SinkExt, Stream, StreamExt};
     use sha3::Digest;
-    use smoltcp::iface::Route;
-    use smoltcp::phy::Medium;
-    use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
     use tokio::task::spawn_local;
     use tokio_stream::wrappers::UnboundedReceiverStream;
+    use ya_smoltcp::iface::Route;
+    use ya_smoltcp::phy::Medium;
+    use ya_smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
     use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};
@@ -724,7 +724,7 @@ mod tests {
 
     fn new_network(medium: Medium, ip: IpAddress, config: StackConfig) -> Network {
         let config = Rc::new(config);
-        let cidr = IpCidr::new(ip.into(), 16);
+        let cidr = IpCidr::new(ip, 16);
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
             IpAddress::Ipv6(ipv6) => Route::new_ipv6_gateway(ipv6),

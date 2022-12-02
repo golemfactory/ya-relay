@@ -1,6 +1,6 @@
-use smoltcp::iface::{Interface, SocketHandle};
-use smoltcp::phy::Device;
-use smoltcp::socket::AnySocket;
+use ya_smoltcp::iface::{Interface, SocketHandle};
+use ya_smoltcp::phy::Device;
+use ya_smoltcp::socket::AnySocket;
 
 #[derive(thiserror::Error, Clone, Debug)]
 pub enum GetSocketError {

@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 
 use managed::{ManagedMap, ManagedSlice};
-use smoltcp::iface::{Interface, InterfaceBuilder, NeighborCache, Route, Routes};
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
+use ya_smoltcp::iface::{Interface, InterfaceBuilder, NeighborCache, Route, Routes};
+use ya_smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
 use crate::device::CaptureDevice;
 

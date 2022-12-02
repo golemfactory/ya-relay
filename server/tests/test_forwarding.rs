@@ -232,7 +232,7 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
         rx: mpsc::UnboundedReceiver<Forwarded>,
     ) {
         tokio::task::spawn_local({
-            let received = received.clone();
+            let received = received;
             async move {
                 UnboundedReceiverStream::new(rx)
                     .for_each(|item| {

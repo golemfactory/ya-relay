@@ -9,7 +9,8 @@ license = "LGPL-3.0"
 description= "Embeddable networking stack"
 
 [dependencies]
-ya-relay-util = { version = "0.1", path = "../util" }
+ya-relay-util = "0.1"
+ya-smoltcp = "0.1"
 
 derive_more = "0.99"
 futures = "0.3"
@@ -19,7 +20,6 @@ managed = { version = "0.8", features = ["std"] }
 num-derive = "0.3"
 num-traits = "0.2"
 rand = { version = "0.8", features = ["std"] }
-smoltcp = { git = "https://github.com/golemfactory/smoltcp", rev = "acb743b6990fd92303c24c43ff75711422a5cb94" }
 thiserror = "1.0"
 tokio = { version = "1", features = ["time", "rt"] }
 tokio-stream = "0.1"
