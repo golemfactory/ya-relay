@@ -56,6 +56,8 @@ pub struct ServerImpl {
 
 impl Server {
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> ServerResult<()> {
+        log::debug!("Server::dispatch");
+
         let session_id = PacketKind::session_id(&packet);
         if !session_id.is_empty() {
             let id = SessionId::try_from(session_id.clone())
@@ -74,8 +76,12 @@ impl Server {
             }
         }
 
+        log::debug!("[dispatch] session_id = {:?}", session_id);
+
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
+                log::debug!("[dispatch] PacketKind::Packet");
+
                 // Empty `session_id` is sent to initialize Session, but only with Session request.
                 if session_id.is_empty() {
                     return match kind {
@@ -90,11 +96,17 @@ impl Server {
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
 
+                log::debug!("[dispatch] id = {:?}", id);
+
                 let node = match { self.state.read().await.nodes.get_by_session(id) } {
-                    Some(node) => node,
+                    Some(node) => {
+                        log::debug!("[dispatch] found node");
+                        node
+                    }
                     None => {
                         return match kind {
                             Some(proto::packet::Kind::Request(request)) => {
+                                log::debug!("[dispatch] start establish_session");
                                 self.clone().establish_session(id, from, request).await
                             }
                             Some(proto::packet::Kind::Control(proto::Control { kind })) => {
@@ -174,6 +186,8 @@ impl Server {
             }
 
             PacketKind::Forward(forward) => {
+                log::debug!("[dispatch] PacketKind::Forward");
+
                 counter!("ya-relay.packet.forward", 1);
                 self.forward(forward, from)
                     .await
@@ -181,6 +195,8 @@ impl Server {
                     .on_done(|_| counter!("ya-relay.packet.forward.done", 1))?
             }
             PacketKind::ForwardCtd(_) => {
+                log::debug!("[dispatch] PacketKind::ForwardCtd");
+
                 log::info!("ForwardCtd packet from: {}", from)
             }
         };
@@ -653,13 +669,19 @@ impl Server {
         _from: SocketAddr,
         request: proto::Request,
     ) -> ServerResult<()> {
+        log::debug!("Server::establish_session");
+
         let mut sender = {
-            match { self.state.read().await.starting_session.get(&id).cloned() } {
+            match {
+                log::debug!("[establish_session] get starting_session");
+                self.state.read().await.starting_session.get(&id).cloned()
+            } {
                 Some(sender) => sender,
                 None => return Err(Unauthorized::SessionNotFound(id).into()),
             }
         };
 
+        log::debug!("[establish_session] spawn_local");
         tokio::task::spawn_local(async move {
             let _ = sender.send(request).await.map_err(|_| {
                 log::warn!("Establish session channel closed. Dropping packet for session [{id}]")
@@ -950,20 +972,25 @@ impl Server {
                 let fut = async move {
                     counter!("ya-relay.packet.incoming", 1);
 
+                    log::debug!("[run] start processing");
                     if server.drop_policy(&packet, timestamp) {
                         counter!("ya-relay.packet.dropped", 1);
                         log::debug!(
                             "Packet from {addr} waited too long in queue ({timestamp}), dropping"
                         );
+                        log::debug!("[run] dropped");
                         return Ok::<_, ()>(());
                     }
 
                     let start = Utc::now();
 
+                    log::debug!("[run] run inner dispatch");
                     if let Err(error) = server.dispatch(addr, packet).await {
                         log::error!(
                             "Packet dispatch failed (request={request_id:?}, from={addr}). {error}"
                         );
+
+                        log::debug!("[run] dispatch failed");
 
                         if let Some(request_id) = request_id {
                             server
