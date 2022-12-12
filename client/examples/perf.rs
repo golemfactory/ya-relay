@@ -134,12 +134,13 @@ mod util {
     ) -> anyhow::Result<()> {
         let step = 100usize;
 
-        for _target_connections in 0..num {
-            clients.push(util::establish_connection(args).await?);
+        let tasks = (0..num)
+            .map(|_| util::establish_connection(args))
+            .collect::<Vec<_>>();
+        let results = futures::future::join_all(tasks.into_iter()).await;
 
-            if clients.len() % step == 0 {
-                log::info!("Established {} connections", clients.len());
-            }
+        for result in results {
+            clients.push(result?);
         }
 
         Ok(())
