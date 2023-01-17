@@ -204,13 +204,17 @@ impl TcpLayer {
     ) -> anyhow::Result<()> {
         let data: Payload = data.into();
 
-        packet_trace_maybe!("TcpLayer::Send", { &try_extract_from_ip_frame(data.as_ref()) });
+        packet_trace_maybe!("TcpLayer::Send", {
+            &try_extract_from_ip_frame(data.as_ref())
+        });
 
         Ok(self.net.send(data, connection).await?)
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
-        packet_trace_maybe!("TcpLayer::Receive", { &try_extract_from_ip_frame(payload.as_ref()) });
+        packet_trace_maybe!("TcpLayer::Receive", {
+            &try_extract_from_ip_frame(payload.as_ref())
+        });
 
         if self.resolve_node(node.id).await.is_err() {
             log::debug!(
@@ -278,7 +282,9 @@ impl TcpLayer {
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => {
-                            packet_trace_maybe!("TcpLayer::ingress_router", { &try_extract_from_ip_frame(&payload) });
+                            packet_trace_maybe!("TcpLayer::ingress_router", {
+                                &try_extract_from_ip_frame(&payload)
+                            });
 
                             (desc, payload)
                         }
