@@ -362,8 +362,8 @@ impl SessionManager {
         let state = self.state.read().await;
         state
             .sessions
-            .iter()
-            .map(|(_, session)| session.clone())
+            .values()
+            .map(|session| session.clone())
             .collect()
     }
 
