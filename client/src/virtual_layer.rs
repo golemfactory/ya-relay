@@ -23,7 +23,8 @@ use ya_relay_stack::ya_smoltcp::iface::Route;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::*;
 
-use ya_packet_trace::packet_trace_maybe;
+#[allow(unused_imports)]
+use ya_packet_trace::{packet_trace_maybe, try_extract_from_ip_frame};
 
 use crate::client::Forwarded;
 use crate::registry::NodeEntry;
@@ -203,33 +204,13 @@ impl TcpLayer {
     ) -> anyhow::Result<()> {
         let data: Payload = data.into();
 
-        #[cfg(feature = "packet-trace-enable")]
-        let to_trace = {
-            let frame: &[u8] = data.as_ref();
-            if frame[12..14] == [0x08, 0x00] && frame.len() > 55 {
-                Some(frame[54..].to_owned())
-            } else {
-                None
-            }
-        };
-
-        packet_trace_maybe!("TcpLayer::Send", { &to_trace });
+        packet_trace_maybe!("TcpLayer::Send", { &try_extract_from_ip_frame(data.as_ref()) });
 
         Ok(self.net.send(data, connection).await?)
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
-        #[cfg(feature = "packet-trace-enable")]
-        let to_trace = {
-            let frame: &[u8] = payload.as_ref();
-            if frame[12..14] == [0x08, 0x00] && frame.len() > 55 {
-                Some(frame[54..].to_owned())
-            } else {
-                None
-            }
-        };
-
-        packet_trace_maybe!("TcpLayer::Receive", { &to_trace });
+        packet_trace_maybe!("TcpLayer::Receive", { &try_extract_from_ip_frame(payload.as_ref()) });
 
         if self.resolve_node(node.id).await.is_err() {
             log::debug!(
@@ -297,16 +278,7 @@ impl TcpLayer {
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => {
-                            #[cfg(feature = "packet-trace-enable")]
-                            let to_trace = {
-                                if payload[12..14] == [0x08, 0x00] && payload.len() > 55 {
-                                    Some(payload[54..].to_owned())
-                                } else {
-                                    None
-                                }
-                            };
-
-                            packet_trace_maybe!("TcpLayer::ingress_router", { &to_trace });
+                            packet_trace_maybe!("TcpLayer::ingress_router", { &try_extract_from_ip_frame(&payload) });
 
                             (desc, payload)
                         }
