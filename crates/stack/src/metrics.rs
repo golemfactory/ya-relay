@@ -128,7 +128,7 @@ where
     pub fn new(start: Instant, size: Duration, average: A) -> Self {
         Self {
             size,
-            updated: start - size,
+            updated: start.checked_sub(size).unwrap(),
             acc: V::zero(),
             total: V::zero(),
             average,

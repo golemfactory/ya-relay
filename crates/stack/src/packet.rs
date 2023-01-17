@@ -323,7 +323,7 @@ impl<'a> PeekPacket<'a> for IpV6Packet<'a> {
         }
 
         let len = Self::MIN_HEADER_LEN + ntoh_u16(&data[IpV6Field::PAYLOAD_LEN]).unwrap() as usize;
-        if data_len < len as usize {
+        if data_len < len {
             return Err(Error::PacketMalformed("IPv6: payload too short".into()));
         } else if len == Self::MIN_HEADER_LEN {
             return Err(Error::ProtocolNotSupported("IPv6: jumbogram".into()));
