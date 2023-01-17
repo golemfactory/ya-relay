@@ -23,6 +23,8 @@ use ya_relay_stack::ya_smoltcp::iface::Route;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::*;
 
+use ya_packet_trace::packet_trace_maybe;
+
 use crate::client::Forwarded;
 use crate::registry::NodeEntry;
 use crate::session::Session;
@@ -199,10 +201,36 @@ impl TcpLayer {
         data: impl Into<Payload>,
         connection: Connection,
     ) -> anyhow::Result<()> {
+        let data: Payload = data.into();
+
+        #[cfg(feature = "packet-trace-enable")]
+        let to_trace = {
+            let frame: &[u8] = data.as_ref();
+            if frame[12..14] == [0x08, 0x00] && frame.len() > 55 {
+                Some(frame[54..].to_owned())
+            } else {
+                None
+            }
+        };
+
+        packet_trace_maybe!("TcpLayer::Send", { &to_trace });
+
         Ok(self.net.send(data, connection).await?)
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
+        #[cfg(feature = "packet-trace-enable")]
+        let to_trace = {
+            let frame: &[u8] = payload.as_ref();
+            if frame[12..14] == [0x08, 0x00] && frame.len() > 55 {
+                Some(frame[54..].to_owned())
+            } else {
+                None
+            }
+        };
+
+        packet_trace_maybe!("TcpLayer::Receive", { &to_trace });
+
         if self.resolve_node(node.id).await.is_err() {
             log::debug!(
                 "[VirtualTcp] Incoming message from new Node [{}]. Adding connection.",
@@ -268,7 +296,20 @@ impl TcpLayer {
                             );
                             return;
                         }
-                        IngressEvent::Packet { desc, payload, .. } => (desc, payload),
+                        IngressEvent::Packet { desc, payload, .. } => {
+                            #[cfg(feature = "packet-trace-enable")]
+                            let to_trace = {
+                                if payload[12..14] == [0x08, 0x00] && payload.len() > 55 {
+                                    Some(payload[54..].to_owned())
+                                } else {
+                                    None
+                                }
+                            };
+
+                            packet_trace_maybe!("TcpLayer::ingress_router", { &to_trace });
+
+                            (desc, payload)
+                        }
                     };
 
                     if desc.protocol != Protocol::Tcp {
