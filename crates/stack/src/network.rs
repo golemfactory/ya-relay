@@ -130,7 +130,7 @@ impl Network {
         protocol: Protocol,
         endpoint: impl Into<SocketEndpoint>,
     ) -> Option<SocketHandle> {
-        let endpoint = local_endpoint.into();
+        let endpoint = endpoint.into();
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
         let mut sockets = iface.sockets();
@@ -152,7 +152,11 @@ impl Network {
         let iface = iface_rfc.borrow();
         let mut sockets = iface.sockets();
         sockets
-            .find(|(_, s)| s.protocol() == protocol && (s.local_endpoint() == local_endpoint || s.remote_endpoint() == remote_endpoint))
+            .find(|(_, s)| {
+                s.protocol() == protocol
+                    && (s.local_endpoint() == local_endpoint
+                        || s.remote_endpoint() == remote_endpoint)
+            })
             .map(|(h, _)| h)
     }
 
