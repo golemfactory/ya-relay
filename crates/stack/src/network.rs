@@ -130,12 +130,29 @@ impl Network {
         protocol: Protocol,
         endpoint: impl Into<SocketEndpoint>,
     ) -> Option<SocketHandle> {
-        let endpoint = endpoint.into();
+        let endpoint = local_endpoint.into();
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
         let mut sockets = iface.sockets();
         sockets
             .find(|(_, s)| s.protocol() == protocol && s.local_endpoint() == endpoint)
+            .map(|(h, _)| h)
+    }
+
+    /// Returns a socket bound on an endpoint
+    pub fn get_bound_2(
+        &self,
+        protocol: Protocol,
+        local_endpoint: impl Into<SocketEndpoint>,
+        remote_endpoint: impl Into<SocketEndpoint>,
+    ) -> Option<SocketHandle> {
+        let local_endpoint = local_endpoint.into();
+        let remote_endpoint = remote_endpoint.into();
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        let mut sockets = iface.sockets();
+        sockets
+            .find(|(_, s)| s.protocol() == protocol && (s.local_endpoint() == local_endpoint || s.remote_endpoint() == remote_endpoint))
             .map(|(h, _)| h)
     }
 
