@@ -154,8 +154,8 @@ impl Network {
         sockets
             .find(|(_, s)| {
                 s.protocol() == protocol
-                    && (s.local_endpoint() == local_endpoint
-                        || s.remote_endpoint() == remote_endpoint)
+                    && s.local_endpoint() == local_endpoint
+                    && s.remote_endpoint() == remote_endpoint
             })
             .map(|(h, _)| h)
     }
