@@ -11,3 +11,4 @@ lto = "thin"
 
 [patch.crates-io]
 ya-relay-util = { path = "crates/util" }
+ya-relay-stack = { path = "crates/stack" }
