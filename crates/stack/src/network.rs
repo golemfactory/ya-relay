@@ -144,18 +144,18 @@ impl Network {
         &self,
         protocol: Protocol,
         local_endpoint: impl Into<SocketEndpoint>,
-        remote_endpoint: impl Into<SocketEndpoint>,
     ) -> Option<SocketHandle> {
         let local_endpoint = local_endpoint.into();
-        let remote_endpoint = remote_endpoint.into();
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
         let mut sockets = iface.sockets();
         sockets
-            .find(|(_, s)| {
+            .find(|(handle, s)| {
                 s.protocol() == protocol
                     && s.local_endpoint() == local_endpoint
-                    && s.remote_endpoint() == remote_endpoint
+                    // This condition prevents from returning socket connection instead
+                    // of bound socket, unattached to connection.
+                    && self.bindings.borrow().contains(handle)
             })
             .map(|(h, _)| h)
     }
