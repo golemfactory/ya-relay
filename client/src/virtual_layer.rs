@@ -23,9 +23,6 @@ use ya_relay_stack::ya_smoltcp::iface::Route;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::*;
 
-#[allow(unused_imports)]
-use ya_packet_trace::{packet_trace_maybe, try_extract_from_ip_frame};
-
 use crate::client::Forwarded;
 use crate::registry::NodeEntry;
 use crate::session::Session;
@@ -204,16 +201,16 @@ impl TcpLayer {
     ) -> anyhow::Result<()> {
         let data: Payload = data.into();
 
-        packet_trace_maybe!("TcpLayer::Send", {
-            &try_extract_from_ip_frame(data.as_ref())
+        ya_packet_trace::packet_trace_maybe!("TcpLayer::Send", {
+            &ya_packet_trace::try_extract_from_ip_frame(data.as_ref())
         });
 
         Ok(self.net.send(data, connection).await?)
     }
 
     pub async fn receive(&self, node: NodeEntry, payload: Payload) {
-        packet_trace_maybe!("TcpLayer::Receive", {
-            &try_extract_from_ip_frame(payload.as_ref())
+        ya_packet_trace::packet_trace_maybe!("TcpLayer::Receive", {
+            &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
         });
 
         if self.resolve_node(node.id).await.is_err() {
@@ -282,8 +279,8 @@ impl TcpLayer {
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => {
-                            packet_trace_maybe!("TcpLayer::ingress_router", {
-                                &try_extract_from_ip_frame(&payload)
+                            ya_packet_trace::packet_trace_maybe!("TcpLayer::ingress_router", {
+                                &ya_packet_trace::try_extract_from_ip_frame(&payload)
                             });
 
                             (desc, payload)
