@@ -10,6 +10,7 @@ description= "Client for hybrid Net communication protocol"
 ya-relay-stack = "0.4.1"
 ya-relay-proto = "0.4.1"
 ya-relay-core = "0.3.1"
+ya-packet-trace = { git = "https://github.com/golemfactory/ya-packet-trace" }
 
 anyhow = "1.0"
 chrono = "0.4"
@@ -36,3 +37,7 @@ serde_json = "1.0"
 simple-logging = "2.0"
 structopt = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "signal"] }
+
+[features]
+packet-trace-enable = ["ya-packet-trace/enable"]
+default = []

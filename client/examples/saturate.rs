@@ -323,7 +323,7 @@ async fn sample_state(node_id: NodeId, state: State, delay: Duration, time: Dura
 
 #[inline]
 fn bytesize_per_second(value: u64) -> String {
-    format!("{} /s", bytesize::to_string(value as u64, false))
+    format!("{} /s", bytesize::to_string(value, false))
 }
 
 fn print_table(headers: &[&str], values: Vec<Vec<String>>, table_format: TableFormat) {

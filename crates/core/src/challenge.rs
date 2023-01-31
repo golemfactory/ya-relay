@@ -220,7 +220,7 @@ pub fn prepare_challenge() -> (proto::ChallengeRequest, RawChallenge) {
         version: "0.0.1".to_string(),
         caps: 0,
         kind: proto::challenge_request::Kind::Sha3512LeadingZeros as i32,
-        difficulty: CHALLENGE_DIFFICULTY as u64,
+        difficulty: CHALLENGE_DIFFICULTY,
         challenge: raw_challenge.to_vec(),
     };
     (request, raw_challenge)
