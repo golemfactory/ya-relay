@@ -124,7 +124,8 @@ impl Network {
         network
     }
 
-    /// Returns a socket bound on an endpoint
+    /// Returns a socket listening on an endpoint and ready for incoming
+    /// connections. Sockets already connected won't be returned.
     pub fn get_bound(
         &self,
         protocol: Protocol,
@@ -135,26 +136,11 @@ impl Network {
         let iface = iface_rfc.borrow();
         let mut sockets = iface.sockets();
         sockets
-            .find(|(_, s)| s.protocol() == protocol && s.local_endpoint() == endpoint)
-            .map(|(h, _)| h)
-    }
-
-    /// Returns a socket bound on an endpoint
-    pub fn get_bound_2(
-        &self,
-        protocol: Protocol,
-        local_endpoint: impl Into<SocketEndpoint>,
-    ) -> Option<SocketHandle> {
-        let local_endpoint = local_endpoint.into();
-        let iface_rfc = self.stack.iface();
-        let iface = iface_rfc.borrow();
-        let mut sockets = iface.sockets();
-        sockets
             .find(|(handle, s)| {
                 s.protocol() == protocol
-                    && s.local_endpoint() == local_endpoint
+                    && s.local_endpoint() == endpoint
                     // This condition prevents from returning socket connection instead
-                    // of bound socket, unattached to connection.
+                    // of listening socket, unattached to connection.
                     && self.bindings.borrow().contains(handle)
             })
             .map(|(h, _)| h)
