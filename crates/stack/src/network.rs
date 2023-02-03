@@ -89,7 +89,7 @@ pub struct Network {
     is_tun: bool,
     sender: StackSender,
     poller: StackPoller,
-    bindings: Rc<RefCell<HashSet<SocketHandle>>>,
+    pub bindings: Rc<RefCell<HashSet<SocketHandle>>>,
     connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
     handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
     ingress: Channel<IngressEvent>,
