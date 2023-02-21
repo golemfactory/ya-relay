@@ -375,15 +375,16 @@ impl Network {
                         );
 
                         remove.push((meta, handle));
-                        if let Ok(desc) = meta.try_into() {
-                            events.push(IngressEvent::Disconnected { desc })
-                        } else {
-                            log::debug!(
-                                "{}: unable to convert socket metadata {:?}",
-                                self.name,
-                                desc
-                            );
-                        }
+                        events.push(IngressEvent::Disconnected { desc: meta })
+                        // if let Ok(desc) = meta.try_into() {
+                        //
+                        // } else {
+                        //     log::debug!(
+                        //         "{}: unable to convert socket metadata {:?}",
+                        //         self.name,
+                        //         desc
+                        //     );
+                        // }
                     }
                     None if desc.local.is_specified() => {
                         log::debug!("{}: closing socket [{handle}]: {:?}", self.name, desc);
@@ -395,7 +396,7 @@ impl Network {
                                 desc
                             );
                             remove.push((meta, handle));
-                            events.push(IngressEvent::Disconnected { desc });
+                            events.push(IngressEvent::Disconnected { desc: meta });
                         } else {
                             log::debug!("{}: unknown socket [{handle}] {:?}", self.name, desc);
                         }
@@ -529,7 +530,7 @@ pub enum IngressEvent {
     /// New connection to a bound endpoint
     InboundConnection { desc: SocketDesc },
     /// Disconnection from a bound endpoint
-    Disconnected { desc: SocketDesc },
+    Disconnected { desc: ConnectionMeta },
     /// Bound endpoint packet
     Packet { desc: SocketDesc, payload: Vec<u8> },
 }
