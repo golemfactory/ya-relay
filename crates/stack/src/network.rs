@@ -364,6 +364,9 @@ impl Network {
         for (handle, socket) in iface.sockets_mut() {
             let mut desc = socket.desc();
 
+            // When socket is closing, smoltcp clears remote endpoint at some point
+            // to `Unspecified`. This is why SocketDesc and ConnectionMeta can differ here.
+            // We will try to use ConnectionMeta, because it conveys more information.
             if socket.is_closed() {
                 match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
@@ -375,16 +378,7 @@ impl Network {
                         );
 
                         remove.push((meta, handle));
-                        events.push(IngressEvent::Disconnected { desc: meta })
-                        // if let Ok(desc) = meta.try_into() {
-                        //
-                        // } else {
-                        //     log::debug!(
-                        //         "{}: unable to convert socket metadata {:?}",
-                        //         self.name,
-                        //         desc
-                        //     );
-                        // }
+                        events.push(IngressEvent::Disconnected { desc: meta.into() })
                     }
                     None if desc.local.is_specified() => {
                         log::debug!("{}: closing socket [{handle}]: {:?}", self.name, desc);
@@ -396,7 +390,7 @@ impl Network {
                                 desc
                             );
                             remove.push((meta, handle));
-                            events.push(IngressEvent::Disconnected { desc: meta });
+                            events.push(IngressEvent::Disconnected { desc: meta.into() });
                         } else {
                             log::debug!("{}: unknown socket [{handle}] {:?}", self.name, desc);
                         }
@@ -425,7 +419,7 @@ impl Network {
                 if let Ok(meta) = desc.try_into() {
                     if !self.is_connected(&meta) {
                         self.add_connection(Connection { handle, meta });
-                        events.push(IngressEvent::InboundConnection { desc });
+                        events.push(IngressEvent::InboundConnection { desc: meta.into() });
                     }
                 }
 
@@ -530,7 +524,7 @@ pub enum IngressEvent {
     /// New connection to a bound endpoint
     InboundConnection { desc: SocketDesc },
     /// Disconnection from a bound endpoint
-    Disconnected { desc: ConnectionMeta },
+    Disconnected { desc: SocketDesc },
     /// Bound endpoint packet
     Packet { desc: SocketDesc, payload: Vec<u8> },
 }
