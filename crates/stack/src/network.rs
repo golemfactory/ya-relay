@@ -89,6 +89,8 @@ pub struct Network {
     is_tun: bool,
     sender: StackSender,
     poller: StackPoller,
+    /// Set of listening sockets. Socket is removed from this set, when connection is created.
+    /// Network stack will create new binding using new handle in place of previous.
     bindings: Rc<RefCell<HashSet<SocketHandle>>>,
     connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
     handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
@@ -256,6 +258,27 @@ impl Network {
             .collect()
     }
 
+    pub fn sockets_meta(&self) -> Vec<(SocketHandle, SocketDesc, SocketState<ChannelMetrics>)> {
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        let connections = self.handles.borrow();
+
+        iface
+            .sockets()
+            .map(|(handle, s)| {
+                (
+                    handle,
+                    connections
+                        .get(&handle)
+                        .cloned()
+                        .map(|meta| meta.into())
+                        .unwrap_or(s.desc()),
+                    s.state(),
+                )
+            })
+            .collect()
+    }
+
     pub fn metrics(&self) -> ChannelMetrics {
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
@@ -364,6 +387,9 @@ impl Network {
         for (handle, socket) in iface.sockets_mut() {
             let mut desc = socket.desc();
 
+            // When socket is closing, smoltcp clears remote endpoint at some point
+            // to `Unspecified`. This is why SocketDesc and ConnectionMeta can differ here.
+            // We will try to use ConnectionMeta, because it conveys more information.
             if socket.is_closed() {
                 match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
