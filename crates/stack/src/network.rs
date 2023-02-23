@@ -89,6 +89,8 @@ pub struct Network {
     is_tun: bool,
     sender: StackSender,
     poller: StackPoller,
+    /// Set of listening sockets. Socket is removed from this set, when connection is created.
+    /// Network stack will create new binding using new handle in place of previous.
     pub bindings: Rc<RefCell<HashSet<SocketHandle>>>,
     pub connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
     pub handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
@@ -252,6 +254,26 @@ impl Network {
                 let mut state = s.state();
                 state.set_inner(metrics);
                 (desc, state)
+            })
+            .collect()
+    }
+
+    pub fn sockets_meta(&self) -> Vec<(SocketHandle, SocketDesc)> {
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        let connections = self.handles.borrow();
+
+        iface
+            .sockets()
+            .map(|(handle, s)| {
+                (
+                    handle,
+                    connections
+                        .get(&handle)
+                        .cloned()
+                        .map(|meta| meta.into())
+                        .unwrap_or(s.desc()),
+                )
             })
             .collect()
     }
