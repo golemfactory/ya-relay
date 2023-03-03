@@ -258,7 +258,7 @@ impl Network {
             .collect()
     }
 
-    pub fn sockets_meta(&self) -> Vec<(SocketHandle, SocketDesc)> {
+    pub fn sockets_meta(&self) -> Vec<(SocketHandle, SocketDesc, SocketState<ChannelMetrics>)> {
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
         let connections = self.handles.borrow();
@@ -273,6 +273,7 @@ impl Network {
                         .cloned()
                         .map(|meta| meta.into())
                         .unwrap_or(s.desc()),
+                    s.state(),
                 )
             })
             .collect()
