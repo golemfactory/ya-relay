@@ -394,7 +394,8 @@ impl Network {
                 match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
                         log::debug!(
-                            "{}: closing socket [{handle}]: {:?} / {:?}",
+                            "{}: closing socket [{}]: {:?} / {:?}",
+                            handle,
                             self.name,
                             desc,
                             meta
@@ -404,18 +405,19 @@ impl Network {
                         events.push(IngressEvent::Disconnected { desc: meta.into() })
                     }
                     None if desc.local.is_specified() => {
-                        log::debug!("{}: closing socket [{handle}]: {:?}", self.name, desc);
+                        log::debug!("{}: closing socket [{}]: {:?}", handle, self.name, desc);
 
                         if let Ok(meta) = desc.try_into() {
                             log::debug!(
-                                "{}: removing unregistered socket [{handle}] {:?}",
+                                "{}: removing unregistered socket [{}] {:?}",
+                                handle,
                                 self.name,
                                 desc
                             );
                             remove.push((meta, handle));
-                            events.push(IngressEvent::Disconnected { desc: meta.into() });
+                            events.push(IngressEvent::Disconnected { desc });
                         } else {
-                            log::debug!("{}: unknown socket [{handle}] {:?}", self.name, desc);
+                            log::debug!("{}: unknown socket [{}] {:?}", handle, self.name, desc);
                         }
                     }
                     _ => (),
