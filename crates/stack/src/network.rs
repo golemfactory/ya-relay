@@ -240,6 +240,18 @@ impl Network {
         .boxed_local()
     }
 
+    pub fn bindings(&self) -> core::cell::Ref<'_, HashSet<SocketHandle>> {
+        self.bindings.borrow()
+    }
+
+    pub fn handles(&self) -> core::cell::Ref<'_, HashMap<SocketHandle, ConnectionMeta>> {
+        self.handles.borrow()
+    }
+
+    pub fn connections(&self) -> core::cell::Ref<'_, HashMap<ConnectionMeta, Connection>> {
+        self.connections.borrow()
+    }
+
     pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
