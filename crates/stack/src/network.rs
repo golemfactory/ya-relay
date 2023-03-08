@@ -89,6 +89,8 @@ pub struct Network {
     is_tun: bool,
     sender: StackSender,
     poller: StackPoller,
+    /// Set of listening sockets. Socket is removed from this set, when connection is created.
+    /// Network stack will create new binding using new handle in place of previous.
     bindings: Rc<RefCell<HashSet<SocketHandle>>>,
     connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
     handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
@@ -124,18 +126,25 @@ impl Network {
         network
     }
 
-    /// Returns a socket bound on an endpoint
+    /// Returns a socket listening on an endpoint and ready for incoming
+    /// connections. Sockets already connected won't be returned.
     pub fn get_bound(
         &self,
         protocol: Protocol,
-        endpoint: impl Into<SocketEndpoint>,
+        local_endpoint: impl Into<SocketEndpoint>,
     ) -> Option<SocketHandle> {
-        let endpoint = endpoint.into();
+        let endpoint = local_endpoint.into();
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
         let mut sockets = iface.sockets();
         sockets
-            .find(|(_, s)| s.protocol() == protocol && s.local_endpoint() == endpoint)
+            .find(|(handle, s)| {
+                s.protocol() == protocol
+                    && s.local_endpoint() == endpoint
+                    // This condition prevents from returning socket connection instead
+                    // of listening socket, unattached to connection.
+                    && self.bindings.borrow().contains(handle)
+            })
             .map(|(h, _)| h)
     }
 
@@ -231,6 +240,18 @@ impl Network {
         .boxed_local()
     }
 
+    pub fn bindings(&self) -> core::cell::Ref<'_, HashSet<SocketHandle>> {
+        self.bindings.borrow()
+    }
+
+    pub fn handles(&self) -> core::cell::Ref<'_, HashMap<SocketHandle, ConnectionMeta>> {
+        self.handles.borrow()
+    }
+
+    pub fn connections(&self) -> core::cell::Ref<'_, HashMap<ConnectionMeta, Connection>> {
+        self.connections.borrow()
+    }
+
     pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
@@ -245,6 +266,27 @@ impl Network {
                 let mut state = s.state();
                 state.set_inner(metrics);
                 (desc, state)
+            })
+            .collect()
+    }
+
+    pub fn sockets_meta(&self) -> Vec<(SocketHandle, SocketDesc, SocketState<ChannelMetrics>)> {
+        let iface_rfc = self.stack.iface();
+        let iface = iface_rfc.borrow();
+        let connections = self.handles.borrow();
+
+        iface
+            .sockets()
+            .map(|(handle, s)| {
+                (
+                    handle,
+                    connections
+                        .get(&handle)
+                        .cloned()
+                        .map(|meta| meta.into())
+                        .unwrap_or(s.desc()),
+                    s.state(),
+                )
             })
             .collect()
     }
@@ -357,31 +399,37 @@ impl Network {
         for (handle, socket) in iface.sockets_mut() {
             let mut desc = socket.desc();
 
+            // When socket is closing, smoltcp clears remote endpoint at some point
+            // to `Unspecified`. This is why SocketDesc and ConnectionMeta can differ here.
+            // We will try to use ConnectionMeta, because it conveys more information.
             if socket.is_closed() {
                 match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
-                        log::debug!("{}: closing socket: {:?} / {:?}", self.name, desc, meta);
+                        log::debug!(
+                            "{}: closing socket [{}]: {:?} / {:?}",
+                            handle,
+                            self.name,
+                            desc,
+                            meta
+                        );
 
                         remove.push((meta, handle));
-                        if let Ok(desc) = meta.try_into() {
-                            events.push(IngressEvent::Disconnected { desc })
-                        } else {
+                        events.push(IngressEvent::Disconnected { desc: meta.into() })
+                    }
+                    None if desc.local.is_specified() => {
+                        log::debug!("{}: closing socket [{}]: {:?}", handle, self.name, desc);
+
+                        if let Ok(meta) = desc.try_into() {
                             log::debug!(
-                                "{}: unable to convert socket metadata {:?}",
+                                "{}: removing unregistered socket [{}] {:?}",
+                                handle,
                                 self.name,
                                 desc
                             );
-                        }
-                    }
-                    None if desc.local.is_specified() => {
-                        log::debug!("{}: closing socket: {:?}", self.name, desc);
-
-                        if let Ok(meta) = desc.try_into() {
-                            log::debug!("{}: removing unregistered socket {:?}", self.name, desc);
                             remove.push((meta, handle));
                             events.push(IngressEvent::Disconnected { desc });
                         } else {
-                            log::debug!("{}: unknown socket {:?}", self.name, desc);
+                            log::debug!("{}: unknown socket [{}] {:?}", handle, self.name, desc);
                         }
                     }
                     _ => (),
