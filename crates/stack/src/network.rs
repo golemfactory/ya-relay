@@ -131,9 +131,9 @@ impl Network {
     pub fn get_bound(
         &self,
         protocol: Protocol,
-        endpoint: impl Into<SocketEndpoint>,
+        local_endpoint: impl Into<SocketEndpoint>,
     ) -> Option<SocketHandle> {
-        let endpoint = endpoint.into();
+        let endpoint = local_endpoint.into();
         let iface_rfc = self.stack.iface();
         let iface = iface_rfc.borrow();
         let mut sockets = iface.sockets();
@@ -238,6 +238,18 @@ impl Network {
             }
         }
         .boxed_local()
+    }
+
+    pub fn bindings(&self) -> core::cell::Ref<'_, HashSet<SocketHandle>> {
+        self.bindings.borrow()
+    }
+
+    pub fn handles(&self) -> core::cell::Ref<'_, HashMap<SocketHandle, ConnectionMeta>> {
+        self.handles.borrow()
+    }
+
+    pub fn connections(&self) -> core::cell::Ref<'_, HashMap<ConnectionMeta, Connection>> {
+        self.connections.borrow()
     }
 
     pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
@@ -394,23 +406,20 @@ impl Network {
                 match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
                         log::debug!(
-                            "{}: closing socket [{handle}]: {:?} / {:?}",
-                            self.name,
-                            desc,
-                            meta
+                            "{}: closing socket [{handle}]: {desc:?} / {meta:?}",
+                            self.name
                         );
 
                         remove.push((meta, handle));
                         events.push(IngressEvent::Disconnected { desc: meta.into() })
                     }
                     None if desc.local.is_specified() => {
-                        log::debug!("{}: closing socket [{handle}]: {:?}", self.name, desc);
+                        log::debug!("{}: closing socket [{handle}]: {desc:?}", self.name);
 
                         if let Ok(meta) = desc.try_into() {
                             log::debug!(
-                                "{}: removing unregistered socket [{handle}] {:?}",
+                                "{}: removing unregistered socket [{handle}] {desc:?}",
                                 self.name,
-                                desc
                             );
                             remove.push((meta, handle));
                             events.push(IngressEvent::Disconnected { desc: meta.into() });

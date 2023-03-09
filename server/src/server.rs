@@ -1046,10 +1046,10 @@ pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, St
             kind: Some(proto::packet::Kind::Response(proto::Response { kind, code, .. })),
             ..
         }) => match kind {
-            None => Err(StatusCode::from_i32(code as i32).ok_or(StatusCode::Undefined)?),
-            Some(response) => match StatusCode::from_i32(code as i32) {
+            None => Err(StatusCode::from_i32(code).ok_or(StatusCode::Undefined)?),
+            Some(response) => match StatusCode::from_i32(code) {
                 Some(StatusCode::Ok) => Ok(response),
-                _ => Err(StatusCode::from_i32(code as i32).ok_or(StatusCode::Undefined)?),
+                _ => Err(StatusCode::from_i32(code).ok_or(StatusCode::Undefined)?),
             },
         },
         _ => Err(StatusCode::Undefined),

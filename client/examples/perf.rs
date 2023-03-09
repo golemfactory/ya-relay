@@ -362,7 +362,7 @@ mod load_test {
                 let now = Instant::now();
                 if now > *start + duration {
                     let overshoot = now - (*start + duration);
-                    *start = now - overshoot;
+                    *start = now.checked_sub(overshoot).unwrap();
 
                     break;
                 }

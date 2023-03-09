@@ -360,11 +360,7 @@ impl SessionManager {
 
     pub async fn sessions(&self) -> Vec<Arc<Session>> {
         let state = self.state.read().await;
-        state
-            .sessions
-            .iter()
-            .map(|(_, session)| session.clone())
-            .collect()
+        state.sessions.values().cloned().collect()
     }
 
     pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<Session>> {
