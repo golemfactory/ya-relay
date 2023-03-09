@@ -30,6 +30,7 @@ use crate::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;
 
+#[derive(Clone, Copy)]
 pub enum PortType {
     Messages = 1,
     Transfer = 2,
@@ -331,22 +332,19 @@ impl TcpLayer {
 
                             if tx.send(payload).is_err() {
                                 log::trace!(
-                                    "[{}] ingress router: ingress handler closed for node {}",
-                                    myself.net_id(),
-                                    node_id
+                                    "[{}] ingress router: ingress handler closed for node {node_id}",
+                                    myself.net_id()
                                 );
                             } else {
                                 log::trace!(
-                                    "[{}] ingress router: forwarded {} B",
-                                    myself.net_id(),
-                                    payload_len
+                                    "[{}] ingress router: forwarded {payload_len} B",
+                                    myself.net_id()
                                 );
                             }
                         }
                         _ => log::trace!(
-                            "[{}] ingress router: unknown remote address {}",
-                            myself.net_id(),
-                            remote_address
+                            "[{}] ingress router: unknown remote address {remote_address}",
+                            myself.net_id()
                         ),
                     };
                 }

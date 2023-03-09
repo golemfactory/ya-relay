@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{SlotId, FORWARD_SLOT_ID};
@@ -104,6 +104,14 @@ impl NodeEntry {
     #[inline]
     pub fn is_p2p(&self) -> bool {
         self.slot == FORWARD_SLOT_ID
+    }
+
+    pub async fn guard(&self) -> (OwnedRwLockWriteGuard<()>, bool) {
+        let conn_lock = self.conn_lock.clone();
+        match conn_lock.clone().try_write_owned() {
+            Ok(guard) => (guard, false),
+            Err(_) => (conn_lock.write_owned().await, true),
+        }
     }
 }
 

@@ -562,98 +562,87 @@ impl SessionManager {
             .ok_or_else(|| anyhow!("Network sink not initialized"))
     }
 
+    async fn forward_channel(
+        &self,
+        node_id: NodeId,
+        channel: TransportType,
+    ) -> Option<ForwardSender> {
+        let state = self.state.read().await;
+        match channel {
+            TransportType::Reliable => state.forward_reliable.get(&node_id).cloned(),
+            TransportType::Transfer => state.forward_transfer.get(&node_id).cloned(),
+            TransportType::Unreliable => state.forward_unreliable.get(&node_id).cloned(),
+        }
+    }
+
+    async fn set_forward_channel(
+        &self,
+        node_id: NodeId,
+        channel: TransportType,
+        tx: ForwardSender,
+    ) {
+        let mut state = self.state.write().await;
+        match channel {
+            TransportType::Reliable => state.forward_reliable.insert(node_id, tx),
+            TransportType::Transfer => state.forward_transfer.insert(node_id, tx),
+            TransportType::Unreliable => state.forward_unreliable.insert(node_id, tx),
+        };
+    }
+
     pub async fn forward(
         &self,
-        _session: Arc<Session>,
+        session: Arc<Session>,
         node_id: NodeId,
     ) -> anyhow::Result<ForwardSender> {
-        // TODO: Use `_session` parameter. We can allow using other session, than default.
-
-        let node = self.get_node(node_id).await?;
-        let tx = {
-            match {
-                let state = self.state.read().await;
-                state.forward_reliable.get(&node_id).cloned()
-            } {
-                Some(tx) => tx,
-                None => {
-                    self.virtual_tcp_fast_lane.borrow_mut().clear();
-
-                    let conn_lock = node.conn_lock.clone();
-                    let (_guard, was_locked) = match conn_lock.try_write() {
-                        Ok(guard) => (guard, false),
-                        Err(_) => (conn_lock.write().await, true),
-                    };
-
-                    if was_locked {
-                        if let Some(tx) = {
-                            let state = self.state.read().await;
-                            state.forward_reliable.get(&node_id).cloned()
-                        } {
-                            return Ok(tx);
-                        }
-                    }
-
-                    let conn = self
-                        .virtual_tcp
-                        .connect(node.clone(), PortType::Messages)
-                        .await?;
-                    let (tx, rx) = mpsc::channel(1);
-                    tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
-
-                    let mut state = self.state.write().await;
-                    state.forward_reliable.insert(node_id, tx.clone());
-
-                    tx
-                }
-            }
-        };
-
-        Ok(tx)
+        self.forward_generic(session, node_id, TransportType::Reliable)
+            .await
     }
 
     pub async fn forward_transfer(
         &self,
+        session: Arc<Session>,
+        node_id: NodeId,
+    ) -> anyhow::Result<ForwardSender> {
+        self.forward_generic(session, node_id, TransportType::Transfer)
+            .await
+    }
+
+    pub async fn forward_generic(
+        &self,
         _session: Arc<Session>,
         node_id: NodeId,
+        channel: TransportType,
     ) -> anyhow::Result<ForwardSender> {
         // TODO: Use `_session` parameter. We can allow using other session, than default.
 
         let node = self.get_node(node_id).await?;
         let tx = {
-            match {
-                let state = self.state.read().await;
-                state.forward_transfer.get(&node_id).cloned()
-            } {
+            match self.forward_channel(node_id, channel).await {
                 Some(tx) => tx,
                 None => {
                     self.virtual_tcp_fast_lane.borrow_mut().clear();
 
-                    let conn_lock = node.conn_lock.clone();
-                    let (_guard, was_locked) = match conn_lock.try_write() {
-                        Ok(guard) => (guard, false),
-                        Err(_) => (conn_lock.write().await, true),
-                    };
+                    let (_guard, was_locked) = node.guard().await;
 
                     if was_locked {
-                        if let Some(tx) = {
-                            let state = self.state.read().await;
-                            state.forward_transfer.get(&node_id).cloned()
-                        } {
+                        // If we still don't have this channel, probably it was connected on other
+                        // `TransportType`, so we should try to make new connection anyway.
+                        if let Some(tx) = self.forward_channel(node_id, channel).await {
                             return Ok(tx);
                         }
                     }
 
-                    let conn = self
-                        .virtual_tcp
-                        .connect(node.clone(), PortType::Transfer)
-                        .await?;
+                    let channel_port = match channel {
+                        TransportType::Reliable => PortType::Messages,
+                        TransportType::Transfer => PortType::Transfer,
+                        _ => bail!("Programming error: `forward_generic` shouldn't been used for unreliable connection.")
+                    };
+
+                    let conn = self.virtual_tcp.connect(node.clone(), channel_port).await?;
                     let (tx, rx) = mpsc::channel(1);
                     tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
 
-                    let mut state = self.state.write().await;
-                    state.forward_transfer.insert(node_id, tx.clone());
-
+                    self.set_forward_channel(node_id, channel, tx.clone()).await;
                     tx
                 }
             }
@@ -668,6 +657,16 @@ impl SessionManager {
         node_id: NodeId,
     ) -> anyhow::Result<ForwardSender> {
         let node = self.get_node(node_id).await?;
+
+        // This will return fast, if we already have this channel.
+        // These lines are not necessary, because code below would do the job,
+        // but this way we avoid querying write lock on every attaempt to send message.
+        if let Some(tx) = self
+            .forward_channel(node_id, TransportType::Unreliable)
+            .await
+        {
+            return Ok(tx);
+        }
 
         let (tx, rx) = {
             let mut state = self.state.write().await;
@@ -704,12 +703,11 @@ impl SessionManager {
 
             if let Err(err) = self.virtual_tcp.send(payload, connection).await {
                 log::debug!(
-                    "[{}] forward to {} through {} (session id: {}) failed: {}",
+                    "[{}] forward to {} through {} (session id: {}) failed: {err}",
                     self.config.node_id,
                     node.id,
                     session.remote,
                     session.id,
-                    err
                 );
                 break;
             }
@@ -744,12 +742,11 @@ impl SessionManager {
             let forward = Forward::unreliable(session.id, node.slot, payload);
             if let Err(error) = session.send(forward).await {
                 log::debug!(
-                    "[{}] forward (U) to {} through {} (session id: {}) failed: {}",
+                    "[{}] forward (U) to {} through {} (session id: {}) failed: {error}",
                     self.config.node_id,
                     node.id,
                     session.remote,
-                    session.id,
-                    error
+                    session.id
                 );
                 break;
             }
