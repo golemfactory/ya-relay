@@ -223,7 +223,7 @@ impl<'a> Stack<'a> {
     pub(crate) fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
-            log::debug!("!!! Aborting socket. Handle: {handle:?} socket: {sock:?}");
+            log::debug!("!!! Aborting socket. Handle: {handle:?} socket: {}", sock.state().to_string());
             sock.abort();
         } else {
             log::debug!("!!! Failed to find/abort sock. Handle: {handle:?}");
