@@ -320,16 +320,17 @@ impl Network {
 
     #[inline(always)]
     fn remove_connection(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+        self.stack.remove(meta, handle);
+        self.handles.borrow_mut().remove(&handle);
+        self.sender.remove(&handle);
+
         if !meta.remote.is_specified() {
             log::debug!("!!! Not removing socket. Meta: {meta:?}, handle: {handle:?}");
             return;
         } else {
             log::debug!("!!! Removing socket. Meta: {meta:?}, handle: {handle:?}");
         }
-        self.stack.remove(meta, handle);
-        self.handles.borrow_mut().remove(&handle);
         self.connections.borrow_mut().remove(meta);
-        self.sender.remove(&handle);
     }
 
     /// Inject send data into the stack
@@ -430,7 +431,12 @@ impl Network {
                             log::debug!("{}: unknown socket [{handle}] {:?}", self.name, desc);
                         }
                     }
-                    _ => (),
+                    _ => {
+                        // In this case socket got RST packet and it's state was cleared,
+                        // so we don't have any metadata for it, but we need to remove it.
+                        log::debug!("Removing reset socket {handle}");
+                        remove.push((ConnectionMeta::unspecified(desc.protocol), handle));
+                    }
                 };
             }
 
