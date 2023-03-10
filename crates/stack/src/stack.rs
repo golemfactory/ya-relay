@@ -212,10 +212,10 @@ impl<'a> Stack<'a> {
         let mut iface = self.iface.borrow_mut();
         // log::debug!("!!! Disconnect")
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
-            log::debug!("!!! Disconnecting socket. Handle: {handle:?}, sock: {}", sock.state().to_string());
+            log::debug!("!!! Disconnecting socket. Handle: {handle:?}.");
             sock.close();
         } else {
-            log::debug!("!!! Failed to disconnect sock. Handle: {handle:?}");
+            log::debug!("!!! Failed to find/disconnect sock. Handle: {handle:?}");
         }
         Disconnect::new(handle, self.iface.clone())
     }
@@ -223,7 +223,7 @@ impl<'a> Stack<'a> {
     pub(crate) fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
-            log::debug!("!!! Aborting socket. Handle: {handle:?} socket: {}", sock.state().to_string());
+            log::debug!("!!! Aborting socket. Handle: {handle:?}.");
             sock.abort();
         } else {
             log::debug!("!!! Failed to find/abort sock. Handle: {handle:?}");
