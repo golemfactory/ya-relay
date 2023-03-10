@@ -166,6 +166,8 @@ impl TcpLayer {
             node.session.id
         );
 
+        print_sockets(&self.net);
+
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
         let endpoint = IpEndpoint::new(node.endpoint.addr, port as u16);
@@ -480,5 +482,21 @@ impl From<u16> for PortType {
         } else {
             PortType::Messages
         }
+    }
+}
+
+pub fn print_sockets(network: &Network) {
+    log::debug!("[inet] existing sockets:");
+    for (handle, meta, state) in network.sockets_meta() {
+        log::debug!("[inet] socket: {handle} ({}) {meta:?}", state.to_string());
+    }
+    log::debug!("[inet] existing connections:");
+    for (handle, meta) in network.handles.borrow_mut().iter() {
+        log::debug!("[inet] connection: {handle} {meta:?}");
+    }
+
+    log::debug!("[inet] listening sockets:");
+    for handle in network.bindings.borrow_mut().iter() {
+        log::debug!("[inet] listening socket: {handle}");
     }
 }

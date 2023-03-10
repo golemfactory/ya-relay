@@ -600,7 +600,7 @@ impl SessionManager {
     //                     Ok(guard) => (guard, false),
     //                     Err(_) => {
     //                         log::debug!("!!! Was not locked: {node_id:?}");
-    //                         (conn_lock.write().await, true) 
+    //                         (conn_lock.write().await, true)
     //                     },
     //                 };
 

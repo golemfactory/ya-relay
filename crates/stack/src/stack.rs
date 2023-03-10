@@ -182,7 +182,7 @@ impl<'a> Stack<'a> {
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
 
-        log::debug!("!!! Connecting to {} ({})", remote, protocol);
+        log::debug!("!!! Connecting to {remote} ({protocol}), handle: {handle}");
 
         match {
             let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
@@ -190,7 +190,7 @@ impl<'a> Stack<'a> {
         } {
             Ok(socket) => socket.set_defaults(),
             Err(e) => {
-                log::debug!("!!! Failed to connecting to {} ({})", remote, protocol);
+                log::debug!("!!! Failed to connecting to {remote} ({protocol}), handle: {handle}");
                 iface.remove_socket(handle);
                 ports.free(Protocol::Tcp, port);
                 return Err(Error::ConnectionError(e.to_string()));
