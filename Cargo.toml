@@ -10,5 +10,9 @@ opt-level = 3
 lto = "thin"
 
 [patch.crates-io]
-ya-relay-util = { path = "crates/util" }
+ya-relay-client = { path = "client" }
+ya-relay-core = { path = "crates/core" }
+ya-relay-proto = { path = "crates/proto" }
 ya-relay-stack = { path = "crates/stack" }
+ya-relay-util = { path = "crates/util" }
+ya-relay-server = { path = "server" }

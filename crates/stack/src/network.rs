@@ -321,7 +321,10 @@ impl Network {
     #[inline(always)]
     fn remove_connection(&self, meta: &ConnectionMeta, handle: SocketHandle) {
         if !meta.remote.is_specified() {
+            log::debug!("!!! Not removing socket. Meta: {meta:?}, handle: {handle:?}");
             return;
+        } else {
+            log::debug!("!!! Removing socket. Meta: {meta:?}, handle: {handle:?}");
         }
         self.stack.remove(meta, handle);
         self.handles.borrow_mut().remove(&handle);

@@ -220,7 +220,7 @@ impl Client {
     pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         let node_id = match self.sessions.alias(&node_id).await {
             Some(target_id) => {
-                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
+                log::debug!("!!! Resolved id [{}] as an alias of [{}]", node_id, target_id);
                 target_id
             }
             None => node_id,
