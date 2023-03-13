@@ -90,7 +90,7 @@ impl ConnectionMeta {
         Self {
             protocol,
             local: IpEndpoint::default(),
-            remote: IpEndpoint::default()
+            remote: IpEndpoint::default(),
         }
     }
 

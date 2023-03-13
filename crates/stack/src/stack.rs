@@ -181,7 +181,6 @@ impl<'a> Stack<'a> {
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
 
-
         match {
             let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
             socket.connect(ctx, remote, local).map(|_| socket)
