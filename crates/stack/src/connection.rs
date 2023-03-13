@@ -86,6 +86,14 @@ impl ConnectionMeta {
         }
     }
 
+    pub fn unspecified(protocol: Protocol) -> Self {
+        Self {
+            protocol,
+            local: IpEndpoint::default(),
+            remote: IpEndpoint::default(),
+        }
+    }
+
     #[inline]
     pub fn to_socket_addr(&self) -> SocketAddr {
         SocketAddr::from((self.local.addr, self.local.port))

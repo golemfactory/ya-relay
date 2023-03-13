@@ -148,6 +148,7 @@ impl<'a> Stack<'a> {
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
+        log::trace!("Unbinding {protocol:?} {endpoint:?}");
         let mut iface = self.iface.borrow_mut();
         let mut sockets = iface.sockets_mut();
 
@@ -160,7 +161,6 @@ impl<'a> Stack<'a> {
             .ok_or(Error::SocketClosed)?;
 
         let _ = endpoint.ip_endpoint().map(|e| {
-            log::trace!("unbinding {} ({})", e, protocol);
             let mut ports = self.ports.borrow_mut();
             ports.free(protocol, e.port);
         });
@@ -180,8 +180,6 @@ impl<'a> Stack<'a> {
         let handle = iface.add_socket(tcp_socket(self.config.tcp_mem.rx, self.config.tcp_mem.tx));
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
-
-        log::trace!("connecting to {} ({})", remote, protocol);
 
         match {
             let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
@@ -209,6 +207,7 @@ impl<'a> Stack<'a> {
     pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+            log::trace!("Disconnecting. Socket handle: {handle:?}.");
             sock.close();
         }
         Disconnect::new(handle, self.iface.clone())
@@ -217,6 +216,7 @@ impl<'a> Stack<'a> {
     pub(crate) fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+            log::trace!("Aborting. Socket handle: {handle:?}.");
             sock.abort();
         }
     }
@@ -230,12 +230,7 @@ impl<'a> Stack<'a> {
             let mut sockets = iface.sockets();
             sockets.find(|(h, _)| h == &handle)
         } {
-            log::trace!(
-                "removing connection: {}:{}:{}",
-                meta.protocol,
-                meta.local,
-                meta.remote,
-            );
+            log::trace!("Removing connection: {meta:?}. Socket hadnle: {handle:?}");
 
             metrics.remove(&socket.desc());
             iface.remove_socket(handle);

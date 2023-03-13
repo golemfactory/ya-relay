@@ -30,6 +30,7 @@ use crate::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;
 
+#[derive(Clone, Copy)]
 pub enum PortType {
     Messages = 1,
     Transfer = 2,
@@ -164,6 +165,8 @@ impl TcpLayer {
             node.id,
             node.session.id
         );
+
+        print_sockets(&self.net);
 
         // This will override previous Node settings, if we had them.
         let node = self.add_virt_node(node).await?;
@@ -331,22 +334,19 @@ impl TcpLayer {
 
                             if tx.send(payload).is_err() {
                                 log::trace!(
-                                    "[{}] ingress router: ingress handler closed for node {}",
-                                    myself.net_id(),
-                                    node_id
+                                    "[{}] ingress router: ingress handler closed for node {node_id}",
+                                    myself.net_id()
                                 );
                             } else {
                                 log::trace!(
-                                    "[{}] ingress router: forwarded {} B",
-                                    myself.net_id(),
-                                    payload_len
+                                    "[{}] ingress router: forwarded {payload_len} B",
+                                    myself.net_id()
                                 );
                             }
                         }
                         _ => log::trace!(
-                            "[{}] ingress router: unknown remote address {}",
-                            myself.net_id(),
-                            remote_address
+                            "[{}] ingress router: unknown remote address {remote_address}",
+                            myself.net_id()
                         ),
                     };
                 }
@@ -482,5 +482,21 @@ impl From<u16> for PortType {
         } else {
             PortType::Messages
         }
+    }
+}
+
+pub fn print_sockets(network: &Network) {
+    log::debug!("[inet] existing sockets:");
+    for (handle, meta, state) in network.sockets_meta() {
+        log::debug!("[inet] socket: {handle} ({}) {meta:?}", state.to_string());
+    }
+    log::debug!("[inet] existing connections:");
+    for (handle, meta) in network.handles.borrow_mut().iter() {
+        log::debug!("[inet] connection: {handle} {meta:?}");
+    }
+
+    log::debug!("[inet] listening sockets:");
+    for handle in network.bindings.borrow_mut().iter() {
+        log::debug!("[inet] listening socket: {handle}");
     }
 }

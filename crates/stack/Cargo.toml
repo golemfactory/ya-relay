@@ -10,7 +10,7 @@ description= "Embeddable networking stack"
 
 [dependencies]
 ya-relay-util = "0.1"
-ya-smoltcp = "0.1"
+ya-smoltcp = { version = "0.1" }
 
 derive_more = "0.99"
 futures = "0.3"
@@ -26,6 +26,7 @@ tokio-stream = "0.1"
 
 [features]
 test-suite = []
+stack-verbose = ["ya-smoltcp/verbose"]
 
 [dev-dependencies]
 anyhow = "1.0"

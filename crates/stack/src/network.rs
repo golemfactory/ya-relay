@@ -91,9 +91,9 @@ pub struct Network {
     poller: StackPoller,
     /// Set of listening sockets. Socket is removed from this set, when connection is created.
     /// Network stack will create new binding using new handle in place of previous.
-    bindings: Rc<RefCell<HashSet<SocketHandle>>>,
-    connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
-    handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
+    pub bindings: Rc<RefCell<HashSet<SocketHandle>>>,
+    pub connections: Rc<RefCell<HashMap<ConnectionMeta, Connection>>>,
+    pub handles: Rc<RefCell<HashMap<SocketHandle, ConnectionMeta>>>,
     ingress: Channel<IngressEvent>,
     egress: Channel<EgressEvent>,
 }
@@ -320,13 +320,14 @@ impl Network {
 
     #[inline(always)]
     fn remove_connection(&self, meta: &ConnectionMeta, handle: SocketHandle) {
+        self.stack.remove(meta, handle);
+        self.handles.borrow_mut().remove(&handle);
+        self.sender.remove(&handle);
+
         if !meta.remote.is_specified() {
             return;
         }
-        self.stack.remove(meta, handle);
-        self.handles.borrow_mut().remove(&handle);
         self.connections.borrow_mut().remove(meta);
-        self.sender.remove(&handle);
     }
 
     /// Inject send data into the stack
@@ -406,33 +407,33 @@ impl Network {
                 match { self.handles.borrow().get(&handle).copied() } {
                     Some(meta) => {
                         log::debug!(
-                            "{}: closing socket [{}]: {:?} / {:?}",
-                            handle,
-                            self.name,
-                            desc,
-                            meta
+                            "{}: closing socket [{handle}]: {desc:?} / {meta:?}",
+                            self.name
                         );
 
                         remove.push((meta, handle));
                         events.push(IngressEvent::Disconnected { desc: meta.into() })
                     }
                     None if desc.local.is_specified() => {
-                        log::debug!("{}: closing socket [{}]: {:?}", handle, self.name, desc);
+                        log::debug!("{}: closing socket [{handle}]: {desc:?}", self.name);
 
                         if let Ok(meta) = desc.try_into() {
                             log::debug!(
-                                "{}: removing unregistered socket [{}] {:?}",
-                                handle,
+                                "{}: removing unregistered socket [{handle}] {desc:?}",
                                 self.name,
-                                desc
                             );
                             remove.push((meta, handle));
-                            events.push(IngressEvent::Disconnected { desc });
+                            events.push(IngressEvent::Disconnected { desc: meta.into() });
                         } else {
-                            log::debug!("{}: unknown socket [{}] {:?}", handle, self.name, desc);
+                            log::debug!("{}: unknown socket [{handle}] {:?}", self.name, desc);
                         }
                     }
-                    _ => (),
+                    _ => {
+                        // In this case socket got RST packet and it's state was cleared,
+                        // so we don't have any metadata for it, but we need to remove it.
+                        log::debug!("Removing reset socket {handle}");
+                        remove.push((ConnectionMeta::unspecified(desc.protocol), handle));
+                    }
                 };
             }
 
@@ -456,7 +457,7 @@ impl Network {
                 if let Ok(meta) = desc.try_into() {
                     if !self.is_connected(&meta) {
                         self.add_connection(Connection { handle, meta });
-                        events.push(IngressEvent::InboundConnection { desc });
+                        events.push(IngressEvent::InboundConnection { desc: meta.into() });
                     }
                 }
 
