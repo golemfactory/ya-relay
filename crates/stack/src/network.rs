@@ -404,37 +404,31 @@ impl Network {
             // to `Unspecified`. This is why SocketDesc and ConnectionMeta can differ here.
             // We will try to use ConnectionMeta, because it conveys more information.
             if socket.is_closed() {
-                match { self.handles.borrow().get(&handle).copied() } {
-                    Some(meta) => {
-                        log::debug!(
-                            "{}: closing socket [{handle}]: {desc:?} / {meta:?}",
-                            self.name
-                        );
+                let meta = self
+                    .handles
+                    .borrow()
+                    .get(&handle)
+                    .copied()
+                    .or(desc.try_into().ok());
 
-                        remove.push((meta, handle));
-                        events.push(IngressEvent::Disconnected { desc: meta.into() })
-                    }
-                    None if desc.local.is_specified() => {
-                        log::debug!("{}: closing socket [{handle}]: {desc:?}", self.name);
+                if let Some(meta) = meta {
+                    // We had established connection with someone and it was closed.
+                    log::debug!(
+                        "{}: closing socket [{handle}]: {desc:?} / {meta:?}",
+                        self.name
+                    );
+                    events.push(IngressEvent::Disconnected { desc: meta.into() });
+                } else {
+                    // Connection metadata was cleared.
+                    // Socket probably got RST packet and it's state was cleared,
+                    // or it was only listening socket that wasn't connected at any moment.
+                    log::debug!("Removing socket {handle} with reset metadata");
+                }
 
-                        if let Ok(meta) = desc.try_into() {
-                            log::debug!(
-                                "{}: removing unregistered socket [{handle}] {desc:?}",
-                                self.name,
-                            );
-                            remove.push((meta, handle));
-                            events.push(IngressEvent::Disconnected { desc: meta.into() });
-                        } else {
-                            log::debug!("{}: unknown socket [{handle}] {:?}", self.name, desc);
-                        }
-                    }
-                    _ => {
-                        // In this case socket got RST packet and it's state was cleared,
-                        // so we don't have any metadata for it, but we need to remove it.
-                        log::debug!("Removing reset socket {handle}");
-                        remove.push((ConnectionMeta::unspecified(desc.protocol), handle));
-                    }
-                };
+                remove.push((
+                    meta.unwrap_or(ConnectionMeta::unspecified(desc.protocol)),
+                    handle,
+                ));
             }
 
             let mut received = 0;
@@ -444,7 +438,7 @@ impl Network {
                     Ok(Some(tuple)) => tuple,
                     Ok(None) => break,
                     Err(err) => {
-                        log::debug!("{}: ingress packet error: {}", self.name, err);
+                        log::debug!("{}: ingress packet error: {err}", self.name);
                         continue;
                     }
                 };
@@ -461,7 +455,7 @@ impl Network {
                     }
                 }
 
-                log::trace!("{}: ingress {} B packet", self.name, len);
+                log::trace!("{}: ingress {len} B packet", self.name);
 
                 self.stack.on_received(&desc, len);
                 events.push(IngressEvent::Packet { desc, payload });
@@ -503,7 +497,7 @@ impl Network {
 
         if let Some((p, ep)) = rebind {
             if let Err(e) = self.bind(p, ep) {
-                log::warn!("{}: cannot bind socket {} {:?}: {}", self.name, p, ep, e);
+                log::warn!("{}: cannot bind socket {p} {ep:?}: {e}", self.name);
             }
             let _ = self.stack.poll();
             return self.process_ingress();
