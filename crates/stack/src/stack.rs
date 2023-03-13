@@ -148,6 +148,7 @@ impl<'a> Stack<'a> {
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
+        log::trace!("Unbinding {protocol:?} {endpoint:?}");
         let mut iface = self.iface.borrow_mut();
         let mut sockets = iface.sockets_mut();
 
@@ -159,9 +160,7 @@ impl<'a> Stack<'a> {
             })
             .ok_or(Error::SocketClosed)?;
 
-        log::debug!("!!! unbinding {:?}", endpoint);
         let _ = endpoint.ip_endpoint().map(|e| {
-            log::debug!("!!! unbinding ports {} ({})", e, protocol);
             let mut ports = self.ports.borrow_mut();
             ports.free(protocol, e.port);
         });
@@ -182,7 +181,6 @@ impl<'a> Stack<'a> {
         let port = ports.next(protocol)?;
         let local: IpEndpoint = (ip, port).into();
 
-        log::debug!("!!! Connecting to {remote} ({protocol}), handle: {handle}");
 
         match {
             let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
@@ -190,7 +188,6 @@ impl<'a> Stack<'a> {
         } {
             Ok(socket) => socket.set_defaults(),
             Err(e) => {
-                log::debug!("!!! Failed to connecting to {remote} ({protocol}), handle: {handle}");
                 iface.remove_socket(handle);
                 ports.free(Protocol::Tcp, port);
                 return Err(Error::ConnectionError(e.to_string()));
@@ -210,12 +207,9 @@ impl<'a> Stack<'a> {
 
     pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
         let mut iface = self.iface.borrow_mut();
-        // log::debug!("!!! Disconnect")
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
-            log::debug!("!!! Disconnecting socket. Handle: {handle:?}.");
+            log::trace!("Disconnecting. Socket handle: {handle:?}.");
             sock.close();
-        } else {
-            log::debug!("!!! Failed to find/disconnect sock. Handle: {handle:?}");
         }
         Disconnect::new(handle, self.iface.clone())
     }
@@ -223,10 +217,8 @@ impl<'a> Stack<'a> {
     pub(crate) fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
-            log::debug!("!!! Aborting socket. Handle: {handle:?}.");
+            log::trace!("Aborting. Socket handle: {handle:?}.");
             sock.abort();
-        } else {
-            log::debug!("!!! Failed to find/abort sock. Handle: {handle:?}");
         }
     }
 
@@ -239,23 +231,11 @@ impl<'a> Stack<'a> {
             let mut sockets = iface.sockets();
             sockets.find(|(h, _)| h == &handle)
         } {
-            log::debug!(
-                "!!! Removing connection: {}:{}:{}",
-                meta.protocol,
-                meta.local,
-                meta.remote,
-            );
+            log::trace!("Removing connection: {meta:?}. Socket hadnle: {handle:?}");
 
             metrics.remove(&socket.desc());
             iface.remove_socket(handle);
             ports.free(meta.protocol, meta.local.port);
-        } else {
-            log::debug!(
-                "!!! Failed to find/remove connection: {}:{}:{}",
-                meta.protocol,
-                meta.local,
-                meta.remote,
-            );
         }
     }
 

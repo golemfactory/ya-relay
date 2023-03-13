@@ -325,10 +325,7 @@ impl Network {
         self.sender.remove(&handle);
 
         if !meta.remote.is_specified() {
-            log::debug!("!!! Not removing socket. Meta: {meta:?}, handle: {handle:?}");
             return;
-        } else {
-            log::debug!("!!! Removing socket. Meta: {meta:?}, handle: {handle:?}");
         }
         self.connections.borrow_mut().remove(meta);
     }

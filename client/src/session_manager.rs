@@ -521,10 +521,8 @@ impl SessionManager {
     pub async fn optimal_session(&self, node_id: NodeId) -> anyhow::Result<Arc<Session>> {
         // Maybe we already have optimal session resolved.
         if let Ok(node) = self.get_node(node_id).await {
-            log::debug!("!!! There was already a session for: {node_id:?}");
             return Ok(node.session);
         }
-        log::debug!("!!! Creating new session for: {node_id:?}");
 
         // query node information on the server
         let server_session = self
