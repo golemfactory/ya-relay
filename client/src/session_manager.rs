@@ -575,53 +575,6 @@ impl SessionManager {
         }
     }
 
-    // ) -> anyhow::Result<ForwardSender> {
-    //     // TODO: Use `_session` parameter. We can allow using other session, than default.
-
-    //     let node = self.get_node(node_id).await?;
-    //     let tx = {
-    //         match {
-    //             let state = self.state.read().await;
-    //             // is it always/often none?
-    //             state.forward_reliable.get(&node_id).cloned()
-    //         } {
-    //             Some(tx) => {
-    //                 log::debug!("!!! Found connection to node: {node_id:?}.");
-    //                 tx
-    //             },
-    //             None => {
-    //                 log::debug!("!!! No connection to node: {node_id:?}.");
-    //                 self.virtual_tcp_fast_lane.borrow_mut().clear();
-
-    //                 let conn_lock = node.conn_lock.clone();
-    //                 let (_guard, was_locked) = match conn_lock.try_write() {
-    //                     Ok(guard) => (guard, false),
-    //                     Err(_) => {
-    //                         log::debug!("!!! Was not locked: {node_id:?}");
-    //                         (conn_lock.write().await, true)
-    //                     },
-    //                 };
-
-    //                 if was_locked {
-    //                     if let Some(tx) = {
-    //                         let state = self.state.read().await;
-    //                         state.forward_reliable.get(&node_id).cloned()
-    //                     } {
-    //                         log::debug!("!!! Found forward_reliable for: {node_id:?}");
-    //                         return Ok(tx);
-    //                     }
-    //                 }
-
-    //                 let conn = self
-    //                     .virtual_tcp
-    //                     .connect(node.clone(), PortType::Messages)
-    //                     .await?;
-    //                 let (tx, rx) = mpsc::channel(1);
-    //                 tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
-
-    //                 let mut state = self.state.write().await;
-    //                 state.forward_reliable.insert(node_id, tx.clone());
-
     async fn set_forward_channel(
         &self,
         node_id: NodeId,
