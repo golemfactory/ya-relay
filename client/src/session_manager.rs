@@ -3,11 +3,11 @@ use futures::channel::mpsc;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet}; //, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc}; //, Mutex};
 use tokio::sync::RwLock;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
@@ -32,7 +32,7 @@ use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
 use crate::virtual_layer::{PortType, TcpLayer};
 
-type ReqFingerprint = (Vec<u8>, u64);
+// type ReqFingerprint = (Vec<u8>, u64);
 
 /// This is the only layer, that should know real IP addresses and ports
 /// of other peers. Other layers should use higher level abstractions
@@ -49,7 +49,7 @@ pub struct SessionManager {
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
 
-    pub processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
+    // processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
 }
 
 #[derive(Default)]
@@ -95,7 +95,7 @@ impl SessionManager {
             registry: NodesRegistry::default(),
             guarded: Default::default(),
             state: Arc::new(RwLock::new(state)),
-            processed_requests: Arc::new(Mutex::new(VecDeque::new())),
+            // processed_requests: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
 
@@ -158,23 +158,23 @@ impl SessionManager {
         ids
     }
 
-    fn _record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
-        const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
+    // fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
+    //     const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
 
-        let mut processed_requests = self.processed_requests.lock().unwrap();
-        processed_requests.push_back((session_id, request_id));
-        if processed_requests.len() > REQ_DEDUPLICATE_BUF_SIZE {
-            processed_requests.pop_front();
-        }
-    }
+    //     let mut processed_requests = self.processed_requests.lock().unwrap();
+    //     processed_requests.push_back((session_id, request_id));
+    //     if processed_requests.len() > REQ_DEDUPLICATE_BUF_SIZE {
+    //         processed_requests.pop_front();
+    //     }
+    // }
 
-    fn _is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
-        self.processed_requests
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
-    }
+    // fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
+    //     self.processed_requests
+    //         .lock()
+    //         .unwrap()
+    //         .iter()
+    //         .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
+    // }
 
     async fn init_session(
         &self,
