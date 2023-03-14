@@ -5,6 +5,7 @@ pub mod interface;
 mod metrics;
 mod network;
 pub mod packet;
+mod packet_conv;
 mod patch_smoltcp;
 mod port;
 mod protocol;
@@ -23,5 +24,5 @@ pub use protocol::Protocol;
 pub use socket::{SocketDesc, SocketState};
 pub use stack::Stack;
 pub use ya_smoltcp;
-
 pub type Result<T> = std::result::Result<T, Error>;
+pub use packet_conv::{packet_ether_to_ip_slice, packet_ip_wrap_to_ether};
