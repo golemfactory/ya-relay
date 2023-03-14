@@ -1354,9 +1354,9 @@ impl Handler for SessionManager {
         request: proto::Request,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        log::trace!("Received request packet from {}: {:?}", from, request);
+        log::debug!("Received request packet from {}: {:?}", from, request);
 
-        let (request_id, kind) = match request {
+        let (request_id, kind) = match request.clone() {
             proto::Request {
                 request_id,
                 kind: Some(kind),
@@ -1365,6 +1365,7 @@ impl Handler for SessionManager {
         };
 
         if self.is_request_duplicate(&session_id, request_id) {
+            log::info!("Packet looks duplicate {:?}", request);
             return None;
         }
         self.record_duplicate(session_id.clone(), request_id);
