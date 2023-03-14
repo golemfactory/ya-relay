@@ -8,7 +8,7 @@ use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::{Crypto, CryptoProvider};
@@ -49,6 +49,8 @@ pub struct SessionManager {
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
 
+    simultaneous_challenges: Arc<Semaphore>,
+
     processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
 }
 
@@ -87,6 +89,10 @@ impl SessionManager {
             &state.ingress_channel,
         );
 
+        // We don't want to overwhelm CPU with challenge solving operations.
+        // Leave at least 2 threads for yagna to work.
+        let max_heavy_threads = std::cmp::max(num_cpus::get() - 2, 1);
+
         SessionManager {
             sink: None,
             config,
@@ -95,6 +101,7 @@ impl SessionManager {
             registry: NodesRegistry::default(),
             guarded: Default::default(),
             state: Arc::new(RwLock::new(state)),
+            simultaneous_challenges: Arc::new(Semaphore::new(max_heavy_threads)),
             processed_requests: Arc::new(Mutex::new(VecDeque::new())),
         }
     }
@@ -1162,10 +1169,23 @@ impl SessionManager {
             Err(e) => return Box::pin(futures::future::err(e)),
         };
 
+        let limit = self.simultaneous_challenges.clone();
+
         // Compute challenge in different thread to avoid blocking runtime.
         // Note: computing starts here, not after awaiting.
-        challenge::solve::<ChallengeDigest, _>(request.challenge, request.difficulty, crypto_vec)
-            .boxed_local()
+        async move {
+            // Challenge will be solved in thread, where blocking operations are allowed.
+            // As tokio documentation for `spawn_blocking` states, number of blocking threads
+            // can be very high, so for CPU consuming task, we need to manage number of threads ourselves.
+            let _permit = limit.acquire().await?;
+            challenge::solve::<ChallengeDigest, _>(
+                request.challenge,
+                request.difficulty,
+                crypto_vec,
+            )
+            .await
+        }
+        .boxed_local()
     }
 
     pub async fn prepare_challenge_request(
