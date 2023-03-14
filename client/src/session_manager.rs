@@ -49,7 +49,7 @@ pub struct SessionManager {
     guarded: GuardedSessions,
     state: Arc<RwLock<SessionManagerState>>,
 
-    processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
+    pub processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
 }
 
 #[derive(Default)]
@@ -158,7 +158,7 @@ impl SessionManager {
         ids
     }
 
-    fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
+    fn _record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
         const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
 
         let mut processed_requests = self.processed_requests.lock().unwrap();
@@ -168,7 +168,7 @@ impl SessionManager {
         }
     }
 
-    fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
+    fn _is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
         self.processed_requests
             .lock()
             .unwrap()
@@ -1364,11 +1364,11 @@ impl Handler for SessionManager {
             _ => return None,
         };
 
-        if self.is_request_duplicate(&session_id, request_id) {
-            log::info!("Packet looks duplicate {:?}", request);
-            return None;
-        }
-        self.record_duplicate(session_id.clone(), request_id);
+        // if self.is_request_duplicate(&session_id, request_id) {
+        //     log::info!("Packet looks duplicate {:?}", request);
+        //     return None;
+        // }
+        // self.record_duplicate(session_id.clone(), request_id);
 
         let fut = match kind {
             proto::request::Kind::Ping(request) => {
