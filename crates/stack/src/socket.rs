@@ -1,3 +1,4 @@
+use derive_more::Display;
 use std::hash::{Hash, Hasher};
 
 use derive_more::From;
@@ -36,7 +37,13 @@ fn env_opt<T, F: FnOnce(u64) -> T>(var: &str, f: F) -> Option<Option<T>> {
 }
 
 /// Socket quintuplet
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(Clone, Display, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd)]
+#[display(
+    fmt = "SocketDesc {{ protocol: {}, local: {}, remote: {} }}",
+    protocol,
+    local,
+    remote
+)]
 pub struct SocketDesc {
     pub protocol: Protocol,
     pub local: SocketEndpoint,
@@ -104,9 +111,10 @@ impl<T> ToString for SocketState<T> {
 }
 
 /// Socket endpoint kind
-#[derive(From, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+#[derive(From, Display, Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum SocketEndpoint {
     Ip(IpEndpoint),
+    #[display(fmt = "{:?}", _0)]
     Icmp(IcmpEndpoint),
     Other,
 }

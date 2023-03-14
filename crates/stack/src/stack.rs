@@ -207,7 +207,7 @@ impl<'a> Stack<'a> {
     pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
-            log::trace!("Disconnecting. Socket handle: {handle:?}.");
+            log::trace!("Disconnecting. Socket handle: {handle}.");
             sock.close();
         }
         Disconnect::new(handle, self.iface.clone())
@@ -216,7 +216,7 @@ impl<'a> Stack<'a> {
     pub(crate) fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
-            log::trace!("Aborting. Socket handle: {handle:?}.");
+            log::trace!("Aborting. Socket handle: {handle}.");
             sock.abort();
         }
     }
@@ -230,7 +230,7 @@ impl<'a> Stack<'a> {
             let mut sockets = iface.sockets();
             sockets.find(|(h, _)| h == &handle)
         } {
-            log::trace!("Removing connection: {meta:?}. Socket hadnle: {handle:?}");
+            log::trace!("Removing connection: {meta}. Socket handle: {handle}");
 
             metrics.remove(&socket.desc());
             iface.remove_socket(handle);

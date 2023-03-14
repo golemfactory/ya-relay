@@ -413,10 +413,7 @@ impl Network {
 
                 if let Some(meta) = meta {
                     // We had established connection with someone and it was closed.
-                    log::debug!(
-                        "{}: closing socket [{handle}]: {desc:?} / {meta:?}",
-                        self.name
-                    );
+                    log::debug!("{}: closing socket [{handle}]: {desc} / {meta}", self.name);
                     events.push(IngressEvent::Disconnected { desc: meta.into() });
                 } else {
                     // Connection metadata was cleared.
