@@ -488,11 +488,11 @@ impl From<u16> for PortType {
 pub fn print_sockets(network: &Network) {
     log::debug!("[inet] existing sockets:");
     for (handle, meta, state) in network.sockets_meta() {
-        log::debug!("[inet] socket: {handle} ({}) {meta:?}", state.to_string());
+        log::debug!("[inet] socket: {handle} ({}) {meta}", state.to_string());
     }
     log::debug!("[inet] existing connections:");
     for (handle, meta) in network.handles.borrow_mut().iter() {
-        log::debug!("[inet] connection: {handle} {meta:?}");
+        log::debug!("[inet] connection: {handle} {meta}");
     }
 
     log::debug!("[inet] listening sockets:");

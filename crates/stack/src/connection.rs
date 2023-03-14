@@ -1,3 +1,4 @@
+use derive_more::Display;
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::future::Future;
@@ -70,7 +71,13 @@ impl From<Connection> for ConnectionMeta {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Display, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[display(
+    fmt = "ConnectionMeta {{ protocol: {}, local: {}, remote: {} }}",
+    protocol,
+    local,
+    remote
+)]
 pub struct ConnectionMeta {
     pub protocol: Protocol,
     pub local: IpEndpoint,
