@@ -21,13 +21,13 @@ pub fn packet_ip_wrap_to_ether(
     if let Some(dst_mac) = dst_mac {
         eth_packet[EtherField::DST_MAC].copy_from_slice(dst_mac);
     } else {
-        const DEFAULT_DST_MAC: &[u8; 6] = &[0x02, 0x02, 0x02, 0x02, 0x02, 0x02];
+        const DEFAULT_DST_MAC: &[u8; 6] = &[0x32, 0x32, 0x32, 0x32, 0x32, 0x32];
         eth_packet[EtherField::DST_MAC].copy_from_slice(DEFAULT_DST_MAC);
     }
     if let Some(src_mac) = src_mac {
         eth_packet[EtherField::SRC_MAC].copy_from_slice(src_mac);
     } else {
-        const DEFAULT_SRC_MAC: &[u8; 6] = &[0x01, 0x01, 0x01, 0x01, 0x01, 0x01];
+        const DEFAULT_SRC_MAC: &[u8; 6] = &[0x22, 0x22, 0x22, 0x22, 0x22, 0x22];
         eth_packet[EtherField::SRC_MAC].copy_from_slice(DEFAULT_SRC_MAC);
     }
     match IpPacket::packet(frame) {
