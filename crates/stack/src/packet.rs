@@ -223,6 +223,7 @@ impl IpV4Field {
     pub const IHL: BitField = (0, 4..8);
     pub const TOTAL_LEN: Field = 2..4;
     pub const PROTOCOL: Field = 9..10;
+    pub const CHECKSUM: Field = 10..12;
     pub const SRC_ADDR: Field = 12..16;
     pub const DST_ADDR: Field = 16..20;
 }
@@ -243,7 +244,7 @@ impl<'a> IpV4Packet<'a> {
         self.payload_off
     }
 
-    fn read_header_len(data: &'a [u8]) -> usize {
+    pub fn read_header_len(data: &'a [u8]) -> usize {
         let ihl = get_bit_field(data, IpV4Field::IHL) as usize;
         if ihl >= 5 {
             4 * ihl
