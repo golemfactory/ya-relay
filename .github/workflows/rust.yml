@@ -10,9 +10,6 @@ on:
       - main
       - release/*
 
-env:
-  rust_stable: 1.64.0
-
 jobs:
   build:
     name: Tests
@@ -29,10 +26,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v1
 
-      - name: Install Rust ${{ env.rust_stable }}
+      - name: Install last stable Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: ${{ env.rust_stable }}
+          toolchain: stable
           components: rustfmt, clippy
 
 #      - name: Install openssl ( Windows only )
