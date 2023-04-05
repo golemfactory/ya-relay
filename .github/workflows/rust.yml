@@ -35,12 +35,12 @@ jobs:
           toolchain: ${{ env.rust_stable }}
           components: rustfmt, clippy
 
-      #      - name: Install openssl ( Windows only )
-      #        if: runner.os == 'Windows'
-      #        run: |
-      #          vcpkg install openssl:x64-windows openssl:x64-windows-static
-      #          vcpkg list
-      #          vcpkg integrate install
+#      - name: Install openssl ( Windows only )
+#        if: runner.os == 'Windows'
+#        run: |
+#          vcpkg install openssl:x64-windows openssl:x64-windows-static
+#          vcpkg list
+#          vcpkg integrate install
 
       - name: Unit tests
         uses: actions-rs/cargo@v1
