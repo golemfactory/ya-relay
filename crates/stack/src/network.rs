@@ -1185,7 +1185,7 @@ mod tests {
                 Ok(_) => println!("Connection({i}) successful"),
                 Err(e) => {
                     if i != u16::MAX {
-                        panic!("Connection failed! Error: {}", e.to_string());
+                        panic!("Connection failed! Error: {}", e);
                     };
 
                     let expected = error::Error::Other("no ports available".into());
