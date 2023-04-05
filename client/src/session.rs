@@ -191,7 +191,7 @@ impl Session {
             // We need only one response.
             // Note: futures are asynchronous, because we shouldn't wait for ping timeout
             //       in case of lost packets.
-            futures::future::select_ok((0..3).map(|i| {
+            futures::future::select_ok((0..3).into_iter().map(|i| {
                 async move {
                     tokio::time::sleep(Duration::from_millis(200 * i)).await;
                     self.ping().await

@@ -268,11 +268,11 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     let marker1 = spawn_receive_for_client(&client1, "Client1").await?;
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
-    check_broadcast(&client1, &client2, marker2.clone(), 2)
+    let _keep1 = check_broadcast(&client1, &client2, marker2.clone(), 2)
         .await
         .unwrap();
 
-    check_broadcast(&client2, &client1, marker1.clone(), 2)
+    let _keep2 = check_broadcast(&client2, &client1, marker1.clone(), 2)
         .await
         .unwrap();
 
@@ -282,6 +282,7 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     let crypto = client2.config.crypto.clone();
 
     client2.shutdown().await.unwrap();
+    drop(_keep2);
 
     println!("Waiting for session cleanup on Client1.");
 
@@ -355,11 +356,11 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     let marker1 = spawn_receive_for_client(&client1, "Client1").await?;
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
-    check_broadcast(&client1, &client2, marker2.clone(), 2)
+    let _keep1 = check_broadcast(&client1, &client2, marker2.clone(), 2)
         .await
         .unwrap();
 
-    check_broadcast(&client2, &client1, marker1.clone(), 2)
+    let _keep2 = check_broadcast(&client2, &client1, marker1.clone(), 2)
         .await
         .unwrap();
 
@@ -369,6 +370,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     let crypto = client2.config.crypto.clone();
 
     client2.shutdown().await.unwrap();
+    drop(_keep2);
 
     println!("Waiting for session cleanup on Client1.");
 

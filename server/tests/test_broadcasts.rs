@@ -46,7 +46,7 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
         .collect();
 
     // Node itself isn't returned in it's neighbourhood.
-    assert!(!ids.contains(&node_id));
+    assert_eq!(ids.contains(&node_id), false);
 
     // No duplicated nodes in neighbourhood.
     assert_eq!(ids.len(), 5);
@@ -96,7 +96,7 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
         .collect();
 
     // Node itself isn't returned in it's neighbourhood.
-    assert!(!ids.contains(&node_id));
+    assert_eq!(ids.contains(&node_id), false);
 
     // Node neighbourhood consists of all nodes beside requesting node.
     assert_eq!(ids.len(), 2);
