@@ -307,8 +307,8 @@ async fn sample_state(node_id: NodeId, state: State, delay: Duration, time: Dura
         };
 
         for value in values {
-            output.write(value.join(",").as_bytes()).await.unwrap();
-            output.write(b"\n").await.unwrap();
+            let _ = output.write(value.join(",").as_bytes()).await.unwrap();
+            let _ = output.write(b"\n").await.unwrap();
         }
 
         if Instant::now() >= deadline {
