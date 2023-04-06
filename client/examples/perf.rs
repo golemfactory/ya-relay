@@ -845,7 +845,6 @@ mod relaying {
 
         let records = load_scenario(&cmd.scenario_file)?;
         let scenarios = (0..cmd.requestors)
-            .into_iter()
             .map(|_| create_scenario(records.clone(), &mut clients))
             .collect::<Result<Vec<Scenario>, _>>()?;
 

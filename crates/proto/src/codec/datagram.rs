@@ -157,9 +157,9 @@ mod tests {
             .encode_length_delimited(&mut buf)
             .expect("serialization failed");
 
-        assert!(match codec.decode(&mut buf) {
-            Err(Error::Decode(DecodeError::PrefixTooLong)) => true,
-            _ => false,
-        })
+        assert!(matches!(
+            codec.decode(&mut buf),
+            Err(Error::Decode(DecodeError::PrefixTooLong))
+        ))
     }
 }
