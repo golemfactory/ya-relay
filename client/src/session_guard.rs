@@ -23,17 +23,14 @@ impl GuardedSessions {
         node_id: NodeId,
         addrs: &[SocketAddr],
     ) -> Arc<RwLock<()>> {
-        if let Some(target) = {
-            let state = self.state.read().await;
-            state.find(node_id, addrs)
-        } {
-            return target.lock;
+        let mut state = self.state.write().await;
+        if let Some(target) = state.find(node_id, addrs) {
+            return target.lock.clone();
         }
 
         let target = SessionTarget::new(node_id, addrs.to_vec());
-        let mut state = self.state.write().await;
-        state.add(target.clone());
 
+        state.add(target.clone());
         target.lock.clone()
     }
 
