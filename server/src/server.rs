@@ -36,13 +36,13 @@ use ya_relay_proto::proto::{RequestId, StatusCode};
 #[derive(Clone)]
 pub struct Server {
     pub state: Arc<RwLock<ServerState>>,
+    pub starting_session: Arc<RwLock<HashMap<SessionId, mpsc::Sender<proto::Request>>>>,
     pub inner: Arc<ServerImpl>,
     pub config: Arc<Config>,
 }
 
 pub struct ServerState {
     pub nodes: NodesState,
-    pub starting_session: HashMap<SessionId, mpsc::Sender<proto::Request>>,
     resume_forwarding: BTreeSet<(QuantaInstant, SessionId, SocketAddr)>,
 
     recv_socket: Option<InStream>,
@@ -627,10 +627,9 @@ impl Server {
         counter!("ya-relay.session.establish.start", 1);
 
         {
-            self.state
+            self.starting_session
                 .write()
                 .await
-                .starting_session
                 .entry(session_id)
                 .or_insert(sender);
         }
@@ -674,7 +673,7 @@ impl Server {
         let mut sender = {
             match {
                 log::debug!("[establish_session] get starting_session");
-                self.state.read().await.starting_session.get(&id).cloned()
+                self.starting_session.read().await.get(&id).cloned()
             } {
                 Some(sender) => sender,
                 None => return Err(Unauthorized::SessionNotFound(id).into()),
@@ -703,9 +702,11 @@ impl Server {
         let challenge =
             proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, packet);
 
-        self.send_to(challenge, &with)
-            .await
-            .map_err(|_| InternalError::Send)?;
+        for _ in 0..3 {
+            self.send_to(challenge.clone(), &with)
+                .await
+                .map_err(|_| InternalError::Send)?;
+        }
 
         log::info!("Challenge sent to: {with}, session: {session_id}");
         counter!("ya-relay.session.establish.challenge.sent", 1);
@@ -750,17 +751,19 @@ impl Server {
                     request_history: RequestHistory::new(REQ_DEDUPLICATE_BUF_SIZE),
                 };
 
-                self.send_to(
-                    proto::Packet::response(
-                        request_id,
-                        session_id.to_vec(),
-                        StatusCode::Ok,
-                        proto::response::Session::default(),
-                    ),
-                    &with,
-                )
-                .await
-                .map_err(|_| InternalError::Send)?;
+                for _ in 0..3 {
+                    self.send_to(
+                        proto::Packet::response(
+                            request_id,
+                            session_id.to_vec(),
+                            StatusCode::Ok,
+                            proto::response::Session::default(),
+                        ),
+                        &with,
+                    )
+                    .await
+                    .map_err(|_| InternalError::Send)?;
+                }
 
                 log::info!(
                     "Session: {session_id} ({with}). Got valid challenge from node: {node_id}"
@@ -808,7 +811,7 @@ impl Server {
     }
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
-        self.state.write().await.starting_session.remove(session_id);
+        self.starting_session.write().await.remove(session_id);
     }
 
     async fn session_cleaner(&self) {
@@ -933,13 +936,13 @@ impl Server {
 
         let state = Arc::new(RwLock::new(ServerState {
             nodes: NodesState::new(),
-            starting_session: Default::default(),
             recv_socket: Some(input),
             resume_forwarding: BTreeSet::new(),
         }));
 
         Ok(Server {
             state,
+            starting_session: Arc::new(Default::default()),
             inner,
             config,
         })
@@ -961,7 +964,7 @@ impl Server {
                 .ok_or_else(|| anyhow::anyhow!("Server already running."))?
         };
         tokio::task::spawn_local(async move { server_session_cleaner.session_cleaner().await });
-        tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
+        //tokio::task::spawn_local(async move { server_forward_resumer.forward_resumer().await });
 
         input
             .map(|(packet, addr, timestamp)| {

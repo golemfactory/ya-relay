@@ -131,7 +131,7 @@ mod util {
         clients: &mut Vec<Client>,
         args: &Options,
         num: usize,
-    ) -> anyhow::Result<()> {
+    ) -> anyhow::Result<usize> {
         let step = 100usize;
 
         let tasks = (0..num)
@@ -139,11 +139,18 @@ mod util {
             .collect::<Vec<_>>();
         let results = futures::future::join_all(tasks.into_iter()).await;
 
+        let mut failures = 0;
         for result in results {
-            clients.push(result?);
+            match result {
+                Ok(client) => clients.push(client),
+                Err(e) => {
+                    log::error!("Failed to init client: {e}");
+                    failures += 1;
+                }
+            }
         }
 
-        Ok(())
+        Ok(num - failures)
     }
 }
 
@@ -200,14 +207,16 @@ mod connections_test {
         'test_loop: loop {
             let start = Instant::now();
             let res = util::establish_connections(&mut conns, args, connections).await;
-            if res.is_err() {
-                break 'test_loop;
-            }
+
+            let successful = match res {
+                Err(_) => break 'test_loop,
+                Ok(successful) => successful,
+            };
 
             let elapsed = Instant::now() - start;
-            let rate = (connections as f32) / elapsed.as_secs_f32();
+            let rate = (successful as f32) / elapsed.as_secs_f32();
             log::info!(
-                "Connections currently established: {}, {:.1}/s",
+                "Connections currently established: {}, new {successful}/{connections}, {:.1}/s",
                 conns.len(),
                 rate
             );

@@ -5,9 +5,13 @@ use structopt::{clap, StructOpt};
 #[structopt(about = "NET Server")]
 #[structopt(global_setting = clap::AppSettings::ColoredHelp)]
 pub struct Config {
-    #[structopt(short = "a", env = "NET_ADDRESS")]
+    #[structopt(
+        short = "a",
+        env = "NET_ADDRESS",
+        default_value = "udp://127.0.0.1:7464"
+    )]
     pub address: url::Url,
-    #[structopt(long, env = "NET_IP_CHECKER_PORT")]
+    #[structopt(long, env = "NET_IP_CHECKER_PORT", default_value = "7465")]
     pub ip_checker_port: u16,
     #[structopt(long, env, parse(try_from_str = humantime::parse_duration), default_value = "10s")]
     pub session_cleaner_interval: Duration,
