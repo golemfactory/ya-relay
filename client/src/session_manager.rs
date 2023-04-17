@@ -475,6 +475,8 @@ impl SessionManager {
                 tx.close().await.ok();
             }
         }
+
+        log::debug!("Node [{node_id}] information removed.");
     }
 
     pub async fn close_session(&self, session: Arc<Session>) -> anyhow::Result<()> {
