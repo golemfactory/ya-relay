@@ -669,7 +669,7 @@ impl SessionManager {
 
         // This will return fast, if we already have this channel.
         // These lines are not necessary, because code below would do the job,
-        // but this way we avoid querying write lock on every attaempt to send message.
+        // but this way we avoid querying write lock on every attempt to send message.
         if let Some(tx) = self
             .forward_channel(node_id, TransportType::Unreliable)
             .await
