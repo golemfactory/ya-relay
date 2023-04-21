@@ -1,5 +1,3 @@
-mod helpers;
-
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::time::Duration;
@@ -7,60 +5,70 @@ use ya_relay_client::ClientBuilder;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider};
 use ya_relay_core::key::generate;
 use ya_relay_server::testing::server::init_test_server;
+use test_case::test_case;
 
+enum Node {
+    WithAlias, WithoutAlias
+}
+
+#[test_case(Node::WithAlias ; "shutdowning node with alias")]
+#[test_case(Node::WithoutAlias; "shutdowning node without alias")]
 #[serial_test::serial]
-async fn test_closing_session() -> anyhow::Result<()> {
+async fn test_closed_session(node_to_shutdown: Node) -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let mut crypto = FallbackCryptoProvider::default();
     crypto.add(generate());
 
-    let alias_2 = crypto.aliases().await.unwrap()[0];
+    let alias = crypto.aliases().await.unwrap()[0];
 
-    let mut client_1 = ClientBuilder::from_url(wrapper.url())
+    let mut client = ClientBuilder::from_url(wrapper.url())
         .connect()
         .build()
         .await?;
-    let client_2 = ClientBuilder::from_url(wrapper.url())
+    let mut client_w_alias = ClientBuilder::from_url(wrapper.url())
         .connect()
         .crypto(crypto)
         .build()
         .await?;
 
-    let _ = client_1.forward_unreliable(alias_2).await.unwrap();
-    let _ = client_2
-        .forward_unreliable(client_1.node_id())
+    let _ = client.forward_unreliable(alias).await.unwrap();
+    let _ = client_w_alias
+        .forward_unreliable(client.node_id())
         .await
         .unwrap();
 
-    let node_1 = client_1.node_id();
-    let node_2 = client_2.node_id();
+    let node_1 = client.node_id();
+    let node_2 = client_w_alias.node_id();
 
-    let nodes = tuples_vec_to_map(client_1.connected_nodes().await);
+    let nodes = tuples_vec_to_map(client.connected_nodes().await);
     let expected_nodes = HashMap::from([
         (node_2.clone(), HashSet::new()),
-        (alias_2.clone(), HashSet::from([node_2.clone()])),
+        (alias.clone(), HashSet::from([node_2.clone()])),
     ]);
     assert_eq!(nodes, expected_nodes, "1 sees 2's default id and alias");
 
-    let nodes = tuples_vec_to_map(client_2.connected_nodes().await);
+    let nodes = tuples_vec_to_map(client_w_alias.connected_nodes().await);
     let expected_nodes = HashMap::from([(node_1.clone(), HashSet::new())]);
     assert_eq!(nodes, expected_nodes, "2 sees only 1's default id");
 
     // Closing session
-    client_1.shutdown().await.unwrap();
+    match node_to_shutdown {
+        Node::WithAlias => client_w_alias.shutdown().await.unwrap(),
+        Node::WithoutAlias => client.shutdown().await.unwrap(),
+    }
 
     // Waiting
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let nodes = tuples_vec_to_map(client_1.connected_nodes().await);
+    let nodes = tuples_vec_to_map(client.connected_nodes().await);
     let expected_nodes = HashMap::new();
     assert_eq!(
         nodes, expected_nodes,
         "1 does not see both 2's default id and alias"
     );
 
-    let nodes = tuples_vec_to_map(client_2.connected_nodes().await);
+    let nodes = tuples_vec_to_map(client_w_alias.connected_nodes().await);
     let expected_nodes = HashMap::new();
     assert_eq!(nodes, expected_nodes, "2 does not see 1's default id");
     Ok(())

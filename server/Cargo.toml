@@ -41,3 +41,4 @@ url = "2.1"
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = ["actix-rt2"]}
 tokio-stream = "0.1.8"
+test-case = "3"
