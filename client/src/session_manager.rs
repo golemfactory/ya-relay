@@ -61,7 +61,9 @@ pub struct SessionManagerState {
     bind_addr: Option<SocketAddr>,
 
     pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
+    /// Map of socket to Node default id
     pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
+    /// Map od Node default id to Node aliases
     node_aliases: HashMap<NodeId, Vec<Identity>>,
     node_default_id: HashMap<NodeId, NodeId>,
 
