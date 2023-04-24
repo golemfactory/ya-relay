@@ -63,7 +63,7 @@ pub struct SessionManagerState {
     pub(crate) sessions: HashMap<SocketAddr, Arc<Session>>,
     /// Map of socket to Node default id
     pub(crate) nodes_addr: HashMap<SocketAddr, NodeId>,
-    /// Map od Node default id to Node aliases
+    /// Map of Node default id to Node aliases
     node_aliases: HashMap<NodeId, Vec<Identity>>,
     node_default_id: HashMap<NodeId, NodeId>,
 
@@ -1477,7 +1477,7 @@ impl SessionManagerState {
     }
 
     pub fn remove_identities(&mut self, node_id: NodeId) {
-        log::debug!("Remove identities for {}", node_id);
+        log::debug!("Remove identities for {node_id}");
         let default_id = match self.node_default_id.remove(&node_id) {
             Some(default_id) => default_id,
             None => node_id, // given node_id is a default_id
