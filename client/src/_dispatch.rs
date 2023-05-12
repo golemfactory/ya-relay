@@ -13,7 +13,7 @@ use futures::stream::{Stream, StreamExt};
 use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
 
-use crate::_routing_session::{DirectSession, RoutingSession};
+use crate::_routing_session::{DirectSession, NodeRouting};
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 

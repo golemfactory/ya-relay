@@ -9,14 +9,15 @@ use tokio::sync::{RwLock, Semaphore};
 
 use crate::_dispatch::{Dispatcher, Handler};
 use crate::_error::SessionError;
-use crate::_routing_session::{DirectSession, NodeEntry, NodeRouting, Routing};
+use crate::_routing_session::{DirectSession, NodeEntry, NodeRouting, RoutingSender};
 use crate::_session_guard::GuardedSessions;
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
-
+use crate::ForwardReceiver;
 use crate::_encryption::Encryption;
 use crate::_session::SystemSession;
+
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::SessionId;
+use ya_relay_core::session::{SessionId, TransportType};
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::control::disconnected::By;
@@ -28,6 +29,7 @@ type ReqFingerprint = (Vec<u8>, u64);
 
 /// Responsible for establishing/receiving connections from other Nodes.
 /// Hides from upper layers the decisions, how to route packets to desired location
+#[derive(Clone)]
 pub struct SessionLayer {
     pub config: Arc<ClientConfig>,
     /// If address is None after registering endpoints on Server, that means
@@ -59,18 +61,18 @@ impl SessionLayer {
     /// Returns `NodeRouting` which can be used to send packets to desired Node.
     /// Creates session with Node if necessary. Function will choose the most optimal
     /// route to destination.
-    pub async fn session(&self, node_id: NodeId) -> Result<Weak<NodeRouting>, SessionError> {
+    pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
         unimplemented!()
     }
 
-    pub async fn server_session(&self) -> Result<Weak<NodeRouting>, SessionError> {
+    pub async fn server_session(&self) -> Result<RoutingSender, SessionError> {
         unimplemented!()
     }
 
     pub async fn close_session(
         &self,
         session: Arc<NodeRouting>,
-    ) -> Result<RoutingSession, SessionError> {
+    ) -> Result<NodeRouting, SessionError> {
         unimplemented!()
     }
 
@@ -119,6 +121,10 @@ impl SessionLayer {
             .ok_or_else(|| anyhow!("Network sink not initialized"))
     }
 
+    pub async fn receiver(&self) -> Option<ForwardReceiver> {
+        self.ingress_channel.receiver()
+    }
+
     async fn send_disconnect(&self, session_id: SessionId, addr: SocketAddr) -> anyhow::Result<()> {
         // Don't use temporary session, because we don't want to initialize session
         // with this address, nor receive the response.
@@ -133,7 +139,7 @@ impl Handler for SessionLayer {
         async move {
             let session = {
                 let state = handler.state.read().await;
-                state.sessions.get(&from).cloned()
+                state.p2p_sessions.get(&from).cloned()
             };
 
             // We get either dispatcher for already existing Session from self,
@@ -321,16 +327,9 @@ impl Handler for SessionLayer {
         //       correct session or create one.
         //       We need to consider if we need to create session here at all.
         let reliable = forward.is_reliable();
+        let encrypted = forward.is_encrypted();
         let slot = forward.slot;
-
-        // TODO: fast lane should be handled in virtual_tcp
-        if reliable && {
-            let fast_lane = self.virtual_tcp_fast_lane.borrow();
-            fast_lane.contains(&(from, slot))
-        } {
-            self.virtual_tcp.inject(forward.payload);
-            return None;
-        }
+        let channel = self.ingress_channel.clone();
 
         let myself = self;
         let fut = async move {
@@ -377,13 +376,18 @@ impl Handler for SessionLayer {
                 }
             };
 
-            if reliable {
-                myself.virtual_tcp.receive(node, forward.payload).await;
-                myself.virtual_tcp_fast_lane.borrow_mut().insert((from, slot));
-            } else {
-                myself.dispatch_unreliable(node.id, forward).await;
-            }
+            // Decryption
 
+            let packet = Forwarded {
+                transport: match reliable {
+                    true => TransportType::Reliable,
+                    false => TransportType::Unreliable,
+                },
+                node_id: node.default_id.node_id,
+                payload: Default::default(),
+            };
+
+            channel.tx.send(packet).map_err(|e| anyhow!("SessionLayer can't pass packet to other layers: {e}"))?;
             anyhow::Result::<()>::Ok(())
         }
             .map_err(|e| log::debug!("On forward failed: {e}"))

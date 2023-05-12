@@ -74,6 +74,10 @@ impl Forward {
         self.flags & UNRELIABLE_FLAG != UNRELIABLE_FLAG
     }
 
+    pub fn is_encrypted(&self) -> bool {
+        self.flags & ENCRYPTED_FLAG != ENCRYPTED_FLAG
+    }
+
     #[inline]
     pub fn encoded_len(&self) -> usize {
         Self::header_size() + self.payload.len()

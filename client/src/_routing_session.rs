@@ -4,6 +4,7 @@ use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
+use ya_relay_core::session::{SessionId, TransportType};
 use ya_relay_core::NodeId;
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{Payload, SlotId};
@@ -116,15 +117,65 @@ impl NodeRouting {
 /// `NodeRouting`, `DirectSession` and `Session` are mostly read-only structs and will be replaced
 /// in case connection will change.
 #[derive(Clone)]
-pub struct Routing {
+pub struct RoutingSender {
     /// This can be either secondary or default id.
     target: NodeId,
     node_routing: Weak<NodeRouting>,
     layer: SessionLayer,
 }
 
-impl Routing {
-    pub async fn send(&mut self, packet: Payload) -> Result<(), SessionError> {
+impl RoutingSender {
+    /// Create `RoutingSender` without initialized connection. It will be
+    /// create later on demand.
+    pub fn empty(target: NodeId, layer: SessionLayer) -> RoutingSender {
+        RoutingSender {
+            target,
+            node_routing: Weak::new(),
+            layer,
+        }
+    }
+
+    /// Sends Payload to target Node. Creates session if it didn't exist.
+    /// `transport` is only declaration which will be used to set flags in
+    /// `Forward` packet.
+    pub async fn send(
+        &mut self,
+        packet: Payload,
+        transport: TransportType,
+    ) -> Result<(), SessionError> {
+        unimplemented!()
+    }
+
+    /// Establishes connection on demand if it didn't exist.
+    /// This function can be used to prepare connection before later use.
+    /// Thanks to this we can return early if Node is unreachable in the network.
+    ///
+    /// Calling this function doesn't guarantee, that `RoutingSender::send` won't require
+    /// waiting for session. Connection can be lost again before we call `send.
+    pub async fn connect(&mut self) -> Result<(), SessionError> {
+        unimplemented!()
+    }
+
+    pub fn target(&self) -> NodeId {
+        self.target
+    }
+
+    pub fn route(&self) -> NodeId {
+        if let Some(routing) = self.node_routing.upgrade() {
+            if let Some(route) = routing.route.upgrade() {
+                route.owner.default_id.clone()
+            }
+        }
+        unimplemented!()
+    }
+
+    /// Returns id of session used to forward packets.
+    pub fn session_id(&self) -> SessionId {
+        if let Some(routing) = self.node_routing.upgrade() {
+            if let Some(route) = routing.route.upgrade() {
+                route.session.id
+            }
+        }
         unimplemented!()
     }
 }

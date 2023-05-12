@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Context};
 use futures::channel::mpsc;
 use futures::StreamExt;
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::net::Ipv6Addr;
 use std::path::PathBuf;
@@ -12,11 +13,12 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
-use ya_relay_core::session::TransportType;
+use ya_relay_core::session::{NodeSession, TransportType};
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 
-use crate::_session::RoutingSession;
+use crate::_routing_session::{NodeRouting, RoutingSender};
+use crate::_session_layer::SessionLayer;
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
@@ -43,9 +45,7 @@ pub enum PortType {
 pub struct VirtNode {
     pub id: NodeId,
     pub endpoint: IpEndpoint,
-    pub session: Arc<RoutingSession>,
-    //TODO: Remove
-    pub session_slot: SlotId,
+    pub session: RoutingSender,
 }
 
 /// Client implements TCP protocol over underlying UDP.
@@ -55,36 +55,26 @@ pub struct VirtNode {
 #[derive(Clone)]
 pub struct TcpLayer {
     net: Network,
+    session_layer: SessionLayer,
+
     state: Arc<RwLock<TcpLayerState>>,
+
+    ingress: Channel<Forwarded>,
+    virtual_tcp_fast_lane: Rc<RefCell<HashSet<NodeId>>>,
 }
 
 struct TcpLayerState {
-    ingress: Channel<Forwarded>,
-
     nodes: HashMap<Box<[u8]>, VirtNode>,
     ips: HashMap<NodeId, Box<[u8]>>,
 }
 
-impl VirtNode {
-    pub fn try_new(
-        id: NodeId,
-        session: Arc<Session>,
-        session_slot: SlotId,
-    ) -> anyhow::Result<Self> {
-        let ip = IpAddress::from(to_ipv6(id.into_array()));
-        let endpoint = (ip, PortType::Messages as u16).into();
-
-        Ok(Self {
-            id,
-            endpoint,
-            session,
-            session_slot,
-        })
-    }
-}
-
 impl TcpLayer {
-    pub fn new(key: &PublicKey, config: &StackConfig, ingress: &Channel<Forwarded>) -> TcpLayer {
+    pub fn new(
+        key: &PublicKey,
+        config: &StackConfig,
+        ingress: &Channel<Forwarded>,
+        session_layer: SessionLayer,
+    ) -> TcpLayer {
         let pcap = config.pcap_path.clone().map(|p| match pcap_writer(p) {
             Ok(pcap) => pcap,
             Err(err) => panic!("{}", err),
@@ -93,11 +83,13 @@ impl TcpLayer {
 
         TcpLayer {
             net,
+            ingress: ingress.clone(),
             state: Arc::new(RwLock::new(TcpLayerState {
-                ingress: ingress.clone(),
                 nodes: Default::default(),
                 ips: Default::default(),
             })),
+            virtual_tcp_fast_lane: Rc::new(RefCell::new(Default::default())),
+            session_layer,
         }
     }
 
@@ -125,19 +117,39 @@ impl TcpLayer {
 
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
         let state = self.state.read().await;
-        state.resolve_node(node)
+        let ip = state
+            .ips
+            .get(&node)
+            .ok_or_else(|| anyhow!("Virtual node for id [{node}] not found."))?;
+        state
+            .nodes
+            .get(ip)
+            .cloned()
+            .ok_or_else(|| anyhow!("Virtual node for ip {ip:?} not found."))
     }
 
-    pub async fn add_virt_node(&self, node: NodeEntry) -> anyhow::Result<VirtNode> {
-        let node = VirtNode::try_new(node.id, node.session, node.slot)?;
+    pub fn new_virtual_node(&self, id: NodeId) -> VirtNode {
+        let ip = IpAddress::from(to_ipv6(id.into_array()));
+        let endpoint = (ip, PortType::Messages as u16).into();
+        let session = RoutingSender::empty(id, self.session_layer.clone());
+
+        VirtNode {
+            id,
+            endpoint,
+            session,
+        }
+    }
+
+    pub async fn add_virt_node(&self, node_id: NodeId) -> VirtNode {
+        let node = self.new_virtual_node(node.id);
         {
             let mut state = self.state.write().await;
             let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
 
             state.nodes.insert(ip.clone(), node.clone());
-            state.ips.insert(node.id, ip);
+            state.ips.insert(node_id, ip);
         }
-        Ok(node)
+        node
     }
 
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
@@ -155,26 +167,31 @@ impl TcpLayer {
 
         let mut state = self.state.write().await;
         if let Some(remote_ip) = state.ips.remove(&node_id) {
-            log::debug!("[VirtualTcp] Disconnected from node [{}]", node_id);
+            log::debug!("[VirtualTcp] Disconnected from node [{node_id}]");
             state.nodes.remove(&remote_ip);
         }
         Ok(())
     }
 
     /// Connects to other Node and returns `Connection` for sending data.
-    pub async fn connect(&self, node: NodeEntry, port: PortType) -> anyhow::Result<Connection> {
-        log::debug!(
-            "[VirtualTcp] Connecting to node [{}] using session {}.",
-            node.id,
-            node.session.id
-        );
+    /// TODO: We need to ensure that only one single connection can be established
+    ///       at the same time and rest of attempts will wait for finish.
+    /// TODO: Currently we create separate TCP connection for each identity on other Node.
+    ///       Should we protect ourselves from this?
+    pub async fn connect(&self, node_id: NodeId, port: PortType) -> anyhow::Result<Connection> {
+        log::debug!("[VirtualTcp] Connecting to node [{node_id}].",);
 
         print_sockets(&self.net);
 
-        // This will override previous Node settings, if we had them.
-        let node = self.add_virt_node(node).await?;
+        // Make sure we have session with the Node. This allows us to
+        // exit early if target Node is unreachable.
+        self.new_virtual_node(node.id).session.connect().await?;
+
+        let node = self.add_virt_node(node_id).await;
         let endpoint = IpEndpoint::new(node.endpoint.addr, port as u16);
 
+        // TODO: Guard creating TCP connection. `connect` can be called from many
+        //       functions at the same time.
         Ok(self.net.connect(endpoint, TCP_CONN_TIMEOUT).await?)
     }
 
@@ -188,6 +205,8 @@ impl TcpLayer {
         self.net.metrics()
     }
 
+    // TODO: Pausing forwarding should be done on different layer,
+    //       probably closer to `DirectSession`.
     pub async fn get_next_fwd_payload<T>(
         &self,
         rx: &mut mpsc::Receiver<T>,
@@ -214,16 +233,29 @@ impl TcpLayer {
         Ok(self.net.send(data, connection).await?)
     }
 
-    pub async fn receive(&self, node: NodeEntry, payload: Payload) {
+    pub async fn dispatch(&self, packet: Forwarded) -> anyhow::Result<()> {
+        let node_id = packet.node_id;
+        if {
+            // Optimisation to avoid resolving Node if possible.
+            let fast_lane = self.virtual_tcp_fast_lane.borrow();
+            fast_lane.contains(&node_id)
+        } {
+            self.inject(packet.payload);
+            return Ok(());
+        }
+
+        self.receive(node, packet.payload).await;
+        self.virtual_tcp_fast_lane.borrow_mut().insert(node_id);
+        Ok(())
+    }
+
+    pub async fn receive(&self, node: NodeId, payload: Payload) {
         ya_packet_trace::packet_trace_maybe!("TcpLayer::Receive", {
             &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
         });
 
-        if self.resolve_node(node.id).await.is_err() {
-            log::debug!(
-                "[VirtualTcp] Incoming message from new Node [{}]. Adding connection.",
-                node.id
-            );
+        if self.resolve_node(node).await.is_err() {
+            log::debug!("[VirtualTcp] Incoming message from new Node [{node}]. Adding connection.");
             self.add_virt_node(node).await.ok();
         }
         self.inject(payload);
@@ -317,12 +349,12 @@ impl TcpLayer {
                     };
 
                     match {
-                        // nodes are populated via `Client::on_forward` and `Client::forward`
+                        // Nodes are populated via `VirtualLayer::dispatch`
                         let state = myself.state.read().await;
                         state
                             .nodes
                             .get(remote_address.as_bytes())
-                            .map(|node| (node.id, state.ingress.tx.clone()))
+                            .map(|node| (node.id, myself.ingress.tx.clone()))
                     } {
                         Some((node_id, tx)) => {
                             let payload_len = payload.len();
@@ -362,7 +394,7 @@ impl TcpLayer {
             .for_each(move |egress| {
                 let myself = self.clone();
                 async move {
-                    let node = match {
+                    let mut node = match {
                         let state = myself.state.read().await;
                         state.nodes.get(&egress.remote).cloned()
                     } {
@@ -377,31 +409,35 @@ impl TcpLayer {
                         }
                     };
 
-                    let forward = Forward::new(node.session.id, node.session_slot, egress.payload);
-                    if let Err(error) = node.session.send(forward).await {
-                        log::trace!(
-                            "[{}] egress router: forward to {} failed: {}",
-                            myself.net_id(),
-                            node.id,
-                            error
-                        );
-                    }
+                    // `RoutingSender::send` will lazily create session with target Node.
+                    // In most cases session will exist, but if not, we need to protect from
+                    // blocking the rest of packets in the stream.
+                    //
+                    // Note that thanks to lazy sessions, even if we have unstable connection,
+                    // TCP sessions are able to survive disconnection on lower layer. In previous
+                    // implementation we disconnected TCP and all GSB messages in queue were lost.
+                    tokio::task::spawn_local(async move {
+                        if let Err(error) = node
+                            .session
+                            .send(egress.payload.into(), TransportType::Reliable)
+                            .await
+                        {
+                            // TODO: In case of failure it would be nice to somehow send this error
+                            //       back to message sender. In current scenario GSB messages will
+                            //       wait until timeout. This makes error messages from this library
+                            //       really poor, because everything from outside looks like a timeout.
+                            log::trace!(
+                                "[{}] egress router: forward to {} failed: {}",
+                                myself.net_id(),
+                                node.id,
+                                error
+                            );
+                            // TODO: Should we close TCP connection here?
+                        }
+                    })
                 }
             })
             .await
-    }
-}
-
-impl TcpLayerState {
-    fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
-        let ip = self
-            .ips
-            .get(&node)
-            .ok_or_else(|| anyhow!("Virtual node for id [{}] not found.", node))?;
-        self.nodes
-            .get(ip)
-            .cloned()
-            .ok_or_else(|| anyhow!("Virtual node for ip {:?} not found.", ip))
     }
 }
 
