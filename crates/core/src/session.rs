@@ -218,3 +218,26 @@ impl From<Endpoint> for proto::Endpoint {
         }
     }
 }
+
+impl TryFrom<proto::response::Node> for NodeInfo {
+    type Error = anyhow::Error;
+
+    fn try_from(value: proto::response::Node) -> std::result::Result<Self, Self::Error> {
+        let identities = value
+            .identities
+            .iter()
+            .map(Identity::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(NodeInfo {
+            identities,
+            slot: value.slot,
+            endpoints: value
+                .endpoints
+                .into_iter()
+                .map(|endpoint| Endpoint::try_from(endpoint))
+                .collect::<anyhow::Result<Vec<_>>>()?,
+            supported_encryptions: value.supported_encryptions,
+        })
+    }
+}

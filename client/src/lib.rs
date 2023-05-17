@@ -27,7 +27,7 @@ mod _error;
 mod _routing_session;
 mod _session;
 mod _session_guard;
-mod _session_init;
 mod _session_layer;
+mod _session_protocol;
 mod _transport_layer;
 mod _virtual_layer;

@@ -2,14 +2,14 @@ use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
 use std::cell::RefCell;
 use std::convert::TryInto;
-use std::fmt;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
-use crate::dispatch::{Dispatched, Dispatcher};
+use crate::_dispatch::{Dispatched, Dispatcher};
 
+use crate::_error::RequestError;
 use ya_relay_core::session::SessionId;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::udp_stream::OutStream;
@@ -20,7 +20,6 @@ use ya_relay_proto::{codec, proto};
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub type SessionResult<T> = Result<T, SessionError>;
 pub type DropHandler = Box<dyn FnOnce()>;
 
 /// Low-level session representation, which knows where to send packets on system level.
@@ -28,7 +27,7 @@ pub type DropHandler = Box<dyn FnOnce()>;
 ///
 /// This layer isn't aware of Nodes identities.
 #[derive(Clone)]
-pub struct SystemSession {
+pub struct RawSession {
     pub remote: SocketAddr,
     pub id: SessionId,
     pub created: Instant,
@@ -48,8 +47,8 @@ pub struct SessionDesc {
     pub created: std::time::Instant,
 }
 
-impl<'a> From<&'a SystemSession> for SessionDesc {
-    fn from(session: &'a SystemSession) -> Self {
+impl<'a> From<&'a RawSession> for SessionDesc {
+    fn from(session: &'a RawSession) -> Self {
         SessionDesc {
             remote: session.remote,
             id: session.id,
@@ -60,7 +59,7 @@ impl<'a> From<&'a SystemSession> for SessionDesc {
     }
 }
 
-impl SystemSession {
+impl RawSession {
     pub fn new(remote_addr: SocketAddr, id: SessionId, sink: OutStream) -> Arc<Self> {
         Arc::new(Self {
             remote: remote_addr,
@@ -163,7 +162,7 @@ impl SystemSession {
         };
 
         self.dispatcher.update_ping(ping);
-        result.map(|_| ())
+        Ok(result.map(|_| ())?)
     }
 
     pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
@@ -247,13 +246,13 @@ impl SystemSession {
     }
 }
 
-impl SystemSession {
+impl RawSession {
     pub(crate) async fn request<T>(
         &self,
         request: proto::Request,
         session_id: Vec<u8>,
         timeout: Duration,
-    ) -> anyhow::Result<Dispatched<T>>
+    ) -> Result<Dispatched<T>, RequestError>
     where
         proto::response::Kind: TryInto<T, Error = ()>,
         T: 'static,
@@ -279,14 +278,14 @@ impl SystemSession {
         // and await for a response for at least one. This is done to
         // tackle UDP packet drops while containing the entire process
         // to the outer timeout.
-        tokio::select! {
+        Ok(tokio::select! {
             err = retry_send => {
                 Err(err)
             },
             response = response_fut => {
                 response
             }
-        }
+        }?)
     }
 
     #[inline(always)]
@@ -309,46 +308,13 @@ impl SystemSession {
     }
 }
 
-impl Drop for SystemSession {
+impl Drop for RawSession {
     fn drop(&mut self) {
         log::trace!("Dropping Session {} ({}).", self.id, self.remote);
 
         let on_drop = self.drop_handler.borrow_mut().take();
         if let Some(f) = on_drop {
             f()
-        }
-    }
-}
-
-#[derive(thiserror::Error, Clone)]
-pub enum SessionError {
-    Drop(String),
-    Retry(String),
-}
-
-impl From<anyhow::Error> for SessionError {
-    fn from(e: anyhow::Error) -> Self {
-        Self::Retry(e.to_string())
-    }
-}
-
-impl fmt::Debug for SessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Drop(e) => {
-                write!(f, "Drop({:?})", e)
-            }
-            Self::Retry(e) => {
-                write!(f, "Retry({:?})", e)
-            }
-        }
-    }
-}
-
-impl fmt::Display for SessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Drop(e) | Self::Retry(e) => e.fmt(f),
         }
     }
 }

@@ -13,7 +13,7 @@ use futures::stream::{Stream, StreamExt};
 use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
 
-use crate::_routing_session::{DirectSession, NodeRouting};
+use crate::_routing_session::DirectSession;
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 
@@ -29,9 +29,17 @@ where
 {
     while let Some((packet, from, _timestamp)) = stream.next().await {
         let handler = handler.clone();
+
+        // First look for existing session, but if it doesn't exist, maybe we
+        // can find dispatcher from temporary session that is being initialized at this moment.
         let session = handler.session(from).await;
-        if let Some(ref direct) = session {
-            direct.session.dispatcher.update_seen();
+        let dispatcher = match session.clone() {
+            Some(session) => Some(session.raw.dispatcher.clone()),
+            None => handler.dispatcher(from).await,
+        };
+
+        if let Some(ref dispatcher) = dispatcher {
+            dispatcher.update_seen();
         }
 
         match packet {
@@ -67,8 +75,11 @@ where
                 }
             },
             codec::PacketKind::Forward(forward) => {
+                // In case of temporary sessions we shouldn't get `Forward` packets.
                 if let Some(session) = session {
-                    handler.on_forward(forward, from, session).map(spawn_local);
+                    handler
+                        .on_forward(forward, from, Some(session))
+                        .map(spawn_local);
                 }
             }
             _ => log::warn!("Unable to dispatch packet from {from}: not supported"),
@@ -110,7 +121,7 @@ pub trait Handler {
         self,
         forward: proto::Forward,
         from: SocketAddr,
-        session: Arc<DirectSession>,
+        session: Option<Arc<DirectSession>>,
     ) -> Option<LocalBoxFuture<'static, ()>>;
 }
 
@@ -205,7 +216,7 @@ impl Dispatcher {
 
         let request_id_ = request_id;
         if self.responses.borrow_mut().insert(request_id, tx).is_some() {
-            log::warn!("Duplicate dispatch request id: {}", request_id);
+            log::warn!("Duplicate dispatch request id: {request_id}");
         }
 
         async move {

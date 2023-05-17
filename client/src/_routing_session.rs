@@ -1,4 +1,4 @@
-use anyhow::anyhow;
+use anyhow::{anyhow, bail};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
@@ -6,12 +6,11 @@ use tokio::sync::RwLock;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::{SessionId, TransportType};
 use ya_relay_core::NodeId;
-use ya_relay_proto::codec;
 use ya_relay_proto::proto::{Payload, SlotId};
 
 use crate::_encryption::Encryption;
 use crate::_error::SessionError;
-use crate::_session::SystemSession;
+use crate::_session::RawSession;
 use crate::_session_layer::SessionLayer;
 
 /// Describes Node identity.
@@ -36,7 +35,7 @@ pub struct AllowedForwards {
 #[derive(Clone)]
 pub struct DirectSession {
     pub owner: NodeEntry<Identity>,
-    pub session: Arc<SystemSession>,
+    pub raw: Arc<RawSession>,
 
     /// Nodes allowed to use this session for forwarding.
     /// In case of Relay Server session this corresponds to all Nodes, that we queried
@@ -50,7 +49,7 @@ impl DirectSession {
     pub fn new(
         node_id: NodeId,
         identities: impl IntoIterator<Item = Identity>,
-        session: Arc<SystemSession>,
+        session: Arc<RawSession>,
     ) -> anyhow::Result<Arc<DirectSession>> {
         let identities = identities.into_iter().collect::<Vec<_>>();
         let default_id = identities
@@ -66,9 +65,25 @@ impl DirectSession {
                 default_id,
                 identities,
             },
-            session,
+            raw: session,
             forwards: Arc::new(RwLock::new(Default::default())),
         }))
+    }
+
+    pub async fn remove_slot(&self, id: SlotId) -> anyhow::Result<()> {
+        let mut state = self.forwards.write().await;
+        if let Some(node) = state.slots.remove(&id) {
+            state.nodes.remove(&node.default_id);
+            for alias in node.identities {
+                state.nodes.remove(&alias)
+            }
+            Ok(())
+        }
+        bail!(
+            "Slot {id} not found in session: {} ({})",
+            self.raw.id,
+            self.owner.default_id.node_id
+        )
     }
 }
 
@@ -135,6 +150,18 @@ impl RoutingSender {
         }
     }
 
+    pub fn from_node_routing(
+        node: NodeId,
+        target: Arc<NodeRouting>,
+        layer: SessionLayer,
+    ) -> RoutingSender {
+        RoutingSender {
+            target: node,
+            node_routing: Arc::downgrade(&target),
+            layer,
+        }
+    }
+
     /// Sends Payload to target Node. Creates session if it didn't exist.
     /// `transport` is only declaration which will be used to set flags in
     /// `Forward` packet.
@@ -163,7 +190,7 @@ impl RoutingSender {
     pub fn route(&self) -> NodeId {
         if let Some(routing) = self.node_routing.upgrade() {
             if let Some(route) = routing.route.upgrade() {
-                route.owner.default_id.clone()
+                route.owner.default_id.clone();
             }
         }
         unimplemented!()
@@ -173,7 +200,7 @@ impl RoutingSender {
     pub fn session_id(&self) -> SessionId {
         if let Some(routing) = self.node_routing.upgrade() {
             if let Some(route) = routing.route.upgrade() {
-                route.session.id
+                route.raw.id;
             }
         }
         unimplemented!()

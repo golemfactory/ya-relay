@@ -14,6 +14,7 @@ use futures::future::{join_all, AbortHandle};
 use futures::{Future, FutureExt, SinkExt, TryFutureExt};
 use tokio::sync::RwLock;
 use url::Url;
+use ya_relay_core::challenge::CHALLENGE_DIFFICULTY;
 
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
@@ -36,6 +37,8 @@ pub struct ClientConfig {
     pub node_id: NodeId,
     pub node_pub_key: PublicKey,
     pub crypto: Rc<dyn CryptoProvider>,
+    pub challenge_difficulty: u64,
+
     pub bind_url: Url,
     pub srv_addr: SocketAddr,
     pub auto_connect: bool,
@@ -387,21 +390,21 @@ impl Client {
                 let node_id = *node_id;
 
                 async move {
-                    log::trace!("Broadcasting message to [{}]", node_id);
+                    log::trace!("Broadcasting message to [{node_id}]");
 
                     match self.forward_unreliable(node_id).await {
                         Ok(mut forward) => {
                             if forward.send(data.into()).await.is_err() {
-                                bail!("Cannot broadcast to {}: channel closed", node_id);
+                                bail!("Cannot broadcast to {node_id}: channel closed");
                             }
                         }
                         Err(e) => {
-                            bail!("Cannot broadcast to {}: {}", node_id, e);
+                            bail!("Cannot broadcast to {node_id}: {e}");
                         }
                     };
                     anyhow::Result::<()>::Ok(())
                 }
-                .map_err(|e| log::debug!("Failed to broadcast: {}", e))
+                .map_err(|e| log::debug!("Failed to broadcast: {e}"))
                 .map(|_| ())
                 .boxed_local()
             })
@@ -528,6 +531,7 @@ impl ClientBuilder {
             node_id: default_id,
             node_pub_key: default_pub_key,
             crypto,
+            challenge_difficulty: CHALLENGE_DIFFICULTY,
             bind_url,
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
             auto_connect: self.auto_connect,

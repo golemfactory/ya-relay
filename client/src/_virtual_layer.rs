@@ -98,7 +98,7 @@ impl TcpLayer {
     }
 
     pub async fn receiver(&self) -> Option<ForwardReceiver> {
-        self.state.read().await.ingress.receiver()
+        self.ingress.receiver()
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
@@ -141,7 +141,7 @@ impl TcpLayer {
     }
 
     pub async fn add_virt_node(&self, node_id: NodeId) -> VirtNode {
-        let node = self.new_virtual_node(node.id);
+        let node = self.new_virtual_node(node_id);
         {
             let mut state = self.state.write().await;
             let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
@@ -185,7 +185,7 @@ impl TcpLayer {
 
         // Make sure we have session with the Node. This allows us to
         // exit early if target Node is unreachable.
-        self.new_virtual_node(node.id).session.connect().await?;
+        self.new_virtual_node(node_id).session.connect().await?;
 
         let node = self.add_virt_node(node_id).await;
         let endpoint = IpEndpoint::new(node.endpoint.addr, port as u16);
@@ -233,7 +233,7 @@ impl TcpLayer {
         Ok(self.net.send(data, connection).await?)
     }
 
-    pub async fn dispatch(&self, packet: Forwarded) -> anyhow::Result<()> {
+    pub async fn dispatch(&self, packet: Forwarded) {
         let node_id = packet.node_id;
         if {
             // Optimisation to avoid resolving Node if possible.
@@ -241,12 +241,11 @@ impl TcpLayer {
             fast_lane.contains(&node_id)
         } {
             self.inject(packet.payload);
-            return Ok(());
+            return;
         }
 
-        self.receive(node, packet.payload).await;
+        self.receive(node_id, packet.payload).await;
         self.virtual_tcp_fast_lane.borrow_mut().insert(node_id);
-        Ok(())
     }
 
     pub async fn receive(&self, node: NodeId, payload: Payload) {
@@ -256,7 +255,7 @@ impl TcpLayer {
 
         if self.resolve_node(node).await.is_err() {
             log::debug!("[VirtualTcp] Incoming message from new Node [{node}]. Adding connection.");
-            self.add_virt_node(node).await.ok();
+            self.add_virt_node(node).await;
         }
         self.inject(payload);
     }
@@ -434,7 +433,7 @@ impl TcpLayer {
                             );
                             // TODO: Should we close TCP connection here?
                         }
-                    })
+                    });
                 }
             })
             .await

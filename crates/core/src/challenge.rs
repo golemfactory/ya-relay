@@ -138,11 +138,7 @@ pub fn recover_identities_from_challenge<D: Digest>(
     let default_id = default_ident.node_id;
     if let Some(remote_id) = remote_id {
         if default_id != remote_id {
-            anyhow::bail!(
-                "Invalid default NodeId [{}] vs [{}] (response)",
-                remote_id,
-                default_id
-            );
+            anyhow::bail!("Invalid default NodeId [{remote_id}] vs [{default_id}] (response)");
         }
     }
 
