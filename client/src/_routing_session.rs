@@ -70,14 +70,14 @@ impl DirectSession {
         }))
     }
 
-    pub async fn remove_slot(&self, id: SlotId) -> anyhow::Result<()> {
+    pub async fn remove_slot(&self, id: SlotId) -> anyhow::Result<NodeId> {
         let mut state = self.forwards.write().await;
         if let Some(node) = state.slots.remove(&id) {
             state.nodes.remove(&node.default_id);
             for alias in node.identities {
-                state.nodes.remove(&alias)
+                state.nodes.remove(&alias);
             }
-            Ok(())
+            return Ok(node.default_id);
         }
         bail!(
             "Slot {id} not found in session: {} ({})",
@@ -204,5 +204,14 @@ impl RoutingSender {
             }
         }
         unimplemented!()
+    }
+}
+
+impl From<NodeEntry<Identity>> for NodeEntry<NodeId> {
+    fn from(value: NodeEntry<Identity>) -> Self {
+        NodeEntry::<NodeId> {
+            default_id: value.default_id.node_id,
+            identities: value.identities.into_iter().map(|id| id.node_id).collect(),
+        }
     }
 }

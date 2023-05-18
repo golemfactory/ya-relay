@@ -24,6 +24,7 @@ pub use ya_relay_core::session::TransportType;
 mod _dispatch;
 mod _encryption;
 mod _error;
+mod _expire;
 mod _routing_session;
 mod _session;
 mod _session_guard;

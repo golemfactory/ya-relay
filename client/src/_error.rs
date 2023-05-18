@@ -1,3 +1,4 @@
+use anyhow::Error;
 use std::net::SocketAddr;
 use ya_relay_core::NodeId;
 
@@ -53,11 +54,17 @@ pub enum SessionInitError {
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum RequestError {
     #[error("Request failed: {0}")]
-    Generic(#[from] anyhow::Error),
+    Generic(String),
 }
 
 impl From<TransitionError> for SessionError {
     fn from(value: TransitionError) -> Self {
         SessionError::Internal(value.to_string())
+    }
+}
+
+impl From<anyhow::Error> for RequestError {
+    fn from(value: Error) -> Self {
+        RequestError::Generic(value.to_string())
     }
 }

@@ -1369,7 +1369,7 @@ impl Handler for SessionManager {
         request: proto::Request,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        log::trace!("Received request packet from {}: {:?}", from, request);
+        log::trace!("Received request packet from {from}: {request:?}");
 
         let (request_id, kind) = match request {
             proto::Request {

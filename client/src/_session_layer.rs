@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail};
 use futures::future::{AbortHandle, LocalBoxFuture};
-use futures::{FutureExt, TryFutureExt};
+use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::{HashMap, VecDeque};
 use std::convert::TryFrom;
 use std::net::SocketAddr;
@@ -10,20 +10,23 @@ use tokio::sync::{RwLock, Semaphore};
 use crate::client::{ClientConfig, Forwarded};
 use crate::ForwardReceiver;
 
-use crate::_dispatch::{Dispatcher, Handler};
+use crate::_dispatch::{dispatch, Dispatcher, Handler};
 use crate::_encryption::Encryption;
 use crate::_error::{SessionError, SessionResult};
 use crate::_routing_session::{DirectSession, NodeEntry, NodeRouting, RoutingSender};
 use crate::_session::RawSession;
 use crate::_session_guard::GuardedSessions;
 
+use crate::_expire::track_sessions_expiration;
 use crate::_session_protocol::SessionProtocol;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::{NodeInfo, SessionId, TransportType};
-use ya_relay_core::udp_stream::OutStream;
+use ya_relay_core::udp_stream::{udp_bind, OutStream};
+use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
+use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto::control::disconnected::By;
-use ya_relay_proto::proto::{Forward, SlotId, FORWARD_SLOT_ID};
+use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
 use ya_relay_proto::{codec, proto};
 use ya_relay_stack::Channel;
 
@@ -37,8 +40,6 @@ pub struct SessionLayer {
     /// If address is None after registering endpoints on Server, that means
     /// we don't have public IP.
     public_addr: Option<SocketAddr>,
-    /// Equals to `None` when not listening
-    bind_addr: Option<SocketAddr>,
     sink: Option<OutStream>,
 
     state: Arc<RwLock<SessionLayerState>>,
@@ -50,17 +51,59 @@ pub struct SessionLayer {
     processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
 }
 
+#[derive(Default)]
 pub struct SessionLayerState {
+    /// Equals to `None` when not listening
+    bind_addr: Option<SocketAddr>,
+
     pub nodes: HashMap<NodeId, Arc<NodeRouting>>,
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
 
-    starting_sessions: Option<SessionProtocol>,
+    init_protocol: Option<SessionProtocol>,
 
     // Collection of background tasks that must be stopped on shutdown.
     pub handles: Vec<AbortHandle>,
 }
 
 impl SessionLayer {
+    pub fn new(config: Arc<ClientConfig>) -> SessionLayer {
+        let state = SessionLayerState::default();
+
+        SessionLayer {
+            sink: None,
+            config,
+            public_addr: None,
+            state: Arc::new(RwLock::new(state)),
+            guards: Default::default(),
+            ingress_channel: Default::default(),
+            processed_requests: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub async fn spawn(&mut self) -> anyhow::Result<SocketAddr> {
+        let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
+
+        self.sink = Some(sink.clone());
+
+        let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
+        let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
+
+        {
+            let mut state = self.state.write().await;
+
+            state.bind_addr.replace(bind_addr);
+            state.handles.push(abort_dispatcher);
+            state.handles.push(abort_expiration);
+            state.init_protocol = Some(SessionProtocol::new(
+                self.clone(),
+                self.guards.clone(),
+                sink,
+            ));
+        }
+
+        Ok(bind_addr)
+    }
+
     pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
         let state = self.state.read().await;
         state
@@ -177,6 +220,7 @@ impl SessionLayer {
         session.disconnect().await
     }
 
+    // TODO: API should be different. NodeId should be enough to resolve connection.
     async fn resolve(&self, node_id: NodeId, slot: SlotId) -> anyhow::Result<Arc<DirectSession>> {
         unimplemented!()
         // if node_id == self.config.node_id {
@@ -349,6 +393,62 @@ impl SessionLayer {
         //     }
         // }
     }
+
+    pub async fn dispatch_session<'a>(
+        &self,
+        session_id: Vec<u8>,
+        request_id: RequestId,
+        from: SocketAddr,
+        request: proto::request::Session,
+    ) {
+        if let Some(protocol) = { self.state.read().await.init_protocol.clone() } {
+            protocol
+                .dispatch_session(session_id, request_id, from, request)
+                .await;
+        };
+    }
+
+    pub async fn on_ping(
+        &self,
+        session_id: Vec<u8>,
+        request_id: RequestId,
+        from: SocketAddr,
+        _request: proto::request::Ping,
+    ) {
+        let packet = proto::Packet::response(
+            request_id,
+            session_id,
+            proto::StatusCode::Ok,
+            proto::response::Pong {},
+        );
+
+        if let Err(e) = self.send(packet, from).await {
+            log::warn!("Unable to send Pong to {from}: {e}");
+        }
+    }
+
+    async fn send(&self, packet: impl Into<PacketKind>, addr: SocketAddr) -> anyhow::Result<()> {
+        let mut stream = self.out_stream()?;
+        Ok(stream.send((packet.into(), addr)).await?)
+    }
+
+    fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
+        const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
+
+        let mut processed_requests = self.processed_requests.lock().unwrap();
+        processed_requests.push_back((session_id, request_id));
+        if processed_requests.len() > REQ_DEDUPLICATE_BUF_SIZE {
+            processed_requests.pop_front();
+        }
+    }
+
+    fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
+        self.processed_requests
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
+    }
 }
 
 impl Handler for SessionLayer {
@@ -382,10 +482,16 @@ impl Handler for SessionLayer {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
                     let myself = self;
                     tokio::task::spawn_local(async move {
-                        let node_id = NodeId::try_from(&message.node_id)
-                            .ok()
-                            .map(|id| id.to_string())
-                            .unwrap_or(format!("{:?}", message.node_id));
+                        let node_id = match NodeId::try_from(&message.node_id) {
+                            Ok(node_id) => node_id,
+                            Err(_) => {
+                                log::warn!(
+                                    "ReverseConnection with invalid NodeId: {:?}",
+                                    message.node_id
+                                );
+                                return;
+                            }
+                        };
 
                         log::info!(
                             "Got ReverseConnection message. node={node_id}, endpoints={:?}",
@@ -399,7 +505,7 @@ impl Handler for SessionLayer {
 
                         match myself.resolve(node_id, FORWARD_SLOT_ID).await {
                             Err(e) => log::warn!(
-                                "Failed to resolve reverse connection. node_id={node_id} error={e}"
+                                "Failed to resolve ReverseConnection. node_id={node_id} error={e}"
                             ),
                             Ok(_) => log::trace!("ReverseConnection succeeded: {:?}", message),
                         };
@@ -409,7 +515,10 @@ impl Handler for SessionLayer {
                 ya_relay_proto::proto::control::Kind::PauseForwarding(_) => async move {
                     match self.find_session(from).await {
                         Some(session) => {
-                            log::debug!("Forwarding paused for session {}", session.raw.id);
+                            log::debug!(
+                                "Forwarding paused for session {} ({from})",
+                                session.raw.id
+                            );
                             session.raw.pause_forwarding().await;
                         }
                         None => {
@@ -437,29 +546,25 @@ impl Handler for SessionLayer {
                         log::debug!("Got Disconnected from {from}");
 
                         if let Ok(node) = match by {
-                            By::Slot(id) => {
-                                if let Some(session) = self.find_session(from).await {
-                                    session.remove_slot(id).await
-                                }
-                            }
-                            By::NodeId(id) if NodeId::try_from(&id).is_ok() => {
-                                self.get_node(NodeId::try_from(&id).unwrap()).await
-                            }
+                            By::Slot(id) => match self.find_session(from).await {
+                                Some(session) => session.remove_slot(id).await,
+                                None => Err(anyhow!("Session with {from} not found")),
+                            },
+                            By::NodeId(id) => NodeId::try_from(&id).map_err(anyhow::Error::from),
                             // We will disconnect session responsible for sending message. Doesn't matter
                             // what id was sent.
-                            By::SessionId(_session) => {
-                                if let Some(session) = self.find_session(from).await {
+                            By::SessionId(_session) => match self.find_session(from).await {
+                                Some(session) => {
                                     self.close_session(session).await.ok();
+                                    return;
                                 }
-                                return;
-                            }
-                            _ => return,
+                                None => Err(anyhow!("Session with {from} not found")),
+                            },
                         } {
                             log::info!(
-                                "Node [{}] disconnected from Relay. Stopping forwarding..",
-                                node.id
+                                "Node [{node}] disconnected from Relay. Stopping forwarding.."
                             );
-                            self.remove_node(node.id).await;
+                            self.disconnect_node(node).await.ok();
                         }
                     }
                     .boxed_local()
@@ -548,7 +653,7 @@ impl Handler for SessionLayer {
 
             let node = if slot == FORWARD_SLOT_ID {
                 // Direct message from other Node.
-                session.owner.clone()
+                session.owner.clone().into()
             } else {
                 // Messages forwarded through relay server or other relay Node.
                 match { session.forwards.read().await.slots.get(&slot).cloned() } {
@@ -568,13 +673,14 @@ impl Handler for SessionLayer {
                             .await?;
 
                         if session.owner.default_id.node_id == ident.node_id {
-                            session.owner.clone()
+                            session.owner.clone().into()
                         } else {
                             match { session.forwards.read().await.slots.get(&slot).cloned() } {
                                 None => {
                                     log::debug!(
                                         "Forward packet from unknown address: {from}. Failed to resolve.",
                                     );
+                                    bail!("Failed to resolve node with slot {slot} on session {from}")
                                 }
                                 Some(node) => node,
                             }
@@ -590,7 +696,7 @@ impl Handler for SessionLayer {
                     true => TransportType::Reliable,
                     false => TransportType::Unreliable,
                 },
-                node_id: node.default_id.node_id,
+                node_id: node.default_id,
                 payload: Default::default(),
             };
 

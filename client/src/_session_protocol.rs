@@ -57,7 +57,7 @@ impl SessionProtocol {
         SessionProtocol {
             state: Arc::new(Mutex::new(StartingSessionsState::default())),
             sink,
-            layer,
+            layer: layer.clone(),
             guarded,
             config: layer.config.clone(),
             simultaneous_challenges: Arc::new(Semaphore::new(max_heavy_threads)),
@@ -80,7 +80,16 @@ impl SessionProtocol {
         from: SocketAddr,
         request: proto::request::Session,
     ) {
-        todo!()
+        // This will be new session.
+        match session_id.is_empty() {
+            true => self.new_session(request_id, from, request).await,
+            false => self
+                .existing_session(session_id, request_id, from, request)
+                .await
+                .map_err(|e| e.into()),
+        }
+        .map_err(|e| log::warn!("{e}"))
+        .ok();
     }
 
     async fn init_session(
@@ -215,7 +224,8 @@ impl SessionProtocol {
                 ya_relay_proto::proto::control::ResumeForwarding::default(),
             ))
             .await
-            .map_err(|e| ProtocolError::SendFailure(RequestError::Generic(e)))?;
+            .map_err(RequestError::from)
+            .map_err(ProtocolError::from)?;
 
         self.guarded
             .transition(node_id, SessionState::Established)
@@ -406,7 +416,9 @@ impl SessionProtocol {
         );
 
         tmp_session.send(challenge).await.map_err(|_| {
-            ProtocolError::SendFailure(RequestError::Generic(anyhow!("Failed to send challenge")))
+            ProtocolError::SendFailure(RequestError::Generic(
+                "Failed to send challenge".to_string(),
+            ))
         })?;
 
         self.guarded
@@ -484,11 +496,8 @@ impl SessionProtocol {
                     packet,
                 ))
                 .await
-                .map_err(|_| {
-                    ProtocolError::SendFailure(RequestError::Generic(anyhow!(
-                        "for challenge response."
-                    )))
-                })?;
+                .map_err(|_| RequestError::Generic("Sending challenge response.".to_string()))
+                .map_err(ProtocolError::from)?;
 
             // Await for forwarding to be resumed
             if let Some(resumed) = session.raw.forward_pause.next() {
