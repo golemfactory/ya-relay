@@ -75,7 +75,8 @@ where
                 }
             },
             codec::PacketKind::Forward(forward) => {
-                // In case of temporary sessions we shouldn't get `Forward` packets.
+                // In case of temporary sessions we shouldn't get `Forward` packets,
+                // so we can safely ignore this case.
                 if let Some(session) = session {
                     handler
                         .on_forward(forward, from, Some(session))
@@ -86,18 +87,17 @@ where
         };
     }
 
-    log::info!("Client stopped");
+    log::info!("Dispatcher stopped");
 }
 
 /// Handles incoming packets. Used exclusively by the `dispatch` function
 pub trait Handler {
-    /// Returns a clone of a `Dispatcher` object
+    /// Returns a clone of a `Dispatcher` object for temporary sessions.
     fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>>;
 
-    /// TODO: Return session instead of `Dispatcher`. Dispatcher is stored internally.
-    ///       we are doing HashMap lookup for dispatcher and later in code we need to check,
-    ///       which Node we are talking to and make another lookup. We can avoid this
-    ///       duplication by returning `RoutingSession`.
+    /// Returns established session, if it exists. Otherwise returns None.
+    /// It doesn't take into account temporary sessions, so you should call `Handler::dispatcher`
+    /// later.
     fn session(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<DirectSession>>>;
 
     /// Handles `proto::Control` packets

@@ -513,7 +513,7 @@ impl ClientBuilder {
         Ok(self)
     }
 
-    pub async fn build(mut self) -> anyhow::Result<Client> {
+    pub async fn build_config(mut self) -> anyhow::Result<ClientConfig> {
         let bind_url = self
             .bind_url
             .unwrap_or_else(|| Url::parse("udp://0.0.0.0:0").unwrap());
@@ -527,7 +527,7 @@ impl ClientBuilder {
         self.stack_config.max_transmission_unit =
             resolve_max_payload_overhead_size(MAX_TAG_SIZE + Forward::header_size()).await?;
 
-        let mut client = Client::new(ClientConfig {
+        Ok(ClientConfig {
             node_id: default_id,
             node_pub_key: default_pub_key,
             crypto,
@@ -546,10 +546,13 @@ impl ClientBuilder {
             reverse_connection_real_timeout: Duration::from_secs(13),
             incoming_session_timeout: Duration::from_secs(16),
             neighbourhood_ttl: Duration::from_secs(300),
-        });
+        })
+    }
+
+    pub async fn build(mut self) -> anyhow::Result<Client> {
+        let mut client = Client::new(self.build_config().await?);
 
         client.spawn().await?;
-
         Ok(client)
     }
 }

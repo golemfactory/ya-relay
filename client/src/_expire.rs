@@ -5,7 +5,6 @@ use crate::_session::RawSession;
 use crate::_session_layer::SessionLayer;
 
 pub async fn track_sessions_expiration(layer: SessionLayer) {
-    todo!()
     // let expiration = layer.config.session_expiration;
     //
     // loop {

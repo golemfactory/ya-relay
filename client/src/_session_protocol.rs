@@ -23,12 +23,12 @@ use ya_relay_stack::Protocol;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::_routing_session::DirectSession;
 use crate::_session::RawSession;
-use crate::_session_guard::{GuardedSessions, InitState, SessionState};
+use crate::_session_guard::{GuardedSessions, InitState, SessionGuard, SessionState};
 use crate::_session_layer::SessionLayer;
 use crate::client::ClientConfig;
 
 #[derive(Clone)]
-pub(crate) struct SessionProtocol {
+pub struct SessionProtocol {
     state: Arc<Mutex<StartingSessionsState>>,
 
     guarded: GuardedSessions,
@@ -40,7 +40,7 @@ pub(crate) struct SessionProtocol {
 }
 
 #[derive(Default)]
-struct StartingSessionsState {
+pub struct StartingSessionsState {
     /// Initialization of session started by other peers.
     incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
 
@@ -80,30 +80,40 @@ impl SessionProtocol {
         from: SocketAddr,
         request: proto::request::Session,
     ) {
-        // This will be new session.
-        match session_id.is_empty() {
-            true => self.new_session(request_id, from, request).await,
-            false => self
-                .existing_session(session_id, request_id, from, request)
-                .await
-                .map_err(|e| e.into()),
-        }
-        .map_err(|e| log::warn!("{e}"))
-        .ok();
+        todo!()
+        // // This will be new session.
+        // match session_id.is_empty() {
+        //     true => self.new_session(request_id, from, request).await,
+        //     false => self
+        //         .existing_session(session_id, request_id, from, request)
+        //         .await
+        //         .map_err(|e| e.into()),
+        // }
+        // .map_err(|e| log::warn!("{e}"))
+        // .ok();
     }
 
+    /// External layer is responsible for making sure, that we are not processing
+    /// 2 session initializations at the same time.
+    ///
+    /// Rationale: In most cases synchronizing everything internally would be preferred
+    /// over moving this responsibility somewhere else. But the reason for this design
+    /// is to decouple as many components as possible, to make them testable separately.
+    /// We have many methods of initialization, moreover initiative can be on both sides
+    /// of the connection. To synchronize everything internally, we would have to create
+    /// single struct protecting all the logic. Code would become complicated and hard
+    /// to understand.
     async fn init_session(
         &self,
         addr: SocketAddr,
-        node_id: NodeId,
+        guard: SessionGuard,
         challenge: bool,
     ) -> SessionResult<Arc<DirectSession>> {
         let config = self.config.clone();
         let this_id = config.node_id;
+        let node_id = guard.id;
 
-        self.guarded
-            .transition_outgoing(node_id, InitState::Initializing)
-            .await?;
+        guard.transition_outgoing(InitState::Initializing).await?;
 
         let tmp_session = self.temporary_session(addr).await;
 
@@ -119,8 +129,8 @@ impl SessionProtocol {
             .await
             .map_err(ProtocolError::from)?;
 
-        self.guarded
-            .transition_outgoing(node_id, InitState::ChallengeReceived)
+        guard
+            .transition_outgoing(InitState::ChallengeReceived)
             .await?;
 
         let session_id = SessionId::try_from(response.session_id.clone())
@@ -154,8 +164,8 @@ impl SessionProtocol {
             .await
             .map_err(ProtocolError::from)?;
 
-        self.guarded
-            .transition_outgoing(node_id, InitState::ChallengeResponseSent)
+        guard
+            .transition_outgoing(InitState::ChallengeResponseSent)
             .await?;
 
         log::trace!("Challenge sent to: {addr}");
@@ -191,8 +201,8 @@ impl SessionProtocol {
             }
         };
 
-        self.guarded
-            .transition_outgoing(node_id, InitState::ChallengeVerified)
+        guard
+            .transition_outgoing(InitState::ChallengeVerified)
             .await?;
 
         if remote_id != node_id && !identities.iter().any(|i| i.node_id == node_id) {
@@ -213,8 +223,8 @@ impl SessionProtocol {
                 SessionError::Internal(format!("Failed to register session. Error: {e}"))
             })?;
 
-        self.guarded
-            .transition_outgoing(node_id, InitState::SessionRegistered)
+        guard
+            .transition_outgoing(InitState::SessionRegistered)
             .await?;
 
         session
@@ -227,9 +237,7 @@ impl SessionProtocol {
             .map_err(RequestError::from)
             .map_err(ProtocolError::from)?;
 
-        self.guarded
-            .transition(node_id, SessionState::Established)
-            .await?;
+        guard.transition(SessionState::Established).await?;
 
         log::trace!("[{this_id}] session {session_id} established with address: {addr}");
 
@@ -244,15 +252,20 @@ impl SessionProtocol {
         Ok(session)
     }
 
+    /// External layer is responsible for making sure, that we are not processing
+    /// 2 session initializations at the same time.
+    ///
+    /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn init_p2p_session(
         &self,
         addr: SocketAddr,
-        node_id: NodeId,
+        guard: SessionGuard,
     ) -> Result<Arc<DirectSession>, SessionInitError> {
-        log::info!("Initializing p2p session with Node: [{node_id}], address: {addr}");
+        let node_id = guard.id;
 
+        log::info!("Initializing p2p session with Node: [{node_id}], address: {addr}");
         let session = self
-            .init_session(addr, node_id, true)
+            .init_session(addr, guard.clone(), true)
             .await
             .map_err(|e| SessionInitError::P2P(node_id, e))?;
 
@@ -266,15 +279,19 @@ impl SessionProtocol {
         Ok(session)
     }
 
+    /// External layer is responsible for making sure, that we are not processing
+    /// 2 session initializations at the same time.
+    ///
+    /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn init_server_session(
         &self,
         addr: SocketAddr,
+        guard: SessionGuard,
     ) -> Result<Arc<DirectSession>, SessionInitError> {
         log::info!("Initializing session with NET relay server at: {addr}");
 
-        // TODO: In the future relays should have own NodeId.
         let session = self
-            .init_session(addr, NodeId::default(), false)
+            .init_session(addr, guard, false)
             .await
             .map_err(|e| SessionInitError::Relay(addr.clone(), e))?;
 
@@ -286,11 +303,15 @@ impl SessionProtocol {
         Ok(session)
     }
 
-    /// TODO: Session guards should be handled on external layer.
+    /// External layer is responsible for making sure, that we are not processing
+    /// 2 session initializations at the same time.
+    ///
+    /// See `SessionProtocol::init_session` for rationale behind this decision.
     pub async fn new_session(
         self,
         request_id: RequestId,
         with: SocketAddr,
+        guard: SessionGuard,
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
         let session_id = SessionId::generate();
@@ -304,24 +325,9 @@ impl SessionProtocol {
         let this2 = this.clone();
         let init_future = Abortable::new(
             timeout(self.config.incoming_session_timeout, async move {
-                // In case of ReverseConnection, we are awaiting incoming connection from
-                // other party
-                if this.guarded.try_access_unguarded(remote_id).await {
-                    log::debug!("Node [{remote_id}] enters unguarded session initialization.");
-
-                    this.init_session_handler(
-                        with, request_id, session_id, remote_id, request, receiver,
-                    )
-                    .await
-                } else {
-                    let lock = this.guarded.guard_initialization(remote_id, &[with]).await;
-                    let _guard = lock.write().await;
-
-                    this.init_session_handler(
-                        with, request_id, session_id, remote_id, request, receiver,
-                    )
-                    .await
-                }
+                this.init_session_handler(
+                    with, request_id, session_id, guard, request, receiver,
+                ).await
             }),
             abort_registration,
         )
@@ -343,10 +349,10 @@ impl SessionProtocol {
             // Establishing session failed.
             this1.cleanup_initialization(&session_id).await;
             Err(result)
-        })
-        .then(move |result| async move {
-            this2.guarded.stop_guarding(remote_id, result).await;
         });
+        // .then(move |result| async move {
+        //     this2.guarded.stop_guarding(remote_id, result).await;
+        // });
 
         {
             let mut state = self.state.lock().unwrap();
@@ -358,6 +364,10 @@ impl SessionProtocol {
         Ok(())
     }
 
+    /// External layer is responsible for making sure, that we are not processing
+    /// 2 session initializations at the same time.
+    ///
+    /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn existing_session(
         &self,
         raw_id: Vec<u8>,
@@ -388,22 +398,25 @@ impl SessionProtocol {
             .map_err(|_| InternalError::Send)?)
     }
 
+    /// External layer is responsible for making sure, that we are not processing
+    /// 2 session initializations at the same time.
+    ///
+    /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn init_session_handler(
         mut self,
         with: SocketAddr,
         request_id: RequestId,
         session_id: SessionId,
-        remote_id: NodeId,
+        guard: SessionGuard,
         request: proto::request::Session,
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> SessionResult<Arc<DirectSession>> {
         let config = self.config.clone();
+        let remote_id = guard.id;
 
         log::info!("Node [{remote_id}] ({with}) tries to establish p2p session.");
 
-        self.guarded
-            .transition_incoming(remote_id, InitState::Initializing)
-            .await?;
+        guard.transition_incoming(InitState::Initializing).await?;
 
         let tmp_session = self.temporary_session(with).await;
 
@@ -421,8 +434,8 @@ impl SessionProtocol {
             ))
         })?;
 
-        self.guarded
-            .transition_incoming(remote_id, InitState::ChallengeReceived)
+        guard
+            .transition_incoming(InitState::ChallengeReceived)
             .await?;
 
         log::debug!("Challenge sent to Node at address: {with}");
@@ -449,16 +462,16 @@ impl SessionProtocol {
 
             log::debug!("Challenge from Node: [{node_id}], address: {with} verified.");
 
-            self.guarded
-                .transition_incoming(remote_id, InitState::ChallengeVerified)
+            guard
+                .transition_incoming(InitState::ChallengeVerified)
                 .await?;
 
             let challenge = challenge_handle
                 .await
                 .map_err(|e| SessionError::Internal(e.to_string()))?;
 
-            self.guarded
-                .transition_incoming(remote_id, InitState::ChallengeSolved)
+            guard
+                .transition_incoming(InitState::ChallengeSolved)
                 .await?;
 
             let packet = proto::response::Session {
@@ -466,8 +479,8 @@ impl SessionProtocol {
                 ..Default::default()
             };
 
-            self.guarded
-                .transition_incoming(remote_id, InitState::ChallengeResponseSent)
+            guard
+                .transition_incoming(InitState::ChallengeResponseSent)
                 .await?;
 
             // Register incoming session before we send final response.
@@ -481,8 +494,8 @@ impl SessionProtocol {
                     SessionError::Internal(format!("Failed to register session. Error: {e}"))
                 })?;
 
-            self.guarded
-                .transition_incoming(remote_id, InitState::SessionRegistered)
+            guard
+                .transition_incoming(InitState::SessionRegistered)
                 .await?;
 
             // Temporarily pause forwarding from this node
@@ -521,7 +534,7 @@ impl SessionProtocol {
         }
 
         Err(SessionError::Timeout(
-            "Gave up, waiting for Session messages from peer.".to_string(),
+            "Gave up waiting for Session messages from peer.".to_string(),
         ))
     }
 
@@ -618,5 +631,38 @@ impl SessionProtocol {
             }
         }
         Ok(crypto_vec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::testing::accessors::SessionLayerPrivate;
+    use crate::testing::init::{spawn_session_layer, test_default_config};
+
+    use ya_relay_server::testing::server::init_test_server;
+
+    #[serial_test::serial]
+    async fn test_session_protocol_happy_path() {
+        let wrapper = init_test_server().await.unwrap();
+        let layer = spawn_session_layer(&wrapper).await.unwrap();
+        let layer2 = spawn_session_layer(&wrapper).await.unwrap();
+        let protocol = layer.get_protocol().await.unwrap();
+
+        let guard = layer
+            .guards
+            .guard_initialization(
+                layer2.config.node_id,
+                &[layer2.get_local_addr().await.unwrap()],
+            )
+            .await;
+        guard.lock_outgoing().await.unwrap();
+
+        let result = protocol
+            .init_p2p_session(layer2.get_local_addr().await.unwrap(), guard)
+            .await;
+
+        result.unwrap();
     }
 }

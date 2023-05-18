@@ -37,14 +37,11 @@ type ReqFingerprint = (Vec<u8>, u64);
 #[derive(Clone)]
 pub struct SessionLayer {
     pub config: Arc<ClientConfig>,
-    /// If address is None after registering endpoints on Server, that means
-    /// we don't have public IP.
-    public_addr: Option<SocketAddr>,
     sink: Option<OutStream>,
 
-    state: Arc<RwLock<SessionLayerState>>,
+    pub(crate) state: Arc<RwLock<SessionLayerState>>,
 
-    guards: GuardedSessions,
+    pub(crate) guards: GuardedSessions,
     ingress_channel: Channel<Forwarded>,
 
     // TODO: Could be per `Session`.
@@ -53,13 +50,16 @@ pub struct SessionLayer {
 
 #[derive(Default)]
 pub struct SessionLayerState {
+    /// If address is None after registering endpoints on Server, that means
+    /// we don't have public IP.
+    public_addr: Option<SocketAddr>,
     /// Equals to `None` when not listening
-    bind_addr: Option<SocketAddr>,
+    pub(crate) bind_addr: Option<SocketAddr>,
 
     pub nodes: HashMap<NodeId, Arc<NodeRouting>>,
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
 
-    init_protocol: Option<SessionProtocol>,
+    pub(crate) init_protocol: Option<SessionProtocol>,
 
     // Collection of background tasks that must be stopped on shutdown.
     pub handles: Vec<AbortHandle>,
@@ -72,7 +72,6 @@ impl SessionLayer {
         SessionLayer {
             sink: None,
             config,
-            public_addr: None,
             state: Arc::new(RwLock::new(state)),
             guards: Default::default(),
             ingress_channel: Default::default(),
@@ -102,6 +101,14 @@ impl SessionLayer {
         }
 
         Ok(bind_addr)
+    }
+
+    pub async fn get_public_addr(&self) -> Option<SocketAddr> {
+        self.state.read().await.public_addr
+    }
+
+    pub async fn get_local_addr(&self) -> Option<SocketAddr> {
+        self.state.read().await.bind_addr
     }
 
     pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
@@ -708,5 +715,28 @@ impl Handler for SessionLayer {
 
         tokio::task::spawn_local(fut);
         None
+    }
+}
+
+mod testing {
+    use crate::_session_layer::SessionLayer;
+    use crate::_session_protocol::SessionProtocol;
+    use crate::testing::accessors::SessionLayerPrivate;
+
+    use anyhow::bail;
+    use futures::future::LocalBoxFuture;
+    use futures::FutureExt;
+
+    impl SessionLayerPrivate for SessionLayer {
+        fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionProtocol>> {
+            let myself = self.clone();
+            async move {
+                match myself.state.read().await.init_protocol.clone() {
+                    None => bail!("SessionProtocol field is None"),
+                    Some(protocol) => Ok(protocol),
+                }
+            }
+            .boxed_local()
+        }
     }
 }
