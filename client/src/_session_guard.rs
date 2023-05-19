@@ -24,13 +24,8 @@ pub struct GuardedSessions {
 
 #[derive(Default)]
 struct GuardedSessionsState {
-    by_node_id: HashMap<NodeId, SessionGuard>,
-    by_addr: HashMap<SocketAddr, SessionGuard>,
-
-    /// Temporary sessions stored during initialization period.
-    /// After session is established, new struct in SessionManager is created
-    /// and this one is removed.
-    tmp_sessions: HashMap<SocketAddr, Arc<RawSession>>,
+    by_node_id: HashMap<NodeId, SessionEntry>,
+    by_addr: HashMap<SocketAddr, SessionEntry>,
 }
 
 #[derive(Clone, PartialEq, Display, Debug)]
@@ -58,15 +53,15 @@ pub enum InitState {
 }
 
 #[derive(Clone)]
-pub struct SessionGuard {
+pub struct SessionEntry {
+    /// Node default id. Duplicates information in state, but can be accessed
+    /// without acquiring and awaiting RwLock.  
     pub id: NodeId,
-    pub state: Arc<RwLock<SessionGuardState>>,
-    pub lock: Arc<RwLock<()>>,
-
+    pub state: Arc<RwLock<SessionEntryState>>,
     pub state_notifier: Arc<broadcast::Sender<SessionState>>,
 }
 
-pub struct SessionGuardState {
+pub struct SessionEntryState {
     node: NodeEntry<NodeId>,
     addresses: Vec<SocketAddr>,
     state: SessionState,
@@ -81,13 +76,13 @@ impl GuardedSessions {
         &self,
         node_id: NodeId,
         addrs: &[SocketAddr],
-    ) -> SessionGuard {
+    ) -> SessionEntry {
         let mut state = self.state.write().await;
         if let Some(target) = state.find(node_id, addrs) {
             return target.clone();
         }
 
-        let target = SessionGuard::new(node_id, addrs.to_vec());
+        let target = SessionEntry::new(node_id, addrs.to_vec());
 
         state.by_node_id.insert(target.id, target.clone());
         for addr in addrs.iter() {
@@ -109,21 +104,6 @@ impl GuardedSessions {
         //     log::debug!("Sending session init finish notification for Node: {node_id}");
         //     target.notify_finish.send(result).ok();
         // }
-    }
-
-    /// Creates temporary session used only during initialization.
-    /// Only one session will be created for one target Node address.
-    /// If temporary session was already created, this function will wait for initialization finish.
-    pub async fn temporary_session(&self, addr: SocketAddr, sink: OutStream) -> Arc<RawSession> {
-        let mut state = self.state.write().await;
-        match state.tmp_sessions.get(&addr) {
-            None => {
-                let session = RawSession::new(addr, SessionId::generate(), sink);
-                state.tmp_sessions.insert(addr, session.clone());
-                session
-            }
-            Some(session) => session.clone(),
-        }
     }
 
     pub async fn register_waiting_for_node(&self, node_id: NodeId) -> anyhow::Result<NodeAwaiting> {
@@ -150,11 +130,6 @@ impl GuardedSessions {
         // } else {
         //     false
         // }
-    }
-
-    /// Differs from `temporary_session`, that it doesn't create session, if it doesn't exist.
-    pub async fn get_temporary_session(&self, addr: &SocketAddr) -> Option<Arc<RawSession>> {
-        self.state.read().await.tmp_sessions.get(addr).cloned()
     }
 
     pub async fn transition(
@@ -191,41 +166,37 @@ impl GuardedSessions {
     }
 
     // TODO: Use other error type than `TransitionError`
-    async fn session_target(&self, node_id: NodeId) -> Result<SessionGuard, TransitionError> {
+    async fn session_target(&self, node_id: NodeId) -> Result<SessionEntry, TransitionError> {
         match { self.state.read().await.by_node_id.get(&node_id) } {
             None => return Err(TransitionError::NodeNotFound(node_id)),
             Some(target) => Ok(target.clone()),
         }
     }
 
-    pub async fn shutdown(&self) {
-        let mut state = self.state.write().await;
-        state.tmp_sessions.clear();
-    }
+    pub async fn shutdown(&self) {}
 }
 
 impl GuardedSessionsState {
-    fn find(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<SessionGuard> {
+    fn find(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<SessionEntry> {
         self.by_node_id
             .get(&node_id)
             .or_else(|| addrs.iter().filter_map(|a| self.by_addr.get(a)).next())
             .cloned()
     }
 
-    fn find_by_id(&self, node_id: NodeId) -> Option<SessionGuard> {
+    fn find_by_id(&self, node_id: NodeId) -> Option<SessionEntry> {
         self.by_node_id.get(&node_id).cloned()
     }
 
     // fn remove(&mut self, target: &SessionTarget) {
     //     for addr in target.addresses.iter() {
     //         self.by_addr.remove(addr);
-    //         self.tmp_sessions.remove(addr);
     //     }
     //     self.by_node_id.remove(&target.node_id);
     // }
 }
 
-impl SessionGuard {
+impl SessionEntry {
     pub async fn transition(
         &self,
         new_state: SessionState,
@@ -359,13 +330,13 @@ impl SessionState {
     }
 }
 
-impl SessionGuard {
+impl SessionEntry {
     fn new(node_id: NodeId, addresses: Vec<SocketAddr>) -> Self {
         let (notify_msg, _) = broadcast::channel(1);
 
         Self {
             id: node_id,
-            state: Arc::new(RwLock::new(SessionGuardState {
+            state: Arc::new(RwLock::new(SessionEntryState {
                 node: NodeEntry {
                     default_id: node_id,
                     identities: vec![],
@@ -373,20 +344,19 @@ impl SessionGuard {
                 addresses,
                 state: SessionState::Closed,
             })),
-            lock: Default::default(),
             state_notifier: Arc::new(notify_msg),
         }
     }
 
     /// Make intent, that you want initialize session with this Node.
     /// Function either will return Lock granting you exclusive right to
-    /// initialize this session or it will wait for initialization finish.
-    pub async fn lock_outgoing(&self) -> Option<LockedSession> {
+    /// initialize this session or object for awaiting on session.
+    pub async fn lock_outgoing(&self) -> SessionLock {
         // We need to subscribe to state change events, before we will start transition,
         // otherwise a few events could be lost.
-        let notifier = self.state_notifier.subscribe();
+        let notifier = self.awaiting_notifier();
         match self.transition_outgoing(InitState::ConnectIntent).await {
-            Ok(_) => Some(LockedSession {
+            Ok(_) => SessionLock::Permit(SessionPermit {
                 guard: self.clone(),
             }),
             Err(e) => {
@@ -397,48 +367,71 @@ impl SessionGuard {
                     )
                 };
 
-                self.await_for_finish(notifier).await;
-                None
+                SessionLock::Wait(notifier)
             }
         }
     }
 
-    pub async fn lock_incoming(&self) -> Option<LockedSession> {
-        todo!()
-    }
+    /// See: `SessionGuard::lock_outgoing`
+    /// TODO: Unify implementation with `lock_outgoing`.
+    pub async fn lock_incoming(&self) -> SessionLock {
+        // We need to subscribe to state change events, before we will start transition,
+        // otherwise a few events could be lost.
+        let notifier = self.awaiting_notifier();
+        match self.transition_outgoing(InitState::ConnectIntent).await {
+            Ok(_) => SessionLock::Permit(SessionPermit {
+                guard: self.clone(),
+            }),
+            Err(e) => {
+                if let TransitionError::InvalidTransition(prev, _) = e {
+                    log::debug!(
+                        "Initialization of session with: [{}] in progress, state: {}. Thread will wait for finish.",
+                        self.id, prev
+                    )
+                };
 
-    async fn await_for_finish(&self, mut notifier: broadcast::Receiver<SessionState>) {
-        while let Ok(state) = notifier.recv().await {
-            if state.is_finished() {
-                // TODO: Handle case, when it ended in `SessionState::Closed` state
-                return;
+                SessionLock::Wait(notifier)
             }
         }
     }
+
+    fn awaiting_notifier(&self) -> NodeAwaiting {
+        NodeAwaiting {
+            guard: self.clone(),
+            notifier: self.state_notifier.subscribe(),
+        }
+    }
+}
+
+/// Structure giving you exclusive right to initialize session (`Permit`)
+/// or allows to wait for results (`Wait`).
+pub enum SessionLock {
+    Permit(SessionPermit),
+    Wait(NodeAwaiting),
 }
 
 /// Structure giving you exclusive right to initialize session.
 /// TODO: Struct should ensure clear Session state on drop.
-pub struct LockedSession {
-    guard: SessionGuard,
+pub struct SessionPermit {
+    pub guard: SessionEntry,
 }
 
+/// Structure for awaiting established connection.
 pub struct NodeAwaiting {
-    /// Notifies, when establishing session is finished either with success or with failure.
-    notify_finish: broadcast::Receiver<SessionResult<Arc<DirectSession>>>,
-    /// Notifies first connection message received from other party.
-    /// Check `try_reverse_connection`, why we need this.
-    notify_msg: broadcast::Receiver<()>,
+    pub guard: SessionEntry,
+    notifier: broadcast::Receiver<SessionState>,
 }
 
 impl NodeAwaiting {
-    pub async fn wait_for_first_message(&mut self) {
-        self.notify_msg.recv().await.ok();
-    }
-
-    pub async fn wait_for_connection(&mut self) -> SessionResult<Arc<DirectSession>> {
-        self.notify_finish.recv().await.map_err(|_| {
-            SessionError::Internal("Channel error while waiting for connection".to_string())
-        })?
+    async fn await_for_finish(&mut self) -> anyhow::Result<()> {
+        while let Ok(state) = self.notifier.recv().await {
+            match state {
+                SessionState::Established => return Ok(()),
+                // TODO: We would like to return more meaningful error message.
+                SessionState::Closed => bail!("Initialization failed."),
+                _ => (),
+            };
+        }
+        bail!("Waiting for session initialization: notifier dropped.")
     }
 }

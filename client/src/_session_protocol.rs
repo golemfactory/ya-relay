@@ -26,15 +26,15 @@ use ya_relay_stack::Protocol;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::_routing_session::DirectSession;
 use crate::_session::RawSession;
-use crate::_session_guard::{GuardedSessions, InitState, SessionGuard, SessionState};
+use crate::_session_guard::{
+    GuardedSessions, InitState, SessionEntry, SessionPermit, SessionState,
+};
 use crate::_session_layer::SessionLayer;
 use crate::client::ClientConfig;
 
 #[derive(Clone)]
 pub struct SessionProtocol {
-    state: Arc<Mutex<StartingSessionsState>>,
-
-    guarded: GuardedSessions,
+    state: Arc<Mutex<SessionProtocolState>>,
     layer: SessionLayer,
 
     simultaneous_challenges: Arc<Semaphore>,
@@ -43,25 +43,29 @@ pub struct SessionProtocol {
 }
 
 #[derive(Default)]
-pub struct StartingSessionsState {
+pub struct SessionProtocolState {
     /// Initialization of session started by other peers.
     incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
+
+    /// Temporary sessions stored during initialization period.
+    /// After session is established, new struct in `SessionLayer` is created
+    /// and this one is removed.
+    tmp_sessions: HashMap<SocketAddr, Arc<RawSession>>,
 
     /// Collection of background tasks that must be stopped on shutdown.
     handles: Vec<AbortHandle>,
 }
 
 impl SessionProtocol {
-    pub fn new(layer: SessionLayer, guarded: GuardedSessions, sink: OutStream) -> SessionProtocol {
+    pub fn new(layer: SessionLayer, sink: OutStream) -> SessionProtocol {
         // We don't want to overwhelm CPU with challenge solving operations.
         // Leave at least 2 threads for yagna to work.
         let max_heavy_threads = std::cmp::max(num_cpus::get() - 2, 1);
 
         SessionProtocol {
-            state: Arc::new(Mutex::new(StartingSessionsState::default())),
+            state: Arc::new(Mutex::new(SessionProtocolState::default())),
             sink,
             layer: layer.clone(),
-            guarded,
             config: layer.config.clone(),
             simultaneous_challenges: Arc::new(Semaphore::new(max_heavy_threads)),
         }
@@ -69,35 +73,21 @@ impl SessionProtocol {
 
     /// Creates temporary session used only during initialization.
     /// Only one session will be created for one target Node address.
-    /// If temporary session was already created, this function will wait for initialization finish.
-    pub async fn temporary_session(&self, addr: SocketAddr) -> Arc<RawSession> {
-        self.guarded
-            .temporary_session(addr, self.sink.clone())
-            .await
+    pub async fn temporary_session(&self, addr: &SocketAddr) -> Arc<RawSession> {
+        let sink = self.sink.clone();
+        let mut state = self.state.lock().unwrap();
+        match state.tmp_sessions.get(&addr) {
+            None => {
+                let session = RawSession::new(addr.clone(), SessionId::generate(), sink);
+                state.tmp_sessions.insert(addr.clone(), session.clone());
+                session
+            }
+            Some(session) => session.clone(),
+        }
     }
 
-    pub async fn dispatch_session(
-        self,
-        session_id: Vec<u8>,
-        request_id: RequestId,
-        from: SocketAddr,
-        request: proto::request::Session,
-    ) {
-        todo!()
-        // // This will be new session.
-        // match session_id.is_empty() {
-        //     true => self.new_session(request_id, from, request).await,
-        //     false => self
-        //         .existing_session(session_id, request_id, from, request)
-        //         .await
-        //         .map_err(|e| e.into()),
-        // }
-        // .map_err(|e| log::warn!("{e}"))
-        // .ok();
-    }
-
-    /// External layer is responsible for making sure, that we are not processing
-    /// 2 session initializations at the same time.
+    /// External layer is responsible for acquiring `SessionPermit` to make sure,
+    /// that we are not processing 2 session initializations at the same time.
     ///
     /// Rationale: In most cases synchronizing everything internally would be preferred
     /// over moving this responsibility somewhere else. But the reason for this design
@@ -109,16 +99,17 @@ impl SessionProtocol {
     async fn init_session(
         &self,
         addr: SocketAddr,
-        guard: SessionGuard,
+        permit: &SessionPermit,
         challenge: bool,
     ) -> SessionResult<Arc<DirectSession>> {
         let config = self.config.clone();
         let this_id = config.node_id;
+        let guard = permit.guard.clone();
         let node_id = guard.id;
 
         guard.transition_outgoing(InitState::Initializing).await?;
 
-        let tmp_session = self.temporary_session(addr).await;
+        let tmp_session = self.temporary_session(&addr).await;
 
         log::debug!("[{this_id}] initializing session with {addr}");
 
@@ -255,20 +246,20 @@ impl SessionProtocol {
         Ok(session)
     }
 
-    /// External layer is responsible for making sure, that we are not processing
-    /// 2 session initializations at the same time.
+    /// External layer is responsible for acquiring `SessionPermit` to make sure,
+    /// that we are not processing 2 session initializations at the same time.
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn init_p2p_session(
         &self,
         addr: SocketAddr,
-        guard: SessionGuard,
+        permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionInitError> {
-        let node_id = guard.id;
+        let node_id = permit.guard.id;
 
         log::info!("Initializing p2p session with Node: [{node_id}], address: {addr}");
         let session = self
-            .init_session(addr, guard.clone(), true)
+            .init_session(addr, permit, true)
             .await
             .map_err(|e| SessionInitError::P2P(node_id, e))?;
 
@@ -282,19 +273,19 @@ impl SessionProtocol {
         Ok(session)
     }
 
-    /// External layer is responsible for making sure, that we are not processing
-    /// 2 session initializations at the same time.
+    /// External layer is responsible for acquiring `SessionPermit` to make sure,
+    /// that we are not processing 2 session initializations at the same time.
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn init_server_session(
         &self,
         addr: SocketAddr,
-        guard: SessionGuard,
+        permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionInitError> {
         log::info!("Initializing session with NET relay server at: {addr}");
 
         let session = self
-            .init_session(addr, guard, false)
+            .init_session(addr, permit, false)
             .await
             .map_err(|e| SessionInitError::Relay(addr.clone(), e))?;
 
@@ -306,30 +297,35 @@ impl SessionProtocol {
         Ok(session)
     }
 
-    /// External layer is responsible for making sure, that we are not processing
-    /// 2 session initializations at the same time.
+    /// External layer is responsible for acquiring `SessionPermit` to make sure,
+    /// that we are not processing 2 session initializations at the same time.
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
     pub async fn new_session(
         self,
         request_id: RequestId,
         with: SocketAddr,
-        guard: SessionGuard,
+        permit: &SessionPermit,
         request: proto::request::Session,
     ) -> anyhow::Result<()> {
         let session_id = SessionId::generate();
-        let remote_id = challenge::recover_default_node_id(&request)?;
+        let remote_id = permit.guard.id;
         let (sender, receiver) = mpsc::channel(1);
 
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
+        {
+            let mut state = self.state.lock().unwrap();
+            state.incoming_sessions.entry(session_id).or_insert(sender);
+            state.handles.push(abort_handle);
+        }
+
         let this = self.clone();
         let this1 = this.clone();
-        let this2 = this.clone();
         let init_future = Abortable::new(
             timeout(self.config.incoming_session_timeout, async move {
                 this.init_session_handler(
-                    with, request_id, session_id, guard, request, receiver,
+                    with, request_id, session_id, permit, request, receiver,
                 ).await
             }),
             abort_registration,
@@ -341,9 +337,8 @@ impl SessionProtocol {
             Err(_aborted) => Err(SessionError::Internal("Aborted".to_string())),
         })
         .or_else(move |result| async move {
-            if let Some(session) = this1.guarded.get_temporary_session(&with).await {
-                session.disconnect().await.ok();
-            }
+            let session = this1.temporary_session(&with).await;
+            session.disconnect().await.ok();
 
             log::warn!(
                 "Error initializing session {session_id} with node [{remote_id}] ({with}). Error: {result}"
@@ -352,46 +347,29 @@ impl SessionProtocol {
             // Establishing session failed.
             this1.cleanup_initialization(&session_id).await;
             Err(result)
-        });
-        // .then(move |result| async move {
-        //     this2.guarded.stop_guarding(remote_id, result).await;
-        // });
+        }).await?;
 
-        {
-            let mut state = self.state.lock().unwrap();
-            state.incoming_sessions.entry(session_id).or_insert(sender);
-            state.handles.push(abort_handle);
-        }
-
-        tokio::task::spawn_local(init_future);
         Ok(())
     }
 
-    /// External layer is responsible for making sure, that we are not processing
-    /// 2 session initializations at the same time.
-    ///
-    /// See `SessionProtocol::init_session` for rationale behind this decision.
-    async fn existing_session(
+    pub(crate) async fn existing_session(
         &self,
-        raw_id: Vec<u8>,
+        session_id: SessionId,
         request_id: RequestId,
         _from: SocketAddr,
         request: proto::request::Session,
     ) -> ServerResult<()> {
-        let id = SessionId::try_from(raw_id.clone())
-            .map_err(|_| Unauthorized::InvalidSessionId(raw_id))?;
-
         let mut sender = {
             match {
                 self.state
                     .lock()
                     .unwrap()
                     .incoming_sessions
-                    .get(&id)
+                    .get(&session_id)
                     .cloned()
             } {
                 Some(sender) => sender.clone(),
-                None => return Err(Unauthorized::SessionNotFound(id).into()),
+                None => return Err(Unauthorized::SessionNotFound(session_id).into()),
             }
         };
 
@@ -401,8 +379,8 @@ impl SessionProtocol {
             .map_err(|_| InternalError::Send)?)
     }
 
-    /// External layer is responsible for making sure, that we are not processing
-    /// 2 session initializations at the same time.
+    /// External layer is responsible for acquiring `SessionPermit` to make sure,
+    /// that we are not processing 2 session initializations at the same time.
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn init_session_handler(
@@ -410,18 +388,19 @@ impl SessionProtocol {
         with: SocketAddr,
         request_id: RequestId,
         session_id: SessionId,
-        guard: SessionGuard,
+        permit: &SessionPermit,
         request: proto::request::Session,
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> SessionResult<Arc<DirectSession>> {
         let config = self.config.clone();
-        let remote_id = guard.id;
+        let remote_id = permit.guard.id;
+        let guard = permit.guard.clone();
 
         log::info!("Node [{remote_id}] ({with}) tries to establish p2p session.");
 
         guard.transition_incoming(InitState::Initializing).await?;
 
-        let tmp_session = self.temporary_session(with).await;
+        let tmp_session = self.temporary_session(&with).await;
 
         let (packet, raw_challenge) = challenge::prepare_challenge_response();
         let challenge = proto::Packet::response(
@@ -543,13 +522,25 @@ impl SessionProtocol {
 
     async fn cleanup_initialization(&self, session_id: &SessionId) {
         let mut state = self.state.lock().unwrap();
+
         state.incoming_sessions.remove(session_id);
+
+        if let Some(session) = state
+            .tmp_sessions
+            .iter()
+            .find(|(_, session)| &session.id == session_id)
+            .map(|(addr, _)| addr)
+            .cloned()
+        {
+            state.tmp_sessions.remove(&session);
+        }
     }
 
     pub async fn shutdown(&self) {
         let handles = {
             let mut state = self.state.lock().unwrap();
             state.incoming_sessions.clear();
+            state.tmp_sessions.clear();
             std::mem::take(&mut state.handles)
         };
 
@@ -644,6 +635,7 @@ mod tests {
     use crate::testing::accessors::SessionLayerPrivate;
     use crate::testing::init::{spawn_session_layer, test_default_config};
 
+    use crate::_session_guard::SessionLock;
     use ya_relay_server::testing::server::init_test_server;
 
     #[serial_test::serial]
@@ -660,10 +652,14 @@ mod tests {
                 &[layer2.get_local_addr().await.unwrap()],
             )
             .await;
-        guard.lock_outgoing().await.unwrap();
+
+        let permit = match guard.lock_outgoing().await {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization permit"),
+        };
 
         let result = protocol
-            .init_p2p_session(layer2.get_local_addr().await.unwrap(), guard)
+            .init_p2p_session(layer2.get_local_addr().await.unwrap(), &permit)
             .await;
 
         result.unwrap();

@@ -5,7 +5,7 @@ use anyhow::{anyhow, bail};
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::{HashMap, VecDeque};
-use std::convert::TryFrom;
+use std::convert::{Infallible, TryFrom};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, Semaphore};
@@ -18,7 +18,7 @@ use crate::_encryption::Encryption;
 use crate::_error::{SessionError, SessionResult};
 use crate::_routing_session::{DirectSession, NodeEntry, NodeRouting, RoutingSender};
 use crate::_session::RawSession;
-use crate::_session_guard::GuardedSessions;
+use crate::_session_guard::{GuardedSessions, SessionLock};
 
 use crate::_expire::track_sessions_expiration;
 use crate::_session_protocol::SessionProtocol;
@@ -26,7 +26,7 @@ use ya_relay_core::identity::Identity;
 use ya_relay_core::session::{NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::utils::spawn_local_abortable;
-use ya_relay_core::NodeId;
+use ya_relay_core::{challenge, NodeId};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
@@ -96,11 +96,7 @@ impl SessionLayer {
             state.bind_addr.replace(bind_addr);
             state.handles.push(abort_dispatcher);
             state.handles.push(abort_expiration);
-            state.init_protocol = Some(SessionProtocol::new(
-                self.clone(),
-                self.guards.clone(),
-                sink,
-            ));
+            state.init_protocol = Some(SessionProtocol::new(self.clone(), sink));
         }
 
         Ok(bind_addr)
@@ -410,12 +406,34 @@ impl SessionLayer {
         request_id: RequestId,
         from: SocketAddr,
         request: proto::request::Session,
-    ) {
-        if let Some(protocol) = { self.state.read().await.init_protocol.clone() } {
-            protocol
-                .dispatch_session(session_id, request_id, from, request)
-                .await;
+    ) -> anyhow::Result<()> {
+        let protocol = match { self.state.read().await.init_protocol.clone() } {
+            Some(protocol) => protocol,
+            None => bail!("`SessionProtocol` empty (not initialized?)"),
         };
+
+        if session_id.is_empty() {
+            // Empty `session_id` indicates attempt to initialize session.
+            let remote_id = challenge::recover_default_node_id(&request)?;
+            let guard = self.guards.guard_initialization(remote_id, &[from]).await;
+
+            return match guard.lock_incoming().await {
+                SessionLock::Permit(permit) => Ok(protocol
+                    .new_session(request_id, from, &permit, request)
+                    .await?),
+                SessionLock::Wait(_) => {
+                    // We didn't get lock, so probably other thread is in charge of initializing session.
+                    // TODO: This could be situation, when both sides tried to initialize connection.
+                    //       Maybe we should implement algorithm, which would decide, who has precedence.
+                    Ok(())
+                }
+            };
+        }
+
+        let session_id = SessionId::try_from(session_id)?;
+        Ok(protocol
+            .existing_session(session_id, request_id, from, request)
+            .await?)
     }
 
     pub async fn on_ping(
@@ -464,10 +482,11 @@ impl SessionLayer {
 impl Handler for SessionLayer {
     fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>> {
         async move {
-            self.guards
-                .get_temporary_session(&from)
-                .await
-                .map(|entity| entity.dispatcher())
+            if let Some(protocol) = { self.state.read().await.init_protocol.clone() } {
+                Some(protocol.temporary_session(&from).await.dispatcher())
+            } else {
+                None
+            }
         }
         .boxed_local()
     }
@@ -618,6 +637,8 @@ impl Handler for SessionLayer {
             proto::request::Kind::Session(request) => async move {
                 self.dispatch_session(session_id, request_id, from, request)
                     .await
+                    .map_err(|e| log::warn!("Handling `Session` request: {e}"))
+                    .ok();
             }
             .boxed_local(),
             _ => return None,
