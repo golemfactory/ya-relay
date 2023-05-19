@@ -111,7 +111,7 @@ impl SessionProtocol {
 
         let tmp_session = self.temporary_session(&addr).await;
 
-        log::debug!("[{this_id}] initializing session with {addr}");
+        log::debug!("[{this_id}] initializing session with [{node_id}] ({addr})");
 
         let (request, raw_challenge) = self.prepare_challenge_request(challenge).await?;
         let response = tmp_session
@@ -124,7 +124,7 @@ impl SessionProtocol {
             .map_err(ProtocolError::from)?;
 
         guard
-            .transition_outgoing(InitState::ChallengeReceived)
+            .transition_outgoing(InitState::ChallengeHandshake)
             .await?;
 
         let session_id = SessionId::try_from(response.session_id.clone())
@@ -136,7 +136,7 @@ impl SessionProtocol {
         })?;
         let challenge_handle = self.solve_challenge(challenge_req).await;
 
-        log::trace!("Solving challenge while establishing session with: {addr}");
+        log::trace!("Solving challenge while establishing session with: [{node_id}] ({addr})");
 
         // with the current ECDSA scheme the public key
         // can be recovered from challenge signature
@@ -158,11 +158,10 @@ impl SessionProtocol {
             .await
             .map_err(ProtocolError::from)?;
 
+        log::trace!("Challenge response sent to: [{node_id}] ({addr})");
         guard
-            .transition_outgoing(InitState::ChallengeResponseSent)
+            .transition_outgoing(InitState::HandshakeResponse)
             .await?;
-
-        log::trace!("Challenge sent to: {addr}");
 
         if session_id != &response.session_id[..] {
             let _ = tmp_session.disconnect().await;
@@ -173,11 +172,10 @@ impl SessionProtocol {
             .into());
         }
 
-        log::trace!("Validating challenge from: {addr}");
-
         let (remote_id, identities) = match {
             if challenge {
-                // Validate the challenge
+                log::trace!("Validating challenge from: [{node_id}] ({addr})");
+
                 challenge::recover_identities_from_challenge::<ChallengeDigest>(
                     &raw_challenge,
                     config.challenge_difficulty,
@@ -231,9 +229,9 @@ impl SessionProtocol {
             .map_err(RequestError::from)
             .map_err(ProtocolError::from)?;
 
-        guard.transition(SessionState::Established).await?;
+        guard.transition_outgoing(InitState::Ready).await?;
 
-        log::trace!("[{this_id}] session {session_id} established with address: {addr}");
+        log::trace!("[{this_id}] session {session_id} established with: [{node_id}] ({addr})");
 
         // Send ping to measure response time.
         // Otherwise we will have very big response time, when querying this information
@@ -417,10 +415,10 @@ impl SessionProtocol {
         })?;
 
         guard
-            .transition_incoming(InitState::ChallengeReceived)
+            .transition_incoming(InitState::ChallengeHandshake)
             .await?;
 
-        log::debug!("Challenge sent to Node at address: {with}");
+        log::debug!("Challenge sent to Node [{remote_id}] at address: {with}");
 
         // Compute challenge in different thread to avoid blocking runtime.
         let challenge_handle = match request.challenge_req {
@@ -429,7 +427,11 @@ impl SessionProtocol {
         };
 
         if let Some((request_id, session)) = rc.next().await {
-            log::debug!("Got challenge response from Node at address: {with}");
+            log::debug!("Got challenge response from Node [{remote_id}] at address: {with}");
+
+            guard
+                .transition_incoming(InitState::HandshakeResponse)
+                .await?;
 
             // Validate the challenge before we start solving it ourselves.
             // This way we avoid DDoS.
@@ -444,26 +446,18 @@ impl SessionProtocol {
 
             log::debug!("Challenge from Node: [{node_id}], address: {with} verified.");
 
-            guard
-                .transition_incoming(InitState::ChallengeVerified)
-                .await?;
-
             let challenge = challenge_handle
                 .await
                 .map_err(|e| SessionError::Internal(e.to_string()))?;
 
             guard
-                .transition_incoming(InitState::ChallengeSolved)
+                .transition_incoming(InitState::ChallengeVerified)
                 .await?;
 
             let packet = proto::response::Session {
                 challenge_resp: Some(challenge),
                 ..Default::default()
             };
-
-            guard
-                .transition_incoming(InitState::ChallengeResponseSent)
-                .await?;
 
             // Register incoming session before we send final response.
             // This way we will avoid race conditions, in case remote Node will attempt
@@ -501,6 +495,8 @@ impl SessionProtocol {
                 );
                 resumed.await;
             }
+
+            guard.transition_incoming(InitState::Ready).await?;
 
             log::info!(
                 "Incoming P2P session {session_id} with Node: [{node_id}], address: {with} established."
@@ -645,21 +641,16 @@ mod tests {
         let layer2 = spawn_session_layer(&wrapper).await.unwrap();
         let protocol = layer.get_protocol().await.unwrap();
 
-        let guard = layer
-            .guards
-            .guard_initialization(
-                layer2.config.node_id,
-                &[layer2.get_local_addr().await.unwrap()],
-            )
-            .await;
+        let node_id2 = layer2.config.node_id;
+        let addrs = &[layer2.get_test_socket_addr().await.unwrap()];
 
-        let permit = match guard.lock_outgoing().await {
+        let permit = match layer.guards.lock_outgoing(node_id2, addrs).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization permit"),
         };
 
         let result = protocol
-            .init_p2p_session(layer2.get_local_addr().await.unwrap(), &permit)
+            .init_p2p_session(layer2.get_test_socket_addr().await.unwrap(), &permit)
             .await;
 
         result.unwrap();

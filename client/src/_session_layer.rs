@@ -415,9 +415,8 @@ impl SessionLayer {
         if session_id.is_empty() {
             // Empty `session_id` indicates attempt to initialize session.
             let remote_id = challenge::recover_default_node_id(&request)?;
-            let guard = self.guards.guard_initialization(remote_id, &[from]).await;
 
-            return match guard.lock_incoming().await {
+            return match self.guards.lock_incoming(remote_id, &[from]).await {
                 SessionLock::Permit(permit) => Ok(protocol
                     .new_session(request_id, from, &permit, request)
                     .await?),
@@ -749,7 +748,8 @@ mod testing {
 
     use anyhow::bail;
     use futures::future::LocalBoxFuture;
-    use futures::FutureExt;
+    use futures::{FutureExt, StreamExt};
+    use std::net::SocketAddr;
 
     impl SessionLayerPrivate for SessionLayer {
         fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionProtocol>> {
@@ -758,6 +758,19 @@ mod testing {
                 match myself.state.read().await.init_protocol.clone() {
                     None => bail!("SessionProtocol field is None"),
                     Some(protocol) => Ok(protocol),
+                }
+            }
+            .boxed_local()
+        }
+
+        fn get_test_socket_addr(&self) -> LocalBoxFuture<anyhow::Result<SocketAddr>> {
+            let myself = self.clone();
+            async move {
+                if let Some(addr) = myself.get_local_addr().await {
+                    let port = addr.port();
+                    Ok(format!("127.0.0.1:{port}").parse()?)
+                } else {
+                    bail!("Can't get local address.")
                 }
             }
             .boxed_local()

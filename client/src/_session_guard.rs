@@ -3,6 +3,8 @@
 
 use anyhow::bail;
 use derive_more::Display;
+use futures::future::LocalBoxFuture;
+use futures::FutureExt;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
@@ -30,8 +32,11 @@ struct GuardedSessionsState {
 
 #[derive(Clone, PartialEq, Display, Debug)]
 pub enum SessionState {
+    #[display(fmt = "Outgoing-{}", _0)]
     Outgoing(InitState),
+    #[display(fmt = "Incoming-{}", _0)]
     Incoming(InitState),
+    #[display(fmt = "Reverse-{}", _0)]
     ReverseConnection(InitState),
     Established,
     Closed,
@@ -43,13 +48,23 @@ pub enum InitState {
     /// so we are not allowed to do this. Instead we should wait until
     /// connection will be ready.
     ConnectIntent,
+    /// State set on the beginning of initialization function.
     Initializing,
     WaitingForReverseConnection,
-    ChallengeReceived,
-    ChallengeSolved,
-    ChallengeResponseSent,
+    /// First round of `Session` requests, challenges sent.
+    ChallengeHandshake,
+    /// Second round of handshake, challenge response received.
+    HandshakeResponse,
+    /// Challenge from other party is valid.
     ChallengeVerified,
+    /// Session is registered in `SessionLayer`.
+    /// We should be ready to receive packets, but shouldn't send packets yet,
+    /// because we are waiting for `ResumeForwarding` packet.
     SessionRegistered,
+    /// We received (or sent in case of initiator) `ResumeForwarding` packet,
+    /// so Protocol initialization part is finished.
+    /// From this state session can transition to established.
+    Ready,
 }
 
 #[derive(Clone)]
@@ -90,6 +105,20 @@ impl GuardedSessions {
         }
 
         target
+    }
+
+    pub async fn lock_outgoing(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
+        self.guard_initialization(node_id, addrs)
+            .await
+            .lock_outgoing()
+            .await
+    }
+
+    pub async fn lock_incoming(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
+        self.guard_initialization(node_id, addrs)
+            .await
+            .lock_incoming()
+            .await
     }
 
     pub async fn stop_guarding(&self, node_id: NodeId, result: SessionResult<Arc<DirectSession>>) {
@@ -237,9 +266,16 @@ impl SessionEntry {
     }
 
     fn notify_change(&self, new_state: SessionState) {
+        // TODO: Consider changing to trace
+        log::debug!(
+            "State changed to {} for session with [{}]",
+            new_state,
+            self.id
+        );
+
         self.state_notifier
             .send(new_state)
-            .map_err(|e| log::warn!("Failed to send state change for {}", self.id))
+            .map_err(|_| log::trace!("Notifying state change for {}: No listeners", self.id))
             .ok();
     }
 }
@@ -248,11 +284,11 @@ impl InitState {
     pub fn allowed(&self, new_state: &InitState) -> bool {
         match (self, &new_state) {
             (InitState::ConnectIntent, InitState::Initializing) => true,
-            (InitState::Initializing, InitState::ChallengeReceived) => true,
-            (InitState::ChallengeReceived, InitState::ChallengeSolved) => true,
-            (InitState::ChallengeSolved, InitState::ChallengeResponseSent) => true,
-            (InitState::ChallengeResponseSent, InitState::ChallengeVerified) => true,
+            (InitState::Initializing, InitState::ChallengeHandshake) => true,
+            (InitState::ChallengeHandshake, InitState::HandshakeResponse) => true,
+            (InitState::HandshakeResponse, InitState::ChallengeVerified) => true,
             (InitState::ChallengeVerified, InitState::SessionRegistered) => true,
+            (InitState::SessionRegistered, InitState::Ready) => true,
             _ => false,
         }
     }
@@ -378,7 +414,7 @@ impl SessionEntry {
         // We need to subscribe to state change events, before we will start transition,
         // otherwise a few events could be lost.
         let notifier = self.awaiting_notifier();
-        match self.transition_outgoing(InitState::ConnectIntent).await {
+        match self.transition_incoming(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 guard: self.clone(),
             }),

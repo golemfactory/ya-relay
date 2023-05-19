@@ -266,12 +266,11 @@ impl Dispatcher {
                     })
                     .is_err()
                 {
-                    log::debug!("Unable to dispatch response from {from}: listener is closed");
+                    log::debug!("Unable to dispatch response (request_id = {request_id}) from {from}: listener is closed");
                 }
             }
             None => log::debug!(
-                "Unable to dispatch response from {from}: listener does not exist. {:?}",
-                kind
+                "Unable to dispatch response (request_id = {request_id}) from {from}: listener does not exist. {kind:?}"
             ),
         };
 
