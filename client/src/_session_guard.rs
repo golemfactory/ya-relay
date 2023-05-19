@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use anyhow::bail;
 use derive_more::Display;
 use std::collections::HashMap;

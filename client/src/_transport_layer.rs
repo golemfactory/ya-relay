@@ -1,3 +1,6 @@
+#![allow(dead_code)]
+#![allow(unused)]
+
 use anyhow::bail;
 use futures::channel::mpsc;
 use futures::StreamExt;

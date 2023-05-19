@@ -549,7 +549,7 @@ impl ClientBuilder {
         })
     }
 
-    pub async fn build(mut self) -> anyhow::Result<Client> {
+    pub async fn build(self) -> anyhow::Result<Client> {
         let mut client = Client::new(self.build_config().await?);
 
         client.spawn().await?;
