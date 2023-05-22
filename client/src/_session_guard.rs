@@ -6,9 +6,11 @@ use derive_more::Display;
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
 
 use crate::_error::{SessionError, SessionResult, TransitionError};
@@ -40,6 +42,7 @@ pub enum SessionState {
     ReverseConnection(InitState),
     Established,
     Closed,
+    FailedEstablish,
 }
 
 #[derive(Clone, PartialEq, Display, Debug)]
@@ -322,22 +325,26 @@ impl SessionState {
 
     pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
         let allowed = match (&self, &new_state) {
-            (SessionState::Incoming(InitState::SessionRegistered), SessionState::Established) => {
-                true
-            }
-            (SessionState::Outgoing(InitState::SessionRegistered), SessionState::Established) => {
-                true
-            }
-            (
-                SessionState::ReverseConnection(InitState::SessionRegistered),
-                SessionState::Established,
-            ) => true,
+            (SessionState::Incoming(_), SessionState::FailedEstablish) => true,
+            (SessionState::Outgoing(_), SessionState::FailedEstablish) => true,
+            (SessionState::ReverseConnection(_), SessionState::FailedEstablish) => true,
+            (SessionState::Incoming(InitState::Ready), SessionState::Established) => true,
+            (SessionState::Outgoing(InitState::Ready), SessionState::Established) => true,
+            (SessionState::ReverseConnection(InitState::Ready), SessionState::Established) => true,
             (
                 SessionState::Outgoing(InitState::WaitingForReverseConnection),
                 SessionState::ReverseConnection(InitState::Initializing),
             ) => true,
             (SessionState::Closed, SessionState::Outgoing(InitState::ConnectIntent)) => true,
             (SessionState::Closed, SessionState::Incoming(InitState::ConnectIntent)) => true,
+            (SessionState::Established, SessionState::Established) => true,
+            (SessionState::Established, SessionState::Established) => true,
+            (SessionState::FailedEstablish, SessionState::Outgoing(InitState::ConnectIntent)) => {
+                true
+            }
+            (SessionState::FailedEstablish, SessionState::Incoming(InitState::ConnectIntent)) => {
+                true
+            }
             (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(&next),
             (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(&next),
             (SessionState::ReverseConnection(prev), SessionState::ReverseConnection(next)) => {
@@ -361,6 +368,7 @@ impl SessionState {
         match self {
             SessionState::Established => true,
             SessionState::Closed => true,
+            SessionState::FailedEstablish => true,
             _ => false,
         }
     }
@@ -368,7 +376,7 @@ impl SessionState {
 
 impl SessionEntry {
     fn new(node_id: NodeId, addresses: Vec<SocketAddr>) -> Self {
-        let (notify_msg, _) = broadcast::channel(1);
+        let (notify_msg, _) = broadcast::channel(10);
 
         Self {
             id: node_id,
@@ -437,6 +445,10 @@ impl SessionEntry {
             notifier: self.state_notifier.subscribe(),
         }
     }
+
+    pub async fn state(&self) -> SessionState {
+        self.state.read().await.state.clone()
+    }
 }
 
 /// Structure giving you exclusive right to initialize session (`Permit`)
@@ -452,6 +464,22 @@ pub struct SessionPermit {
     pub guard: SessionEntry,
 }
 
+impl SessionPermit {
+    pub async fn async_drop(guard: SessionEntry) {
+        let node_id = guard.id;
+        if let Err(e) = guard.transition(SessionState::Established).await {
+            log::warn!("Dropping Permit for Node {node_id}: {e}");
+            guard.transition(SessionState::FailedEstablish).await;
+        }
+    }
+}
+
+impl Drop for SessionPermit {
+    fn drop(&mut self) {
+        tokio::task::spawn_local(SessionPermit::async_drop(self.guard.clone()));
+    }
+}
+
 /// Structure for awaiting established connection.
 pub struct NodeAwaiting {
     pub guard: SessionEntry,
@@ -459,16 +487,32 @@ pub struct NodeAwaiting {
 }
 
 impl NodeAwaiting {
-    async fn await_for_finish(&mut self) -> anyhow::Result<()> {
-        while let Ok(state) = self.notifier.recv().await {
+    pub async fn await_for_finish(&mut self) -> anyhow::Result<()> {
+        // If we query `NodeAwaiting` after session is already established, we won't get
+        // any notification, so we must check state before entering loop.
+        let mut state = self.guard.state().await;
+        let node_id = self.guard.id;
+
+        loop {
             match state {
                 SessionState::Established => return Ok(()),
                 // TODO: We would like to return more meaningful error message.
-                SessionState::Closed => bail!("Initialization failed."),
-                _ => (),
+                SessionState::Closed => bail!("Connection closed."),
+                SessionState::FailedEstablish => bail!("Initialization failed."),
+                _ => log::trace!("Waiting for established session with {node_id}: state: {state}"),
             };
+
+            state = match self.notifier.recv().await {
+                Ok(state) => state,
+                Err(RecvError::Closed) => {
+                    bail!("Waiting for session initialization: notifier dropped.")
+                }
+                Err(RecvError::Lagged(lost)) => {
+                    // TODO: Maybe we could handle lags better, by checking current state?
+                    bail!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")
+                }
+            }
         }
-        bail!("Waiting for session initialization: notifier dropped.")
     }
 }
 
@@ -480,7 +524,6 @@ mod tests {
 
     use std::str::FromStr;
     use std::time::Duration;
-    use structopt::lazy_static;
     use tokio::time::timeout;
 
     lazy_static! {
@@ -492,7 +535,7 @@ mod tests {
         static ref ADDR2: SocketAddr = SocketAddr::from_str("127.0.0.1:8001").unwrap();
     }
 
-    async fn mock_establish(permit: &SessionPermit) -> anyhow::Result<()> {
+    async fn mock_establish_outgoing(permit: SessionPermit) -> anyhow::Result<()> {
         let node = permit.guard.clone();
         node.transition_outgoing(InitState::Initializing).await?;
         node.transition_outgoing(InitState::ChallengeHandshake)
@@ -504,45 +547,38 @@ mod tests {
         node.transition_outgoing(InitState::SessionRegistered)
             .await?;
         node.transition_outgoing(InitState::Ready).await?;
-        node.transition(SessionState::Established).await?;
+        drop(permit);
         Ok(())
     }
 
-    #[actix_rt::test]
-    async fn test_session_guards_waiting() {
-        let guards = GuardedSessions::default();
-        let permit = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
-            SessionLock::Permit(permit) => permit,
-            SessionLock::Wait(_) => panic!("Expected initialization permit"),
-        };
-
-        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
-        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
-            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
-            SessionLock::Wait(waiter) => waiter,
-        };
-
-        tokio::task::spawn_local(async move {
-            tokio::time::sleep(Duration::from_millis(200)).await;
-            mock_establish(&permit).await.unwrap();
-        });
-
-        timeout(Duration::from_millis(600), waiter.await_for_finish())
-            .await
-            .unwrap();
+    async fn mock_establish_incoming(permit: SessionPermit) -> anyhow::Result<()> {
+        let node = permit.guard.clone();
+        node.transition_incoming(InitState::Initializing).await?;
+        node.transition_incoming(InitState::ChallengeHandshake)
+            .await?;
+        node.transition_incoming(InitState::HandshakeResponse)
+            .await?;
+        node.transition_incoming(InitState::ChallengeVerified)
+            .await?;
+        node.transition_incoming(InitState::SessionRegistered)
+            .await?;
+        node.transition_incoming(InitState::Ready).await?;
+        drop(permit);
+        Ok(())
     }
 
+    /// Checks if `Permits` and `NodeAwaiting` work independently.
     #[actix_rt::test]
     async fn test_session_guards_independent_permits() {
         let guards = GuardedSessions::default();
         let permit1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
             SessionLock::Permit(permit) => permit,
-            SessionLock::Wait(_) => panic!("Expected initialization permit"),
+            SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
         let permit2 = match guards.lock_outgoing(*NODE_ID2, &[*ADDR2]).await {
             SessionLock::Permit(permit) => permit,
-            SessionLock::Wait(_) => panic!("Expected initialization permit"),
+            SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
         /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
@@ -562,11 +598,12 @@ mod tests {
         // shouldn't affect second initialization.
         tokio::task::spawn_local(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            mock_establish(&permit1).await.unwrap();
+            mock_establish_outgoing(permit1).await.unwrap();
         });
 
         timeout(Duration::from_millis(600), waiter1.await_for_finish())
             .await
+            .unwrap()
             .unwrap();
 
         // Second permit should still be locked
@@ -575,5 +612,77 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[actix_rt::test]
+    async fn test_session_guards_incoming() {
+        let guards = GuardedSessions::default();
+        let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization Permit"),
+        };
+
+        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
+        let mut waiter = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            mock_establish_incoming(permit).await.unwrap();
+        });
+
+        timeout(Duration::from_millis(600), waiter.await_for_finish())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    /// Checks if permits work correctly in case of attempts to initialize
+    /// both incoming and outgoing session.
+    #[actix_rt::test]
+    async fn test_session_guards_incoming_and_outgoing() {
+        let guards = GuardedSessions::default();
+        let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization Permit"),
+        };
+
+        /// We shouldn't get `Permit` if incoming session initialization started.
+        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            mock_establish_incoming(permit).await.unwrap();
+        });
+
+        timeout(Duration::from_millis(600), waiter.await_for_finish())
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[actix_rt::test]
+    async fn test_session_guards_already_established() {
+        let guards = GuardedSessions::default();
+        let permit = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization Permit"),
+        };
+
+        mock_establish_outgoing(permit).await.unwrap();
+
+        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+        timeout(Duration::from_millis(100), waiter.await_for_finish())
+            .await
+            .unwrap()
+            .unwrap();
     }
 }

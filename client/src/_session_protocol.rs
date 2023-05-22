@@ -637,22 +637,38 @@ mod tests {
     #[serial_test::serial]
     async fn test_session_protocol_happy_path() {
         let wrapper = init_test_server().await.unwrap();
-        let layer = spawn_session_layer(&wrapper).await.unwrap();
+        let layer1 = spawn_session_layer(&wrapper).await.unwrap();
         let layer2 = spawn_session_layer(&wrapper).await.unwrap();
-        let protocol = layer.get_protocol().await.unwrap();
+        let protocol = layer1.get_protocol().await.unwrap();
 
         let node_id2 = layer2.config.node_id;
-        let addrs = &[layer2.get_test_socket_addr().await.unwrap()];
+        let addrs2 = &[layer2.get_test_socket_addr().await.unwrap()];
 
-        let permit = match layer.guards.lock_outgoing(node_id2, addrs).await {
+        let node_id1 = layer1.config.node_id;
+        let addrs1 = &[layer1.get_test_socket_addr().await.unwrap()];
+
+        let permit = match layer1.guards.lock_outgoing(node_id2, addrs2).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization permit"),
         };
 
+        let guard1 = permit.guard.clone();
         let result = protocol
             .init_p2p_session(layer2.get_test_socket_addr().await.unwrap(), &permit)
-            .await;
+            .await
+            .unwrap();
 
-        result.unwrap();
+        // Finishes the initialization by setting established state.
+        drop(permit);
+
+        let mut waiter2 = match layer2.guards.lock_incoming(node_id1, addrs1).await {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+
+        // Wait until both sides will have session established.
+        waiter2.await_for_finish().await.unwrap();
+        assert_eq!(waiter2.guard.state().await, SessionState::Established);
+        assert_eq!(guard1.state().await, SessionState::Established);
     }
 }
