@@ -14,6 +14,7 @@ use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
 
 use crate::_routing_session::DirectSession;
+use crate::_session::RawSession;
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 
@@ -34,12 +35,12 @@ where
         // can find dispatcher from temporary session that is being initialized at this moment.
         let session = handler.session(from).await;
         let dispatcher = match session.clone() {
-            Some(session) => Some(session.raw.dispatcher.clone()),
+            Some(session) => Some(session.raw.clone()),
             None => handler.dispatcher(from).await,
         };
 
         if let Some(ref dispatcher) = dispatcher {
-            dispatcher.update_seen();
+            dispatcher.dispatcher.update_seen();
         }
 
         match packet {
@@ -60,7 +61,7 @@ where
                 proto::packet::Kind::Response(response) => {
                     match response.kind {
                         Some(kind) => match dispatcher {
-                            Some(dispatcher) => dispatcher.dispatch_response(
+                            Some(dispatcher) => dispatcher.dispatcher.dispatch_response(
                                 from,
                                 response.request_id,
                                 session_id,
@@ -93,7 +94,7 @@ where
 /// Handles incoming packets. Used exclusively by the `dispatch` function
 pub trait Handler {
     /// Returns a clone of a `Dispatcher` object for temporary sessions.
-    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>>;
+    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<RawSession>>>;
 
     /// Returns established session, if it exists. Otherwise returns None.
     /// It doesn't take into account temporary sessions, so you should call `Handler::dispatcher`

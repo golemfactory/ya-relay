@@ -16,12 +16,12 @@ use crate::ForwardReceiver;
 use crate::_dispatch::{dispatch, Dispatcher, Handler};
 use crate::_encryption::Encryption;
 use crate::_error::{SessionError, SessionResult};
+use crate::_expire::track_sessions_expiration;
 use crate::_routing_session::{DirectSession, NodeEntry, NodeRouting, RoutingSender};
 use crate::_session::RawSession;
 use crate::_session_guard::{GuardedSessions, SessionLock};
-
-use crate::_expire::track_sessions_expiration;
 use crate::_session_protocol::SessionProtocol;
+
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::{NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
@@ -167,6 +167,13 @@ impl SessionLayer {
     }
 
     pub async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError> {
+        unimplemented!()
+    }
+
+    pub async fn abort_initializations(
+        &self,
+        session: Arc<RawSession>,
+    ) -> Result<(), SessionError> {
         unimplemented!()
     }
 
@@ -454,6 +461,58 @@ impl SessionLayer {
         }
     }
 
+    pub async fn on_disconnected(
+        &self,
+        session_id: Vec<u8>,
+        from: SocketAddr,
+        by: By,
+    ) -> anyhow::Result<()> {
+        log::debug!("Got `Disconnected` from {from}");
+
+        // SessionId should be valid, otherwise this is some unknown session
+        // so we should be cautious, when processing it.
+        let session_id = SessionId::try_from(session_id)?;
+
+        if let Ok(node) = match by {
+            By::Slot(id) => match self.find_session(from).await {
+                Some(session) => session.remove_slot(id).await,
+                None => Err(anyhow!("Session with {from} not found")),
+            },
+            By::NodeId(id) => NodeId::try_from(&id).map_err(anyhow::Error::from),
+            // We will disconnect session responsible for sending message. Doesn't matter
+            // what id was sent.
+            By::SessionId(to_close) => {
+                let to_close = SessionId::try_from(to_close)?;
+                if to_close != session_id {
+                    bail!("Session id mismatch. Sender: {session_id}, session to close: {to_close}. Might be exploit attempt..")
+                }
+
+                match self.find_session(from).await {
+                    Some(session) => {
+                        if session.raw.id != session_id {
+                            bail!("Unexpected Session id: {session_id}")
+                        }
+
+                        self.close_session(session).await?;
+                        return Ok(());
+                    }
+                    None => {
+                        // If we didn't find established session, maybe we have temporary session
+                        // during initialization.
+                        if let Some(session) = self.dispatcher(from).await {
+                            return Ok(self.abort_initializations(session).await?);
+                        }
+                        Err(anyhow!("Session with {from} not found"))
+                    }
+                }
+            }
+        } {
+            log::info!("Node [{node}] disconnected from Relay. Stopping forwarding..");
+            self.disconnect_node(node).await.ok();
+        }
+        Ok(())
+    }
+
     async fn send(&self, packet: impl Into<PacketKind>, addr: SocketAddr) -> anyhow::Result<()> {
         let mut stream = self.out_stream()?;
         Ok(stream.send((packet.into(), addr)).await?)
@@ -479,10 +538,10 @@ impl SessionLayer {
 }
 
 impl Handler for SessionLayer {
-    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>> {
+    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<RawSession>>> {
         async move {
             if let Some(protocol) = { self.state.read().await.init_protocol.clone() } {
-                Some(protocol.temporary_session(&from).await.dispatcher())
+                protocol.get_temporary_session(&from).await
             } else {
                 None
             }
@@ -501,7 +560,7 @@ impl Handler for SessionLayer {
 
     fn on_control(
         self,
-        _session_id: Vec<u8>,
+        session_id: Vec<u8>,
         control: proto::Control,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
@@ -570,30 +629,13 @@ impl Handler for SessionLayer {
                 ya_relay_proto::proto::control::Kind::Disconnected(
                     proto::control::Disconnected { by: Some(by) },
                 ) => {
+                    let myself = self;
                     async move {
-                        log::debug!("Got Disconnected from {from}");
-
-                        if let Ok(node) = match by {
-                            By::Slot(id) => match self.find_session(from).await {
-                                Some(session) => session.remove_slot(id).await,
-                                None => Err(anyhow!("Session with {from} not found")),
-                            },
-                            By::NodeId(id) => NodeId::try_from(&id).map_err(anyhow::Error::from),
-                            // We will disconnect session responsible for sending message. Doesn't matter
-                            // what id was sent.
-                            By::SessionId(_session) => match self.find_session(from).await {
-                                Some(session) => {
-                                    self.close_session(session).await.ok();
-                                    return;
-                                }
-                                None => Err(anyhow!("Session with {from} not found")),
-                            },
-                        } {
-                            log::info!(
-                                "Node [{node}] disconnected from Relay. Stopping forwarding.."
-                            );
-                            self.disconnect_node(node).await.ok();
-                        }
+                        myself
+                            .on_disconnected(session_id, from, by)
+                            .await
+                            .map_err(|e| log::debug!("Error handling `Disconnected`: {e}"))
+                            .ok();
                     }
                     .boxed_local()
                 }
