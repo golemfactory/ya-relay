@@ -471,3 +471,109 @@ impl NodeAwaiting {
         bail!("Waiting for session initialization: notifier dropped.")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use lazy_static::lazy_static;
+
+    use std::str::FromStr;
+    use std::time::Duration;
+    use structopt::lazy_static;
+    use tokio::time::timeout;
+
+    lazy_static! {
+        static ref NODE_ID1: NodeId =
+            NodeId::from_str("0x92cb979d5e7ef337accfd6d37132a0fe3d864864").unwrap();
+        static ref NODE_ID2: NodeId =
+            NodeId::from_str("0xad0b0b4198d86cbb1338094a201678b23919a197").unwrap();
+        static ref ADDR1: SocketAddr = SocketAddr::from_str("127.0.0.1:8000").unwrap();
+        static ref ADDR2: SocketAddr = SocketAddr::from_str("127.0.0.1:8001").unwrap();
+    }
+
+    async fn mock_establish(permit: &SessionPermit) -> anyhow::Result<()> {
+        let node = permit.guard.clone();
+        node.transition_outgoing(InitState::Initializing).await?;
+        node.transition_outgoing(InitState::ChallengeHandshake)
+            .await?;
+        node.transition_outgoing(InitState::HandshakeResponse)
+            .await?;
+        node.transition_outgoing(InitState::ChallengeVerified)
+            .await?;
+        node.transition_outgoing(InitState::SessionRegistered)
+            .await?;
+        node.transition_outgoing(InitState::Ready).await?;
+        node.transition(SessionState::Established).await?;
+        Ok(())
+    }
+
+    #[actix_rt::test]
+    async fn test_session_guards_waiting() {
+        let guards = GuardedSessions::default();
+        let permit = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization permit"),
+        };
+
+        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
+        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            mock_establish(&permit).await.unwrap();
+        });
+
+        timeout(Duration::from_millis(600), waiter.await_for_finish())
+            .await
+            .unwrap();
+    }
+
+    #[actix_rt::test]
+    async fn test_session_guards_independent_permits() {
+        let guards = GuardedSessions::default();
+        let permit1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization permit"),
+        };
+
+        let permit2 = match guards.lock_outgoing(*NODE_ID2, &[*ADDR2]).await {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization permit"),
+        };
+
+        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
+        let mut waiter1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+
+        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
+        let mut waiter2 = match guards.lock_outgoing(*NODE_ID2, &[*ADDR2]).await {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+
+        // Initialize session related to permit 1
+        // Waiters should work independently from each other. Waiting one initialization
+        // shouldn't affect second initialization.
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            mock_establish(&permit1).await.unwrap();
+        });
+
+        timeout(Duration::from_millis(600), waiter1.await_for_finish())
+            .await
+            .unwrap();
+
+        // Second permit should still be locked
+        assert!(
+            timeout(Duration::from_millis(200), waiter2.await_for_finish())
+                .await
+                .is_err()
+        );
+    }
+}

@@ -628,10 +628,10 @@ impl SessionProtocol {
 mod tests {
     use super::*;
 
+    use crate::_session_guard::SessionLock;
     use crate::testing::accessors::SessionLayerPrivate;
     use crate::testing::init::{spawn_session_layer, test_default_config};
 
-    use crate::_session_guard::SessionLock;
     use ya_relay_server::testing::server::init_test_server;
 
     #[serial_test::serial]
