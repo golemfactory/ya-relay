@@ -3,7 +3,9 @@ name = "ya-relay-server"
 version = "0.2.2"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
-
+description = "Node discovery server for forwarding data between Golem network ndoes"
+license = "LGPL-3.0"
+repository = "https://github.com/golemfactory/ya-relay"
 
 [lib]
 name = "ya_relay_server"
