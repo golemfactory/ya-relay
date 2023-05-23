@@ -19,7 +19,7 @@ path = "src/main.rs"
 [dependencies]
 ya-relay-proto = "0.4.1"
 ya-relay-core = "0.4.0"
-ya-relay-client = "0.5"
+ya-relay-client = "0.6"
 
 actix-rt = "2.7"
 anyhow = "1.0"
