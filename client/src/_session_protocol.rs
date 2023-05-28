@@ -126,8 +126,7 @@ impl SessionProtocol {
                 vec![],
                 self.config.session_request_timeout,
             )
-            .await
-            .map_err(ProtocolError::from)?;
+            .await?;
 
         guard
             .transition_outgoing(InitState::ChallengeHandshake)
@@ -161,8 +160,7 @@ impl SessionProtocol {
                 session_id.to_vec(),
                 config.challenge_request_timeout,
             )
-            .await
-            .map_err(ProtocolError::from)?;
+            .await?;
 
         log::trace!("Challenge response sent to: [{node_id}] ({addr})");
         guard
@@ -232,8 +230,7 @@ impl SessionProtocol {
                 ya_relay_proto::proto::control::ResumeForwarding::default(),
             ))
             .await
-            .map_err(RequestError::from)
-            .map_err(ProtocolError::from)?;
+            .map_err(RequestError::from)?;
 
         guard.transition_outgoing(InitState::Ready).await?;
 
@@ -254,7 +251,7 @@ impl SessionProtocol {
     /// that we are not processing 2 session initializations at the same time.
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
-    async fn init_p2p_session(
+    pub(crate) async fn init_p2p_session(
         &self,
         addr: SocketAddr,
         permit: &SessionPermit,
@@ -414,11 +411,10 @@ impl SessionProtocol {
             packet,
         );
 
-        tmp_session.send(challenge).await.map_err(|_| {
-            ProtocolError::SendFailure(RequestError::Generic(
-                "Failed to send challenge".to_string(),
-            ))
-        })?;
+        tmp_session
+            .send(challenge)
+            .await
+            .map_err(|_| RequestError::Generic("Failed to send challenge".to_string()))?;
 
         guard
             .transition_incoming(InitState::ChallengeHandshake)
@@ -491,8 +487,7 @@ impl SessionProtocol {
                     packet,
                 ))
                 .await
-                .map_err(|_| RequestError::Generic("Sending challenge response.".to_string()))
-                .map_err(ProtocolError::from)?;
+                .map_err(|_| RequestError::Generic("Sending challenge response.".to_string()))?;
 
             // Await for forwarding to be resumed
             if let Some(resumed) = session.raw.forward_pause.next() {

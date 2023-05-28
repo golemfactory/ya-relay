@@ -8,8 +8,8 @@ use std::sync::Arc;
 use tokio::time::{Duration, Instant};
 
 use crate::_dispatch::{Dispatched, Dispatcher};
-
 use crate::_error::RequestError;
+
 use ya_relay_core::session::SessionId;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::udp_stream::OutStream;
@@ -21,6 +21,14 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub type DropHandler = Box<dyn FnOnce()>;
+
+#[derive(Clone, derive_more::Display)]
+pub enum SessionType {
+    #[display(fmt = "p2p")]
+    P2P,
+    #[display(fmt = "relay")]
+    Relay,
+}
 
 /// Low-level session representation, which knows where to send packets on system level.
 /// Represents direct peer-to-peer connection with other Node (or relay server).

@@ -12,12 +12,13 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
+use ya_relay_core::identity::Identity;
 
 use crate::_error::{SessionError, SessionResult, TransitionError};
 use crate::_routing_session::{DirectSession, NodeEntry};
 use crate::_session::RawSession;
 
-use ya_relay_core::session::SessionId;
+use ya_relay_core::session::{Endpoint, SessionId};
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 
@@ -80,6 +81,9 @@ pub struct SessionEntry {
 }
 
 pub struct SessionEntryState {
+    /// TODO: We need to store public keys here. We could use `Identity` instead
+    ///       of NodeId, but we not always have full information, when initializing this
+    ///       struct.
     node: NodeEntry<NodeId>,
     addresses: Vec<SocketAddr>,
     state: SessionState,
@@ -268,6 +272,17 @@ impl SessionEntry {
         Ok(new_state)
     }
 
+    pub async fn public_addresses(&self) -> Vec<SocketAddr> {
+        let mut target = self.state.read().await;
+        target.addresses.clone()
+    }
+
+    pub async fn identities(&self) -> NodeEntry<Identity> {
+        todo!()
+        // let mut target = self.state.read().await;
+        // target.node.clone()
+    }
+
     fn notify_change(&self, new_state: SessionState) {
         // TODO: Consider changing to trace
         log::debug!(
@@ -439,7 +454,7 @@ impl SessionEntry {
         }
     }
 
-    fn awaiting_notifier(&self) -> NodeAwaiting {
+    pub fn awaiting_notifier(&self) -> NodeAwaiting {
         NodeAwaiting {
             guard: self.clone(),
             notifier: self.state_notifier.subscribe(),
@@ -460,6 +475,8 @@ pub enum SessionLock {
 
 /// Structure giving you exclusive right to initialize session.
 /// TODO: Struct should ensure clear Session state on drop.
+/// TODO: Rename `guard` in every place in the code, since it has completely
+///       different purpose now
 pub struct SessionPermit {
     pub guard: SessionEntry,
 }

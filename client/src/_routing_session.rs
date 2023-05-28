@@ -2,6 +2,7 @@
 #![allow(unused)]
 
 use anyhow::{anyhow, bail};
+use derive_more::Display;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
@@ -13,10 +14,12 @@ use ya_relay_proto::proto::{Payload, SlotId};
 
 use crate::_encryption::Encryption;
 use crate::_error::SessionError;
-use crate::_session::RawSession;
+use crate::_session::{RawSession, SessionType};
 use crate::_session_layer::SessionLayer;
 
 /// Describes Node identity.
+/// `IdType` Could be either plain `NodeId` or `Identity` structure containing
+/// public key.
 #[derive(Clone)]
 pub struct NodeEntry<IdType> {
     pub default_id: IdType,
@@ -25,6 +28,9 @@ pub struct NodeEntry<IdType> {
 }
 
 /// Nodes to SlotIds mapping that should be used to identify forwarding calls.
+/// TODO: Consider storing here `NodeRouting`. This would save us a need to query
+///       this struct based on NodeId from `SessionLayer` when receiving packets.
+///       Only `NodeRouting` contains information necessary for decrypting packets.
 #[derive(Clone, Default)]
 pub struct AllowedForwards {
     pub slots: HashMap<SlotId, NodeEntry<NodeId>>,
@@ -204,6 +210,18 @@ impl RoutingSender {
         if let Some(routing) = self.node_routing.upgrade() {
             if let Some(route) = routing.route.upgrade() {
                 route.raw.id;
+            }
+        }
+        unimplemented!()
+    }
+
+    pub fn session_type(&self) -> SessionType {
+        if let Some(routing) = self.node_routing.upgrade() {
+            if let Some(route) = routing.route.upgrade() {
+                return match routing.node.default_id.node_id == route.owner.default_id.node_id {
+                    true => SessionType::P2P,
+                    false => SessionType::Relay,
+                };
             }
         }
         unimplemented!()

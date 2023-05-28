@@ -6,28 +6,42 @@ use crate::_session_guard::SessionState;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 
+/// TODO: Organize this error better. We should be able to make decision
+///       if we can recover from error or we should give up. I see at least
+///       2 contexts for this:
+///       - p2p session initialization has to decide if it should continue
+///         testing other public addresses.
+///       - Library user should decide if he wants to try send message again    
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum SessionError {
-    #[error("Internal Error: {0}")]
+    #[error("Internal error: {0}")]
     Internal(String),
-    #[error("Protocol Error: {0}")]
+    #[error("Protocol error: {0}")]
     Protocol(#[from] ProtocolError),
-    #[error("Bad Response Error: {0}")]
+    #[error("Bad Response error: {0}")]
     BadResponse(String),
-    #[error("Network Error: {0}")]
+    #[error("Bad Request: {0}")]
+    BadRequest(String),
+    #[error("Network error: {0}")]
     Network(String),
     #[error("Timeout: {0}")]
     Timeout(String),
     #[error("Not Found: {0}")]
     NotFound(String),
+    #[error("Relay error: {0}")]
+    Relay(String),
+    #[error("Unexpected error: {0}")]
+    Unexpected(String),
+    #[error("Programming error: {0}")]
+    ProgrammingError(String),
+    #[error("{0}")]
+    Generic(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum ProtocolError {
     #[error("Protocol Error: {0}")]
     InvalidResponse(String),
-    #[error("Failed to send response: {0}")]
-    SendFailure(#[from] RequestError),
     #[error("Invalid challenge: {0}")]
     InvalidChallenge(String),
 }
@@ -60,6 +74,12 @@ pub enum RequestError {
 impl From<TransitionError> for SessionError {
     fn from(value: TransitionError) -> Self {
         SessionError::Internal(value.to_string())
+    }
+}
+
+impl From<RequestError> for SessionError {
+    fn from(value: RequestError) -> Self {
+        SessionError::Network(value.to_string())
     }
 }
 
