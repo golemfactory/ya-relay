@@ -1,11 +1,9 @@
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot::{self, Sender};
 use futures::future::{FutureExt, LocalBoxFuture};
@@ -15,11 +13,12 @@ use tokio::time::{Duration, Instant};
 
 use crate::_routing_session::DirectSession;
 use crate::_session::RawSession;
+
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 
-pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult>;
-pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()>>>;
+pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult + Send>;
+pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()> + Send>>;
 type ResponseSender = Sender<Dispatched<proto::response::Kind>>;
 
 /// Signals receipt of a response packet
@@ -136,17 +135,17 @@ pub struct Dispatched<T> {
 /// Facility for dispatching and awaiting response packets
 #[derive(Clone)]
 pub struct Dispatcher {
-    seen: Rc<RefCell<Instant>>,
-    ping: Rc<RefCell<Duration>>,
-    responses: Rc<RefCell<HashMap<u64, ResponseSender>>>,
-    error_handlers: Rc<RefCell<HashMap<i32, ErrorHandler>>>,
+    seen: Arc<Mutex<Instant>>,
+    ping: Arc<Mutex<Duration>>,
+    responses: Arc<Mutex<HashMap<u64, ResponseSender>>>,
+    error_handlers: Arc<Mutex<HashMap<i32, ErrorHandler>>>,
 }
 
 impl Default for Dispatcher {
     fn default() -> Self {
         Self {
-            seen: Rc::new(RefCell::new(Instant::now())),
-            ping: Rc::new(RefCell::new(Duration::MAX)),
+            seen: Arc::new(Mutex::new(Instant::now())),
+            ping: Arc::new(Mutex::new(Duration::MAX)),
             responses: Default::default(),
             error_handlers: Default::default(),
         }
@@ -155,23 +154,23 @@ impl Default for Dispatcher {
 
 impl Dispatcher {
     pub fn update_seen(&self) {
-        *self.seen.borrow_mut() = Instant::now();
+        *self.seen.lock().unwrap() = Instant::now();
     }
 
     pub fn update_ping(&self, ping: Duration) {
-        *self.ping.borrow_mut() = ping;
+        *self.ping.lock().unwrap() = ping;
     }
 
     pub fn last_seen(&self) -> Instant {
-        *self.seen.borrow()
+        *self.seen.lock().unwrap()
     }
 
     pub fn last_ping(&self) -> Duration {
-        *self.ping.borrow()
+        *self.ping.lock().unwrap()
     }
 
     /// Registers a response code handler
-    pub fn handle_error<F: Fn() -> ErrorHandlerResult + 'static>(
+    pub fn handle_error<F: Fn() -> ErrorHandlerResult + Sync + Send + 'static>(
         &self,
         code: i32,
         exclusive: bool,
@@ -180,8 +179,8 @@ impl Dispatcher {
         use std::sync::atomic::AtomicBool;
         use std::sync::atomic::Ordering::SeqCst;
 
-        let handler_fn = Rc::new(Box::new(handler));
-        let latch = Rc::new(AtomicBool::new(false));
+        let handler_fn = Arc::new(Box::new(handler));
+        let latch = Arc::new(AtomicBool::new(false));
 
         let handler = Box::new(move || {
             let handler_fn = handler_fn.clone();
@@ -196,10 +195,10 @@ impl Dispatcher {
                 handler_fn().await;
                 latch.store(false, SeqCst);
             }
-            .boxed_local()
+            .boxed()
         });
 
-        let mut handlers = self.error_handlers.borrow_mut();
+        let mut handlers = self.error_handlers.lock().unwrap();
         handlers.insert(code, handler);
     }
 
@@ -216,7 +215,13 @@ impl Dispatcher {
         let (tx, rx) = oneshot::channel();
 
         let request_id_ = request_id;
-        if self.responses.borrow_mut().insert(request_id, tx).is_some() {
+        if self
+            .responses
+            .lock()
+            .unwrap()
+            .insert(request_id, tx)
+            .is_some()
+        {
             log::warn!("Duplicate dispatch request id: {request_id}");
         }
 
@@ -242,7 +247,7 @@ impl Dispatcher {
             })
         }
         .then(move |result| async move {
-            this.responses.borrow_mut().remove(&request_id_);
+            this.responses.lock().unwrap().remove(&request_id_);
             result
         })
         .boxed_local()
@@ -257,7 +262,7 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
-        match { self.responses.borrow_mut().remove(&request_id) } {
+        match { self.responses.lock().unwrap().remove(&request_id) } {
             Some(sender) => {
                 if sender
                     .send(Dispatched {
@@ -276,7 +281,7 @@ impl Dispatcher {
         };
 
         if code != proto::StatusCode::Ok as i32 {
-            let handlers = self.error_handlers.borrow();
+            let handlers = self.error_handlers.lock().unwrap();
             if let Some(handler) = handlers.get(&code) {
                 spawn_local((*handler)());
             }

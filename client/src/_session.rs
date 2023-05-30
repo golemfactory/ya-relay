@@ -1,10 +1,8 @@
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
-use std::cell::RefCell;
 use std::convert::TryInto;
 use std::net::SocketAddr;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
 
 use crate::_dispatch::{Dispatched, Dispatcher};
@@ -20,7 +18,7 @@ use ya_relay_proto::{codec, proto};
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub type DropHandler = Box<dyn FnOnce()>;
+pub type DropHandler = Box<dyn FnOnce() + Send>;
 
 #[derive(Clone, derive_more::Display)]
 pub enum SessionType {
@@ -42,7 +40,7 @@ pub struct RawSession {
 
     sink: OutStream,
     pub(crate) dispatcher: Dispatcher,
-    pub(crate) drop_handler: Rc<RefCell<Option<DropHandler>>>,
+    pub(crate) drop_handler: Arc<Mutex<Option<DropHandler>>>,
     pub(crate) forward_pause: Actuator,
 }
 
@@ -87,7 +85,7 @@ impl RawSession {
     pub async fn register_endpoints(
         &self,
         endpoints: Vec<proto::Endpoint>,
-    ) -> anyhow::Result<Vec<proto::Endpoint>> {
+    ) -> Result<Vec<proto::Endpoint>, RequestError> {
         log::info!("[{}] registering endpoints.", self.id);
 
         let response = self
@@ -248,9 +246,9 @@ impl RawSession {
     /// Add a function that will be executed on session drop
     pub fn on_drop<F>(&self, f: F)
     where
-        F: FnOnce() + 'static,
+        F: FnOnce() + Send + 'static,
     {
-        self.drop_handler.borrow_mut().replace(Box::new(f));
+        self.drop_handler.lock().unwrap().replace(Box::new(f));
     }
 }
 
@@ -320,7 +318,7 @@ impl Drop for RawSession {
     fn drop(&mut self) {
         log::trace!("Dropping Session {} ({}).", self.id, self.remote);
 
-        let on_drop = self.drop_handler.borrow_mut().take();
+        let on_drop = self.drop_handler.lock().unwrap().take();
         if let Some(f) = on_drop {
             f()
         }

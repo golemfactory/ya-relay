@@ -117,6 +117,10 @@ impl SessionLayer {
         self.state.read().await.public_addr
     }
 
+    pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
+        self.state.write().await.public_addr = addr;
+    }
+
     pub async fn get_local_addr(&self) -> Option<SocketAddr> {
         self.state.read().await.bind_addr
     }
@@ -249,9 +253,9 @@ impl SessionLayer {
             .map_err(|e| SessionError::NotFound(format!("Error querying node {node_id}: {e}")))?;
 
         if info.identities.is_empty() {
-            return Err(SessionError::Unexpected(
-                "No default id from relay response for [{node_id}]".to_string(),
-            ));
+            return Err(SessionError::Unexpected(format!(
+                "No default id from relay response for [{node_id}]"
+            )));
         }
 
         let remote_id = info.identities[0].node_id;
@@ -297,6 +301,7 @@ impl SessionLayer {
             .map_err(|e| SessionError::Generic(e.to_string()))?;
 
         // TODO: How should we react to non-existing session in this place?
+        //       The best solution could be returning Session from `await_for_finish`.
         self.get_node_routing(node_id)
             .await
             .ok_or(SessionError::Internal(format!(
@@ -305,6 +310,74 @@ impl SessionLayer {
     }
 
     pub async fn server_session(&self) -> Result<Arc<DirectSession>, SessionError> {
+        // A little bit dirty hack, that we give default NodeId (0x00) for relay server.
+        // TODO: In the future relays should have regular NodeId
+        let remote_id = NodeId::default();
+        let addr = self.config.srv_addr;
+
+        let mut waiter = match self.guards.lock_outgoing(remote_id, &[addr]).await {
+            SessionLock::Permit(permit) => {
+                let myself = self.clone();
+                let waiter = permit.guard.awaiting_notifier();
+
+                // Caller of `SessionLayer:session` can drop function execution at any time, but
+                // other threads can be waiting for initialization as well. That's why we initialize
+                // session in other task and wait for finish.
+                tokio::task::spawn_local(async move {
+                    myself
+                        .try_server_session(remote_id, addr, &permit)
+                        .await
+                        .map_err(|e| {
+                            log::info!(
+                                "Failed init relay session with {remote_id} ({addr}). Error: {e}"
+                            )
+                        })
+                        .ok();
+                });
+
+                waiter
+            }
+            SessionLock::Wait(waiter) => waiter,
+        };
+
+        let session =
+            waiter
+                .await_for_finish()
+                .await?
+                .upgrade()
+                .ok_or(SessionError::Unexpected(
+                    "Session was removed before we could use it.".to_string(),
+                ))?;
+
+        // TODO: Make sure this functionality is replaced in new code.
+        // session.raw.dispatcher.handle_error(
+        //     proto::StatusCode::Unauthorized as i32,
+        //     true,
+        //     move || {
+        //         let manager = manager.clone();
+        //         async move {
+        //             manager.drop_server_session().await;
+        //             let _ = manager.server_session().await;
+        //         }
+        //         .boxed_local()
+        //     },
+        // );
+        //
+        // let fast_lane = self.virtual_tcp_fast_lane.clone();
+        // session.raw.on_drop(move || {
+        //     fast_lane.borrow_mut().clear();
+        // });
+
+        let endpoints = session.raw.register_endpoints(vec![]).await?;
+
+        // If there is any (correct) endpoint on the list, that means we have public IP.
+        if let Some(addr) = endpoints
+            .into_iter()
+            .find_map(|endpoint| endpoint.try_into().ok())
+        {
+            self.set_public_addr(Some(addr)).await;
+        }
+
         unimplemented!()
     }
 
@@ -365,6 +438,19 @@ impl SessionLayer {
         ))
     }
 
+    pub async fn try_server_session(
+        &self,
+        node_id: NodeId,
+        addr: SocketAddr,
+        permit: &SessionPermit,
+    ) -> SessionResult<Arc<DirectSession>> {
+        let protocol = self.get_protocol().await?;
+        return match protocol.init_server_session(addr, permit).await {
+            Ok(session) => Ok(session),
+            Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => Err(e),
+        };
+    }
+
     pub async fn try_direct_session(
         &self,
         node_id: NodeId,
@@ -373,9 +459,9 @@ impl SessionLayer {
         let protocol = self.get_protocol().await?;
         let addrs = permit.guard.public_addresses().await;
         if addrs.is_empty() {
-            return Err(SessionError::BadRequest(
-                "Node [{node_id}] has no public endpoints.".to_string(),
-            ));
+            return Err(SessionError::BadRequest(format!(
+                "Node [{node_id}] has no public endpoints."
+            )));
         }
 
         // Try to connect to remote Node's public endpoints.
@@ -477,7 +563,10 @@ impl SessionLayer {
         // Currently only single server supported. In the future we could use multiple
         // relays or use other p2p Nodes to forward traffic.
         // We could even route traffic through many Nodes/Servers at the same time.
-        let server = self.server_session().await?;
+        let server = self
+            .server_session()
+            .await
+            .map_err(|e| SessionError::Relay(e.to_string()))?;
         let server_id = server.owner.default_id.node_id;
         let addr = server.raw.remote;
 
@@ -620,16 +709,27 @@ impl SessionLayer {
             )
         })?;
 
+        if message.endpoints.is_empty() {
+            bail!("Got ReverseConnection for Node [{node_id}] from {from} with no endpoints to connect to.")
+        }
+
+        let endpoints = self
+            .filter_own_addresses(
+                &message
+                    .endpoints
+                    .iter()
+                    .cloned()
+                    .filter_map(|e| e.try_into().ok())
+                    .collect::<Vec<_>>(),
+            )
+            .await;
+
         log::info!(
-            "Got ReverseConnection message. node={node_id}, endpoints={:?}",
+            "Got ReverseConnection message from {from}. node={node_id}, endpoints={:?}",
             message.endpoints
         );
 
-        if message.endpoints.is_empty() {
-            bail!("Got ReverseConnection with no endpoints to connect to.")
-        }
-
-        let permit = match self.guards.lock_outgoing(node_id, &[from]).await {
+        let permit = match self.guards.lock_outgoing(node_id, &endpoints).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(waiter) => return Ok(()),
         };
@@ -919,5 +1019,26 @@ mod testing {
             }
             .boxed_local()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::time::Duration;
+
+    use crate::testing::accessors::SessionLayerPrivate;
+    use crate::testing::init::MockSessionNetwork;
+
+    use ya_relay_server::testing::server::init_test_server;
+
+    #[actix_rt::test]
+    async fn test_session_layer_happy_path() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        let result = layer1.layer.session(layer2.id).await;
     }
 }

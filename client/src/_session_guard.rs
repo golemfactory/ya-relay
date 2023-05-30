@@ -3,13 +3,14 @@
 
 use anyhow::bail;
 use derive_more::Display;
+use educe::Educe;
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
 use ya_relay_core::identity::Identity;
@@ -33,7 +34,8 @@ struct GuardedSessionsState {
     by_addr: HashMap<SocketAddr, SessionEntry>,
 }
 
-#[derive(Clone, PartialEq, Display, Debug)]
+#[derive(Clone, Educe, Display, Debug)]
+#[educe(PartialEq)]
 pub enum SessionState {
     #[display(fmt = "Outgoing-{}", _0)]
     Outgoing(InitState),
@@ -41,9 +43,13 @@ pub enum SessionState {
     Incoming(InitState),
     #[display(fmt = "Reverse-{}", _0)]
     ReverseConnection(InitState),
-    Established,
+    /// Holds established session.
+    #[display(fmt = "Established")]
+    Established(#[educe(PartialEq(ignore))] Weak<DirectSession>),
+    /// Last attempt to init session failed. Holds error.
+    #[display(fmt = "FailedEstablish")]
+    FailedEstablish(SessionError),
     Closed,
-    FailedEstablish,
 }
 
 #[derive(Clone, PartialEq, Display, Debug)]
@@ -81,10 +87,14 @@ pub struct SessionEntry {
 }
 
 pub struct SessionEntryState {
-    /// TODO: We need to store public keys here. We could use `Identity` instead
-    ///       of NodeId, but we not always have full information, when initializing this
-    ///       struct.
-    node: NodeEntry<NodeId>,
+    /// TODO: We need to store public keys here. Using `Identity` is problematic
+    ///       here, because we not always have full information, when initializing this
+    ///       struct. To have full info, we need to query it from relay server. In case we got
+    ///       `ReverseConnection` this could increase time to receiving first message by initiator.
+    ///       On the other side if we don't have all Node identities, than we risk that we won't
+    ///       protect ourselves from attempting to initialize 2 sessions at the same time.
+    ///       For example we could create 2 separate SessionEntries for default and secondary identity.
+    node: Option<NodeEntry<Identity>>,
     addresses: Vec<SocketAddr>,
     state: SessionState,
 }
@@ -340,26 +350,30 @@ impl SessionState {
 
     pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
         let allowed = match (&self, &new_state) {
-            (SessionState::Incoming(_), SessionState::FailedEstablish) => true,
-            (SessionState::Outgoing(_), SessionState::FailedEstablish) => true,
-            (SessionState::ReverseConnection(_), SessionState::FailedEstablish) => true,
-            (SessionState::Incoming(InitState::Ready), SessionState::Established) => true,
-            (SessionState::Outgoing(InitState::Ready), SessionState::Established) => true,
-            (SessionState::ReverseConnection(InitState::Ready), SessionState::Established) => true,
+            (SessionState::Incoming(_), SessionState::FailedEstablish(_)) => true,
+            (SessionState::Outgoing(_), SessionState::FailedEstablish(_)) => true,
+            (SessionState::ReverseConnection(_), SessionState::FailedEstablish(_)) => true,
+            (SessionState::Incoming(InitState::Ready), SessionState::Established(_)) => true,
+            (SessionState::Outgoing(InitState::Ready), SessionState::Established(_)) => true,
+            (SessionState::ReverseConnection(InitState::Ready), SessionState::Established(_)) => {
+                true
+            }
             (
                 SessionState::Outgoing(InitState::WaitingForReverseConnection),
                 SessionState::ReverseConnection(InitState::Initializing),
             ) => true,
             (SessionState::Closed, SessionState::Outgoing(InitState::ConnectIntent)) => true,
             (SessionState::Closed, SessionState::Incoming(InitState::ConnectIntent)) => true,
-            (SessionState::Established, SessionState::Established) => true,
-            (SessionState::Established, SessionState::Established) => true,
-            (SessionState::FailedEstablish, SessionState::Outgoing(InitState::ConnectIntent)) => {
-                true
-            }
-            (SessionState::FailedEstablish, SessionState::Incoming(InitState::ConnectIntent)) => {
-                true
-            }
+            (SessionState::Established(_), SessionState::Established(_)) => true,
+            (SessionState::Established(_), SessionState::Established(_)) => true,
+            (
+                SessionState::FailedEstablish(_),
+                SessionState::Outgoing(InitState::ConnectIntent),
+            ) => true,
+            (
+                SessionState::FailedEstablish(_),
+                SessionState::Incoming(InitState::ConnectIntent),
+            ) => true,
             (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(&next),
             (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(&next),
             (SessionState::ReverseConnection(prev), SessionState::ReverseConnection(next)) => {
@@ -381,9 +395,9 @@ impl SessionState {
 
     pub fn is_finished(&self) -> bool {
         match self {
-            SessionState::Established => true,
+            SessionState::Established(_) => true,
             SessionState::Closed => true,
-            SessionState::FailedEstablish => true,
+            SessionState::FailedEstablish(_) => true,
             _ => false,
         }
     }
@@ -396,10 +410,7 @@ impl SessionEntry {
         Self {
             id: node_id,
             state: Arc::new(RwLock::new(SessionEntryState {
-                node: NodeEntry {
-                    default_id: node_id,
-                    identities: vec![],
-                },
+                node: None,
                 addresses,
                 state: SessionState::Closed,
             })),
@@ -417,6 +428,7 @@ impl SessionEntry {
         match self.transition_outgoing(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 guard: self.clone(),
+                result: None,
             }),
             Err(e) => {
                 if let TransitionError::InvalidTransition(prev, _) = e {
@@ -440,6 +452,7 @@ impl SessionEntry {
         match self.transition_incoming(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 guard: self.clone(),
+                result: None,
             }),
             Err(e) => {
                 if let TransitionError::InvalidTransition(prev, _) = e {
@@ -479,21 +492,47 @@ pub enum SessionLock {
 ///       different purpose now
 pub struct SessionPermit {
     pub guard: SessionEntry,
+    result: Option<Result<Arc<DirectSession>, SessionError>>,
 }
 
 impl SessionPermit {
-    pub async fn async_drop(guard: SessionEntry) {
+    pub(crate) async fn async_drop(
+        guard: SessionEntry,
+        result: Option<Result<Arc<DirectSession>, SessionError>>,
+    ) {
         let node_id = guard.id;
-        if let Err(e) = guard.transition(SessionState::Established).await {
+        let new_state = match result {
+            None => SessionState::FailedEstablish(SessionError::ProgrammingError(
+                "Dropping `SessionPermit` without result.".to_string(),
+            )),
+            Some(Ok(session)) => SessionState::Established(Arc::downgrade(&session)),
+            Some(Err(e)) => SessionState::FailedEstablish(e),
+        };
+
+        // We don't expect to fail here, so if we do, something has gone really bad.
+        if let Err(e) = guard.transition(new_state.clone()).await {
             log::warn!("Dropping Permit for Node {node_id}: {e}");
-            guard.transition(SessionState::FailedEstablish).await;
+            guard
+                .transition(SessionState::FailedEstablish(
+                    SessionError::ProgrammingError(format!(
+                        "Failed to transition to state: {new_state}: {e}"
+                    )),
+                ))
+                .await;
         }
+    }
+
+    pub fn results(&mut self, result: Result<Arc<DirectSession>, SessionError>) {
+        self.result = Some(result);
     }
 }
 
 impl Drop for SessionPermit {
     fn drop(&mut self) {
-        tokio::task::spawn_local(SessionPermit::async_drop(self.guard.clone()));
+        tokio::task::spawn_local(SessionPermit::async_drop(
+            self.guard.clone(),
+            self.result.take(),
+        ));
     }
 }
 
@@ -504,7 +543,7 @@ pub struct NodeAwaiting {
 }
 
 impl NodeAwaiting {
-    pub async fn await_for_finish(&mut self) -> anyhow::Result<()> {
+    pub async fn await_for_finish(&mut self) -> Result<Weak<DirectSession>, SessionError> {
         // If we query `NodeAwaiting` after session is already established, we won't get
         // any notification, so we must check state before entering loop.
         let mut state = self.guard.state().await;
@@ -512,21 +551,25 @@ impl NodeAwaiting {
 
         loop {
             match state {
-                SessionState::Established => return Ok(()),
+                SessionState::Established(session) => return Ok(session),
                 // TODO: We would like to return more meaningful error message.
-                SessionState::Closed => bail!("Connection closed."),
-                SessionState::FailedEstablish => bail!("Initialization failed."),
+                SessionState::Closed => {
+                    return Err(SessionError::Unexpected("Connection closed.".to_string()))
+                }
+                SessionState::FailedEstablish(e) => return Err(e),
                 _ => log::trace!("Waiting for established session with {node_id}: state: {state}"),
             };
 
             state = match self.notifier.recv().await {
                 Ok(state) => state,
                 Err(RecvError::Closed) => {
-                    bail!("Waiting for session initialization: notifier dropped.")
+                    return Err(SessionError::Internal(
+                        "Waiting for session initialization: notifier dropped.".to_string(),
+                    ))
                 }
                 Err(RecvError::Lagged(lost)) => {
                     // TODO: Maybe we could handle lags better, by checking current state?
-                    bail!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")
+                    return Err(SessionError::Internal(format!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")));
                 }
             }
         }
@@ -543,16 +586,25 @@ mod tests {
     use std::time::Duration;
     use tokio::time::timeout;
 
+    use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
+    use ya_relay_proto::codec::PacketKind;
+
     lazy_static! {
-        static ref NODE_ID1: NodeId =
-            NodeId::from_str("0x92cb979d5e7ef337accfd6d37132a0fe3d864864").unwrap();
-        static ref NODE_ID2: NodeId =
-            NodeId::from_str("0xad0b0b4198d86cbb1338094a201678b23919a197").unwrap();
+        static ref CRYPTO1: FallbackCryptoProvider = FallbackCryptoProvider::default();
+        static ref CRYPTO2: FallbackCryptoProvider = FallbackCryptoProvider::default();
+        static ref NODE_ID1: NodeId = CRYPTO1.default_node_id();
+        static ref NODE_ID2: NodeId = CRYPTO2.default_node_id();
         static ref ADDR1: SocketAddr = SocketAddr::from_str("127.0.0.1:8000").unwrap();
         static ref ADDR2: SocketAddr = SocketAddr::from_str("127.0.0.1:8001").unwrap();
+        static ref CRYPTOS: HashMap<NodeId, &'static FallbackCryptoProvider> = {
+            let mut map = HashMap::<NodeId, &'static FallbackCryptoProvider>::new();
+            map.insert(*NODE_ID1, &CRYPTO1);
+            map.insert(*NODE_ID2, &CRYPTO2);
+            map
+        };
     }
 
-    async fn mock_establish_outgoing(permit: SessionPermit) -> anyhow::Result<()> {
+    async fn mock_establish_outgoing(mut permit: SessionPermit) -> anyhow::Result<()> {
         let node = permit.guard.clone();
         node.transition_outgoing(InitState::Initializing).await?;
         node.transition_outgoing(InitState::ChallengeHandshake)
@@ -564,11 +616,13 @@ mod tests {
         node.transition_outgoing(InitState::SessionRegistered)
             .await?;
         node.transition_outgoing(InitState::Ready).await?;
+
+        permit.results(Ok(mock_session(&permit).await));
         drop(permit);
         Ok(())
     }
 
-    async fn mock_establish_incoming(permit: SessionPermit) -> anyhow::Result<()> {
+    async fn mock_establish_incoming(mut permit: SessionPermit) -> anyhow::Result<()> {
         let node = permit.guard.clone();
         node.transition_incoming(InitState::Initializing).await?;
         node.transition_incoming(InitState::ChallengeHandshake)
@@ -580,8 +634,28 @@ mod tests {
         node.transition_incoming(InitState::SessionRegistered)
             .await?;
         node.transition_incoming(InitState::Ready).await?;
+
+        permit.results(Ok(mock_session(&permit).await));
         drop(permit);
         Ok(())
+    }
+
+    async fn mock_session(permit: &SessionPermit) -> Arc<DirectSession> {
+        let node_id = permit.guard.id;
+        let addr = permit.guard.public_addresses().await[0];
+
+        let crypto_provider = *CRYPTOS.get(&node_id).unwrap();
+        let crypto = crypto_provider.get(node_id).await.unwrap();
+        let public_key = crypto.public_key().await.unwrap();
+        let identity = Identity {
+            node_id,
+            public_key,
+        };
+
+        let (sink, _) = futures::channel::mpsc::channel::<(PacketKind, SocketAddr)>(1);
+
+        let raw = RawSession::new(addr, SessionId::generate(), sink);
+        DirectSession::new(permit.guard.id, vec![identity].into_iter(), raw).unwrap()
     }
 
     /// Checks if `Permits` and `NodeAwaiting` work independently.

@@ -278,7 +278,7 @@ impl SessionProtocol {
     /// that we are not processing 2 session initializations at the same time.
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
-    async fn init_server_session(
+    pub(crate) async fn init_server_session(
         &self,
         addr: SocketAddr,
         permit: &SessionPermit,
@@ -665,8 +665,14 @@ mod tests {
 
         // Wait until both sides will have session established.
         waiter2.await_for_finish().await.unwrap();
-        assert_eq!(waiter2.guard.state().await, SessionState::Established);
-        assert_eq!(guard1.state().await, SessionState::Established);
+        assert!(matches!(
+            waiter2.guard.state().await,
+            SessionState::Established(..)
+        ));
+        assert!(matches!(
+            guard1.state().await,
+            SessionState::Established(..)
+        ));
     }
 
     /// Connection attempt should be rejected, if challenge is not present.

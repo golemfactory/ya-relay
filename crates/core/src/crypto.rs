@@ -75,6 +75,10 @@ impl FallbackCryptoProvider {
         let crypto: FallbackCrypto = secret.into();
         self.inner.insert(crypto.id, crypto);
     }
+
+    pub fn default_node_id(&self) -> NodeId {
+        self.default_id
+    }
 }
 
 impl Default for FallbackCryptoProvider {
