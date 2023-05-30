@@ -1,5 +1,6 @@
 use anyhow::Error;
 use std::net::SocketAddr;
+use ya_relay_core::session::SessionId;
 use ya_relay_core::NodeId;
 
 use crate::_session_guard::SessionState;
@@ -38,12 +39,21 @@ pub enum SessionError {
     Generic(String),
 }
 
+/// Error indicates that other Node failed to stick to protocol.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum ProtocolError {
-    #[error("Protocol Error: {0}")]
+    #[error("Protocol invalid response: {0}")]
     InvalidResponse(String),
     #[error("Invalid challenge: {0}")]
     InvalidChallenge(String),
+    #[error("Failed to recover NodeId from request: {0}")]
+    RecoverId(String),
+    /// In this case it can be either other party fault (malicious behavior)
+    /// or we closed Session but other party still thinks it exists.
+    #[error("Unknown SessionId: {0}")]
+    SessionNotFound(SessionId),
+    #[error("Request with invalid SessionId {0:x?}. Error: {1}")]
+    InvalidSessionId(Vec<u8>, String),
 }
 
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
@@ -54,6 +64,7 @@ pub enum TransitionError {
     NodeNotFound(NodeId),
 }
 
+/// TODO: Do we really need this error. In most places it is converted back to `SessionError`.
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum SessionInitError {
     #[error("Failed to init p2p session with {0}: {1}")]
@@ -80,6 +91,14 @@ impl From<TransitionError> for SessionError {
 impl From<RequestError> for SessionError {
     fn from(value: RequestError) -> Self {
         SessionError::Network(value.to_string())
+    }
+}
+
+impl From<SessionInitError> for SessionError {
+    fn from(err: SessionInitError) -> Self {
+        return match err {
+            SessionInitError::P2P(_, e) | SessionInitError::Relay(_, e) => e,
+        };
     }
 }
 

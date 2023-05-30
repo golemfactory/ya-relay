@@ -492,7 +492,7 @@ pub enum SessionLock {
 ///       different purpose now
 pub struct SessionPermit {
     pub guard: SessionEntry,
-    result: Option<Result<Arc<DirectSession>, SessionError>>,
+    pub(crate) result: Option<Result<Arc<DirectSession>, SessionError>>,
 }
 
 impl SessionPermit {
@@ -522,13 +522,18 @@ impl SessionPermit {
         }
     }
 
-    pub fn results(&mut self, result: Result<Arc<DirectSession>, SessionError>) {
-        self.result = Some(result);
+    pub fn results(
+        &mut self,
+        result: Result<Arc<DirectSession>, SessionError>,
+    ) -> Result<Arc<DirectSession>, SessionError> {
+        self.result = Some(result.clone());
+        result
     }
 }
 
 impl Drop for SessionPermit {
     fn drop(&mut self) {
+        log::trace!("Dropping `SessionPermit` for {}.", self.guard.id,);
         tokio::task::spawn_local(SessionPermit::async_drop(
             self.guard.clone(),
             self.result.take(),

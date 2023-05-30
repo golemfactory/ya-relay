@@ -43,7 +43,9 @@ pub struct AllowedForwards {
 /// than session owner.
 #[derive(Clone)]
 pub struct DirectSession {
-    pub owner: NodeEntry<Identity>,
+    /// I would prefer to use `NodeEntry<Identity>` here, but current implementation of
+    /// relay server doesn't provide public key.
+    pub owner: NodeEntry<NodeId>,
     pub raw: Arc<RawSession>,
 
     /// Nodes allowed to use this session for forwarding.
@@ -60,10 +62,13 @@ impl DirectSession {
         identities: impl IntoIterator<Item = Identity>,
         session: Arc<RawSession>,
     ) -> anyhow::Result<Arc<DirectSession>> {
-        let identities = identities.into_iter().collect::<Vec<_>>();
+        let identities = identities
+            .into_iter()
+            .map(|identity| identity.node_id)
+            .collect::<Vec<_>>();
         let default_id = identities
             .iter()
-            .find(|ident| ident.node_id == node_id)
+            .find(|ident| ident == &&node_id)
             .cloned()
             .ok_or(anyhow!(
                 "DirectSession constructor expects default id on identities list."
@@ -73,6 +78,23 @@ impl DirectSession {
             owner: NodeEntry {
                 default_id,
                 identities,
+            },
+            raw: session,
+            forwards: Arc::new(RwLock::new(Default::default())),
+        }))
+    }
+
+    /// Relay doesn't return identities list, so normal function for creating
+    /// `DirectSession` won't work. We should remove differences between p2p sessions
+    /// and relay session. In the future this function should disappear.
+    pub fn new_relay(
+        node_id: NodeId,
+        session: Arc<RawSession>,
+    ) -> anyhow::Result<Arc<DirectSession>> {
+        Ok(Arc::new(DirectSession {
+            owner: NodeEntry {
+                default_id: node_id,
+                identities: vec![],
             },
             raw: session,
             forwards: Arc::new(RwLock::new(Default::default())),
@@ -91,7 +113,7 @@ impl DirectSession {
         bail!(
             "Slot {id} not found in session: {} ({})",
             self.raw.id,
-            self.owner.default_id.node_id
+            self.owner.default_id
         )
     }
 }
@@ -199,7 +221,7 @@ impl RoutingSender {
     pub fn route(&self) -> NodeId {
         if let Some(routing) = self.node_routing.upgrade() {
             if let Some(route) = routing.route.upgrade() {
-                route.owner.default_id.clone();
+                return route.owner.default_id.clone();
             }
         }
         unimplemented!()
@@ -209,7 +231,7 @@ impl RoutingSender {
     pub fn session_id(&self) -> SessionId {
         if let Some(routing) = self.node_routing.upgrade() {
             if let Some(route) = routing.route.upgrade() {
-                route.raw.id;
+                return route.raw.id;
             }
         }
         unimplemented!()
@@ -218,7 +240,7 @@ impl RoutingSender {
     pub fn session_type(&self) -> SessionType {
         if let Some(routing) = self.node_routing.upgrade() {
             if let Some(route) = routing.route.upgrade() {
-                return match routing.node.default_id.node_id == route.owner.default_id.node_id {
+                return match routing.node.default_id.node_id == route.owner.default_id {
                     true => SessionType::P2P,
                     false => SessionType::Relay,
                 };

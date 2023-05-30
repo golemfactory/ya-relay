@@ -308,7 +308,7 @@ impl SessionProtocol {
         with: SocketAddr,
         permit: &SessionPermit,
         request: proto::request::Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<Arc<DirectSession>, SessionError> {
         let session_id = SessionId::generate();
         let remote_id = permit.guard.id;
         let (sender, receiver) = mpsc::channel(1);
@@ -323,7 +323,7 @@ impl SessionProtocol {
 
         let this = self.clone();
         let this1 = this.clone();
-        let init_future = Abortable::new(
+        let session = Abortable::new(
             timeout(self.config.incoming_session_timeout, async move {
                 this.init_session_handler(
                     with, request_id, session_id, permit, request, receiver,
@@ -350,7 +350,7 @@ impl SessionProtocol {
             Err(result)
         }).await?;
 
-        Ok(())
+        Ok(session)
     }
 
     pub(crate) async fn existing_session(
@@ -359,7 +359,7 @@ impl SessionProtocol {
         request_id: RequestId,
         _from: SocketAddr,
         request: proto::request::Session,
-    ) -> ServerResult<()> {
+    ) -> Result<(), SessionError> {
         let mut sender = {
             match {
                 self.state
@@ -370,14 +370,14 @@ impl SessionProtocol {
                     .cloned()
             } {
                 Some(sender) => sender.clone(),
-                None => return Err(Unauthorized::SessionNotFound(session_id).into()),
+                None => return Err(ProtocolError::SessionNotFound(session_id).into()),
             }
         };
 
         Ok(sender
             .send((request_id, request))
             .await
-            .map_err(|_| InternalError::Send)?)
+            .map_err(|_| SessionError::Internal("Failed to send Request to channel".to_string()))?)
     }
 
     /// External layer is responsible for acquiring `SessionPermit` to make sure,
@@ -644,16 +644,20 @@ mod tests {
         let layer2 = network.new_layer().await.unwrap();
         let protocol = layer1.protocol;
 
-        let permit = match layer1.guards.lock_outgoing(layer2.id, &[layer2.addr]).await {
+        let mut permit = match layer1.guards.lock_outgoing(layer2.id, &[layer2.addr]).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization permit"),
         };
 
         let guard1 = permit.guard.clone();
-        let result = protocol
-            .init_p2p_session(layer2.addr, &permit)
-            .await
-            .unwrap();
+        permit.results(
+            protocol
+                .init_p2p_session(layer2.addr, &permit)
+                .await
+                .map_err(SessionError::from),
+        );
+
+        log::debug!("Permit Result: {}", permit.result.is_some());
 
         // Finishes the initialization by setting established state.
         drop(permit);

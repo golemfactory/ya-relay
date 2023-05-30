@@ -1,3 +1,4 @@
+use derive_more::Display;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
 use std::convert::TryInto;
@@ -20,7 +21,7 @@ const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub type DropHandler = Box<dyn FnOnce() + Send>;
 
-#[derive(Clone, derive_more::Display)]
+#[derive(Clone, Display, PartialEq, Debug, Copy)]
 pub enum SessionType {
     #[display(fmt = "p2p")]
     P2P,
@@ -86,7 +87,7 @@ impl RawSession {
         &self,
         endpoints: Vec<proto::Endpoint>,
     ) -> Result<Vec<proto::Endpoint>, RequestError> {
-        log::info!("[{}] registering endpoints.", self.id);
+        log::info!("Registering endpoints on {}.", self.remote);
 
         let response = self
             .request::<proto::response::Register>(
@@ -97,16 +98,17 @@ impl RawSession {
             .await?
             .packet;
 
-        log::info!("[{}] endpoints registration finished.", self.id);
+        log::info!("Endpoints registration finished on {}.", self.remote);
 
         Ok(response.endpoints)
     }
 
     pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<proto::response::Node> {
         log::debug!(
-            "Finding Node info [{}], using session {}.",
+            "Finding Node info [{}], using session {} ({}).",
             node_id,
-            self.id
+            self.id,
+            self.remote
         );
 
         let packet = proto::request::Node {

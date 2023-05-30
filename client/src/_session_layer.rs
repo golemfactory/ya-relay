@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
-use anyhow::{anyhow, bail};
+use anyhow::{anyhow, bail, Error};
 use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
@@ -17,7 +17,7 @@ use crate::ForwardReceiver;
 
 use crate::_dispatch::{dispatch, Dispatcher, Handler};
 use crate::_encryption::Encryption;
-use crate::_error::{SessionError, SessionInitError, SessionResult};
+use crate::_error::{ProtocolError, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
 use crate::_routing_session::{DirectSession, NodeEntry, NodeRouting, RoutingSender};
 use crate::_session::RawSession;
@@ -192,24 +192,55 @@ impl SessionLayer {
     ) -> anyhow::Result<Arc<DirectSession>> {
         log::trace!("Calling register_session {id} {addr} {node_id}");
 
+        let identities = identities.into_iter().collect::<Vec<Identity>>();
         let session = RawSession::new(addr, id, self.out_stream()?);
-        let direct = DirectSession::new(node_id, identities, session.clone())
-            .map_err(|e| anyhow!("Registering session for node [{node_id}]: {e}"))?;
 
-        let routing = NodeRouting::new(
-            direct.owner.clone(),
-            direct.clone(),
-            Encryption {
-                crypto: self.config.crypto.clone(),
-            },
-        );
+        // I hate that we need a check like this, but relay doesn't return identities list
+        // and we don't have its public key (because relay doesn't have one).
+        // We should move into direction, that there is no difference between p2p session and relay.
+        // It could be possible to do this in backward compatibility manner, meaning that both new and
+        // old Nodes could talk with new relay, but new Nodes couldn't cooperate with old relay.
+        let is_relay = identities.is_empty();
+        let direct = if is_relay {
+            DirectSession::new_relay(node_id, session.clone()).map_err(|e| {
+                anyhow!("Registering relay session for node [{node_id}] ({addr}): {e}")
+            })?
+        } else {
+            DirectSession::new(node_id, identities.clone().into_iter(), session.clone())
+                .map_err(|e| anyhow!("Registering session for node [{node_id}]: {e}"))?
+        };
+
+        let default_id = identities
+            .iter()
+            .find(|ident| ident.node_id == node_id)
+            .cloned()
+            .ok_or(anyhow!(
+                "DirectSession constructor expects default id on identities list."
+            ));
+
+        let routing = match default_id {
+            Ok(default_id) => Some(NodeRouting::new(
+                NodeEntry::<Identity> {
+                    default_id,
+                    identities,
+                },
+                direct.clone(),
+                Encryption {
+                    crypto: self.config.crypto.clone(),
+                },
+            )),
+            Err(_) if is_relay => None,
+            Err(e) => bail!(e),
+        };
 
         {
             let mut state = self.state.write().await;
 
             state.p2p_sessions.insert(session.remote, direct.clone());
             for id in &direct.owner.identities {
-                state.nodes.insert(id.node_id, routing.clone());
+                if let Some(routing) = routing.clone() {
+                    state.nodes.insert(*id, routing);
+                }
             }
 
             log::trace!("Saved node session {id} [{node_id}] {addr}")
@@ -275,7 +306,7 @@ impl SessionLayer {
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
 
         let mut waiter = match self.guards.lock_outgoing(remote_id, &addrs).await {
-            SessionLock::Permit(permit) => {
+            SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
                 let waiter = permit.guard.awaiting_notifier();
 
@@ -283,9 +314,8 @@ impl SessionLayer {
                 // other threads can be waiting for initialization as well. That's why we initialize
                 // session in other task and wait for finish.
                 tokio::task::spawn_local(async move {
-                    myself
-                        .resolve(remote_id, &permit, &[])
-                        .await
+                    permit
+                        .results(myself.resolve(remote_id, &permit, &[]).await)
                         .map_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
                         .ok();
                 });
@@ -315,8 +345,12 @@ impl SessionLayer {
         let remote_id = NodeId::default();
         let addr = self.config.srv_addr;
 
+        if let Some(session) = { self.state.read().await.p2p_sessions.get(&addr).cloned() } {
+            return Ok(session);
+        }
+
         let mut waiter = match self.guards.lock_outgoing(remote_id, &[addr]).await {
-            SessionLock::Permit(permit) => {
+            SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
                 let waiter = permit.guard.awaiting_notifier();
 
@@ -324,9 +358,8 @@ impl SessionLayer {
                 // other threads can be waiting for initialization as well. That's why we initialize
                 // session in other task and wait for finish.
                 tokio::task::spawn_local(async move {
-                    myself
-                        .try_server_session(remote_id, addr, &permit)
-                        .await
+                    permit
+                        .results(myself.try_server_session(remote_id, addr, &permit).await)
                         .map_err(|e| {
                             log::info!(
                                 "Failed init relay session with {remote_id} ({addr}). Error: {e}"
@@ -368,17 +401,7 @@ impl SessionLayer {
         //     fast_lane.borrow_mut().clear();
         // });
 
-        let endpoints = session.raw.register_endpoints(vec![]).await?;
-
-        // If there is any (correct) endpoint on the list, that means we have public IP.
-        if let Some(addr) = endpoints
-            .into_iter()
-            .find_map(|endpoint| endpoint.try_into().ok())
-        {
-            self.set_public_addr(Some(addr)).await;
-        }
-
-        unimplemented!()
+        Ok(session)
     }
 
     pub async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError> {
@@ -433,9 +456,9 @@ impl SessionLayer {
             log::debug!("Not using relayed connection with [{node_id}].");
         }
 
-        Err(SessionError::Generic(
-            "All attempts to establish session with node [{node_id}] failed".to_string(),
-        ))
+        Err(SessionError::Generic(format!(
+            "All attempts to establish session with node [{node_id}] failed"
+        )))
     }
 
     pub async fn try_server_session(
@@ -445,10 +468,22 @@ impl SessionLayer {
         permit: &SessionPermit,
     ) -> SessionResult<Arc<DirectSession>> {
         let protocol = self.get_protocol().await?;
-        return match protocol.init_server_session(addr, permit).await {
-            Ok(session) => Ok(session),
-            Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => Err(e),
+        let session = match protocol.init_server_session(addr, permit).await {
+            Ok(session) => session,
+            Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => return Err(e),
         };
+
+        let endpoints = session.raw.register_endpoints(vec![]).await?;
+
+        // If there is any (correct) endpoint on the list, that means we have public IP.
+        if let Some(addr) = endpoints
+            .into_iter()
+            .find_map(|endpoint| endpoint.try_into().ok())
+        {
+            self.set_public_addr(Some(addr)).await;
+        }
+
+        Ok(session)
     }
 
     pub async fn try_direct_session(
@@ -499,7 +534,7 @@ impl SessionLayer {
         // We are trying to connect to Node without public IP. Send `ReverseConnection` message,
         // so Node will connect to us.
         if self.get_public_addr().await.is_some() {
-            return Err(SessionError::BadRequest(
+            return Err(SessionError::Generic(
                 "We don't have public endpoints.".to_string(),
             ));
         }
@@ -567,7 +602,7 @@ impl SessionLayer {
             .server_session()
             .await
             .map_err(|e| SessionError::Relay(e.to_string()))?;
-        let server_id = server.owner.default_id.node_id;
+        let server_id = server.owner.default_id;
         let addr = server.raw.remote;
 
         // The only information about Node, that we don't have yet, is its SlotId.
@@ -599,27 +634,35 @@ impl SessionLayer {
         request_id: RequestId,
         from: SocketAddr,
         request: proto::request::Session,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), SessionError> {
         let protocol = self.get_protocol().await?;
 
         if session_id.is_empty() {
             // Empty `session_id` indicates attempt to initialize session.
-            let remote_id = challenge::recover_default_node_id(&request)?;
+            let remote_id = challenge::recover_default_node_id(&request)
+                .map_err(|e| ProtocolError::RecoverId(e.to_string()))?;
 
             return match self.guards.lock_incoming(remote_id, &[from]).await {
-                SessionLock::Permit(permit) => Ok(protocol
-                    .new_session(request_id, from, &permit, request)
-                    .await?),
+                SessionLock::Permit(mut permit) => {
+                    permit.results(
+                        protocol
+                            .new_session(request_id, from, &permit, request)
+                            .await,
+                    )?;
+                    Ok(())
+                }
                 SessionLock::Wait(_) => {
                     // We didn't get lock, so probably other thread is in charge of initializing session.
                     // TODO: This could be situation, when both sides tried to initialize connection.
                     //       Maybe we should implement algorithm, which would decide, who has precedence.
+                    //       It could be based on some kind of ordering according to NodeIds.
                     Ok(())
                 }
             };
         }
 
-        let session_id = SessionId::try_from(session_id)?;
+        let session_id = SessionId::try_from(session_id.clone())
+            .map_err(|e| ProtocolError::InvalidSessionId(session_id, e.to_string()))?;
         Ok(protocol
             .existing_session(session_id, request_id, from, request)
             .await?)
@@ -946,7 +989,7 @@ impl Handler for SessionLayer {
 
             let node = if slot == FORWARD_SLOT_ID {
                 // Direct message from other Node.
-                session.owner.default_id.node_id.clone()
+                session.owner.default_id.clone()
             } else {
                 // Messages forwarded through relay server or other relay Node.
                 match { session.forwards.read().await.slots.get(&slot).cloned() } {
@@ -1031,6 +1074,7 @@ mod tests {
     use crate::testing::accessors::SessionLayerPrivate;
     use crate::testing::init::MockSessionNetwork;
 
+    use crate::_session::SessionType;
     use ya_relay_server::testing::server::init_test_server;
 
     #[actix_rt::test]
@@ -1039,6 +1083,13 @@ mod tests {
         let layer1 = network.new_layer().await.unwrap();
         let layer2 = network.new_layer().await.unwrap();
 
-        let result = layer1.layer.session(layer2.id).await;
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await;
+        let session = layer1.layer.session(layer2.id).await.unwrap();
+
+        // p2p session - target and route are the same.
+        assert_eq!(session.target(), layer2.id);
+        assert_eq!(session.route(), layer2.id);
+        assert_eq!(session.session_type(), SessionType::P2P);
     }
 }

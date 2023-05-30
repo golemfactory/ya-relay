@@ -198,8 +198,8 @@ impl TryFrom<proto::Endpoint> for Endpoint {
     type Error = anyhow::Error;
 
     fn try_from(endpoint: proto::Endpoint) -> Result<Self> {
-        let mut address: SocketAddr = endpoint.address.parse()?;
-        address.set_port(endpoint.port as u16);
+        let address = format!("{}:{}", endpoint.address, endpoint.port);
+        let address: SocketAddr = address.parse()?;
 
         Ok(Endpoint {
             protocol: proto::Protocol::from_i32(endpoint.protocol)
