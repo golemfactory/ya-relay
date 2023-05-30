@@ -235,7 +235,7 @@ impl TryFrom<proto::response::Node> for NodeInfo {
             endpoints: value
                 .endpoints
                 .into_iter()
-                .map(|endpoint| Endpoint::try_from(endpoint))
+                .map(Endpoint::try_from)
                 .collect::<anyhow::Result<Vec<_>>>()?,
             supported_encryptions: value.supported_encryptions,
         })

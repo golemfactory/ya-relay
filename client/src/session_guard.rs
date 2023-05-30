@@ -25,13 +25,13 @@ impl GuardedSessions {
     ) -> Arc<RwLock<()>> {
         let mut state = self.state.write().await;
         if let Some(target) = state.find(node_id, addrs) {
-            return target.lock.clone();
+            return target.lock;
         }
 
         let target = SessionTarget::new(node_id, addrs.to_vec());
 
         state.add(target.clone());
-        target.lock.clone()
+        target.lock
     }
 
     pub async fn stop_guarding(&self, node_id: NodeId, result: SessionResult<Arc<Session>>) {

@@ -111,7 +111,7 @@ impl GuardedSessions {
     ) -> SessionEntry {
         let mut state = self.state.write().await;
         if let Some(target) = state.find(node_id, addrs) {
-            return target.clone();
+            return target;
         }
 
         let target = SessionEntry::new(node_id, addrs.to_vec());
@@ -214,7 +214,7 @@ impl GuardedSessions {
     // TODO: Use other error type than `TransitionError`
     async fn session_target(&self, node_id: NodeId) -> Result<SessionEntry, TransitionError> {
         match { self.state.read().await.by_node_id.get(&node_id) } {
-            None => return Err(TransitionError::NodeNotFound(node_id)),
+            None => Err(TransitionError::NodeNotFound(node_id)),
             Some(target) => Ok(target.clone()),
         }
     }
@@ -309,6 +309,7 @@ impl SessionEntry {
 }
 
 impl InitState {
+    #[allow(clippy::match_like_matches_macro)]
     pub fn allowed(&self, new_state: &InitState) -> bool {
         match (self, &new_state) {
             (InitState::ConnectIntent, InitState::Initializing) => true,
@@ -342,10 +343,7 @@ impl SessionState {
         &mut self,
         new_state: InitState,
     ) -> Result<SessionState, TransitionError> {
-        let new_state = match self {
-            _ => SessionState::Outgoing(new_state),
-        };
-        self.transition(new_state)
+        self.transition(SessionState::Outgoing(new_state))
     }
 
     pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
@@ -374,30 +372,28 @@ impl SessionState {
                 SessionState::FailedEstablish(_),
                 SessionState::Incoming(InitState::ConnectIntent),
             ) => true,
-            (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(&next),
-            (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(&next),
+            (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(next),
+            (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(next),
             (SessionState::ReverseConnection(prev), SessionState::ReverseConnection(next)) => {
-                prev.allowed(&next)
+                prev.allowed(next)
             }
             _ => false,
         };
 
         if !allowed {
-            return Err(TransitionError::InvalidTransition(
-                self.clone(),
-                new_state.clone(),
-            ));
+            Err(TransitionError::InvalidTransition(self.clone(), new_state))
         } else {
             *self = new_state;
             Ok(self.clone())
         }
     }
 
+    #[allow(clippy::match_like_matches_macro)]
     pub fn is_finished(&self) -> bool {
         match self {
-            SessionState::Established(_) => true,
-            SessionState::Closed => true,
-            SessionState::FailedEstablish(_) => true,
+            SessionState::Established(_)
+            | SessionState::Closed
+            | SessionState::FailedEstablish(_) => true,
             _ => false,
         }
     }

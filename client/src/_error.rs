@@ -96,9 +96,9 @@ impl From<RequestError> for SessionError {
 
 impl From<SessionInitError> for SessionError {
     fn from(err: SessionInitError) -> Self {
-        return match err {
+        match err {
             SessionInitError::P2P(_, e) | SessionInitError::Relay(_, e) => e,
-        };
+        }
     }
 }
 

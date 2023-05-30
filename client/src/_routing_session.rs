@@ -221,7 +221,7 @@ impl RoutingSender {
     pub fn route(&self) -> NodeId {
         if let Some(routing) = self.node_routing.upgrade() {
             if let Some(route) = routing.route.upgrade() {
-                return route.owner.default_id.clone();
+                return route.owner.default_id;
             }
         }
         unimplemented!()

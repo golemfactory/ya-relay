@@ -236,11 +236,13 @@ impl TcpLayer {
 
     pub async fn dispatch(&self, packet: Forwarded) {
         let node_id = packet.node_id;
-        if {
+        let exists = {
             // Optimisation to avoid resolving Node if possible.
             let fast_lane = self.virtual_tcp_fast_lane.borrow();
             fast_lane.contains(&node_id)
-        } {
+        };
+
+        if exists {
             self.inject(packet.payload);
             return;
         }

@@ -424,7 +424,7 @@ impl SessionLayer {
         if !dont_use.contains(&ConnectionMethod::Direct) {
             log::debug!("Attempting to establish direct p2p connection with [{node_id}].");
 
-            match self.try_direct_session(node_id, &permit).await {
+            match self.try_direct_session(node_id, permit).await {
                 Ok(session) => return Ok(session),
                 Err(e) => log::debug!("Can't establish direct p2p session with [{node_id}]. {e}"),
             }
@@ -435,7 +435,7 @@ impl SessionLayer {
         if !dont_use.contains(&ConnectionMethod::Reverse) {
             log::debug!("Attempting to establish reverse p2p connection with [{node_id}].");
 
-            match self.try_reverse_connection(node_id, &permit).await {
+            match self.try_reverse_connection(node_id, permit).await {
                 Ok(session) => return Ok(session),
                 Err(e) => log::debug!("Can't establish reverse p2p session with [{node_id}]. {e}"),
             }
@@ -448,7 +448,7 @@ impl SessionLayer {
         if !dont_use.contains(&ConnectionMethod::Relay) {
             log::info!("Attempting to use relay Server to forward packets to [{node_id}]");
 
-            match self.try_relayed_connection(node_id, &permit).await {
+            match self.try_relayed_connection(node_id, permit).await {
                 Ok(session) => return Ok(session),
                 Err(e) => log::debug!("Can't use relayed connection with [{node_id}]. {e}"),
             }
@@ -663,9 +663,9 @@ impl SessionLayer {
 
         let session_id = SessionId::try_from(session_id.clone())
             .map_err(|e| ProtocolError::InvalidSessionId(session_id, e.to_string()))?;
-        Ok(protocol
+        protocol
             .existing_session(session_id, request_id, from, request)
-            .await?)
+            .await
     }
 
     pub async fn on_ping(
@@ -813,11 +813,9 @@ impl SessionLayer {
 
     async fn get_protocol(&self) -> Result<SessionProtocol, SessionError> {
         match self.state.read().await.init_protocol.clone() {
-            None => {
-                return Err(SessionError::Internal(
-                    "`SessionProtocol` empty (not initialized?)".to_string(),
-                ))
-            }
+            None => Err(SessionError::Internal(
+                "`SessionProtocol` empty (not initialized?)".to_string(),
+            )),
             Some(protocol) => Ok(protocol),
         }
     }
@@ -989,7 +987,7 @@ impl Handler for SessionLayer {
 
             let node = if slot == FORWARD_SLOT_ID {
                 // Direct message from other Node.
-                session.owner.default_id.clone()
+                session.owner.default_id
             } else {
                 // Messages forwarded through relay server or other relay Node.
                 match { session.forwards.read().await.slots.get(&slot).cloned() } {
@@ -1071,10 +1069,10 @@ mod tests {
 
     use std::time::Duration;
 
+    use crate::_session::SessionType;
     use crate::testing::accessors::SessionLayerPrivate;
     use crate::testing::init::MockSessionNetwork;
 
-    use crate::_session::SessionType;
     use ya_relay_server::testing::server::init_test_server;
 
     #[actix_rt::test]
