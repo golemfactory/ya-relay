@@ -8,9 +8,9 @@ use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::SessionId;
+use ya_relay_core::session::{SessionId, TransportType};
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::SlotId;
+use ya_relay_proto::proto::{Forward, Payload, SlotId, FORWARD_SLOT_ID};
 
 use crate::_encryption::Encryption;
 use crate::_error::SessionError;
@@ -56,7 +56,7 @@ impl AllowedForwards {
     }
 
     pub fn remove(&mut self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
-        if let Some(slot) = self.nodes.remove(&node_id) {
+        if let Some(slot) = self.nodes.remove(node_id) {
             if let Some(entry) = self.slots.remove(&slot) {
                 for id in &entry.identities {
                     self.nodes.remove(id);
@@ -79,8 +79,12 @@ impl AllowedForwards {
         self.slots.get(&slot).cloned()
     }
 
+    pub fn get_slot(&self, node_id: &NodeId) -> Option<SlotId> {
+        self.nodes.get(node_id).cloned()
+    }
+
     pub fn get_by_id(&self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
-        if let Some(slot) = self.nodes.get(&node_id) {
+        if let Some(slot) = self.nodes.get(node_id) {
             return self.get_by_slot(*slot);
         }
         None
@@ -151,6 +155,36 @@ impl DirectSession {
         }))
     }
 
+    pub async fn send(
+        &self,
+        target: NodeId,
+        packet: Payload,
+        transport: TransportType,
+        encrypted: bool,
+    ) -> anyhow::Result<()> {
+        let router_id = self.owner.default_id;
+        let slot = if router_id == target {
+            FORWARD_SLOT_ID
+        } else {
+            self.find_slot(&target)
+                .await
+                .ok_or(SessionError::Internal(format!(
+                    "Session with [{router_id}] doesn't allow to forward packets for [{target}]"
+                )))?
+        };
+
+        let mut forward = match transport {
+            TransportType::Unreliable => Forward::unreliable(self.raw.id, slot, packet),
+            TransportType::Reliable => Forward::new(self.raw.id, slot, packet),
+            TransportType::Transfer => Forward::new(self.raw.id, slot, packet),
+        };
+        if encrypted {
+            forward.set_encrypted();
+        }
+
+        self.raw.send(forward).await
+    }
+
     pub async fn remove_by_slot(&self, id: SlotId) -> anyhow::Result<NodeId> {
         let mut forwards = self.forwards.write().await;
         if let Some(node_id) = forwards.remove_by_slot(id) {
@@ -165,7 +199,7 @@ impl DirectSession {
 
     pub async fn remove(&self, node_id: &NodeId) -> anyhow::Result<NodeEntry<NodeId>> {
         let mut forwards = self.forwards.write().await;
-        match forwards.remove(&node_id) {
+        match forwards.remove(node_id) {
             Some(node_id) => Ok(node_id),
             None => bail!(
                 "Node {node_id} not found in session: {} ({})",
@@ -188,6 +222,11 @@ impl DirectSession {
     pub async fn get_by_id(&self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
         let mut forwards = self.forwards.read().await;
         forwards.get_by_id(node_id)
+    }
+
+    pub async fn find_slot(&self, node_id: &NodeId) -> Option<SlotId> {
+        let mut forwards = self.forwards.read().await;
+        forwards.get_slot(node_id)
     }
 }
 
@@ -232,6 +271,8 @@ mod tests {
 
         session.register(node.clone(), 4).await;
 
+        assert_eq!(session.find_slot(&*NODE_ID1).await.unwrap(), 4);
+
         let entry = session.get_by_slot(4).await.unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 1);
@@ -245,6 +286,7 @@ mod tests {
         session.remove(&*NODE_ID1).await;
         assert!(session.get_by_slot(4).await.is_none());
         assert!(session.get_by_id(&*NODE_ID1).await.is_none());
+        assert!(session.find_slot(&*NODE_ID1).await.is_none());
     }
 
     #[tokio::test]
@@ -260,6 +302,7 @@ mod tests {
 
         assert!(session.get_by_slot(4).await.is_none());
         assert!(session.get_by_id(&*NODE_ID1).await.is_none());
+        assert!(session.find_slot(&*NODE_ID1).await.is_none());
     }
 
     #[tokio::test]
@@ -271,6 +314,9 @@ mod tests {
         };
 
         session.register(node.clone(), 4).await;
+
+        assert_eq!(session.find_slot(&*NODE_ID1).await.unwrap(), 4);
+        assert_eq!(session.find_slot(&*NODE_ID2).await.unwrap(), 4);
 
         let entry = session.get_by_slot(4).await.unwrap();
         assert_eq!(entry.default_id, node.default_id);
@@ -312,6 +358,8 @@ mod tests {
         assert!(session.get_by_slot(4).await.is_none());
         assert!(session.get_by_id(&*NODE_ID1).await.is_none());
         assert!(session.get_by_id(&*NODE_ID2).await.is_none());
+        assert!(session.find_slot(&*NODE_ID1).await.is_none());
+        assert!(session.find_slot(&*NODE_ID2).await.is_none());
 
         let entry = session.get_by_slot(5).await.unwrap();
         assert_eq!(entry.default_id, node2.default_id);

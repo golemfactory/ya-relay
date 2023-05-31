@@ -82,6 +82,12 @@ pub enum RequestError {
     Generic(String),
 }
 
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+pub enum EncryptionError {
+    #[error("{0}")]
+    Generic(String),
+}
+
 impl From<TransitionError> for SessionError {
     fn from(value: TransitionError) -> Self {
         SessionError::Internal(value.to_string())

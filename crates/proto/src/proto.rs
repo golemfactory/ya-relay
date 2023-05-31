@@ -78,6 +78,10 @@ impl Forward {
         self.flags & ENCRYPTED_FLAG != ENCRYPTED_FLAG
     }
 
+    pub fn set_encrypted(&mut self) {
+        self.flags &= ENCRYPTED_FLAG
+    }
+
     #[inline]
     pub fn encoded_len(&self) -> usize {
         Self::header_size() + self.payload.len()

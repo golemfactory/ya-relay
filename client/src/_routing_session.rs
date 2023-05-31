@@ -49,8 +49,30 @@ impl NodeRouting {
         })
     }
 
-    pub async fn send(&self, packet: Payload) -> Result<(), SessionError> {
-        unimplemented!()
+    /// `transport` is only declaration which will be used to set flags in
+    /// `Forward` packet.
+    pub async fn send(
+        &self,
+        packet: Payload,
+        transport: TransportType,
+    ) -> Result<(), SessionError> {
+        if let Some(direct) = self.route.upgrade() {
+            let packet = self
+                .encryption
+                .encrypt(packet)
+                .await
+                .map_err(|e| SessionError::Internal(e.to_string()))?;
+            direct
+                .send(self.node.default_id.node_id, packet, transport, false)
+                .await
+                .map_err(|e| {
+                    SessionError::Network(format!("Sending packet to p2p routing session: {e}"))
+                })?;
+            return Ok(());
+        }
+        Err(SessionError::Unexpected(
+            "Routing session closed unexpectedly.".to_string(),
+        ))
     }
 }
 
@@ -101,7 +123,24 @@ impl RoutingSender {
         packet: Payload,
         transport: TransportType,
     ) -> Result<(), SessionError> {
-        unimplemented!()
+        let routing = match self.node_routing.upgrade() {
+            Some(routing) => routing,
+            None => match self
+                .layer
+                .session(self.target)
+                .await?
+                .node_routing
+                .upgrade()
+            {
+                Some(routing) => routing,
+                None => {
+                    return Err(SessionError::Unexpected(
+                        "Routing session closed unexpectedly.".to_string(),
+                    ))
+                }
+            },
+        };
+        routing.send(packet, transport).await
     }
 
     /// Establishes connection on demand if it didn't exist.
