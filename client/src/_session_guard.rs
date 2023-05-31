@@ -428,10 +428,12 @@ impl SessionEntry {
             }),
             Err(e) => {
                 if let TransitionError::InvalidTransition(prev, _) = e {
-                    log::debug!(
-                        "Initialization of session with: [{}] in progress, state: {}. Thread will wait for finish.",
-                        self.id, prev
-                    )
+                    if !matches!(prev, SessionState::Established(_)) {
+                        log::debug!(
+                            "Initialization of session with: [{}] in progress, state: {}. Thread will wait for finish.",
+                            self.id, prev
+                        )
+                    }
                 };
 
                 SessionLock::Wait(notifier)
@@ -452,10 +454,12 @@ impl SessionEntry {
             }),
             Err(e) => {
                 if let TransitionError::InvalidTransition(prev, _) = e {
-                    log::debug!(
-                        "Initialization of session with: [{}] in progress, state: {}. Thread will wait for finish.",
-                        self.id, prev
-                    )
+                    if !matches!(prev, SessionState::Established(_)) {
+                        log::debug!(
+                            "Initialization of session with: [{}] in progress, state: {}. Thread will wait for finish.",
+                            self.id, prev
+                        )
+                    }
                 };
 
                 SessionLock::Wait(notifier)
@@ -529,7 +533,7 @@ impl SessionPermit {
 
 impl Drop for SessionPermit {
     fn drop(&mut self) {
-        log::trace!("Dropping `SessionPermit` for {}.", self.guard.id,);
+        log::trace!("Dropping `SessionPermit` for {}.", self.guard.id);
         tokio::task::spawn_local(SessionPermit::async_drop(
             self.guard.clone(),
             self.result.take(),

@@ -883,7 +883,7 @@ impl Handler for SessionLayer {
                                 "Forwarding paused for session {} ({from})",
                                 session.raw.id
                             );
-                            session.raw.pause_forwarding().await;
+                            session.pause_forwarding().await;
                         }
                         None => {
                             log::warn!("Cannot pause forwarding: session with {from} not found")
@@ -895,7 +895,7 @@ impl Handler for SessionLayer {
                     match self.find_session(from).await {
                         Some(session) => {
                             log::debug!("Forwarding resumed for session {}", session.raw.id);
-                            session.raw.resume_forwarding().await;
+                            session.resume_forwarding().await;
                         }
                         None => {
                             log::warn!("Cannot resume forwarding: session with {from} not found")

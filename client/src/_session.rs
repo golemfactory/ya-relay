@@ -10,7 +10,6 @@ use crate::_dispatch::{Dispatched, Dispatcher};
 use crate::_error::RequestError;
 
 use ya_relay_core::session::SessionId;
-use ya_relay_core::sync::Actuator;
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};
@@ -42,7 +41,6 @@ pub struct RawSession {
     sink: OutStream,
     pub(crate) dispatcher: Dispatcher,
     pub(crate) drop_handler: Arc<Mutex<Option<DropHandler>>>,
-    pub(crate) forward_pause: Actuator,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -75,7 +73,6 @@ impl RawSession {
             created: Instant::now(),
             dispatcher: Dispatcher::default(),
             drop_handler: Default::default(),
-            forward_pause: Default::default(),
         })
     }
 
@@ -227,16 +224,6 @@ impl RawSession {
             },
         );
         self.send(control_packet).await
-    }
-
-    #[inline]
-    pub async fn pause_forwarding(&self) {
-        self.forward_pause.enable();
-    }
-
-    #[inline]
-    pub async fn resume_forwarding(&self) {
-        self.forward_pause.disable();
     }
 
     /// Will send `Disconnect` message to other Node, to close end Session

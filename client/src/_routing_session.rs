@@ -57,6 +57,15 @@ impl NodeRouting {
         transport: TransportType,
     ) -> Result<(), SessionError> {
         if let Some(direct) = self.route.upgrade() {
+            log::trace!(
+                "Forwarding message ({}) to {} through {} ({}) (session id: {})",
+                transport,
+                self.node.default_id.node_id,
+                direct.owner.default_id,
+                direct.raw.remote,
+                direct.raw.id
+            );
+
             let packet = self
                 .encryption
                 .encrypt(packet)

@@ -477,7 +477,7 @@ impl SessionProtocol {
                 .await?;
 
             // Temporarily pause forwarding from this node
-            session.raw.forward_pause.enable();
+            session.pause_forwarding();
             session
                 .raw
                 .send(proto::Packet::response(
@@ -490,13 +490,7 @@ impl SessionProtocol {
                 .map_err(|_| RequestError::Generic("Sending challenge response.".to_string()))?;
 
             // Await for forwarding to be resumed
-            if let Some(resumed) = session.raw.forward_pause.next() {
-                log::debug!(
-                    "Session {session_id} (node = {node_id}) is awaiting a ResumeForwarding message"
-                );
-                resumed.await;
-            }
-
+            session.wait_for_resume().await;
             guard.transition_incoming(InitState::Ready).await?;
 
             log::info!(
@@ -650,14 +644,14 @@ mod tests {
         };
 
         let guard1 = permit.guard.clone();
+        let mut waiter1 = guard1.awaiting_notifier();
+
         permit.results(
             protocol
                 .init_p2p_session(layer2.addr, &permit)
                 .await
                 .map_err(SessionError::from),
         );
-
-        log::debug!("Permit Result: {}", permit.result.is_some());
 
         // Finishes the initialization by setting established state.
         drop(permit);
@@ -668,11 +662,15 @@ mod tests {
         };
 
         // Wait until both sides will have session established.
+        // Notice: We need to wait on waiter1, because `Permit` drop will spawn asynchronous task
+        // to make final state change.
+        waiter1.await_for_finish().await.unwrap();
         waiter2.await_for_finish().await.unwrap();
         assert!(matches!(
             waiter2.guard.state().await,
             SessionState::Established(..)
         ));
+        eprintln!("{}", guard1.state().await);
         assert!(matches!(
             guard1.state().await,
             SessionState::Established(..)

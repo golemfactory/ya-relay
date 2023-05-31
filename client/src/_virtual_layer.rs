@@ -206,19 +206,6 @@ impl TcpLayer {
         self.net.metrics()
     }
 
-    // TODO: Pausing forwarding should be done on different layer,
-    //       probably closer to `DirectSession`.
-    pub async fn get_next_fwd_payload<T>(
-        &self,
-        rx: &mut mpsc::Receiver<T>,
-        forward_pause: &Actuator,
-    ) -> Option<T> {
-        if let Some(resumed) = forward_pause.next() {
-            resumed.await;
-        }
-        rx.next().await
-    }
-
     #[inline(always)]
     pub async fn send(
         &self,

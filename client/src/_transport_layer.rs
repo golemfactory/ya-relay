@@ -3,7 +3,7 @@
 
 use anyhow::bail;
 use futures::channel::mpsc;
-use futures::StreamExt;
+use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -36,6 +36,9 @@ struct TransportLayer {
 
 struct TransportLayerState {
     /// Every default and secondary NodeId has separate entry here.
+    /// TODO: We ues `ForwardSenders` only for compatibility with previous implementation.
+    ///       It would be better to use always `RoutingSender` for unreliable and something
+    ///       with similar api and lazy connection functionality for reliable transport.
     forward_unreliable: HashMap<NodeId, ForwardSender>,
     forward_transfer: HashMap<NodeId, ForwardSender>,
     forward_reliable: HashMap<NodeId, ForwardSender>,
@@ -230,43 +233,35 @@ impl TransportLayer {
         mut session: RoutingSender,
         mut rx: mpsc::Receiver<Payload>,
     ) {
-        unimplemented!();
-        // // TODO: Fix pause forwarding. Maybe it should be moved to `RoutingSender` internals,
-        // //       since pausing is set per `DirectSession`.
-        // let pause = node.session.forward_pause.clone();
-        //
-        // while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
-        //     // TODO: Session might be established or chosen after we call `RoutingSender::send`,
-        //     //       so this log message has to be fixed.
-        //     log::trace!(
-        //         "Forwarding message (U) to {} through {} (session id: {})",
-        //         session.target(),
-        //         session.route(),
-        //         session.session_id()
-        //     );
-        //
-        //     if let Err(error) = session
-        //         .send(payload.into(), TransportType::Unreliable)
-        //         .await
-        //     {
-        //         log::debug!(
-        //             "[{}] forward (U) to {} through {} (session id: {}) failed: {error}",
-        //             self.config.node_id,
-        //             session.target(),
-        //             session.route(),
-        //             session.session_id()
-        //         );
-        //         break;
-        //     }
-        // }
-        //
-        // log::debug!(
-        //     "[{}] forward (U): disconnected from: {}",
-        //     node.id,
-        //     session.target()
-        // );
-        //
-        // rx.close();
-        // self.remove_node(node.id).await;
+        while let Some(payload) = rx.next().await {
+            if let Err(error) = session.send(payload, TransportType::Unreliable).await {
+                log::debug!(
+                    "Forward (U) to {} through {} (session id: {}) failed: {error}",
+                    session.target(),
+                    session.route(),
+                    session.session_id()
+                );
+                break;
+            }
+        }
+
+        log::debug!(
+            "[{}] forward (Unreliable): forward channel closed",
+            session.target()
+        );
+
+        rx.close();
+        self.remove_node(session.target()).await;
+    }
+
+    async fn remove_node(&self, node_id: NodeId) {
+        // TODO: Should we remove forward channels for all other identities for this Node as well?
+        let rx = {
+            let mut state = self.state.write().await;
+            state.forward_unreliable.remove(&node_id)
+        };
+        if let Some(mut rx) = rx {
+            rx.close().await.ok();
+        }
     }
 }

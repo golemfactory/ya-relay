@@ -9,6 +9,7 @@ use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::{SessionId, TransportType};
+use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, Payload, SlotId, FORWARD_SLOT_ID};
 
@@ -108,6 +109,8 @@ pub struct DirectSession {
     /// In case of p2p session these values will be empty. In future we can use other
     /// sessions than Relay to forward packets.
     pub forwards: Arc<RwLock<AllowedForwards>>,
+    /// Implements limiting forwarding functionality.
+    pub(crate) forward_pause: Actuator,
 }
 
 impl DirectSession {
@@ -135,6 +138,7 @@ impl DirectSession {
             },
             raw: session,
             forwards: Arc::new(RwLock::new(Default::default())),
+            forward_pause: Default::default(),
         }))
     }
 
@@ -152,6 +156,7 @@ impl DirectSession {
             },
             raw: session,
             forwards: Arc::new(RwLock::new(Default::default())),
+            forward_pause: Default::default(),
         }))
     }
 
@@ -178,10 +183,12 @@ impl DirectSession {
             TransportType::Reliable => Forward::new(self.raw.id, slot, packet),
             TransportType::Transfer => Forward::new(self.raw.id, slot, packet),
         };
+
         if encrypted {
             forward.set_encrypted();
         }
 
+        self.wait_for_resume().await;
         self.raw.send(forward).await
     }
 
@@ -227,6 +234,34 @@ impl DirectSession {
     pub async fn find_slot(&self, node_id: &NodeId) -> Option<SlotId> {
         let mut forwards = self.forwards.read().await;
         forwards.get_slot(node_id)
+    }
+
+    #[inline]
+    pub async fn pause_forwarding(&self) {
+        self.forward_pause.enable();
+    }
+
+    #[inline]
+    pub async fn resume_forwarding(&self) {
+        self.forward_pause.disable();
+    }
+
+    /// Other party can pause forwarding for multiple reasons:
+    /// 1. It is not able to receive messages so fast (in most cases TCP is enough to avoid this)
+    /// 2. It forwards traffic for many other Nodes and we are using to much of bandwidth.
+    /// 3. After session initialization we need to wait until other party will be able to receive
+    ///    packets
+    #[inline]
+    pub async fn wait_for_resume(&self) {
+        if let Some(resumed) = self.forward_pause.next() {
+            log::debug!(
+                "Session {} (node = {}) is awaiting a ResumeForwarding message",
+                self.raw.id,
+                self.owner.default_id
+            );
+
+            resumed.await;
+        }
     }
 }
 
