@@ -592,13 +592,26 @@ impl SessionLayer {
         server.register(ids.clone().into(), slot).await;
 
         let routing = NodeRouting::new(
-            ids,
+            ids.clone(),
             server.clone(),
             Encryption {
                 crypto: self.config.crypto.clone(),
             },
         );
-        todo!()
+
+        {
+            let mut state = self.state.write().await;
+            for id in ids.identities {
+                let node_id = id.node_id;
+                state.nodes.insert(node_id, routing.clone());
+
+                log::debug!(
+                    "Registered node [{node_id}] routing through server [{server_id}] ({addr})"
+                );
+            }
+        }
+
+        Ok(server)
     }
 
     pub async fn dispatch_session<'a>(
@@ -958,9 +971,6 @@ impl Handler for SessionLayer {
         from: SocketAddr,
         session: Option<Arc<DirectSession>>,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        // TODO: We shouldn't handle different transport types, but only care to either return
-        //       correct session or create one.
-        //       We need to consider if we need to create session here at all.
         let reliable = forward.is_reliable();
         let encrypted = forward.is_encrypted();
         let slot = forward.slot;
@@ -1070,6 +1080,8 @@ mod tests {
     use super::*;
 
     use std::time::Duration;
+    use tokio::time::timeout;
+    use ya_relay_proto::proto::Payload;
 
     use crate::_session::SessionType;
     use crate::testing::accessors::SessionLayerPrivate;
@@ -1097,5 +1109,54 @@ mod tests {
         assert_eq!(session.target(), layer1.id);
         assert_eq!(session.route(), layer1.id);
         assert_eq!(session.session_type(), SessionType::P2P);
+    }
+
+    #[actix_rt::test]
+    async fn test_session_layer_p2p_send_receive() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        let mut receiver1 = layer1.layer.receiver().unwrap();
+        let mut receiver2 = layer2.layer.receiver().unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await;
+
+        // Send Node-1 -> Node-2
+        let mut session = layer1.layer.session(layer2.id).await.unwrap();
+
+        let packet = Payload::Vec(vec![4u8]);
+        session
+            .send(packet.clone(), TransportType::Unreliable)
+            .await
+            .unwrap();
+
+        let forwarded = timeout(Duration::from_millis(300), receiver2.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(forwarded.node_id, layer1.id);
+        assert_eq!(forwarded.transport, TransportType::Unreliable);
+        assert_eq!(forwarded.payload, packet);
+
+        // Send Node-2 -> Node-1
+        let mut session = layer2.layer.session(layer1.id).await.unwrap();
+
+        let packet = Payload::Vec(vec![7u8]);
+        session
+            .send(packet.clone(), TransportType::Unreliable)
+            .await
+            .unwrap();
+
+        let forwarded = timeout(Duration::from_millis(300), receiver1.recv())
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(forwarded.node_id, layer2.id);
+        assert_eq!(forwarded.transport, TransportType::Unreliable);
+        assert_eq!(forwarded.payload, packet);
     }
 }
