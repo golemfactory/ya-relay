@@ -1,7 +1,4 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use anyhow::{anyhow, bail};
+use anyhow::bail;
 use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
@@ -15,22 +12,17 @@ use tokio::time::timeout;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge};
 use ya_relay_core::crypto::Crypto;
-use ya_relay_core::error::{InternalError, ServerResult, Unauthorized};
 use ya_relay_core::session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
-use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
-use ya_relay_stack::Protocol;
 
+use crate::_client::ClientConfig;
 use crate::_direct_session::DirectSession;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::_session::RawSession;
-use crate::_session_guard::{
-    GuardedSessions, InitState, SessionEntry, SessionPermit, SessionState,
-};
+use crate::_session_guard::{InitState, SessionPermit};
 use crate::_session_layer::SessionLayer;
-use crate::client::ClientConfig;
 
 #[derive(Clone)]
 pub struct SessionProtocol {
@@ -88,7 +80,7 @@ impl SessionProtocol {
 
     /// Different from `temporary_session` because it doesn't create new session.
     pub async fn get_temporary_session(&self, addr: &SocketAddr) -> Option<Arc<RawSession>> {
-        let mut state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap();
         state.tmp_sessions.get(addr).cloned()
     }
 
@@ -227,7 +219,7 @@ impl SessionProtocol {
             .raw
             .send(proto::Packet::control(
                 session.raw.id.to_vec(),
-                ya_relay_proto::proto::control::ResumeForwarding::default(),
+                proto::control::ResumeForwarding::default(),
             ))
             .await
             .map_err(RequestError::from)?;
@@ -385,7 +377,7 @@ impl SessionProtocol {
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
     async fn init_session_handler(
-        mut self,
+        self,
         with: SocketAddr,
         request_id: RequestId,
         session_id: SessionId,
@@ -477,7 +469,7 @@ impl SessionProtocol {
                 .await?;
 
             // Temporarily pause forwarding from this node
-            session.pause_forwarding();
+            session.pause_forwarding().await;
             session
                 .raw
                 .send(proto::Packet::response(
@@ -623,13 +615,8 @@ impl SessionProtocol {
 mod tests {
     use super::*;
 
-    use std::time::Duration;
-
-    use crate::_session_guard::SessionLock;
-    use crate::testing::accessors::SessionLayerPrivate;
-    use crate::testing::init::{spawn_session_layer, test_default_config, MockSessionNetwork};
-
-    use ya_relay_server::testing::server::init_test_server;
+    use crate::_session_guard::{SessionLock, SessionState};
+    use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]
     async fn test_session_protocol_happy_path() {
@@ -646,7 +633,7 @@ mod tests {
         let guard1 = permit.guard.clone();
         let mut waiter1 = guard1.awaiting_notifier();
 
-        permit.results(
+        let _ = permit.results(
             protocol
                 .init_p2p_session(layer2.addr, &permit)
                 .await

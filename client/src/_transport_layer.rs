@@ -14,19 +14,21 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, Payload};
 use ya_relay_stack::{Channel, Connection};
 
+use crate::_client::{ClientConfig, Forwarded};
 use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
 use crate::_virtual_layer::{PortType, TcpLayer};
-use crate::client::{ClientConfig, ForwardSender, Forwarded};
-use crate::ForwardReceiver;
+
+pub type ForwardSender = mpsc::Sender<Payload>;
+pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
 /// Responsible for sending data. Handles different kinds of transport types.
 #[derive(Clone)]
-struct TransportLayer {
+pub struct TransportLayer {
     pub config: Arc<ClientConfig>,
 
-    session_layer: SessionLayer,
-    virtual_tcp: TcpLayer,
+    pub session_layer: SessionLayer,
+    pub virtual_tcp: TcpLayer,
 
     state: Arc<RwLock<TransportLayerState>>,
 
@@ -45,6 +47,10 @@ struct TransportLayerState {
 }
 
 impl TransportLayer {
+    pub fn new(config: Arc<ClientConfig>) -> TransportLayer {
+        todo!()
+    }
+
     async fn dispatch(&self, packet: Forwarded) {
         match &packet.transport {
             TransportType::Unreliable => self.dispatch_unreliable(packet).await,

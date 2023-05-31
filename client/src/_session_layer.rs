@@ -12,9 +12,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, Semaphore};
 
-use crate::client::{ClientConfig, Forwarded};
-use crate::ForwardReceiver;
-
+use crate::_client::{ClientConfig, Forwarded};
 use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_dispatch::{dispatch, Dispatcher, Handler};
 use crate::_encryption::Encryption;
@@ -25,6 +23,7 @@ use crate::_session::RawSession;
 use crate::_session_guard::{GuardedSessions, SessionLock, SessionPermit};
 use crate::_session_protocol::SessionProtocol;
 
+use crate::_transport_layer::ForwardReceiver;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::session::{Endpoint, NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};

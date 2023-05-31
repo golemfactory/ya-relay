@@ -19,9 +19,6 @@ use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::session::TransportType;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
-
-use crate::_routing_session::RoutingSender;
-use crate::_session_layer::SessionLayer;
 use ya_relay_proto::proto::Payload;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
@@ -29,8 +26,10 @@ use ya_relay_stack::ya_smoltcp::iface::Route;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::*;
 
-use crate::client::Forwarded;
-use crate::ForwardReceiver;
+use crate::_client::Forwarded;
+use crate::_routing_session::RoutingSender;
+use crate::_session_layer::SessionLayer;
+use crate::_transport_layer::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;
 

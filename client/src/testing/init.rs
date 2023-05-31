@@ -3,8 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use url::Url;
 
-use crate::client::ClientConfig;
-use crate::ClientBuilder;
+use crate::_config::{ClientBuilder, ClientConfig};
 use crate::_session_guard::{GuardedSessions, SessionLock, SessionPermit};
 use crate::_session_layer::SessionLayer;
 use crate::_session_protocol::SessionProtocol;
