@@ -15,11 +15,12 @@ use tokio::sync::{RwLock, Semaphore};
 use crate::client::{ClientConfig, Forwarded};
 use crate::ForwardReceiver;
 
+use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_dispatch::{dispatch, Dispatcher, Handler};
 use crate::_encryption::Encryption;
 use crate::_error::{ProtocolError, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
-use crate::_routing_session::{DirectSession, NodeEntry, NodeRouting, RoutingSender};
+use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session::RawSession;
 use crate::_session_guard::{GuardedSessions, SessionLock, SessionPermit};
 use crate::_session_protocol::SessionProtocol;
@@ -125,6 +126,11 @@ impl SessionLayer {
         self.state.read().await.bind_addr
     }
 
+    pub fn receiver(&self) -> Option<ForwardReceiver> {
+        self.ingress_channel.receiver()
+    }
+
+    /// Doesn't try to initialize session. `None` if session didn't exist.
     pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
         let state = self.state.read().await;
         state
@@ -153,22 +159,6 @@ impl SessionLayer {
             .map_err(|e| anyhow!("Failed to find Node on relay server: {e}"))?;
 
         NodeInfo::try_from(node)
-    }
-
-    async fn filter_own_addresses(&self, endpoints: &[Endpoint]) -> Vec<SocketAddr> {
-        let own_addrs: Vec<_> = {
-            let state = self.state.read().await;
-            vec![state.bind_addr, state.public_addr]
-                .into_iter()
-                .flatten()
-                .collect()
-        };
-        endpoints
-            .iter()
-            .cloned()
-            .map(|e| e.address)
-            .filter(|a| !own_addrs.iter().any(|o| o == a))
-            .collect()
     }
 
     pub async fn abort_initializations(
@@ -246,23 +236,6 @@ impl SessionLayer {
             log::trace!("Saved node session {id} [{node_id}] {addr}")
         }
         Ok(direct)
-    }
-
-    pub fn out_stream(&self) -> anyhow::Result<OutStream> {
-        self.sink
-            .clone()
-            .ok_or_else(|| anyhow!("Network sink not initialized"))
-    }
-
-    pub fn receiver(&self) -> Option<ForwardReceiver> {
-        self.ingress_channel.receiver()
-    }
-
-    async fn send_disconnect(&self, session_id: SessionId, addr: SocketAddr) -> anyhow::Result<()> {
-        // Don't use temporary session, because we don't want to initialize session
-        // with this address, nor receive the response.
-        let session = RawSession::new(addr, session_id, self.out_stream()?);
-        session.disconnect().await
     }
 
     /// Returns `RoutingSender` which can be used to send packets to desired Node.
@@ -615,9 +588,9 @@ impl SessionLayer {
 
         log::info!("Using relay server [{server_id}] ({addr}) to forward packets to [{node_id}] (slot {slot})");
 
-        //server.forwards
-
         let ids = permit.guard.identities().await;
+        server.register(ids.clone().into(), slot).await;
+
         let routing = NodeRouting::new(
             ids,
             server.clone(),
@@ -701,7 +674,7 @@ impl SessionLayer {
 
         if let Ok(node) = match by {
             By::Slot(id) => match self.find_session(from).await {
-                Some(session) => session.remove_slot(id).await,
+                Some(session) => session.remove_by_slot(id).await,
                 None => Err(anyhow!("Session with {from} not found")),
             },
             By::NodeId(id) => NodeId::try_from(&id).map_err(anyhow::Error::from),
@@ -818,6 +791,35 @@ impl SessionLayer {
             )),
             Some(protocol) => Ok(protocol),
         }
+    }
+
+    async fn send_disconnect(&self, session_id: SessionId, addr: SocketAddr) -> anyhow::Result<()> {
+        // Don't use temporary session, because we don't want to initialize session
+        // with this address, nor receive the response.
+        let session = RawSession::new(addr, session_id, self.out_stream()?);
+        session.disconnect().await
+    }
+
+    pub fn out_stream(&self) -> anyhow::Result<OutStream> {
+        self.sink
+            .clone()
+            .ok_or_else(|| anyhow!("Network sink not initialized"))
+    }
+
+    async fn filter_own_addresses(&self, endpoints: &[Endpoint]) -> Vec<SocketAddr> {
+        let own_addrs: Vec<_> = {
+            let state = self.state.read().await;
+            vec![state.bind_addr, state.public_addr]
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        endpoints
+            .iter()
+            .cloned()
+            .map(|e| e.address)
+            .filter(|a| !own_addrs.iter().any(|o| o == a))
+            .collect()
     }
 }
 
@@ -990,7 +992,7 @@ impl Handler for SessionLayer {
                 session.owner.default_id
             } else {
                 // Messages forwarded through relay server or other relay Node.
-                match { session.forwards.read().await.slots.get(&slot).cloned() } {
+                match { session.get_by_slot(slot).await } {
                     Some(node) => node.default_id,
                     None => {
                         log::debug!(
@@ -1088,6 +1090,12 @@ mod tests {
         // p2p session - target and route are the same.
         assert_eq!(session.target(), layer2.id);
         assert_eq!(session.route(), layer2.id);
+        assert_eq!(session.session_type(), SessionType::P2P);
+
+        let session = layer2.layer.session(layer1.id).await.unwrap();
+
+        assert_eq!(session.target(), layer1.id);
+        assert_eq!(session.route(), layer1.id);
         assert_eq!(session.session_type(), SessionType::P2P);
     }
 }

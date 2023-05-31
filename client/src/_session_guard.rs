@@ -15,8 +15,8 @@ use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
 use ya_relay_core::identity::Identity;
 
+use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_error::{SessionError, SessionResult, TransitionError};
-use crate::_routing_session::{DirectSession, NodeEntry};
 use crate::_session::RawSession;
 
 use ya_relay_core::session::{Endpoint, SessionId};

@@ -23,8 +23,8 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
 use ya_relay_stack::Protocol;
 
+use crate::_direct_session::DirectSession;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
-use crate::_routing_session::DirectSession;
 use crate::_session::RawSession;
 use crate::_session_guard::{
     GuardedSessions, InitState, SessionEntry, SessionPermit, SessionState,

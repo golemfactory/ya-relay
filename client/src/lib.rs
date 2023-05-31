@@ -21,6 +21,7 @@ pub use session::{Session, SessionDesc};
 pub use ya_relay_core::session::TransportType;
 
 // Experimental
+mod _direct_session;
 mod _dispatch;
 mod _encryption;
 mod _error;
