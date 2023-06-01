@@ -1,6 +1,6 @@
 [package]
 name = "ya-relay-core"
-version = "0.3.1"
+version = "0.4.0"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
 homepage = "https://github.com/golemfactory/ya-relay/crates/core"
@@ -10,8 +10,8 @@ description= "Golem relay base functionality"
 
 
 [dependencies]
-ya-relay-stack = "0.4.1"
-ya-relay-proto = "0.4.1"
+ya-relay-stack = "0.5.0"
+ya-relay-proto = "0.4.2"
 ya-client-model = "0.5"
 
 anyhow = "1.0.56"

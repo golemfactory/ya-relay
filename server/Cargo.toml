@@ -3,7 +3,9 @@ name = "ya-relay-server"
 version = "0.2.2"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
-
+description = "Node discovery server for forwarding data between Golem network ndoes"
+license = "LGPL-3.0"
+repository = "https://github.com/golemfactory/ya-relay"
 
 [lib]
 name = "ya_relay_server"
@@ -16,7 +18,7 @@ path = "src/main.rs"
 
 [dependencies]
 ya-relay-proto = "0.4.1"
-ya-relay-core = "0.3.1"
+ya-relay-core = "0.4.0"
 
 actix-rt = "2.7"
 anyhow = "1.0"
@@ -40,5 +42,6 @@ url = "2.1"
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = ["actix-rt2"]}
 tokio-stream = "0.1.8"
+test-case = "3.1"
 
-ya-relay-client = "0.5"
+ya-relay-client = "0.6.0"
