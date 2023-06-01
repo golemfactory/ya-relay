@@ -5,9 +5,9 @@ use url::Url;
 
 use crate::_client::Client;
 use crate::_config::{ClientBuilder, ClientConfig, FailFast};
-use crate::_session_guard::{GuardedSessions, SessionLock, SessionPermit};
 use crate::_session_layer::SessionLayer;
 use crate::_session_protocol::SessionProtocol;
+use crate::_session_registry::{Registry, SessionLock, SessionPermit};
 use crate::testing::accessors::SessionLayerPrivate;
 
 use ya_relay_core::NodeId;
@@ -31,7 +31,7 @@ pub struct SessionLayerWrapper {
 
     pub layer: SessionLayer,
     pub protocol: SessionProtocol,
-    pub guards: GuardedSessions,
+    pub guards: Registry,
 }
 
 impl MockSessionNetwork {
@@ -58,7 +58,13 @@ impl MockSessionNetwork {
         Ok(client)
     }
 
+    /// If Client will reconnect to relay server, he will have public IP again.
     pub async fn hack_make_ip_private(&self, client: &Client) {
+        log::info!(
+            "Making Node's {} IP private on relay server",
+            client.node_id()
+        );
+
         let mut state = self.server.server.state.write().await;
 
         let mut info = state.nodes.get_by_node_id(client.node_id()).unwrap();
@@ -81,7 +87,7 @@ pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<Sess
     let node_id = layer.config.node_id;
     let addr = layer.get_test_socket_addr().await?;
     let protocol = layer.get_protocol().await?;
-    let guards = layer.guards.clone();
+    let guards = layer.registry.clone();
 
     log::info!("Spawned `SessionLayer` for [{node_id}] ({addr})");
     Ok(SessionLayerWrapper {

@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
 
-use crate::_session_guard::SessionState;
+use crate::_session_registry::SessionState;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 
@@ -35,6 +35,9 @@ pub enum SessionError {
     Unexpected(String),
     #[error("Programming error: {0}")]
     ProgrammingError(String),
+    #[error("{0}")]
+    /// This is not an error itself, but prevents from completing operation.
+    NotApplicable(String),
     #[error("{0}")]
     Generic(String),
 }

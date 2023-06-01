@@ -20,8 +20,8 @@ use crate::_error::{ProtocolError, SessionError, SessionInitError, SessionResult
 use crate::_expire::track_sessions_expiration;
 use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session::RawSession;
-use crate::_session_guard::{GuardedSessions, SessionLock, SessionPermit};
 use crate::_session_protocol::SessionProtocol;
+use crate::_session_registry::{Registry, SessionLock, SessionPermit};
 
 use crate::_transport_layer::ForwardReceiver;
 use ya_relay_core::identity::Identity;
@@ -55,7 +55,7 @@ pub struct SessionLayer {
 
     pub(crate) state: Arc<RwLock<SessionLayerState>>,
 
-    pub(crate) guards: GuardedSessions,
+    pub(crate) registry: Registry,
     ingress_channel: Channel<Forwarded>,
 
     // TODO: Could be per `Session`.
@@ -87,7 +87,7 @@ impl SessionLayer {
             sink: None,
             config,
             state: Arc::new(RwLock::new(state)),
-            guards: Default::default(),
+            registry: Default::default(),
             ingress_channel: Default::default(),
             processed_requests: Arc::new(Mutex::new(VecDeque::new())),
         }
@@ -189,7 +189,7 @@ impl SessionLayer {
     }
 
     /// Queries information about Node from relay server.
-    /// TODO: Update `GuardedSessions` information.
+    /// TODO: Update `Registry` information.
     pub async fn query_node_info(&self, node_id: NodeId) -> anyhow::Result<NodeInfo> {
         let server_session = self
             .server_session()
@@ -321,10 +321,10 @@ impl SessionLayer {
         //       In previous implementation we were filtering, but I don't know the rationale.
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
 
-        let mut waiter = match self.guards.lock_outgoing(remote_id, &addrs).await {
+        let mut waiter = match self.registry.lock_outgoing(remote_id, &addrs).await {
             SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
-                let waiter = permit.guard.awaiting_notifier();
+                let waiter = permit.registry.awaiting_notifier();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
                 // other threads can be waiting for initialization as well. That's why we initialize
@@ -365,10 +365,10 @@ impl SessionLayer {
             return Ok(session);
         }
 
-        let mut waiter = match self.guards.lock_outgoing(remote_id, &[addr]).await {
+        let mut waiter = match self.registry.lock_outgoing(remote_id, &[addr]).await {
             SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
-                let waiter = permit.guard.awaiting_notifier();
+                let waiter = permit.registry.awaiting_notifier();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
                 // other threads can be waiting for initialization as well. That's why we initialize
@@ -461,6 +461,11 @@ impl SessionLayer {
 
         log::debug!("All attempts to establish direct session with node [{node_id}] failed");
 
+        // TODO: If one party has public IP, but previous resolution attempts failed, then we should
+        //       consider if it would be better not to use relayed connection.
+        //       If we are using relay, we don't know if other Node is reachable at all, until
+        //       we establish TCP connection on higher layer. That means that on `SessionLayer` level,
+        //       we are not aware if the relayed connection doesn't work.
         if !dont_use.contains(&ConnectionMethod::Relay) {
             log::info!("Attempting to use relay Server to forward packets to [{node_id}]");
 
@@ -508,9 +513,9 @@ impl SessionLayer {
         permit: &SessionPermit,
     ) -> SessionResult<Arc<DirectSession>> {
         let protocol = self.get_protocol().await?;
-        let addrs = permit.guard.public_addresses().await;
+        let addrs = permit.registry.public_addresses().await;
         if addrs.is_empty() {
-            return Err(SessionError::BadRequest(format!(
+            return Err(SessionError::NotApplicable(format!(
                 "Node [{node_id}] has no public endpoints."
             )));
         }
@@ -549,8 +554,8 @@ impl SessionLayer {
     ) -> Result<Arc<DirectSession>, SessionError> {
         // We are trying to connect to Node without public IP. Send `ReverseConnection` message,
         // so Node will connect to us.
-        if self.get_public_addr().await.is_some() {
-            return Err(SessionError::Generic(
+        if self.get_public_addr().await.is_none() {
+            return Err(SessionError::NotApplicable(
                 "We don't have public endpoints.".to_string(),
             ));
         }
@@ -631,7 +636,7 @@ impl SessionLayer {
 
         log::info!("Using relay server [{server_id}] ({addr}) to forward packets to [{node_id}] (slot {slot})");
 
-        let ids = permit.guard.identities().await;
+        let ids = permit.registry.identities().await;
         server.register(ids.clone().into(), slot).await;
 
         let routing = NodeRouting::new(
@@ -671,7 +676,7 @@ impl SessionLayer {
             let remote_id = challenge::recover_default_node_id(&request)
                 .map_err(|e| ProtocolError::RecoverId(e.to_string()))?;
 
-            return match self.guards.lock_incoming(remote_id, &[from]).await {
+            return match self.registry.lock_incoming(remote_id, &[from]).await {
                 SessionLock::Permit(mut permit) => {
                     permit.results(
                         protocol
@@ -801,7 +806,7 @@ impl SessionLayer {
             message.endpoints
         );
 
-        let permit = match self.guards.lock_outgoing(node_id, &endpoints).await {
+        let permit = match self.registry.lock_outgoing(node_id, &endpoints).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(waiter) => return Ok(()),
         };

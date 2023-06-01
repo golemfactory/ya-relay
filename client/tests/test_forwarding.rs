@@ -8,54 +8,48 @@ use std::time::Duration;
 use ya_relay_client::testing::forwarding_utils::spawn_receive;
 use ya_relay_client::testing::init::MockSessionNetwork;
 
-// #[serial_test::serial]
-// async fn test_forward_unreliable_relayed() -> anyhow::Result<()> {
-//     let wrapper = init_test_server().await?;
-//
-//     let client1 = ClientBuilder::from_url(wrapper.url())
-//         .connect()
-//         .build()
-//         .await?;
-//     let client2 = ClientBuilder::from_url(wrapper.url())
-//         .connect()
-//         .build()
-//         .await?;
-//
-//     hack_make_ip_private(&wrapper, &client1).await;
-//     hack_make_ip_private(&wrapper, &client2).await;
-//
-//     let rx1 = client1
-//         .forward_receiver()
-//         .await
-//         .context("no forward receiver")?;
-//     let rx2 = client2
-//         .forward_receiver()
-//         .await
-//         .context("no forward receiver")?;
-//
-//     let received1 = Rc::new(AtomicBool::new(false));
-//     let received2 = Rc::new(AtomicBool::new(false));
-//
-//     println!("Setting up");
-//
-//     spawn_receive(">> 1", received1.clone(), rx1);
-//     spawn_receive(">> 2", received2.clone(), rx2);
-//
-//     println!("Forwarding: unreliable");
-//
-//     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
-//     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
-//
-//     tx1.send(vec![1u8].into()).await?;
-//     tx2.send(vec![2u8].into()).await?;
-//
-//     tokio::time::sleep(Duration::from_millis(100)).await;
-//
-//     assert!(received1.load(SeqCst));
-//     assert!(received2.load(SeqCst));
-//     Ok(())
-// }
-//
+#[serial_test::serial]
+async fn test_forward_unreliable_relayed() -> anyhow::Result<()> {
+    let mut network = MockSessionNetwork::new().await.unwrap();
+
+    let client1 = network.new_client().await?;
+    let client2 = network.new_client().await?;
+
+    network.hack_make_ip_private(&client1).await;
+    network.hack_make_ip_private(&client2).await;
+
+    let rx1 = client1
+        .forward_receiver()
+        .await
+        .context("no forward receiver")?;
+    let rx2 = client2
+        .forward_receiver()
+        .await
+        .context("no forward receiver")?;
+
+    let received1 = Rc::new(AtomicBool::new(false));
+    let received2 = Rc::new(AtomicBool::new(false));
+
+    println!("Setting up");
+
+    spawn_receive(">> 1", received1.clone(), rx1);
+    spawn_receive(">> 2", received2.clone(), rx2);
+
+    println!("Forwarding: unreliable");
+
+    let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
+    let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
+
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    assert!(received1.load(SeqCst));
+    assert!(received2.load(SeqCst));
+    Ok(())
+}
+
 // #[serial_test::serial]
 // async fn test_forward_reliable_relayed() -> anyhow::Result<()> {
 //     let wrapper = init_test_server().await?;

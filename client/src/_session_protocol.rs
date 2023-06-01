@@ -21,8 +21,8 @@ use crate::_client::ClientConfig;
 use crate::_direct_session::DirectSession;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::_session::RawSession;
-use crate::_session_guard::{InitState, SessionPermit};
 use crate::_session_layer::SessionLayer;
+use crate::_session_registry::{InitState, SessionPermit};
 
 #[derive(Clone)]
 pub struct SessionProtocol {
@@ -102,7 +102,7 @@ impl SessionProtocol {
     ) -> SessionResult<Arc<DirectSession>> {
         let config = self.config.clone();
         let this_id = config.node_id;
-        let guard = permit.guard.clone();
+        let guard = permit.registry.clone();
         let node_id = guard.id;
 
         guard.transition_outgoing(InitState::Initializing).await?;
@@ -248,7 +248,7 @@ impl SessionProtocol {
         addr: SocketAddr,
         permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionInitError> {
-        let node_id = permit.guard.id;
+        let node_id = permit.registry.id;
 
         log::info!("Initializing p2p session with Node: [{node_id}], address: {addr}");
         let session = self
@@ -302,7 +302,7 @@ impl SessionProtocol {
         request: proto::request::Session,
     ) -> Result<Arc<DirectSession>, SessionError> {
         let session_id = SessionId::generate();
-        let remote_id = permit.guard.id;
+        let remote_id = permit.registry.id;
         let (sender, receiver) = mpsc::channel(1);
 
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
@@ -386,8 +386,8 @@ impl SessionProtocol {
         mut rc: mpsc::Receiver<(RequestId, proto::request::Session)>,
     ) -> SessionResult<Arc<DirectSession>> {
         let config = self.config.clone();
-        let remote_id = permit.guard.id;
-        let guard = permit.guard.clone();
+        let remote_id = permit.registry.id;
+        let guard = permit.registry.clone();
 
         log::info!("Node [{remote_id}] ({with}) tries to establish p2p session.");
 
@@ -615,7 +615,7 @@ impl SessionProtocol {
 mod tests {
     use super::*;
 
-    use crate::_session_guard::{SessionLock, SessionState};
+    use crate::_session_registry::{SessionLock, SessionState};
     use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]
@@ -630,7 +630,7 @@ mod tests {
             SessionLock::Wait(_) => panic!("Expected initialization permit"),
         };
 
-        let guard1 = permit.guard.clone();
+        let guard1 = permit.registry.clone();
         let mut waiter1 = guard1.awaiting_notifier();
 
         let _ = permit.results(
@@ -654,7 +654,7 @@ mod tests {
         waiter1.await_for_finish().await.unwrap();
         waiter2.await_for_finish().await.unwrap();
         assert!(matches!(
-            waiter2.guard.state().await,
+            waiter2.registry.state().await,
             SessionState::Established(..)
         ));
         eprintln!("{}", guard1.state().await);

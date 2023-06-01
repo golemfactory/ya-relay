@@ -24,12 +24,12 @@ use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 
 #[derive(Clone, Default)]
-pub struct GuardedSessions {
-    state: Arc<RwLock<GuardedSessionsState>>,
+pub struct Registry {
+    state: Arc<RwLock<RegistryState>>,
 }
 
 #[derive(Default)]
-struct GuardedSessionsState {
+struct RegistryState {
     by_node_id: HashMap<NodeId, SessionEntry>,
     by_addr: HashMap<SocketAddr, SessionEntry>,
 }
@@ -99,7 +99,7 @@ pub struct SessionEntryState {
     state: SessionState,
 }
 
-impl GuardedSessions {
+impl Registry {
     /// Returns `SessionGuard` for other Node. Operation is atomic,
     /// you should get the same object in all places in the code.
     /// `SessionGuard` should be stored even if connection was closed,
@@ -222,7 +222,7 @@ impl GuardedSessions {
     pub async fn shutdown(&self) {}
 }
 
-impl GuardedSessionsState {
+impl RegistryState {
     fn find(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<SessionEntry> {
         self.by_node_id
             .get(&node_id)
@@ -423,7 +423,7 @@ impl SessionEntry {
         let notifier = self.awaiting_notifier();
         match self.transition_outgoing(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
-                guard: self.clone(),
+                registry: self.clone(),
                 result: None,
             }),
             Err(e) => {
@@ -449,7 +449,7 @@ impl SessionEntry {
         let notifier = self.awaiting_notifier();
         match self.transition_incoming(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
-                guard: self.clone(),
+                registry: self.clone(),
                 result: None,
             }),
             Err(e) => {
@@ -469,7 +469,7 @@ impl SessionEntry {
 
     pub fn awaiting_notifier(&self) -> NodeAwaiting {
         NodeAwaiting {
-            guard: self.clone(),
+            registry: self.clone(),
             notifier: self.state_notifier.subscribe(),
         }
     }
@@ -491,7 +491,7 @@ pub enum SessionLock {
 /// TODO: Rename `guard` in every place in the code, since it has completely
 ///       different purpose now
 pub struct SessionPermit {
-    pub guard: SessionEntry,
+    pub registry: SessionEntry,
     pub(crate) result: Option<Result<Arc<DirectSession>, SessionError>>,
 }
 
@@ -533,9 +533,9 @@ impl SessionPermit {
 
 impl Drop for SessionPermit {
     fn drop(&mut self) {
-        log::trace!("Dropping `SessionPermit` for {}.", self.guard.id);
+        log::trace!("Dropping `SessionPermit` for {}.", self.registry.id);
         tokio::task::spawn_local(SessionPermit::async_drop(
-            self.guard.clone(),
+            self.registry.clone(),
             self.result.take(),
         ));
     }
@@ -543,7 +543,7 @@ impl Drop for SessionPermit {
 
 /// Structure for awaiting established connection.
 pub struct NodeAwaiting {
-    pub guard: SessionEntry,
+    pub registry: SessionEntry,
     notifier: broadcast::Receiver<SessionState>,
 }
 
@@ -551,8 +551,8 @@ impl NodeAwaiting {
     pub async fn await_for_finish(&mut self) -> Result<Weak<DirectSession>, SessionError> {
         // If we query `NodeAwaiting` after session is already established, we won't get
         // any notification, so we must check state before entering loop.
-        let mut state = self.guard.state().await;
-        let node_id = self.guard.id;
+        let mut state = self.registry.state().await;
+        let node_id = self.registry.id;
 
         loop {
             match state {
@@ -610,7 +610,7 @@ mod tests {
     }
 
     async fn mock_establish_outgoing(mut permit: SessionPermit) -> anyhow::Result<()> {
-        let node = permit.guard.clone();
+        let node = permit.registry.clone();
         node.transition_outgoing(InitState::Initializing).await?;
         node.transition_outgoing(InitState::ChallengeHandshake)
             .await?;
@@ -628,7 +628,7 @@ mod tests {
     }
 
     async fn mock_establish_incoming(mut permit: SessionPermit) -> anyhow::Result<()> {
-        let node = permit.guard.clone();
+        let node = permit.registry.clone();
         node.transition_incoming(InitState::Initializing).await?;
         node.transition_incoming(InitState::ChallengeHandshake)
             .await?;
@@ -646,8 +646,8 @@ mod tests {
     }
 
     async fn mock_session(permit: &SessionPermit) -> Arc<DirectSession> {
-        let node_id = permit.guard.id;
-        let addr = permit.guard.public_addresses().await[0];
+        let node_id = permit.registry.id;
+        let addr = permit.registry.public_addresses().await[0];
 
         let crypto_provider = *CRYPTOS.get(&node_id).unwrap();
         let crypto = crypto_provider.get(node_id).await.unwrap();
@@ -660,13 +660,13 @@ mod tests {
         let (sink, _) = futures::channel::mpsc::channel::<(PacketKind, SocketAddr)>(1);
 
         let raw = RawSession::new(addr, SessionId::generate(), sink);
-        DirectSession::new(permit.guard.id, vec![identity].into_iter(), raw).unwrap()
+        DirectSession::new(permit.registry.id, vec![identity].into_iter(), raw).unwrap()
     }
 
     /// Checks if `Permits` and `NodeAwaiting` work independently.
     #[actix_rt::test]
     async fn test_session_guards_independent_permits() {
-        let guards = GuardedSessions::default();
+        let guards = Registry::default();
         let permit1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
@@ -712,7 +712,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn test_session_guards_incoming() {
-        let guards = GuardedSessions::default();
+        let guards = Registry::default();
         let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
@@ -739,7 +739,7 @@ mod tests {
     /// both incoming and outgoing session.
     #[actix_rt::test]
     async fn test_session_guards_incoming_and_outgoing() {
-        let guards = GuardedSessions::default();
+        let guards = Registry::default();
         let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
@@ -764,7 +764,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn test_session_guards_already_established() {
-        let guards = GuardedSessions::default();
+        let guards = Registry::default();
         let permit = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
