@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use url::Url;
 
+use crate::_client::Client;
 use crate::_config::{ClientBuilder, ClientConfig};
 use crate::_session_guard::{GuardedSessions, SessionLock, SessionPermit};
 use crate::_session_layer::SessionLayer;
@@ -20,6 +21,7 @@ pub async fn test_default_config(server: Url) -> anyhow::Result<ClientConfig> {
 pub struct MockSessionNetwork {
     pub server: ServerWrapper,
     pub layers: Vec<SessionLayerWrapper>,
+    pub clients: Vec<Client>,
 }
 
 #[derive(Clone)]
@@ -37,6 +39,7 @@ impl MockSessionNetwork {
         Ok(MockSessionNetwork {
             server: init_test_server().await?,
             layers: vec![],
+            clients: vec![],
         })
     }
 
@@ -44,6 +47,29 @@ impl MockSessionNetwork {
         let layer = spawn_session_layer(&self.server).await?;
         self.layers.push(layer.clone());
         Ok(layer)
+    }
+
+    pub async fn new_client(&mut self) -> anyhow::Result<Client> {
+        let client = ClientBuilder::from_url(self.server.url())
+            .connect()
+            .build()
+            .await?;
+        self.clients.push(client.clone());
+        Ok(client)
+    }
+
+    pub async fn hack_make_ip_private(&self, client: &Client) {
+        let mut state = self.server.server.state.write().await;
+
+        let mut info = state.nodes.get_by_node_id(client.node_id()).unwrap();
+        state.nodes.remove_session(info.info.slot);
+
+        // Server won't return any endpoints, so Client won't try to connect directly.
+        info.info.endpoints = vec![];
+        state.nodes.register(info);
+
+        drop(state);
+        client.transport.session_layer.set_public_addr(None).await;
     }
 }
 

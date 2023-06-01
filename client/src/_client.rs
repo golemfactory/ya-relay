@@ -15,13 +15,13 @@ use futures::{FutureExt, TryFutureExt};
 use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::TransportType;
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Payload, SlotId};
 use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
 
-pub use crate::_config::ClientConfig;
+pub use crate::_config::{ClientBuilder, ClientConfig};
 use crate::_session::SessionDesc;
 use crate::_transport_layer::{ForwardReceiver, ForwardSender, TransportLayer};
 

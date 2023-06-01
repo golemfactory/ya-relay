@@ -1,243 +1,353 @@
-use anyhow::{anyhow, bail, Result};
-use chrono::{DateTime, Utc};
-use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
-use governor::RateLimiter;
-use rand::Rng;
-use std::collections::VecDeque;
-use std::convert::TryFrom;
+use futures::future::LocalBoxFuture;
+use futures::{FutureExt, SinkExt};
+use std::cell::RefCell;
+use std::convert::TryInto;
 use std::fmt;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, RwLock};
+use std::rc::Rc;
+use std::sync::Arc;
+use tokio::time::{Duration, Instant};
 
-use crate::identity::Identity;
-use ya_client_model::NodeId;
-use ya_relay_proto::proto;
-use ya_relay_proto::proto::SESSION_ID_SIZE;
+use crate::dispatch::{Dispatched, Dispatcher};
+use crate::server_session::SessionId;
+use crate::sync::Actuator;
+use crate::udp_stream::OutStream;
+use crate::NodeId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::Display)]
-pub enum TransportType {
-    Unreliable,
-    Reliable,
-    Transfer,
-}
+use ya_relay_proto::proto::{RequestId, SlotId};
+use ya_relay_proto::{codec, proto};
 
-#[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq, Ord)]
-pub struct SessionId {
-    id: [u8; SESSION_ID_SIZE],
-}
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
+const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
-#[derive(Clone, PartialEq, Eq)]
-pub struct Endpoint {
-    pub protocol: proto::Protocol,
-    pub address: SocketAddr,
-}
+pub type SessionResult<T> = Result<T, SessionError>;
+pub type DropHandler = Box<dyn FnOnce()>;
 
+/// Udp connection to other Node. It is either peer-to-peer connection
+/// or central server session. Implements functions for sending
+/// protocol messages or forwarding generic messages.
 #[derive(Clone)]
-pub struct NodeInfo {
-    pub identities: Vec<Identity>,
-    pub slot: u32,
+pub struct Session {
+    pub remote: SocketAddr,
+    pub id: SessionId,
+    pub created: Instant,
 
-    /// Endpoints registered by Node.
-    pub endpoints: Vec<Endpoint>,
-    pub supported_encryptions: Vec<String>,
+    sink: OutStream,
+    pub(crate) dispatcher: Dispatcher,
+    pub(crate) drop_handler: Rc<RefCell<Option<DropHandler>>>,
+    pub forward_pause: Actuator,
 }
 
-impl NodeInfo {
-    pub fn node_id(&self) -> NodeId {
-        self.identities.get(0).map(|ident| ident.node_id).unwrap()
-    }
-
-    pub fn public_key(&self) -> Vec<u8> {
-        self.identities
-            .get(0)
-            .map(|ident| ident.public_key.bytes().to_vec())
-            .unwrap()
-    }
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct SessionDesc {
+    pub remote: SocketAddr,
+    pub id: SessionId,
+    pub last_seen: std::time::Instant,
+    pub last_ping: std::time::Duration,
+    pub created: std::time::Instant,
 }
 
-#[derive(Clone)]
-pub struct LastSeen {
-    last_seen: Arc<Mutex<DateTime<Utc>>>,
-}
-
-#[derive(Clone)]
-pub struct RequestHistory {
-    capacity: usize,
-    ids: Arc<RwLock<VecDeque<u64>>>,
-}
-
-#[derive(Clone)]
-pub struct NodeSession {
-    pub info: NodeInfo,
-
-    /// Address from which Session was initialized
-    pub address: SocketAddr,
-    pub session: SessionId,
-    pub last_seen: LastSeen,
-    pub forwarding_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
-
-    /// Request IDs of the last n requests
-    pub request_history: RequestHistory,
-}
-
-impl From<DateTime<Utc>> for LastSeen {
-    fn from(datetime: DateTime<Utc>) -> Self {
-        LastSeen {
-            last_seen: Arc::new(Mutex::new(datetime)),
+impl<'a> From<&'a Session> for SessionDesc {
+    fn from(session: &'a Session) -> Self {
+        SessionDesc {
+            remote: session.remote,
+            id: session.id,
+            last_seen: session.dispatcher.last_seen().into_std(),
+            last_ping: session.dispatcher.last_ping(),
+            created: session.created.into_std(),
         }
     }
 }
 
-impl LastSeen {
-    pub fn now() -> LastSeen {
-        LastSeen::from(Utc::now())
+impl Session {
+    pub fn new(remote_addr: SocketAddr, id: SessionId, sink: OutStream) -> Arc<Self> {
+        Arc::new(Self {
+            remote: remote_addr,
+            id,
+            sink,
+            created: Instant::now(),
+            dispatcher: Dispatcher::default(),
+            drop_handler: Default::default(),
+            forward_pause: Default::default(),
+        })
     }
 
-    pub fn update(&self, datetime: DateTime<Utc>) {
-        *self.last_seen.lock().unwrap() = datetime
+    pub fn dispatcher(&self) -> Dispatcher {
+        self.dispatcher.clone()
     }
 
-    pub fn time(&self) -> DateTime<Utc> {
-        *self.last_seen.lock().unwrap()
+    pub async fn register_endpoints(
+        &self,
+        endpoints: Vec<proto::Endpoint>,
+    ) -> anyhow::Result<Vec<proto::Endpoint>> {
+        log::info!("[{}] registering endpoints.", self.id);
+
+        let response = self
+            .request::<proto::response::Register>(
+                proto::request::Register { endpoints }.into(),
+                self.id.to_vec(),
+                DEFAULT_REQUEST_TIMEOUT,
+            )
+            .await?
+            .packet;
+
+        log::info!("[{}] endpoints registration finished.", self.id);
+
+        Ok(response.endpoints)
+    }
+
+    pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<proto::response::Node> {
+        log::debug!(
+            "Finding Node info [{}], using session {}.",
+            node_id,
+            self.id
+        );
+
+        let packet = proto::request::Node {
+            node_id: node_id.into_array().to_vec(),
+            public_key: true,
+        };
+        self.find_node_by(packet).await
+    }
+
+    pub async fn find_slot(&self, slot: SlotId) -> anyhow::Result<proto::response::Node> {
+        let packet = proto::request::Slot {
+            slot,
+            public_key: true,
+        };
+        self.find_node_by(packet).await
+    }
+
+    async fn find_node_by(
+        &self,
+        packet: impl Into<proto::Request>,
+    ) -> anyhow::Result<proto::response::Node> {
+        let response = self
+            .request::<proto::response::Node>(
+                packet.into(),
+                self.id.to_vec(),
+                DEFAULT_REQUEST_TIMEOUT,
+            )
+            .await?
+            .packet;
+        Ok(response)
+    }
+
+    pub async fn neighbours(&self, count: u32) -> anyhow::Result<proto::response::Neighbours> {
+        let packet = proto::request::Neighbours {
+            count,
+            public_key: true,
+        };
+        let neighbours = self
+            .request::<proto::response::Neighbours>(
+                packet.into(),
+                self.id.to_vec(),
+                DEFAULT_REQUEST_TIMEOUT,
+            )
+            .await?
+            .packet;
+        Ok(neighbours)
+    }
+
+    pub async fn ping(&self) -> anyhow::Result<()> {
+        let packet = proto::request::Ping {};
+        let ping_ts = Instant::now();
+
+        let (ping, result) = match self
+            .request::<proto::response::Pong>(packet.into(), self.id.to_vec(), DEFAULT_PING_TIMEOUT)
+            .await
+        {
+            result @ Ok(_) => (Instant::now() - ping_ts, result),
+            result @ Err(_) => (Instant::now() - self.dispatcher.last_seen(), result),
+        };
+
+        self.dispatcher.update_ping(ping);
+        result.map(|_| ())
+    }
+
+    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let packet = proto::request::ReverseConnection {
+            node_id: node_id.into_array().to_vec(),
+        };
+        self.request::<proto::response::ReverseConnection>(
+            packet.into(),
+            self.id.to_vec(),
+            DEFAULT_REQUEST_TIMEOUT,
+        )
+        .await?;
+
+        Ok(())
+    }
+
+    /// Check if any packet was seen during expiration period.
+    /// If it wasn't, ping will be sent.
+    /// Function returns timestamp of last seen packet from remote Node,
+    /// including ping that can be sent.
+    pub async fn keep_alive(&self, expiration: Duration) -> Instant {
+        let last_seen = self.dispatcher.last_seen();
+
+        if last_seen + expiration < Instant::now() {
+            // Sending 3 pings after each other to avoid lost UDP packets.
+            // We need only one response.
+            // Note: futures are asynchronous, because we shouldn't wait for ping timeout
+            //       in case of lost packets.
+            futures::future::select_ok((0..3).map(|i| {
+                async move {
+                    tokio::time::sleep(Duration::from_millis(200 * i)).await;
+                    self.ping().await
+                }
+                .boxed_local()
+            }))
+            .await
+            // Ignoring error, because in such a case, we should disconnect anyway.
+            .ok();
+        }
+
+        // Could be updated after ping.
+        self.dispatcher.last_seen()
+    }
+
+    pub async fn disconnect(&self) -> anyhow::Result<()> {
+        // Don't use temporary session, because we don't want to initialize session
+        // with this address, nor receive the response.
+        let control_packet = proto::Packet::control(
+            self.id.to_vec(),
+            ya_relay_proto::proto::control::Disconnected {
+                by: Some(proto::control::disconnected::By::SessionId(
+                    self.id.to_vec(),
+                )),
+            },
+        );
+        self.send(control_packet).await
+    }
+
+    #[inline]
+    pub async fn pause_forwarding(&self) {
+        self.forward_pause.enable();
+    }
+
+    #[inline]
+    pub async fn resume_forwarding(&self) {
+        self.forward_pause.disable();
+    }
+
+    /// Will send `Disconnect` message to other Node, to close end Session
+    /// more gracefully.  
+    pub async fn close(&self) -> anyhow::Result<()> {
+        self.disconnect().await
+    }
+
+    /// Add a function that will be executed on session drop
+    pub fn on_drop<F>(&self, f: F)
+    where
+        F: FnOnce() + 'static,
+    {
+        self.drop_handler.borrow_mut().replace(Box::new(f));
     }
 }
 
-impl RequestHistory {
-    pub fn new(capacity: usize) -> Self {
-        RequestHistory {
-            capacity,
-            ids: Arc::new(RwLock::new(VecDeque::new())),
+impl Session {
+    pub async fn request<T>(
+        &self,
+        request: proto::Request,
+        session_id: Vec<u8>,
+        timeout: Duration,
+    ) -> anyhow::Result<Dispatched<T>>
+    where
+        proto::response::Kind: TryInto<T, Error = ()>,
+        T: 'static,
+    {
+        const RETRIES: u32 = 4;
+
+        let response_fut = self.response::<T>(request.request_id, timeout);
+        let packet = proto::Packet {
+            session_id,
+            kind: Some(proto::packet::Kind::Request(request)),
+        };
+
+        let retry_send = async {
+            loop {
+                if let Err(e) = self.send(packet.clone()).await {
+                    return e;
+                }
+                tokio::time::sleep(timeout / RETRIES).await;
+            }
+        };
+
+        // concurrently transmit multiple copies of the same request
+        // and await for a response for at least one. This is done to
+        // tackle UDP packet drops while containing the entire process
+        // to the outer timeout.
+        tokio::select! {
+            err = retry_send => {
+                Err(err)
+            },
+            response = response_fut => {
+                response
+            }
         }
     }
 
-    pub fn push(&self, request_id: u64) {
-        let mut ids = self.ids.write().unwrap();
-
-        if ids.len() == self.capacity {
-            ids.pop_front();
-        }
-
-        ids.push_back(request_id);
+    #[inline(always)]
+    pub(crate) fn response<'a, T>(
+        &self,
+        request_id: RequestId,
+        timeout: Duration,
+    ) -> LocalBoxFuture<'a, anyhow::Result<Dispatched<T>>>
+    where
+        proto::response::Kind: TryInto<T, Error = ()>,
+        T: 'static,
+    {
+        self.dispatcher.clone().response::<T>(request_id, timeout)
     }
 
-    pub fn contains(&self, request_id: u64) -> bool {
-        self.ids.read().unwrap().contains(&request_id)
-    }
-}
-
-impl TryFrom<Vec<u8>> for SessionId {
-    type Error = anyhow::Error;
-
-    fn try_from(session: Vec<u8>) -> Result<Self> {
-        if session.len() != SESSION_ID_SIZE {
-            bail!("Invalid SessionID: {}", String::from_utf8(session)?)
-        }
-
-        let mut id: [u8; SESSION_ID_SIZE] = [0; SESSION_ID_SIZE];
-        session[0..SESSION_ID_SIZE]
-            .iter()
-            .enumerate()
-            .for_each(|(i, s)| id[i] = *s);
-
-        Ok(SessionId { id })
+    #[inline]
+    pub async fn send(&self, packet: impl Into<codec::PacketKind>) -> anyhow::Result<()> {
+        let mut sink = self.sink.clone();
+        Ok(sink.send((packet.into(), self.remote)).await?)
     }
 }
 
-impl TryFrom<&str> for SessionId {
-    type Error = anyhow::Error;
+impl Drop for Session {
+    fn drop(&mut self) {
+        log::trace!("Dropping Session {} ({}).", self.id, self.remote);
 
-    fn try_from(session: &str) -> Result<Self> {
-        SessionId::try_from(hex::decode(session)?)
-    }
-}
-
-impl From<[u8; SESSION_ID_SIZE]> for SessionId {
-    fn from(array: [u8; SESSION_ID_SIZE]) -> Self {
-        SessionId { id: array }
-    }
-}
-
-impl From<SessionId> for [u8; SESSION_ID_SIZE] {
-    fn from(session: SessionId) -> [u8; SESSION_ID_SIZE] {
-        session.id
-    }
-}
-
-impl SessionId {
-    pub fn generate() -> SessionId {
-        SessionId {
-            id: rand::thread_rng().gen::<[u8; SESSION_ID_SIZE]>(),
+        let on_drop = self.drop_handler.borrow_mut().take();
+        if let Some(f) = on_drop {
+            f()
         }
     }
+}
 
-    pub fn to_vec(&self) -> Vec<u8> {
-        self.id.to_vec()
+#[derive(thiserror::Error, Clone)]
+pub enum SessionError {
+    Drop(String),
+    Retry(String),
+}
+
+impl From<anyhow::Error> for SessionError {
+    fn from(e: anyhow::Error) -> Self {
+        Self::Retry(e.to_string())
     }
 }
 
-impl<'a> PartialEq<&'a [u8]> for SessionId {
-    fn eq(&self, other: &&'a [u8]) -> bool {
-        &self.id[..] == *other
-    }
-}
-
-impl fmt::Display for SessionId {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.id))
-    }
-}
-
-impl fmt::Debug for SessionId {
+impl fmt::Debug for SessionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.id))
-    }
-}
-
-impl TryFrom<proto::Endpoint> for Endpoint {
-    type Error = anyhow::Error;
-
-    fn try_from(endpoint: proto::Endpoint) -> Result<Self> {
-        let address = format!("{}:{}", endpoint.address, endpoint.port);
-        let address: SocketAddr = address.parse()?;
-
-        Ok(Endpoint {
-            protocol: proto::Protocol::from_i32(endpoint.protocol)
-                .ok_or_else(|| anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
-            address,
-        })
-    }
-}
-
-impl From<Endpoint> for proto::Endpoint {
-    fn from(endpoint: Endpoint) -> Self {
-        proto::Endpoint {
-            protocol: endpoint.protocol as i32,
-            address: endpoint.address.ip().to_string(),
-            port: endpoint.address.port() as u32,
+        match self {
+            Self::Drop(e) => {
+                write!(f, "Drop({:?})", e)
+            }
+            Self::Retry(e) => {
+                write!(f, "Retry({:?})", e)
+            }
         }
     }
 }
 
-impl TryFrom<proto::response::Node> for NodeInfo {
-    type Error = anyhow::Error;
-
-    fn try_from(value: proto::response::Node) -> std::result::Result<Self, Self::Error> {
-        let identities = value
-            .identities
-            .iter()
-            .map(Identity::try_from)
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(NodeInfo {
-            identities,
-            slot: value.slot,
-            endpoints: value
-                .endpoints
-                .into_iter()
-                .map(Endpoint::try_from)
-                .collect::<anyhow::Result<Vec<_>>>()?,
-            supported_encryptions: value.supported_encryptions,
-        })
+impl fmt::Display for SessionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Drop(e) | Self::Retry(e) => e.fmt(f),
+        }
     }
 }

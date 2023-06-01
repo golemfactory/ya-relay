@@ -22,7 +22,7 @@ use ya_relay_client::client::ForwardSender;
 use ya_relay_client::{ClientBuilder, ForwardReceiver};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
-use ya_relay_core::session::TransportType;
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 
 #[derive(StructOpt)]

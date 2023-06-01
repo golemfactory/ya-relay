@@ -19,7 +19,7 @@ use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_error::{SessionError, SessionResult, TransitionError};
 use crate::_session::RawSession;
 
-use ya_relay_core::session::{Endpoint, SessionId};
+use ya_relay_core::server_session::{Endpoint, SessionId};
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 

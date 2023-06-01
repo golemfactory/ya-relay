@@ -17,7 +17,6 @@ path = "src/main.rs"
 [dependencies]
 ya-relay-proto = "0.4.1"
 ya-relay-core = "0.3.1"
-ya-relay-client = "0.5"
 
 actix-rt = "2.7"
 anyhow = "1.0"
@@ -41,3 +40,5 @@ url = "2.1"
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = ["actix-rt2"]}
 tokio-stream = "0.1.8"
+
+ya-relay-client = "0.5"

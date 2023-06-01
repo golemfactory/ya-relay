@@ -9,13 +9,13 @@ use tokio::time::timeout;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::error::{InternalError, ServerResult, Unauthorized};
-use ya_relay_core::session::SessionId;
+use ya_relay_core::server_session::SessionId;
+use ya_relay_core::session::{Session, SessionError, SessionResult};
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
 
-use crate::session::{Session, SessionError, SessionResult};
 use crate::session_guard::GuardedSessions;
 use crate::session_manager::SessionManager;
 

@@ -5,12 +5,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::sync::{broadcast, RwLock};
 
-use ya_relay_core::session::SessionId;
+use ya_relay_core::server_session::SessionId;
+use ya_relay_core::session::{Session, SessionError, SessionResult};
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
-
-use crate::session::{SessionError, SessionResult};
-use crate::Session;
 
 #[derive(Clone, Default)]
 pub struct GuardedSessions {

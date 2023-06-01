@@ -12,10 +12,11 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
-use ya_relay_core::session::TransportType;
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 
+use ya_relay_core::session::Session;
 use ya_relay_proto::proto::{Forward, Payload, SlotId};
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
@@ -25,7 +26,6 @@ use ya_relay_stack::*;
 
 use crate::client::Forwarded;
 use crate::registry::NodeEntry;
-use crate::session::Session;
 use crate::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;

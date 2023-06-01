@@ -12,8 +12,10 @@ use tokio::sync::{RwLock, Semaphore};
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge, CHALLENGE_DIFFICULTY};
 use ya_relay_core::crypto::{Crypto, CryptoProvider};
+use ya_relay_core::dispatch::{dispatch, Dispatcher, Handler};
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::{SessionId, TransportType};
+use ya_relay_core::server_session::{SessionId, TransportType};
+use ya_relay_core::session::{Session, SessionError, SessionResult};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
@@ -24,10 +26,8 @@ use ya_relay_proto::proto::{Forward, Payload, RequestId, SlotId, FORWARD_SLOT_ID
 use ya_relay_stack::{Channel, Connection};
 
 use crate::client::{ClientConfig, ForwardSender, Forwarded};
-use crate::dispatch::{dispatch, Dispatcher, Handler};
 use crate::expire::track_sessions_expiration;
 use crate::registry::{NodeEntry, NodesRegistry};
-use crate::session::{Session, SessionError, SessionResult};
 use crate::session_guard::GuardedSessions;
 use crate::session_start::StartingSessions;
 use crate::virtual_layer::{PortType, TcpLayer};
@@ -993,16 +993,18 @@ impl SessionManager {
         };
 
         let manager = self.clone();
-        session
-            .dispatcher
-            .handle_error(proto::StatusCode::Unauthorized as i32, true, move || {
+        session.dispatcher().handle_error(
+            proto::StatusCode::Unauthorized as i32,
+            true,
+            move || {
                 let manager = manager.clone();
                 async move {
                     manager.drop_server_session().await;
                     let _ = manager.server_session().await;
                 }
                 .boxed_local()
-            });
+            },
+        );
 
         let fast_lane = self.virtual_tcp_fast_lane.clone();
         session.on_drop(move || {

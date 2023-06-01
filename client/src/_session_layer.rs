@@ -25,7 +25,7 @@ use crate::_session_protocol::SessionProtocol;
 
 use crate::_transport_layer::ForwardReceiver;
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::{Endpoint, NodeInfo, SessionId, TransportType};
+use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::{challenge, NodeId};

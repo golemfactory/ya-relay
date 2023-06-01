@@ -3,10 +3,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{OwnedRwLockWriteGuard, RwLock};
 
+use ya_relay_core::session::Session;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{SlotId, FORWARD_SLOT_ID};
-
-use crate::session::Session;
 
 #[derive(Clone)]
 pub struct NodeEntry {

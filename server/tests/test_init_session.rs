@@ -2,7 +2,7 @@ use std::convert::{TryFrom, TryInto};
 
 use ya_relay_client::testing::Session;
 use ya_relay_client::ClientBuilder;
-use ya_relay_core::session::SessionId;
+use ya_relay_core::server_session::SessionId;
 use ya_relay_proto::proto;
 use ya_relay_server::testing::server::init_test_server;
 

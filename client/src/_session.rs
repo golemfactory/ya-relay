@@ -9,7 +9,7 @@ use tokio::time::{Duration, Instant};
 use crate::_dispatch::{Dispatched, Dispatcher};
 use crate::_error::RequestError;
 
-use ya_relay_core::session::SessionId;
+use ya_relay_core::server_session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};

@@ -19,15 +19,15 @@ use ya_relay_core::challenge::CHALLENGE_DIFFICULTY;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::TransportType;
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
 use ya_relay_core::utils::{parse_udp_url, spawn_local_abortable};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, Payload, SlotId, MAX_TAG_SIZE};
 use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState, StackConfig};
 
-use crate::session::SessionDesc;
 use crate::session_manager::SessionManager;
+use ya_relay_core::session::SessionDesc;
 
 pub type ForwardSender = mpsc::Sender<Payload>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;

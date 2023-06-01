@@ -3,12 +3,12 @@ use itertools::Itertools;
 use metrics::counter;
 use std::collections::HashMap;
 use std::ops::Sub;
-use ya_relay_client::proto::RequestId;
 
 use crate::error::{InternalError, ServerResult, Unauthorized};
 
-use ya_relay_core::session::{NodeSession, SessionId};
+use ya_relay_core::server_session::{NodeSession, SessionId};
 use ya_relay_core::NodeId;
+use ya_relay_proto::proto::RequestId;
 
 #[derive(Clone)]
 pub enum Slot<T: Clone> {

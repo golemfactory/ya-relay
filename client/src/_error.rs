@@ -1,6 +1,6 @@
 use anyhow::Error;
 use std::net::SocketAddr;
-use ya_relay_core::session::SessionId;
+use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
 
 use crate::_session_guard::SessionState;

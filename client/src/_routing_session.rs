@@ -8,7 +8,7 @@ use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
-use ya_relay_core::session::{SessionId, TransportType};
+use ya_relay_core::server_session::{SessionId, TransportType};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Payload, SlotId};
 

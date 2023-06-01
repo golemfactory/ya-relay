@@ -12,7 +12,7 @@ use tokio::time::timeout;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge};
 use ya_relay_core::crypto::Crypto;
-use ya_relay_core::session::SessionId;
+use ya_relay_core::server_session::SessionId;
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_core::session::TransportType;
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, Payload};
 use ya_relay_stack::{Channel, Connection};

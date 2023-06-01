@@ -16,7 +16,7 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
-use ya_relay_core::session::TransportType;
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;

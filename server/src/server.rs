@@ -23,7 +23,7 @@ use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{LastSeen, NodeInfo, NodeSession, RequestHistory, SessionId};
+use ya_relay_core::server_session::{LastSeen, NodeInfo, NodeSession, RequestHistory, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_core::utils::{to_udp_url, ResultExt};
 use ya_relay_proto::codec::PacketKind;
