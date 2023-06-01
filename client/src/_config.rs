@@ -45,6 +45,7 @@ pub struct ClientConfig {
     pub reverse_connection_real_timeout: Duration,
     pub incoming_session_timeout: Duration,
     pub neighbourhood_ttl: Duration,
+    pub node_info_ttl: chrono::Duration,
 }
 
 pub struct ClientBuilder {
@@ -149,6 +150,7 @@ impl ClientBuilder {
             reverse_connection_real_timeout: Duration::from_secs(13),
             incoming_session_timeout: Duration::from_secs(16),
             neighbourhood_ttl: Duration::from_secs(300),
+            node_info_ttl: chrono::Duration::seconds(300),
         })
     }
 

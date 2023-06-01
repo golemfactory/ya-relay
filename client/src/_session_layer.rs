@@ -2,6 +2,7 @@
 #![allow(unused)]
 
 use anyhow::{anyhow, bail, Error};
+use chrono::Utc;
 use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
@@ -189,8 +190,17 @@ impl SessionLayer {
     }
 
     /// Queries information about Node from relay server.
-    /// TODO: Update `Registry` information.
+    /// Information is cached in `Registry` and will be returned from there.
+    /// From time to time query to relay server will be made to check if it is up to date.
     pub async fn query_node_info(&self, node_id: NodeId) -> anyhow::Result<NodeInfo> {
+        if let Some(entry) = self.registry.get_entry(node_id).await {
+            // TODO: Probably we should still use outdated info if we are not able to query
+            //       relay server. This could make network more resilient.
+            if self.config.node_info_ttl > chrono::Utc::now() - entry.last_seen() {
+                return Ok(entry.info().await);
+            }
+        }
+
         let server_session = self
             .server_session()
             .await
@@ -201,7 +211,14 @@ impl SessionLayer {
             .await
             .map_err(|e| anyhow!("Failed to find Node on relay server: {e}"))?;
 
-        NodeInfo::try_from(node)
+        let info =
+            NodeInfo::try_from(node).map_err(|e| anyhow!("failed to convert NodeInfo: {e}"))?;
+
+        self.registry
+            .update_entry(info.clone())
+            .await
+            .map_err(|e| SessionError::Internal("Registry update failed".to_string()))?;
+        Ok(info)
     }
 
     pub async fn abort_initializations(
@@ -477,6 +494,7 @@ impl SessionLayer {
             log::debug!("Not using relayed connection with [{node_id}].");
         }
 
+        // TODO: We will always get this error if something fails. We need something better.
         Err(SessionError::Generic(format!(
             "All attempts to establish session with node [{node_id}] failed"
         )))
@@ -636,7 +654,11 @@ impl SessionLayer {
 
         log::info!("Using relay server [{server_id}] ({addr}) to forward packets to [{node_id}] (slot {slot})");
 
-        let ids = permit.registry.identities().await;
+        let ids = permit
+            .registry
+            .identities()
+            .await
+            .map_err(|e| SessionError::Internal(e.to_string()))?;
         server.register(ids.clone().into(), slot).await;
 
         let routing = NodeRouting::new(

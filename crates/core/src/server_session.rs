@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use crate::identity::Identity;
 use ya_client_model::NodeId;
 use ya_relay_proto::proto;
-use ya_relay_proto::proto::SESSION_ID_SIZE;
+use ya_relay_proto::proto::{SlotId, SESSION_ID_SIZE};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::Display)]
 pub enum TransportType {
@@ -36,7 +36,7 @@ pub struct Endpoint {
 #[derive(Clone)]
 pub struct NodeInfo {
     pub identities: Vec<Identity>,
-    pub slot: u32,
+    pub slot: SlotId,
 
     /// Endpoints registered by Node.
     pub endpoints: Vec<Endpoint>,
