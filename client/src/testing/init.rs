@@ -4,7 +4,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::_client::Client;
-use crate::_config::{ClientBuilder, ClientConfig};
+use crate::_config::{ClientBuilder, ClientConfig, FailFast};
 use crate::_session_guard::{GuardedSessions, SessionLock, SessionPermit};
 use crate::_session_layer::SessionLayer;
 use crate::_session_protocol::SessionProtocol;
@@ -51,7 +51,7 @@ impl MockSessionNetwork {
 
     pub async fn new_client(&mut self) -> anyhow::Result<Client> {
         let client = ClientBuilder::from_url(self.server.url())
-            .connect()
+            .connect(FailFast::Yes)
             .build()
             .await?;
         self.clients.push(client.clone());

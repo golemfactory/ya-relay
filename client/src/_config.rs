@@ -17,6 +17,12 @@ use ya_relay_stack::StackConfig;
 
 use crate::_client::Client;
 
+#[derive(Clone, Copy)]
+pub enum FailFast {
+    Yes,
+    No,
+}
+
 #[derive(Clone)]
 pub struct ClientConfig {
     pub node_id: NodeId,
@@ -27,6 +33,7 @@ pub struct ClientConfig {
     pub bind_url: Url,
     pub srv_addr: SocketAddr,
     pub auto_connect: bool,
+    pub auto_connect_fail_fast: bool,
     pub session_expiration: Duration,
     pub stack_config: StackConfig,
     pub ping_measure_interval: Duration,
@@ -45,6 +52,7 @@ pub struct ClientBuilder {
     srv_url: Url,
     crypto: Option<Rc<dyn CryptoProvider>>,
     auto_connect: bool,
+    auto_connect_fail_fast: bool,
     session_expiration: Option<Duration>,
     stack_config: StackConfig,
 }
@@ -56,6 +64,7 @@ impl ClientBuilder {
             srv_url: url,
             crypto: None,
             auto_connect: false,
+            auto_connect_fail_fast: false,
             session_expiration: None,
             stack_config: Default::default(),
         }
@@ -66,8 +75,13 @@ impl ClientBuilder {
         self
     }
 
-    pub fn connect(mut self) -> ClientBuilder {
+    pub fn connect(mut self, fail_fast: FailFast) -> ClientBuilder {
         self.auto_connect = true;
+        match fail_fast {
+            FailFast::Yes => self.auto_connect_fail_fast = true,
+            FailFast::No => self.auto_connect_fail_fast = false,
+        }
+
         self
     }
 
@@ -123,6 +137,7 @@ impl ClientBuilder {
             bind_url,
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
             auto_connect: self.auto_connect,
+            auto_connect_fail_fast: self.auto_connect_fail_fast,
             session_expiration: self
                 .session_expiration
                 .unwrap_or_else(|| Duration::from_secs(25)),

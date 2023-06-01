@@ -163,7 +163,15 @@ impl Client {
         }
 
         if self.config.auto_connect {
-            self.transport.session_layer.server_session().await?;
+            // We don't want to exit here, since yagna probably will be able to connect to relay
+            // later, so it is very inconvenient for users to exit early.
+            if let Err(e) = self.transport.session_layer.server_session().await {
+                if self.config.auto_connect_fail_fast {
+                    return Err(e.into());
+                } else {
+                    log::warn!("Auto-connecting to relay on startup failed: {e}");
+                }
+            }
         }
 
         // Measure ping from time to time
