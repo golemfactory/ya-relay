@@ -1,17 +1,16 @@
 #![allow(dead_code)]
 #![allow(unused)]
 
+use anyhow::{anyhow, bail};
+use derive_more::From;
+use futures::future::{join_all, AbortHandle};
+use futures::{FutureExt, TryFutureExt};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::iter::zip;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use anyhow::{anyhow, bail};
-use derive_more::From;
-use futures::future::{join_all, AbortHandle};
-use futures::{FutureExt, TryFutureExt};
 use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
@@ -397,9 +396,7 @@ impl Client {
             handle.abort();
         }
 
-        // TODO
-        //self.transport.shutdown().await
-        Ok(())
+        self.transport.shutdown().await
     }
 }
 

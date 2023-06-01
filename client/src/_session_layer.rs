@@ -113,6 +113,50 @@ impl SessionLayer {
         Ok(bind_addr)
     }
 
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        todo!()
+        // let (starting, abort_handles) = {
+        //     let mut state = self.state.write().await;
+        //     let starting = state.starting_sessions.take();
+        //     let handles = std::mem::take(&mut state.handles);
+        //     (starting, handles)
+        // };
+        //
+        // for abort_handle in abort_handles {
+        //     abort_handle.abort();
+        // }
+        //
+        // if let Some(starting) = starting {
+        //     starting.shutdown().await;
+        // }
+        //
+        // // Close sessions simultaneously, otherwise shutdown could last too long.
+        // let sessions = self.sessions().await;
+        // futures::future::join_all(sessions.into_iter().map(|session| {
+        //     self.drop_session(session.clone()).map_err(move |err| {
+        //         log::warn!(
+        //             "Failed to close session {} ({}). {}",
+        //             session.id,
+        //             session.remote,
+        //             err,
+        //         )
+        //     })
+        // }))
+        //     .await;
+        //
+        // self.virtual_tcp.shutdown().await;
+        // if let Some(mut out_stream) = self.sink.take() {
+        //     if let Err(e) = out_stream.close().await {
+        //         log::warn!("Error closing socket (output stream). {}", e);
+        //     }
+        // }
+        //
+        // self.guarded.shutdown().await;
+        // self.drop_server_session().await;
+        //
+        // Ok(())
+    }
+
     pub async fn get_public_addr(&self) -> Option<SocketAddr> {
         self.state.read().await.public_addr
     }

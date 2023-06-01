@@ -48,7 +48,31 @@ struct TransportLayerState {
 
 impl TransportLayer {
     pub fn new(config: Arc<ClientConfig>) -> TransportLayer {
-        todo!()
+        let out = Channel::<Forwarded>::default();
+        let session_layer = SessionLayer::new(config.clone());
+        let virtual_tcp = TcpLayer::new(
+            &config.node_pub_key,
+            &config.stack_config,
+            &out,
+            session_layer.clone(),
+        );
+
+        TransportLayer {
+            config,
+            session_layer,
+            virtual_tcp,
+            state: Arc::new(RwLock::new(TransportLayerState {
+                forward_unreliable: Default::default(),
+                forward_transfer: Default::default(),
+                forward_reliable: Default::default(),
+            })),
+            ingress_channel: out,
+        }
+    }
+
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        self.virtual_tcp.shutdown().await;
+        self.session_layer.shutdown().await
     }
 
     async fn dispatch(&self, packet: Forwarded) {
