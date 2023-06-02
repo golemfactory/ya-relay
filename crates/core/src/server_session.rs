@@ -40,7 +40,7 @@ pub struct NodeInfo {
 
     /// Endpoints registered by Node.
     pub endpoints: Vec<Endpoint>,
-    pub supported_encryptions: Vec<String>,
+    pub supported_encryption: Vec<String>,
 }
 
 impl NodeInfo {
@@ -237,7 +237,7 @@ impl TryFrom<proto::response::Node> for NodeInfo {
                 .into_iter()
                 .map(Endpoint::try_from)
                 .collect::<anyhow::Result<Vec<_>>>()?,
-            supported_encryptions: value.supported_encryptions,
+            supported_encryption: value.supported_encryptions,
         })
     }
 }

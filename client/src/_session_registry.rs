@@ -55,8 +55,8 @@ pub enum SessionState {
     Incoming(InitState),
     #[display(fmt = "Reverse-{}", _0)]
     ReverseConnection(InitState),
-    #[display(fmt = "Relayed-Initializing")]
-    Relayed,
+    #[display(fmt = "Relayed-{}", _0)]
+    Relayed(RelayedState),
     /// Holds established session.
     #[display(fmt = "Established")]
     Established(#[educe(PartialEq(ignore))] Weak<DirectSession>),
@@ -66,6 +66,12 @@ pub enum SessionState {
     /// Session was closed gracefully. (Still the reason
     /// for closing could be some kind of failure)
     Closed,
+}
+
+#[derive(Clone, PartialEq, Display, Debug)]
+pub enum RelayedState {
+    Initializing,
+    Ready,
 }
 
 #[derive(Clone, PartialEq, Display, Debug)]
@@ -400,7 +406,7 @@ impl RegistryEntry {
         let mut state = self.state.write().await;
 
         state.slot = info.slot;
-        state.supported_encryption = info.supported_encryptions;
+        state.supported_encryption = info.supported_encryption;
         // TODO: What should we do if identity lists differ? Is new list always better?
         state.node = info.identities;
         // TODO: We should distinguish between public IPs and addresses assigned temporarily
@@ -472,7 +478,7 @@ impl RegistryEntryState {
                     address: *addr,
                 })
                 .collect(),
-            supported_encryptions: self.supported_encryption.clone(),
+            supported_encryption: self.supported_encryption.clone(),
         }
     }
 }
@@ -487,6 +493,16 @@ impl InitState {
             (InitState::HandshakeResponse, InitState::ChallengeVerified) => true,
             (InitState::ChallengeVerified, InitState::SessionRegistered) => true,
             (InitState::SessionRegistered, InitState::Ready) => true,
+            _ => false,
+        }
+    }
+}
+
+impl RelayedState {
+    #[allow(clippy::match_like_matches_macro)]
+    pub fn allowed(&self, new_state: &RelayedState) -> bool {
+        match (self, &new_state) {
+            (RelayedState::Initializing, RelayedState::Ready) => true,
             _ => false,
         }
     }
@@ -517,17 +533,21 @@ impl SessionState {
 
     pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
         let allowed = match (&self, &new_state) {
-            (SessionState::Relayed, SessionState::FailedEstablish(_)) => true,
+            (SessionState::Relayed(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Incoming(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Outgoing(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::ReverseConnection(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Incoming(InitState::Ready), SessionState::Established(_)) => true,
             (SessionState::Outgoing(InitState::Ready), SessionState::Established(_)) => true,
-            (SessionState::Relayed, SessionState::Established(_)) => true,
-            (SessionState::Outgoing(InitState::ConnectIntent), SessionState::Relayed) => true,
-            (SessionState::ReverseConnection(InitState::ConnectIntent), SessionState::Relayed) => {
-                true
-            }
+            (SessionState::Relayed(RelayedState::Ready), SessionState::Established(_)) => true,
+            (
+                SessionState::Outgoing(InitState::ConnectIntent),
+                SessionState::Relayed(RelayedState::Initializing),
+            ) => true,
+            (
+                SessionState::ReverseConnection(InitState::ConnectIntent),
+                SessionState::Relayed(RelayedState::Initializing),
+            ) => true,
             (SessionState::ReverseConnection(InitState::Ready), SessionState::Established(_)) => {
                 true
             }
@@ -549,6 +569,7 @@ impl SessionState {
             ) => true,
             (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(next),
             (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(next),
+            (SessionState::Relayed(prev), SessionState::Relayed(next)) => prev.allowed(next),
             (SessionState::ReverseConnection(prev), SessionState::ReverseConnection(next)) => {
                 prev.allowed(next)
             }

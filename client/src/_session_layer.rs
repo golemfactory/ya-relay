@@ -23,7 +23,9 @@ use crate::_expire::track_sessions_expiration;
 use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session::RawSession;
 use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{Registry, SessionLock, SessionPermit, SessionState, Validity};
+use crate::_session_registry::{
+    Registry, RelayedState, SessionLock, SessionPermit, SessionState, Validity,
+};
 
 use crate::_transport_layer::ForwardReceiver;
 use ya_relay_core::identity::Identity;
@@ -298,6 +300,27 @@ impl SessionLayer {
             log::trace!("Saved node session {id} [{node_id}] {addr}")
         }
         Ok(direct)
+    }
+
+    pub(crate) async fn register_routing(&self, routing: Arc<NodeRouting>) -> anyhow::Result<()> {
+        let route = match routing.route.upgrade() {
+            None => bail!("`DirectSession` was closed"),
+            Some(route) => route,
+        };
+
+        let server_id = route.owner.default_id;
+        let addr = route.raw.remote;
+
+        let mut state = self.state.write().await;
+        for id in &routing.node.identities {
+            let node_id = id.node_id;
+            state.nodes.insert(node_id, routing.clone());
+
+            log::debug!(
+                "Registered node [{node_id}] routing through server [{server_id}] ({addr})"
+            );
+        }
+        Ok(())
     }
 
     /// Returns `RoutingSender` which can be used to send packets to desired Node.
@@ -654,7 +677,10 @@ impl SessionLayer {
         node_id: NodeId,
         permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionError> {
-        permit.registry.transition(SessionState::Relayed).await?;
+        permit
+            .registry
+            .transition(SessionState::Relayed(RelayedState::Initializing))
+            .await?;
 
         // Currently only single server supported. In the future we could use multiple
         // relays or use other p2p Nodes to forward traffic.
@@ -688,18 +714,14 @@ impl SessionLayer {
             },
         );
 
-        {
-            let mut state = self.state.write().await;
-            for id in ids.identities {
-                let node_id = id.node_id;
-                state.nodes.insert(node_id, routing.clone());
+        self.register_routing(routing)
+            .await
+            .map_err(|e| SessionError::Unexpected(e.to_string()))?;
 
-                log::debug!(
-                    "Registered node [{node_id}] routing through server [{server_id}] ({addr})"
-                );
-            }
-        }
-
+        permit
+            .registry
+            .transition(SessionState::Relayed(RelayedState::Ready))
+            .await?;
         Ok(server)
     }
 
