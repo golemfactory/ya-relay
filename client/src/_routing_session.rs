@@ -159,7 +159,8 @@ impl RoutingSender {
     /// Calling this function doesn't guarantee, that `RoutingSender::send` won't require
     /// waiting for session. Connection can be lost again before we call `send.
     pub async fn connect(&mut self) -> Result<(), SessionError> {
-        unimplemented!()
+        self.layer.session(self.target).await?;
+        Ok(())
     }
 
     pub fn target(&self) -> NodeId {

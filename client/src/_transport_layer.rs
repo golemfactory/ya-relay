@@ -5,6 +5,7 @@ use anyhow::bail;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
@@ -17,7 +18,8 @@ use ya_relay_stack::{Channel, Connection};
 use crate::_client::{ClientConfig, Forwarded};
 use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
-use crate::_virtual_layer::{PortType, TcpLayer};
+use crate::_tcp_registry::{ChannelType, VirtConnection};
+use crate::_virtual_layer::TcpLayer;
 
 pub type ForwardSender = mpsc::Sender<Payload>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
@@ -70,12 +72,32 @@ impl TransportLayer {
         }
     }
 
+    pub(crate) async fn spawn(&mut self) -> anyhow::Result<SocketAddr> {
+        let bind_addr = self.session_layer.spawn().await?;
+        self.virtual_tcp
+            .spawn(self.session_layer.config.node_id)
+            .await?;
+
+        self.spawn_ingress_handler().await?;
+        Ok(bind_addr)
+    }
+
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         self.virtual_tcp.shutdown().await;
         self.session_layer.shutdown().await
     }
 
+    pub fn forward_receiver(&self) -> Option<ForwardReceiver> {
+        self.ingress_channel.receiver()
+    }
+
     async fn dispatch(&self, packet: Forwarded) {
+        log::trace!(
+            "[TransportLayer] Dispatching packet from [{}] ({})",
+            packet.node_id,
+            packet.transport
+        );
+
         match &packet.transport {
             TransportType::Unreliable => self.dispatch_unreliable(packet).await,
             TransportType::Reliable => self.virtual_tcp.dispatch(packet).await,
@@ -146,49 +168,51 @@ impl TransportLayer {
     }
 
     /// NodeId can be either default or secondary.
+    /// TODO: Make this function resistant to dropping future
     pub async fn forward_generic(
         &self,
         node_id: NodeId,
         channel: TransportType,
     ) -> anyhow::Result<ForwardSender> {
-        unimplemented!();
-        // let node = self.get_node(node_id).await?;
-        // let tx = {
-        //     match self.forward_channel(node_id, channel).await {
-        //         Some(tx) => tx,
-        //         None => {
-        //             self.virtual_tcp_fast_lane.borrow_mut().clear();
-        //
-        //             let (_guard, was_locked) = node.guard().await;
-        //
-        //             if was_locked {
-        //                 // If we still don't have this channel, probably it was connected on other
-        //                 // `TransportType`, so we should try to make new connection anyway.
-        //                 if let Some(tx) = self.forward_channel(node_id, channel).await {
-        //                     return Ok(tx);
-        //                 }
-        //             }
-        //
-        //             let channel_port = match channel {
-        //                 TransportType::Reliable => PortType::Messages,
-        //                 TransportType::Transfer => PortType::Transfer,
-        //                 _ => bail!("Programming error: `forward_generic` shouldn't been used for unreliable connection.")
-        //             };
-        //
-        //             let conn = self.virtual_tcp.connect(node.clone(), channel_port).await?;
-        //             let (tx, rx) = mpsc::channel(1);
-        //             tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, node, rx));
-        //
-        //             self.set_forward_channel(node_id, channel, tx.clone()).await;
-        //             tx
-        //         }
-        //     }
-        // };
-        //
-        // Ok(tx)
+        match self.forward_channel(node_id, channel).await {
+            Some(tx) => Ok(tx),
+            None => {
+                //self.virtual_tcp_fast_lane.borrow_mut().clear();
+
+                // Check if this isn't secondary identity. TcpLayer should always get default id.
+                // TODO: Consider how to handle changing identities.
+                let info = self.session_layer.query_node_info(node_id).await?;
+
+                if let Some(tx) = self.forward_channel(info.node_id(), channel).await {
+                    self.set_forward_channel(node_id, channel, tx.clone()).await;
+                    return Ok(tx);
+                }
+
+                let channel_port = match channel {
+                    TransportType::Reliable => ChannelType::Messages,
+                    TransportType::Transfer => ChannelType::Transfer,
+                    _ => bail!("Programming error: `forward_generic` shouldn't been used for unreliable connection.")
+                };
+
+                let conn = self
+                    .virtual_tcp
+                    .connect(info.node_id(), channel_port)
+                    .await?;
+                let (tx, rx) = mpsc::channel(1);
+
+                // TODO: If future will be dropped after connection is established, than we
+                //       won't spawn thread and everything will not work, but the connection will be
+                //       established, so the state will be inconsistent.
+                tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, rx));
+
+                self.set_forward_channel(node_id, channel, tx.clone()).await;
+                Ok(tx)
+            }
+        }
     }
 
     /// NodeId can be either default or secondary.
+    /// TODO: Make this function resistant to dropping future
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         // This will return fast, if we already have this channel.
         // These lines are not necessary, because code below would do the job,
@@ -219,44 +243,35 @@ impl TransportLayer {
         Ok(tx)
     }
 
-    // async fn forward_reliable_handler(
-    //     self,
-    //     connection: Connection,
-    //     node: NodeEntry,
-    //     mut rx: mpsc::Receiver<Payload>,
-    // ) {
-    //     let pause = node.session.forward_pause.clone();
-    //     let session = node.session.clone();
-    //
-    //     while let Some(payload) = self.virtual_tcp.get_next_fwd_payload(&mut rx, &pause).await {
-    //         log::trace!(
-    //             "Forwarding message to {} through {} (session id: {})",
-    //             node.id,
-    //             session.remote,
-    //             session.id
-    //         );
-    //
-    //         if let Err(err) = self.virtual_tcp.send(payload, connection).await {
-    //             log::debug!(
-    //                 "[{}] forward to {} through {} (session id: {}) failed: {err}",
-    //                 self.config.node_id,
-    //                 node.id,
-    //                 session.remote,
-    //                 session.id,
-    //             );
-    //             break;
-    //         }
-    //     }
-    //
-    //     log::debug!(
-    //         "[{}] forward: disconnected from: {}",
-    //         node.id,
-    //         session.remote
-    //     );
-    //
-    //     rx.close();
-    //     let _ = self.close_session(node.session.clone()).await;
-    // }
+    async fn forward_reliable_handler(
+        self,
+        connection: VirtConnection,
+        mut rx: mpsc::Receiver<Payload>,
+    ) {
+        while let Some(payload) = rx.next().await {
+            log::trace!(
+                "Forwarding message to {} using Reliable transport",
+                connection.id,
+            );
+
+            if let Err(err) = self.virtual_tcp.send(payload, connection.conn).await {
+                log::debug!(
+                    "[{}] Reliable forward to {} failed: {err}",
+                    self.config.node_id,
+                    connection.id,
+                );
+                break;
+            }
+        }
+
+        log::debug!(
+            "[{}] forward (Reliable): forward channel closed",
+            connection.id
+        );
+
+        rx.close();
+        // TODO: Close Tcp connection.
+    }
 
     async fn forward_unreliable_handler(
         self,

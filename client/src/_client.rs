@@ -149,13 +149,13 @@ impl Client {
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
-        self.transport.session_layer.receiver()
+        self.transport.forward_receiver()
     }
 
     pub(crate) async fn spawn(&mut self) -> anyhow::Result<()> {
         log::debug!("[{}] starting...", self.node_id());
 
-        let bind_addr = self.transport.session_layer.spawn().await?;
+        let bind_addr = self.transport.spawn().await?;
 
         {
             let mut state = self.state.write().await;

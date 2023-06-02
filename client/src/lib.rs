@@ -31,5 +31,6 @@ mod _session;
 mod _session_layer;
 mod _session_protocol;
 mod _session_registry;
+mod _tcp_registry;
 mod _transport_layer;
 mod _virtual_layer;

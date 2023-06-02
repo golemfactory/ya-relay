@@ -2,6 +2,7 @@
 #![allow(unused)]
 
 use anyhow::{anyhow, Context};
+use derive_more::Display;
 use futures::channel::mpsc;
 use futures::StreamExt;
 use std::cell::RefCell;
@@ -29,24 +30,10 @@ use ya_relay_stack::*;
 use crate::_client::Forwarded;
 use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
+use crate::_tcp_registry::{ChannelType, VirtConnection, VirtNode};
 use crate::_transport_layer::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;
-
-// TODO: Try to unify with `TransportType`.
-#[derive(Clone, Copy)]
-pub enum PortType {
-    Messages = 1,
-    Transfer = 2,
-}
-
-/// Information about virtual node in TCP network built over UDP protocol.
-#[derive(Clone)]
-pub struct VirtNode {
-    pub id: NodeId,
-    pub endpoint: IpEndpoint,
-    pub session: RoutingSender,
-}
 
 /// Client implements TCP protocol over underlying UDP.
 /// To use TCP we need to create virtual network, so that TCP stack appears to
@@ -54,7 +41,7 @@ pub struct VirtNode {
 /// and handles virtual connections.
 #[derive(Clone)]
 pub struct TcpLayer {
-    net: Network,
+    pub(crate) net: Network,
     session_layer: SessionLayer,
 
     state: Arc<RwLock<TcpLayerState>>,
@@ -102,9 +89,9 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
-        let virt_endpoint: IpEndpoint = (to_ipv6(our_id), PortType::Messages as u16).into();
+        let virt_endpoint: IpEndpoint = (to_ipv6(our_id), ChannelType::Messages as u16).into();
         let virt_transfer_endpoint: IpEndpoint =
-            (to_ipv6(our_id), PortType::Transfer as u16).into();
+            (to_ipv6(our_id), ChannelType::Transfer as u16).into();
 
         self.net.spawn_local();
         self.net.bind(Protocol::Tcp, virt_endpoint)?;
@@ -130,7 +117,7 @@ impl TcpLayer {
 
     pub fn new_virtual_node(&self, id: NodeId) -> VirtNode {
         let ip = IpAddress::from(to_ipv6(id.into_array()));
-        let endpoint = (ip, PortType::Messages as u16).into();
+        let endpoint = (ip, ChannelType::Messages as u16).into();
         let session = RoutingSender::empty(id, self.session_layer.clone());
 
         VirtNode {
@@ -178,21 +165,36 @@ impl TcpLayer {
     ///       at the same time and rest of attempts will wait for finish.
     /// TODO: Currently we create separate TCP connection for each identity on other Node.
     ///       Should we protect ourselves from this?
-    pub async fn connect(&self, node_id: NodeId, port: PortType) -> anyhow::Result<Connection> {
-        log::debug!("[VirtualTcp] Connecting to node [{node_id}].",);
+    pub async fn connect(
+        &self,
+        node_id: NodeId,
+        port: ChannelType,
+    ) -> anyhow::Result<VirtConnection> {
+        log::debug!("[VirtualTcp] Connecting to node [{node_id}], channel: {port}.",);
 
         print_sockets(&self.net);
 
         // Make sure we have session with the Node. This allows us to
         // exit early if target Node is unreachable.
-        self.new_virtual_node(node_id).session.connect().await?;
+        self.new_virtual_node(node_id)
+            .session
+            .connect()
+            .await
+            .map_err(|e| anyhow!("Creating `VirtNode`: {e}"))?;
 
         let node = self.add_virt_node(node_id).await;
         let endpoint = IpEndpoint::new(node.endpoint.addr, port as u16);
 
         // TODO: Guard creating TCP connection. `connect` can be called from many
         //       functions at the same time.
-        Ok(self.net.connect(endpoint, TCP_CONN_TIMEOUT).await?)
+        Ok(VirtConnection {
+            id: node_id,
+            conn: self
+                .net
+                .connect(endpoint, TCP_CONN_TIMEOUT)
+                .await
+                .map_err(|e| anyhow!("Establishing Tcp connection: {e}"))?,
+        })
     }
 
     #[inline]
@@ -347,9 +349,9 @@ impl TcpLayer {
                         Some((node_id, tx)) => {
                             let payload_len = payload.len();
                             let payload = Forwarded {
-                                transport: match PortType::from(local_port) {
-                                    PortType::Messages => TransportType::Reliable,
-                                    PortType::Transfer => TransportType::Transfer,
+                                transport: match ChannelType::from(local_port) {
+                                    ChannelType::Messages => TransportType::Reliable,
+                                    ChannelType::Transfer => TransportType::Transfer,
                                 },
                                 node_id,
                                 payload: payload.into(),
@@ -500,14 +502,14 @@ fn default_network(
     Network::new(name, config.clone(), Stack::new(iface, config))
 }
 
-impl From<u16> for PortType {
+impl From<u16> for ChannelType {
     fn from(port: u16) -> Self {
-        if port == PortType::Messages as u16 {
-            PortType::Messages
-        } else if port == PortType::Transfer as u16 {
-            PortType::Transfer
+        if port == ChannelType::Messages as u16 {
+            ChannelType::Messages
+        } else if port == ChannelType::Transfer as u16 {
+            ChannelType::Transfer
         } else {
-            PortType::Messages
+            ChannelType::Messages
         }
     }
 }
