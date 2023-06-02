@@ -9,6 +9,7 @@ use futures::{FutureExt, SinkExt, TryFutureExt};
 use log::log;
 use std::collections::{HashMap, VecDeque};
 use std::convert::{Infallible, TryFrom, TryInto};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::{RwLock, Semaphore};
@@ -22,7 +23,7 @@ use crate::_expire::track_sessions_expiration;
 use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session::RawSession;
 use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{Registry, SessionLock, SessionPermit};
+use crate::_session_registry::{Registry, SessionLock, SessionPermit, SessionState, Validity};
 
 use crate::_transport_layer::ForwardReceiver;
 use ya_relay_core::identity::Identity;
@@ -196,9 +197,10 @@ impl SessionLayer {
         if let Some(entry) = self.registry.get_entry(node_id).await {
             // TODO: Probably we should still use outdated info if we are not able to query
             //       relay server. This could make network more resilient.
-            if self.config.node_info_ttl > chrono::Utc::now() - entry.last_seen() {
-                return Ok(entry.info().await);
-            }
+            match entry.info().await {
+                Validity::UpToDate(info) => return Ok(info),
+                Validity::UpdateRecommended(_) => {}
+            };
         }
 
         let server_session = self
@@ -212,7 +214,7 @@ impl SessionLayer {
             .map_err(|e| anyhow!("Failed to find Node on relay server: {e}"))?;
 
         let info =
-            NodeInfo::try_from(node).map_err(|e| anyhow!("failed to convert NodeInfo: {e}"))?;
+            NodeInfo::try_from(node).map_err(|e| anyhow!("Failed to convert NodeInfo: {e}"))?;
 
         self.registry
             .update_entry(info.clone())
@@ -459,7 +461,15 @@ impl SessionLayer {
 
             match self.try_direct_session(node_id, permit).await {
                 Ok(session) => return Ok(session),
-                Err(e) => log::debug!("Can't establish direct p2p session with [{node_id}]. {e}"),
+                // We can still try other methods.
+                Err(SessionError::NotApplicable(e)) => {
+                    log::debug!("Can't establish direct p2p session with [{node_id}]. {e}");
+                }
+                // In case of other errors we probably shouldn't even try something else.
+                Err(e) => {
+                    log::warn!("Failed to establish direct p2p session with [{node_id}]. {e}");
+                    return Err(e);
+                }
             }
         } else {
             log::debug!("Omitting attempt to establish direct p2p connection with [{node_id}].");
@@ -470,7 +480,17 @@ impl SessionLayer {
 
             match self.try_reverse_connection(node_id, permit).await {
                 Ok(session) => return Ok(session),
-                Err(e) => log::debug!("Can't establish reverse p2p session with [{node_id}]. {e}"),
+                // We can still try other methods.
+                Err(SessionError::NotApplicable(e)) => {
+                    log::debug!("Can't establish reverse p2p session with [{node_id}]. {e}");
+                }
+                // In case of other errors we probably shouldn't even try something else.
+                Err(e) => {
+                    log::warn!(
+                        "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
+                    );
+                    return Err(e);
+                }
             }
         } else {
             log::debug!("Omitting attempt to establish reverse p2p connection with [{node_id}].");
@@ -634,6 +654,8 @@ impl SessionLayer {
         node_id: NodeId,
         permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionError> {
+        permit.registry.transition(SessionState::Relayed).await?;
+
         // Currently only single server supported. In the future we could use multiple
         // relays or use other p2p Nodes to forward traffic.
         // We could even route traffic through many Nodes/Servers at the same time.
@@ -641,24 +663,21 @@ impl SessionLayer {
             .server_session()
             .await
             .map_err(|e| SessionError::Relay(e.to_string()))?;
+
         let server_id = server.owner.default_id;
         let addr = server.raw.remote;
 
-        // The only information about Node, that we don't have yet, is its SlotId.
-        let node = server.raw.find_node(node_id).await.map_err(|e| {
-            SessionError::NotFound(format!(
-                "Failed to find Node [{node_id}] on relay server [{server_id}] ({addr}). {e}"
-            ))
-        })?;
+        // Information should be already cached in registry.
+        let node = permit.registry.info().await.just_get();
         let slot: SlotId = node.slot;
-
-        log::info!("Using relay server [{server_id}] ({addr}) to forward packets to [{node_id}] (slot {slot})");
-
         let ids = permit
             .registry
             .identities()
             .await
             .map_err(|e| SessionError::Internal(e.to_string()))?;
+
+        log::info!("Using relay server [{server_id}] ({addr}) to forward packets to [{node_id}] (slot {slot})");
+
         server.register(ids.clone().into(), slot).await;
 
         let routing = NodeRouting::new(

@@ -26,8 +26,14 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{SlotId, FORWARD_SLOT_ID};
 
+#[derive(Clone)]
+pub struct RegistryConfig {
+    pub node_info_ttl: chrono::Duration,
+}
+
 #[derive(Clone, Default)]
 pub struct Registry {
+    config: Arc<RegistryConfig>,
     state: Arc<RwLock<RegistryState>>,
 }
 
@@ -49,6 +55,8 @@ pub enum SessionState {
     Incoming(InitState),
     #[display(fmt = "Reverse-{}", _0)]
     ReverseConnection(InitState),
+    #[display(fmt = "Relayed-Initializing")]
+    Relayed,
     /// Holds established session.
     #[display(fmt = "Established")]
     Established(#[educe(PartialEq(ignore))] Weak<DirectSession>),
@@ -85,44 +93,14 @@ pub enum InitState {
     Ready,
 }
 
-#[derive(Clone)]
-pub struct RegistryEntry {
-    /// Node default id. Duplicates information in state, but can be accessed
-    /// without acquiring and awaiting RwLock.  
-    pub id: NodeId,
-    /// Last update of information about Node.
-    last_seen: LastSeen,
-    state: Arc<RwLock<RegistryEntryState>>,
-    state_notifier: Arc<broadcast::Sender<SessionState>>,
-}
-
-pub struct RegistryEntryState {
-    /// TODO: We need to store public keys here. Using `NodeEntry<Identity>` is problematic
-    ///       here, because we not always have full information, when initializing this
-    ///       struct. To have full info, we need to query it from relay server. In case we got
-    ///       `ReverseConnection` this could increase time to receiving first message by initiator.
-    ///       On the other side if we don't have all Node identities, than we risk that we won't
-    ///       protect ourselves from attempting to initialize 2 sessions at the same time.
-    ///       For example we could create 2 separate RegistryEntries for default and secondary identity.
-    ///       The second problem is the fact, that relay server doesn't have public key, so NodeEntry
-    ///       structure is not suitable for this case.
-    ///       As a compromise I'm using `Vec<Identity>` with hope that we can replace it with
-    ///       `NodeEntry<Identity>` in the future.
-    ///
-    /// First `Identity` should be default id. Vector can be empty if we don't have enough information.
-    node: Vec<Identity>,
-    /// Assumes only UDP addresses.
-    addresses: Vec<SocketAddr>,
-    supported_encryption: Vec<String>,
-    state: SessionState,
-    /// Currently we are storing slot of Node on relay server. This assumes, that there is only
-    /// one relay server, what I hope, will not be true forever.
-    /// In the future we should store here slot assigned by us, that can be used to forward packets
-    /// through our Node.
-    slot: SlotId,
-}
-
 impl Registry {
+    pub fn new(config: Arc<RegistryConfig>) -> Registry {
+        Registry {
+            config,
+            state: Arc::new(Default::default()),
+        }
+    }
+
     /// Returns `SessionGuard` for other Node. Operation is atomic,
     /// you should get the same object in all places in the code.
     /// `SessionGuard` should be stored even if connection was closed,
@@ -137,7 +115,7 @@ impl Registry {
             return target;
         }
 
-        let target = RegistryEntry::new(node_id, addrs.to_vec());
+        let target = RegistryEntry::new(node_id, addrs.to_vec(), self.config.clone());
 
         state.by_node_id.insert(target.id, target.clone());
         for addr in addrs.iter() {
@@ -182,7 +160,7 @@ impl Registry {
             }
             entries[0].clone()
         } else {
-            RegistryEntry::new(info.node_id(), addrs.clone())
+            RegistryEntry::new(info.node_id(), addrs.clone(), self.config.clone())
         };
 
         for id in &info.identities {
@@ -289,6 +267,47 @@ impl RegistryState {
     }
 }
 
+#[derive(Clone)]
+pub struct RegistryEntry {
+    /// Node default id. Duplicates information in state, but can be accessed
+    /// without acquiring and awaiting RwLock.  
+    pub id: NodeId,
+
+    state: Arc<RwLock<RegistryEntryState>>,
+    state_notifier: Arc<broadcast::Sender<SessionState>>,
+
+    /// Last update of information about Node.
+    last_info_update: LastSeen,
+
+    pub config: Arc<RegistryConfig>,
+}
+
+pub struct RegistryEntryState {
+    /// TODO: We need to store public keys here. Using `NodeEntry<Identity>` is problematic
+    ///       here, because we not always have full information, when initializing this
+    ///       struct. To have full info, we need to query it from relay server. In case we got
+    ///       `ReverseConnection` this could increase time to receiving first message by initiator.
+    ///       On the other side if we don't have all Node identities, than we risk that we won't
+    ///       protect ourselves from attempting to initialize 2 sessions at the same time.
+    ///       For example we could create 2 separate RegistryEntries for default and secondary identity.
+    ///       The second problem is the fact, that relay server doesn't have public key, so NodeEntry
+    ///       structure is not suitable for this case.
+    ///       As a compromise I'm using `Vec<Identity>` with hope that we can replace it with
+    ///       `NodeEntry<Identity>` in the future.
+    ///
+    /// First `Identity` should be default id. Vector can be empty if we don't have enough information.
+    node: Vec<Identity>,
+    /// Assumes only UDP addresses.
+    addresses: Vec<SocketAddr>,
+    supported_encryption: Vec<String>,
+    state: SessionState,
+    /// Currently we are storing slot of Node on relay server. This assumes, that there is only
+    /// one relay server, what I hope, will not be true forever.
+    /// In the future we should store here slot assigned by us, that can be used to forward packets
+    /// through our Node.
+    slot: SlotId,
+}
+
 impl RegistryEntry {
     pub async fn transition(
         &self,
@@ -334,34 +353,62 @@ impl RegistryEntry {
         target.addresses.clone()
     }
 
-    /// Returns last timestamp, when Node was updated.
-    /// TODO: Maybe in case of established session we should return current timestamp.
-    ///       In general we should have valid information as long as we keep session.
-    pub fn last_seen(&self) -> DateTime<Utc> {
-        self.last_seen.time()
-    }
-
-    pub async fn info(&self) -> NodeInfo {
+    /// Returns `NodeInfo` wrapped with enum indicating if it is recommended to update information.
+    ///
+    /// There are few things taken into consideration:
+    /// - Do we have any cached information? (Identities vector empty?)
+    /// - When the last update of information happened?
+    /// - Do we have established session with this Node? (In this case we threat
+    ///   information about Node as up to date)
+    pub async fn info(&self) -> Validity<NodeInfo> {
         let state = self.state.read().await;
-        NodeInfo {
-            identities: state.node.clone(),
-            slot: state.slot,
-            endpoints: state
-                .addresses
-                .iter()
-                .map(|addr| Endpoint {
-                    protocol: proto::Protocol::Udp,
-                    address: *addr,
-                })
-                .collect(),
-            supported_encryptions: state.supported_encryption.clone(),
+
+        let should_update = if state.node.is_empty() {
+            true
+        } else if matches!(state.state, SessionState::Established(_)) {
+            false
+        } else {
+            Utc::now() - self.last_info_update.time() > self.config.node_info_ttl
+        };
+
+        match should_update {
+            true => Validity::UpdateRecommended(state.info()),
+            false => Validity::UpToDate(state.info()),
         }
     }
 
     /// This function should be kept accessible only for this module, since the registry
     /// consistency depends on checks in `Registry`. Updating individual `RegistryEntry`
     /// could result in de-synchronization.
-    pub(self) async fn update_info(&self, info: NodeInfo) {}
+    pub(self) async fn update_info(&self, info: NodeInfo) -> anyhow::Result<()> {
+        if !info.identities.is_empty() {
+            // TODO: We should be resilient to identity change.
+            if info.identities[0].node_id != self.id {
+                bail!(
+                    "Default NodeId changed from {} to {}",
+                    self.id,
+                    info.identities[0].node_id
+                )
+            }
+        }
+
+        // TODO: We can't be sure that new information is more valid than previous.
+        //       For example if we got info directly from Node, than it should be more
+        //       reliable than information from relays. But at the same time this direct
+        //       information can be outdated.
+        //       We need to consider all scenarios and find a best way to handle this.
+        let mut state = self.state.write().await;
+
+        state.slot = info.slot;
+        state.supported_encryption = info.supported_encryptions;
+        // TODO: What should we do if identity lists differ? Is new list always better?
+        state.node = info.identities;
+        // TODO: We should distinguish between public IPs and addresses assigned temporarily
+        //       by routers. `Registry` contains addresses from which we received packets.
+        //       Here we assign only public, but earlier (`guard_initialization`) we added mapped addresses
+        state.addresses = info.endpoints.into_iter().map(|e| e.address).collect();
+        Ok(())
+    }
 
     pub async fn identities(&self) -> anyhow::Result<NodeEntry<Identity>> {
         let mut target = self.state.read().await;
@@ -388,6 +435,45 @@ impl RegistryEntry {
             .send(new_state)
             .map_err(|_| log::trace!("Notifying state change for {}: No listeners", self.id))
             .ok();
+    }
+}
+
+pub enum Validity<T: Sized> {
+    UpToDate(T),
+    UpdateRecommended(T),
+}
+
+impl<T> Validity<T>
+where
+    T: Sized,
+{
+    pub fn just_get(self) -> T {
+        match self {
+            Validity::UpToDate(content) => content,
+            Validity::UpdateRecommended(content) => content,
+        }
+    }
+
+    pub fn update_recommended(&self) -> bool {
+        matches!(self, Validity::UpdateRecommended(_))
+    }
+}
+
+impl RegistryEntryState {
+    pub fn info(&self) -> NodeInfo {
+        NodeInfo {
+            identities: self.node.clone(),
+            slot: self.slot,
+            endpoints: self
+                .addresses
+                .iter()
+                .map(|addr| Endpoint {
+                    protocol: proto::Protocol::Udp,
+                    address: *addr,
+                })
+                .collect(),
+            supported_encryptions: self.supported_encryption.clone(),
+        }
     }
 }
 
@@ -431,11 +517,17 @@ impl SessionState {
 
     pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
         let allowed = match (&self, &new_state) {
+            (SessionState::Relayed, SessionState::FailedEstablish(_)) => true,
             (SessionState::Incoming(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Outgoing(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::ReverseConnection(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Incoming(InitState::Ready), SessionState::Established(_)) => true,
             (SessionState::Outgoing(InitState::Ready), SessionState::Established(_)) => true,
+            (SessionState::Relayed, SessionState::Established(_)) => true,
+            (SessionState::Outgoing(InitState::ConnectIntent), SessionState::Relayed) => true,
+            (SessionState::ReverseConnection(InitState::ConnectIntent), SessionState::Relayed) => {
+                true
+            }
             (SessionState::ReverseConnection(InitState::Ready), SessionState::Established(_)) => {
                 true
             }
@@ -483,12 +575,12 @@ impl SessionState {
 }
 
 impl RegistryEntry {
-    fn new(node_id: NodeId, addresses: Vec<SocketAddr>) -> Self {
+    fn new(node_id: NodeId, addresses: Vec<SocketAddr>, config: Arc<RegistryConfig>) -> Self {
         let (notify_msg, _) = broadcast::channel(10);
 
         Self {
             id: node_id,
-            last_seen: LastSeen::now(),
+            last_info_update: LastSeen::now(),
             state: Arc::new(RwLock::new(RegistryEntryState {
                 node: vec![],
                 addresses,
@@ -497,6 +589,7 @@ impl RegistryEntry {
                 slot: FORWARD_SLOT_ID,
             })),
             state_notifier: Arc::new(notify_msg),
+            config,
         }
     }
 
@@ -663,6 +756,14 @@ impl NodeAwaiting {
                     return Err(SessionError::Internal(format!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")));
                 }
             }
+        }
+    }
+}
+
+impl Default for RegistryConfig {
+    fn default() -> Self {
+        RegistryConfig {
+            node_info_ttl: chrono::Duration::seconds(300),
         }
     }
 }
