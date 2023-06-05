@@ -27,3 +27,7 @@ pub struct VirtConnection {
     pub id: NodeId,
     pub conn: Connection,
 }
+
+pub enum _TcpState {}
+
+pub struct _TcpPermit {}

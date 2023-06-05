@@ -5,6 +5,7 @@ use anyhow::{anyhow, Context};
 use derive_more::Display;
 use futures::channel::mpsc;
 use futures::StreamExt;
+use metrics::{counter, increment_counter};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::io::Write;

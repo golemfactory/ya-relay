@@ -26,6 +26,7 @@ mod _dispatch;
 mod _encryption;
 mod _error;
 mod _expire;
+mod _metrics;
 mod _routing_session;
 mod _session;
 mod _session_layer;

@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, bail};
 use derive_more::Display;
+use metrics::{counter, increment_counter};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
@@ -15,6 +16,7 @@ use ya_relay_proto::proto::{Forward, Payload, SlotId, FORWARD_SLOT_ID};
 
 use crate::_encryption::Encryption;
 use crate::_error::SessionError;
+use crate::_metrics::{RELAY_ID, SOURCE_ID, TARGET_ID};
 use crate::_session::{RawSession, SessionType};
 
 /// Describes Node identity.
@@ -184,12 +186,16 @@ impl DirectSession {
             TransportType::Transfer => Forward::new(self.raw.id, slot, packet),
         };
 
+        let size = forward.encoded_len();
         if encrypted {
             forward.set_encrypted();
         }
 
         self.wait_for_resume().await;
-        self.raw.send(forward).await
+        self.raw.send(forward).await?;
+
+        self.record_outgoing(target, transport, size);
+        Ok(())
     }
 
     pub async fn remove_by_slot(&self, id: SlotId) -> anyhow::Result<NodeId> {
@@ -261,6 +267,38 @@ impl DirectSession {
             );
 
             resumed.await;
+        }
+    }
+
+    #[inline]
+    fn record_outgoing(&self, target: NodeId, transport: TransportType, size: usize) {
+        let relay = self.owner.default_id.to_string();
+        let target = target.to_string();
+        match transport {
+            TransportType::Reliable | TransportType::Transfer => {
+                counter!("ya-relay.packet.tcp.outgoing.size", size as u64, TARGET_ID => target.clone(), RELAY_ID => relay.clone());
+                increment_counter!("ya-relay.packet.tcp.outgoing.num", TARGET_ID => target, RELAY_ID => relay);
+            }
+            TransportType::Unreliable => {
+                counter!("ya-relay.packet.udp.outgoing.size", size as u64, TARGET_ID => target.clone(), RELAY_ID => relay.clone());
+                increment_counter!("ya-relay.packet.udp.outgoing.num", TARGET_ID => target, RELAY_ID => relay);
+            }
+        }
+    }
+
+    #[inline]
+    pub fn record_incoming(&self, source: NodeId, transport: TransportType, size: usize) {
+        let relay = self.owner.default_id.to_string();
+        let source = source.to_string();
+        match transport {
+            TransportType::Unreliable => {
+                counter!("ya-relay.packet.udp.incoming.size", size as u64, RELAY_ID => source.clone(), RELAY_ID => relay.clone());
+                increment_counter!("ya-relay.packet.udp.incoming.num", RELAY_ID => source, RELAY_ID => relay);
+            }
+            TransportType::Reliable | TransportType::Transfer => {
+                counter!("ya-relay.packet.tcp.incoming.size", size as u64, RELAY_ID => source.clone(), RELAY_ID => relay.clone());
+                increment_counter!("ya-relay.packet.tcp.incoming.num", RELAY_ID => source, RELAY_ID => relay);
+            }
         }
     }
 }

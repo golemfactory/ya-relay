@@ -21,6 +21,7 @@ use ya_relay_proto::proto::{Payload, SlotId};
 use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
 
 pub use crate::_config::{ClientBuilder, ClientConfig};
+use crate::_metrics::register_metrics;
 use crate::_session::SessionDesc;
 use crate::_transport_layer::{ForwardReceiver, ForwardSender, TransportLayer};
 
@@ -153,6 +154,8 @@ impl Client {
     }
 
     pub(crate) async fn spawn(&mut self) -> anyhow::Result<()> {
+        register_metrics();
+
         log::debug!("[{}] starting...", self.node_id());
 
         let bind_addr = self.transport.spawn().await?;

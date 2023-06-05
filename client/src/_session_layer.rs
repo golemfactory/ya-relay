@@ -1136,16 +1136,20 @@ impl Handler for SessionLayer {
 
             // Decryption
 
+            let size = forward.encoded_len();
+            let transport = match reliable {
+                true => TransportType::Reliable,
+                false => TransportType::Unreliable,
+            };
             let packet = Forwarded {
-                transport: match reliable {
-                    true => TransportType::Reliable,
-                    false => TransportType::Unreliable,
-                },
+                transport,
                 node_id: node,
                 payload: forward.payload,
             };
 
             channel.tx.send(packet).map_err(|e| anyhow!("SessionLayer can't pass packet to other layers: {e}"))?;
+
+            session.record_incoming(node, transport, size);
             anyhow::Result::<()>::Ok(())
         }
         .map_err(move |e| log::debug!("Forward from {from} failed: {e}"))

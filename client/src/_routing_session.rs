@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, bail};
 use derive_more::Display;
+use metrics::{counter, increment_counter};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use tokio::sync::RwLock;
@@ -71,6 +72,7 @@ impl NodeRouting {
                 .encrypt(packet)
                 .await
                 .map_err(|e| SessionError::Internal(e.to_string()))?;
+
             direct
                 .send(self.node.default_id.node_id, packet, transport, false)
                 .await
