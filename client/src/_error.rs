@@ -4,6 +4,7 @@ use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
 
 use crate::_session_registry::SessionState;
+use crate::_tcp_registry::TcpState;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 
@@ -91,6 +92,18 @@ pub enum EncryptionError {
     Generic(String),
 }
 
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+pub enum TcpError {
+    #[error("{0}")]
+    Generic(String),
+}
+
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+pub enum TcpTransitionError {
+    #[error("State transition not allowed from: {0} to {1}")]
+    InvalidTransition(TcpState, TcpState),
+}
+
 impl From<TransitionError> for SessionError {
     fn from(value: TransitionError) -> Self {
         SessionError::Internal(value.to_string())
@@ -114,5 +127,21 @@ impl From<SessionInitError> for SessionError {
 impl From<anyhow::Error> for RequestError {
     fn from(value: Error) -> Self {
         RequestError::Generic(value.to_string())
+    }
+}
+
+pub trait ResultExt<T, E> {
+    fn on_err<O: FnOnce(&E)>(self, op: O) -> Result<T, E>;
+}
+
+impl<T, E> ResultExt<T, E> for Result<T, E> {
+    fn on_err<O: FnOnce(&E)>(self, op: O) -> Result<T, E> {
+        match self {
+            Ok(t) => Ok(t),
+            Err(e) => {
+                op(&e);
+                Err(e)
+            }
+        }
     }
 }

@@ -18,7 +18,7 @@ use ya_relay_stack::{Channel, Connection};
 use crate::_client::{ClientConfig, Forwarded};
 use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
-use crate::_tcp_registry::{ChannelType, VirtConnection};
+use crate::_tcp_registry::{ChannelType, TcpConnection, TcpSender};
 use crate::_virtual_layer::TcpLayer;
 
 pub type ForwardSender = mpsc::Sender<Payload>;
@@ -245,20 +245,20 @@ impl TransportLayer {
 
     async fn forward_reliable_handler(
         self,
-        connection: VirtConnection,
+        mut sender: TcpSender,
         mut rx: mpsc::Receiver<Payload>,
     ) {
         while let Some(payload) = rx.next().await {
             log::trace!(
                 "Forwarding message to {} using Reliable transport",
-                connection.id,
+                sender.target,
             );
 
-            if let Err(err) = self.virtual_tcp.send(payload, connection.conn).await {
+            if let Err(err) = sender.send(payload).await {
                 log::debug!(
                     "[{}] Reliable forward to {} failed: {err}",
                     self.config.node_id,
-                    connection.id,
+                    sender.target,
                 );
                 break;
             }
@@ -266,7 +266,7 @@ impl TransportLayer {
 
         log::debug!(
             "[{}] forward (Reliable): forward channel closed",
-            connection.id
+            sender.target
         );
 
         rx.close();

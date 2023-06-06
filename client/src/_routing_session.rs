@@ -143,7 +143,10 @@ impl RoutingSender {
                 .node_routing
                 .upgrade()
             {
-                Some(routing) => routing,
+                Some(routing) => {
+                    self.node_routing = Arc::downgrade(&routing);
+                    routing
+                }
                 None => {
                     return Err(SessionError::Unexpected(
                         "Routing session closed unexpectedly.".to_string(),

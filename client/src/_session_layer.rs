@@ -18,7 +18,7 @@ use crate::_client::{ClientConfig, Forwarded};
 use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_dispatch::{dispatch, Dispatcher, Handler};
 use crate::_encryption::Encryption;
-use crate::_error::{ProtocolError, SessionError, SessionInitError, SessionResult};
+use crate::_error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
 use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session::RawSession;
@@ -363,10 +363,9 @@ impl SessionLayer {
         //       In previous implementation we were filtering, but I don't know the rationale.
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
 
-        let mut waiter = match self.registry.lock_outgoing(remote_id, &addrs).await {
+        match self.registry.lock_outgoing(remote_id, &addrs).await {
             SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
-                let waiter = permit.registry.awaiting_notifier();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
                 // other threads can be waiting for initialization as well. That's why we initialize
@@ -374,19 +373,14 @@ impl SessionLayer {
                 tokio::task::spawn_local(async move {
                     permit
                         .results(myself.resolve(remote_id, &permit, &[]).await)
-                        .map_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
-                        .ok();
-                });
-
-                waiter
+                        .on_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
+                })
+                .await
+                .map_err(|e| SessionError::Unexpected(e.to_string()))?
             }
-            SessionLock::Wait(waiter) => waiter,
-        };
-
-        waiter
-            .await_for_finish()
-            .await
-            .map_err(|e| SessionError::Generic(e.to_string()))?;
+            SessionLock::Wait(mut waiter) => waiter.await_for_finish().await,
+        }
+        .map_err(|e| SessionError::Generic(e.to_string()))?;
 
         // TODO: How should we react to non-existing session in this place?
         //       The best solution could be returning Session from `await_for_finish`.
@@ -407,9 +401,10 @@ impl SessionLayer {
             return Ok(session);
         }
 
-        let mut waiter = match self.registry.lock_outgoing(remote_id, &[addr]).await {
+        let session = match self.registry.lock_outgoing(remote_id, &[addr]).await {
             SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
+                // TODO: Use the same patter as in `session` function without getting waiter
                 let waiter = permit.registry.awaiting_notifier();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
@@ -418,27 +413,18 @@ impl SessionLayer {
                 tokio::task::spawn_local(async move {
                     permit
                         .results(myself.try_server_session(remote_id, addr, &permit).await)
-                        .map_err(|e| {
+                        .on_err(|e| {
                             log::info!(
                                 "Failed init relay session with {remote_id} ({addr}). Error: {e}"
                             )
                         })
-                        .ok();
-                });
-
-                waiter
+                })
+                .await
+                .map_err(|e| SessionError::Unexpected(e.to_string()))?
             }
-            SessionLock::Wait(waiter) => waiter,
-        };
-
-        let session =
-            waiter
-                .await_for_finish()
-                .await?
-                .upgrade()
-                .ok_or(SessionError::Unexpected(
-                    "Session was removed before we could use it.".to_string(),
-                ))?;
+            SessionLock::Wait(mut waiter) => waiter.await_for_finish().await,
+        }
+        .map_err(|e| SessionError::Generic(e.to_string()))?;
 
         // TODO: Make sure this functionality is replaced in new code.
         // session.raw.dispatcher.handle_error(
