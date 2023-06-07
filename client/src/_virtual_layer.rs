@@ -1,25 +1,16 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use anyhow::{anyhow, Context};
-use derive_more::Display;
-use futures::channel::mpsc;
+use anyhow::Context;
 use futures::StreamExt;
-use metrics::{counter, increment_counter};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Write;
-use std::net::Ipv6Addr;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
-use tokio::sync::mpsc::{Permit, UnboundedReceiver};
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::server_session::TransportType;
-use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
@@ -33,11 +24,9 @@ use ya_relay_stack::{
 
 use crate::_client::Forwarded;
 use crate::_error::TcpError;
-use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
 use crate::_tcp_registry::{
-    to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry, TcpSender, TcpState,
-    VirtNode,
+    to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry, TcpSender,
 };
 use crate::_transport_layer::ForwardReceiver;
 
@@ -56,11 +45,6 @@ pub struct TcpLayer {
 
     ingress: Channel<Forwarded>,
     virtual_tcp_fast_lane: Rc<RefCell<HashSet<NodeId>>>,
-}
-
-struct TcpLayerState {
-    nodes: HashMap<Box<[u8]>, VirtNode>,
-    ips: HashMap<NodeId, Box<[u8]>>,
 }
 
 impl TcpLayer {
