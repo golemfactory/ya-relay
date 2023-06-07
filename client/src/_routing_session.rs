@@ -129,6 +129,8 @@ impl RoutingSender {
     /// Sends Payload to target Node. Creates session if it didn't exist.
     /// `transport` is only declaration which will be used to set flags in
     /// `Forward` packet.
+    /// TODO: We should use channel-like error where you can recover your payload
+    ///       from error message.
     pub async fn send(
         &mut self,
         packet: Payload,

@@ -118,7 +118,7 @@ impl TcpLayer {
         Ok(())
     }
 
-    /// Connects to other Node and returns `Connection` for sending data.
+    /// Connects to other Node and returns `TcpSender` for sending data.
     /// TODO: We need to ensure that only one single connection can be established
     ///       at the same time and rest of attempts will wait for finish.
     /// TODO: Currently we create separate TCP connection for each identity on other Node.
@@ -269,7 +269,7 @@ impl TcpLayer {
                     let (desc, payload) = match event {
                         IngressEvent::InboundConnection { desc } => {
                             log::trace!(
-                                "[{}] ingress router: new connection from {:?} to {:?} ",
+                                "[{}] new tcp connection from {:?} to {:?} ",
                                 myself.net_id(),
                                 desc.remote,
                                 desc.local,
@@ -278,7 +278,7 @@ impl TcpLayer {
                         }
                         IngressEvent::Disconnected { desc } => {
                             log::trace!(
-                                "[{}] ingress router: ({}) {:?} disconnected from {:?}",
+                                "[{}] virtual tcp: ({}) {:?} disconnected from {:?}",
                                 myself.net_id(),
                                 desc.protocol,
                                 desc.remote,

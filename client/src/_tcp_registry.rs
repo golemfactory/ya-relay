@@ -224,6 +224,10 @@ pub struct TcpConnection {
     pub channel: ChannelType,
 }
 
+/// Structure giving you exclusive right to initialize connection.
+///
+/// This duplicates `SessionPermit`, but I don't see an easy way to unify them
+/// without over-engineering.
 pub struct TcpPermit {
     pub node: VirtNode,
     channel: ChannelType,
@@ -311,6 +315,9 @@ pub enum TcpLock {
     Wait(TcpAwaiting),
 }
 
+/// Interface for sending data to other Node using reliable transport.
+///
+/// If connection was closed, it will be re-initialized.
 #[derive(Clone)]
 pub struct TcpSender {
     pub(crate) target: NodeId,
@@ -322,6 +329,8 @@ pub struct TcpSender {
 impl TcpSender {
     /// Sends Payload to target Node using reliable transport.
     /// Creates connection if it doesn't exist or was closed.
+    /// TODO: We should use channel-like error where you can recover your payload
+    ///       from error message.
     pub async fn send(&mut self, packet: Payload) -> Result<(), TcpError> {
         let routing = match self.connection.upgrade() {
             Some(conn) => conn,
