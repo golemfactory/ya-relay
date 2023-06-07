@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::convert::{Infallible, TryFrom, TryInto};
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::{RwLock, Semaphore};
 
 use crate::_client::{ClientConfig, Forwarded};
@@ -118,47 +118,48 @@ impl SessionLayer {
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
-        todo!()
-        // let (starting, abort_handles) = {
-        //     let mut state = self.state.write().await;
-        //     let starting = state.starting_sessions.take();
-        //     let handles = std::mem::take(&mut state.handles);
-        //     (starting, handles)
-        // };
-        //
-        // for abort_handle in abort_handles {
-        //     abort_handle.abort();
-        // }
-        //
-        // if let Some(starting) = starting {
-        //     starting.shutdown().await;
-        // }
-        //
-        // // Close sessions simultaneously, otherwise shutdown could last too long.
-        // let sessions = self.sessions().await;
-        // futures::future::join_all(sessions.into_iter().map(|session| {
-        //     self.drop_session(session.clone()).map_err(move |err| {
-        //         log::warn!(
-        //             "Failed to close session {} ({}). {}",
-        //             session.id,
-        //             session.remote,
-        //             err,
-        //         )
-        //     })
-        // }))
-        //     .await;
-        //
-        // self.virtual_tcp.shutdown().await;
-        // if let Some(mut out_stream) = self.sink.take() {
-        //     if let Err(e) = out_stream.close().await {
-        //         log::warn!("Error closing socket (output stream). {}", e);
-        //     }
-        // }
-        //
-        // self.guarded.shutdown().await;
-        // self.drop_server_session().await;
-        //
-        // Ok(())
+        let (starting, abort_handles) = {
+            let mut state = self.state.write().await;
+            let starting = state.init_protocol.take();
+            let handles = std::mem::take(&mut state.handles);
+            (starting, handles)
+        };
+
+        for abort_handle in abort_handles {
+            abort_handle.abort();
+        }
+
+        if let Some(starting) = starting {
+            starting.shutdown().await;
+        }
+
+        // Close sessions simultaneously, otherwise shutdown could last too long.
+        let sessions = self.sessions().await;
+        futures::future::join_all(
+            sessions
+                .into_iter()
+                .filter_map(|session| session.upgrade())
+                .map(|session| {
+                    self.close_session(session.clone()).map_err(move |err| {
+                        log::warn!(
+                            "Failed to close session {} ({}). {}",
+                            session.raw.id,
+                            session.raw.remote,
+                            err,
+                        )
+                    })
+                }),
+        )
+        .await;
+
+        if let Some(mut out_stream) = self.sink.take() {
+            if let Err(e) = out_stream.close().await {
+                log::warn!("Error closing socket (output stream). {}", e);
+            }
+        }
+
+        self.registry.shutdown().await;
+        Ok(())
     }
 
     pub async fn is_p2p(&self, node_id: NodeId) -> bool {
@@ -196,6 +197,11 @@ impl SessionLayer {
             .get(&node_id)
             .cloned()
             .map(|routing| RoutingSender::from_node_routing(node_id, routing, self.clone()))
+    }
+
+    pub async fn sessions(&self) -> Vec<Weak<DirectSession>> {
+        let state = self.state.read().await;
+        state.p2p_sessions.values().map(Arc::downgrade).collect()
     }
 
     pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<DirectSession>> {
