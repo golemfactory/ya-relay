@@ -171,6 +171,19 @@ impl SessionLayer {
         }
     }
 
+    pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
+        let state = self.state.read().await;
+        state
+            .p2p_sessions
+            .get(addr)
+            .map(|direct| direct.owner.default_id)
+    }
+
+    pub async fn list_connected(&self) -> Vec<NodeId> {
+        let state = self.state.read().await;
+        state.nodes.keys().cloned().collect()
+    }
+
     pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
         self.registry.get_entry(node_id).await.map(|entry| entry.id)
     }
@@ -365,6 +378,14 @@ impl SessionLayer {
         );
     }
 
+    pub(crate) async fn close_server_session(&self) -> bool {
+        if let Ok(session) = self.server_session().await {
+            let _ = self.close_session(session).await;
+            return true;
+        }
+        false
+    }
+
     /// Registers initialized session to be ready to use.
     pub(crate) async fn register_session(
         &self,
@@ -459,8 +480,6 @@ impl SessionLayer {
     /// route to destination.
     pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
         if let Some(routing) = self.get_node_routing(node_id).await {
-            log::debug!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
-
             // Why we need this ugly solution? Can't we just return `RoutingSender`?
             // The problem is that we can never have full knowledge about other Node's state.
             // And we don't know what he knows about our state. It is possible, that other Node will
@@ -473,6 +492,8 @@ impl SessionLayer {
             // And there is second reason: if we have many threads waiting for session, than someone who
             // will come later, will get through, but the rest of threads would wait for `Established` state.
             self.await_connected(node_id).await?;
+
+            log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
             return Ok(routing);
         }
 
@@ -751,7 +772,9 @@ impl SessionLayer {
             self.config.node_id,
         );
 
-        todo!()
+        Err(SessionError::NotApplicable(
+            "ReverseConnection not implemented.".to_string(),
+        ))
 
         //
         // let mut awaiting = self.guarded.register_waiting_for_node(node_id).await?;

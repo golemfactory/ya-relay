@@ -26,7 +26,7 @@ use crate::_client::Forwarded;
 use crate::_error::TcpError;
 use crate::_session_layer::SessionLayer;
 use crate::_tcp_registry::{
-    to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry, TcpSender,
+    to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry, TcpSender, VirtNode,
 };
 use crate::_transport_layer::ForwardReceiver;
 
@@ -91,6 +91,10 @@ impl TcpLayer {
         Ok(())
     }
 
+    pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
+        self.registry.resolve_node(node).await
+    }
+
     pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
         let remote_ip = self.registry.resolve_ip(node_id).await;
 
@@ -112,13 +116,13 @@ impl TcpLayer {
         node_id: NodeId,
         channel: ChannelType,
     ) -> anyhow::Result<TcpSender> {
-        log::debug!("[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.");
-
         print_sockets(&self.net);
 
         let myself = self.clone();
         let connection = match self.registry.connect_attempt(node_id, channel).await {
             TcpLock::Permit(mut permit) => {
+                log::debug!("[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.");
+
                 // Spawning task protects us from dropping future during initialization.
                 tokio::task::spawn_local(async move {
                     permit.finish(myself.connect_internal(channel, &permit).await)
@@ -454,17 +458,17 @@ impl From<u16> for ChannelType {
 }
 
 pub fn print_sockets(network: &Network) {
-    log::debug!("[inet] existing sockets:");
+    log::trace!("[inet] existing sockets:");
     for (handle, meta, state) in network.sockets_meta() {
-        log::debug!("[inet] socket: {handle} ({}) {meta}", state.to_string());
+        log::trace!("[inet] socket: {handle} ({}) {meta}", state.to_string());
     }
-    log::debug!("[inet] existing connections:");
+    log::trace!("[inet] existing connections:");
     for (handle, meta) in network.handles.borrow_mut().iter() {
-        log::debug!("[inet] connection: {handle} {meta}");
+        log::trace!("[inet] connection: {handle} {meta}");
     }
 
-    log::debug!("[inet] listening sockets:");
+    log::trace!("[inet] listening sockets:");
     for handle in network.bindings.borrow_mut().iter() {
-        log::debug!("[inet] listening socket: {handle}");
+        log::trace!("[inet] listening socket: {handle}");
     }
 }

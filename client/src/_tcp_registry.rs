@@ -273,7 +273,12 @@ pub(crate) async fn async_drop(
         ChannelType::Transfer => node.message.state_notifier.clone(),
     }
     .send(result)
-    .map_err(|_e| log::warn!("Failed to send connection finished broadcast"))
+    .map_err(|_e| {
+        log::debug!(
+            "No one was waiting for info about established tcp connection with [{}]",
+            node.id()
+        )
+    })
     .ok();
 }
 

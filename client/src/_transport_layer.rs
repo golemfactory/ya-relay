@@ -177,8 +177,6 @@ impl TransportLayer {
         match self.forward_channel(node_id, channel).await {
             Some(tx) => Ok(tx),
             None => {
-                //self.virtual_tcp_fast_lane.borrow_mut().clear();
-
                 // Check if this isn't secondary identity. TcpLayer should always get default id.
                 // TODO: Consider how to handle changing identities.
                 let info = self.session_layer.query_node_info(node_id).await?;
