@@ -6,7 +6,6 @@ use derive_more::Display;
 use metrics::{counter, increment_counter};
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{SessionId, TransportType};
@@ -110,7 +109,7 @@ pub struct DirectSession {
     /// information about.
     /// In case of p2p session these values will be empty. In future we can use other
     /// sessions than Relay to forward packets.
-    pub forwards: Arc<RwLock<AllowedForwards>>,
+    pub forwards: Arc<std::sync::RwLock<AllowedForwards>>,
     /// Implements limiting forwarding functionality.
     pub(crate) forward_pause: Actuator,
 }
@@ -139,7 +138,7 @@ impl DirectSession {
                 identities,
             },
             raw: session,
-            forwards: Arc::new(RwLock::new(Default::default())),
+            forwards: Arc::new(std::sync::RwLock::new(Default::default())),
             forward_pause: Default::default(),
         }))
     }
@@ -157,7 +156,7 @@ impl DirectSession {
                 identities: vec![],
             },
             raw: session,
-            forwards: Arc::new(RwLock::new(Default::default())),
+            forwards: Arc::new(std::sync::RwLock::new(Default::default())),
             forward_pause: Default::default(),
         }))
     }
@@ -174,7 +173,6 @@ impl DirectSession {
             FORWARD_SLOT_ID
         } else {
             self.find_slot(&target)
-                .await
                 .ok_or(SessionError::Internal(format!(
                     "Session with [{router_id}] doesn't allow to forward packets for [{target}]"
                 )))?
@@ -198,8 +196,8 @@ impl DirectSession {
         Ok(())
     }
 
-    pub async fn remove_by_slot(&self, id: SlotId) -> anyhow::Result<NodeId> {
-        let mut forwards = self.forwards.write().await;
+    pub fn remove_by_slot(&self, id: SlotId) -> anyhow::Result<NodeId> {
+        let mut forwards = self.forwards.write().unwrap();
         if let Some(node_id) = forwards.remove_by_slot(id) {
             return Ok(node_id);
         }
@@ -210,8 +208,8 @@ impl DirectSession {
         )
     }
 
-    pub async fn remove(&self, node_id: &NodeId) -> anyhow::Result<NodeEntry<NodeId>> {
-        let mut forwards = self.forwards.write().await;
+    pub fn remove(&self, node_id: &NodeId) -> anyhow::Result<NodeEntry<NodeId>> {
+        let mut forwards = self.forwards.write().unwrap();
         match forwards.remove(node_id) {
             Some(node_id) => Ok(node_id),
             None => bail!(
@@ -222,23 +220,28 @@ impl DirectSession {
         }
     }
 
-    pub async fn register(&self, node: NodeEntry<NodeId>, slot: SlotId) {
-        let mut forwards = self.forwards.write().await;
+    pub fn list(&self) -> Vec<NodeEntry<NodeId>> {
+        let mut forwards = self.forwards.read().unwrap();
+        forwards.slots.values().cloned().collect()
+    }
+
+    pub fn register(&self, node: NodeEntry<NodeId>, slot: SlotId) {
+        let mut forwards = self.forwards.write().unwrap();
         forwards.add(node, slot)
     }
 
-    pub async fn get_by_slot(&self, slot: SlotId) -> Option<NodeEntry<NodeId>> {
-        let mut forwards = self.forwards.read().await;
+    pub fn get_by_slot(&self, slot: SlotId) -> Option<NodeEntry<NodeId>> {
+        let mut forwards = self.forwards.read().unwrap();
         forwards.get_by_slot(slot)
     }
 
-    pub async fn get_by_id(&self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
-        let mut forwards = self.forwards.read().await;
+    pub fn get_by_id(&self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
+        let mut forwards = self.forwards.read().unwrap();
         forwards.get_by_id(node_id)
     }
 
-    pub async fn find_slot(&self, node_id: &NodeId) -> Option<SlotId> {
-        let mut forwards = self.forwards.read().await;
+    pub fn find_slot(&self, node_id: &NodeId) -> Option<SlotId> {
+        let mut forwards = self.forwards.read().unwrap();
         forwards.get_slot(node_id)
     }
 
@@ -342,24 +345,24 @@ mod tests {
             identities: vec![*NODE_ID1],
         };
 
-        session.register(node.clone(), 4).await;
+        session.register(node.clone(), 4);
 
-        assert_eq!(session.find_slot(&*NODE_ID1).await.unwrap(), 4);
+        assert_eq!(session.find_slot(&*NODE_ID1).unwrap(), 4);
 
-        let entry = session.get_by_slot(4).await.unwrap();
+        let entry = session.get_by_slot(4).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 1);
         assert_eq!(entry.identities[0], node.identities[0]);
 
-        let entry = session.get_by_id(&*NODE_ID1).await.unwrap();
+        let entry = session.get_by_id(&*NODE_ID1).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 1);
         assert_eq!(entry.identities[0], node.identities[0]);
 
-        session.remove(&*NODE_ID1).await;
-        assert!(session.get_by_slot(4).await.is_none());
-        assert!(session.get_by_id(&*NODE_ID1).await.is_none());
-        assert!(session.find_slot(&*NODE_ID1).await.is_none());
+        session.remove(&*NODE_ID1);
+        assert!(session.get_by_slot(4).is_none());
+        assert!(session.get_by_id(&*NODE_ID1).is_none());
+        assert!(session.find_slot(&*NODE_ID1).is_none());
     }
 
     #[tokio::test]
@@ -370,12 +373,12 @@ mod tests {
             identities: vec![*NODE_ID1],
         };
 
-        session.register(node.clone(), 4).await;
-        session.remove_by_slot(4).await;
+        session.register(node.clone(), 4);
+        session.remove_by_slot(4);
 
-        assert!(session.get_by_slot(4).await.is_none());
-        assert!(session.get_by_id(&*NODE_ID1).await.is_none());
-        assert!(session.find_slot(&*NODE_ID1).await.is_none());
+        assert!(session.get_by_slot(4).is_none());
+        assert!(session.get_by_id(&*NODE_ID1).is_none());
+        assert!(session.find_slot(&*NODE_ID1).is_none());
     }
 
     #[tokio::test]
@@ -386,24 +389,24 @@ mod tests {
             identities: vec![*NODE_ID1, *NODE_ID2],
         };
 
-        session.register(node.clone(), 4).await;
+        session.register(node.clone(), 4);
 
-        assert_eq!(session.find_slot(&*NODE_ID1).await.unwrap(), 4);
-        assert_eq!(session.find_slot(&*NODE_ID2).await.unwrap(), 4);
+        assert_eq!(session.find_slot(&*NODE_ID1).unwrap(), 4);
+        assert_eq!(session.find_slot(&*NODE_ID2).unwrap(), 4);
 
-        let entry = session.get_by_slot(4).await.unwrap();
+        let entry = session.get_by_slot(4).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node.identities[0]);
         assert_eq!(entry.identities[1], node.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID1).await.unwrap();
+        let entry = session.get_by_id(&*NODE_ID1).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node.identities[0]);
         assert_eq!(entry.identities[1], node.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID2).await.unwrap();
+        let entry = session.get_by_id(&*NODE_ID2).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node.identities[0]);
@@ -423,30 +426,30 @@ mod tests {
             identities: vec![*NODE_ID3, *NODE_ID4],
         };
 
-        session.register(node1.clone(), 4).await;
-        session.register(node2.clone(), 5).await;
+        session.register(node1.clone(), 4);
+        session.register(node2.clone(), 5);
 
-        session.remove(&*NODE_ID1).await;
+        session.remove(&*NODE_ID1);
 
-        assert!(session.get_by_slot(4).await.is_none());
-        assert!(session.get_by_id(&*NODE_ID1).await.is_none());
-        assert!(session.get_by_id(&*NODE_ID2).await.is_none());
-        assert!(session.find_slot(&*NODE_ID1).await.is_none());
-        assert!(session.find_slot(&*NODE_ID2).await.is_none());
+        assert!(session.get_by_slot(4).is_none());
+        assert!(session.get_by_id(&*NODE_ID1).is_none());
+        assert!(session.get_by_id(&*NODE_ID2).is_none());
+        assert!(session.find_slot(&*NODE_ID1).is_none());
+        assert!(session.find_slot(&*NODE_ID2).is_none());
 
-        let entry = session.get_by_slot(5).await.unwrap();
+        let entry = session.get_by_slot(5).unwrap();
         assert_eq!(entry.default_id, node2.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node2.identities[0]);
         assert_eq!(entry.identities[1], node2.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID4).await.unwrap();
+        let entry = session.get_by_id(&*NODE_ID4).unwrap();
         assert_eq!(entry.default_id, node2.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node2.identities[0]);
         assert_eq!(entry.identities[1], node2.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID3).await.unwrap();
+        let entry = session.get_by_id(&*NODE_ID3).unwrap();
         assert_eq!(entry.default_id, node2.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node2.identities[0]);

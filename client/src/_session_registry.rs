@@ -63,6 +63,7 @@ pub enum SessionState {
     /// Last attempt to init session failed. Holds error.
     #[display(fmt = "FailedEstablish")]
     FailedEstablish(SessionError),
+    Closing,
     /// Session was closed gracefully. (Still the reason
     /// for closing could be some kind of failure)
     Closed,
@@ -111,11 +112,7 @@ impl Registry {
     /// you should get the same object in all places in the code.
     /// `SessionGuard` should be stored even if connection was closed,
     /// to avoid having multiple objects pointing to the same Node.
-    pub async fn guard_initialization(
-        &self,
-        node_id: NodeId,
-        addrs: &[SocketAddr],
-    ) -> RegistryEntry {
+    pub async fn guard(&self, node_id: NodeId, addrs: &[SocketAddr]) -> RegistryEntry {
         let mut state = self.state.write().await;
         if let Some(target) = state.find(node_id, addrs) {
             return target;
@@ -187,17 +184,11 @@ impl Registry {
     }
 
     pub async fn lock_outgoing(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
-        self.guard_initialization(node_id, addrs)
-            .await
-            .lock_outgoing()
-            .await
+        self.guard(node_id, addrs).await.lock_outgoing().await
     }
 
     pub async fn lock_incoming(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
-        self.guard_initialization(node_id, addrs)
-            .await
-            .lock_incoming()
-            .await
+        self.guard(node_id, addrs).await.lock_incoming().await
     }
 
     pub async fn register_waiting_for_node(&self, node_id: NodeId) -> anyhow::Result<NodeAwaiting> {
@@ -354,6 +345,16 @@ impl RegistryEntry {
         Ok(new_state)
     }
 
+    pub async fn transition_closed(&self) -> Result<(), TransitionError> {
+        let new_state = {
+            let mut target = self.state.write().await;
+            target.state.transition(SessionState::Closed)?
+        };
+
+        self.notify_change(SessionState::Closed);
+        Ok(())
+    }
+
     pub async fn public_addresses(&self) -> Vec<SocketAddr> {
         let mut target = self.state.read().await;
         target.addresses.clone()
@@ -430,8 +431,7 @@ impl RegistryEntry {
     }
 
     fn notify_change(&self, new_state: SessionState) {
-        // TODO: Consider changing to trace
-        log::debug!(
+        log::trace!(
             "State changed to {} for session with [{}]",
             new_state,
             self.id
@@ -558,7 +558,8 @@ impl SessionState {
             (SessionState::Closed, SessionState::Outgoing(InitState::ConnectIntent)) => true,
             (SessionState::Closed, SessionState::Incoming(InitState::ConnectIntent)) => true,
             (SessionState::Established(_), SessionState::Established(_)) => true,
-            (SessionState::Established(_), SessionState::Established(_)) => true,
+            (SessionState::Established(_), SessionState::Closing) => true,
+            (SessionState::Closing, SessionState::Closed) => true,
             (
                 SessionState::FailedEstablish(_),
                 SessionState::Outgoing(InitState::ConnectIntent),
@@ -617,6 +618,7 @@ impl RegistryEntry {
     /// Make intent, that you want initialize session with this Node.
     /// Function either will return Lock granting you exclusive right to
     /// initialize this session or object for awaiting on session.
+    /// TODO: Handle situation when we are attempting to connect and closing session at the same time.
     pub async fn lock_outgoing(&self) -> SessionLock {
         // We need to subscribe to state change events, before we will start transition,
         // otherwise a few events could be lost.

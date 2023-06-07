@@ -170,6 +170,12 @@ impl RoutingSender {
         Ok(())
     }
 
+    /// Closes connection to Node. In case of relayed connection only forwarding information
+    /// will be removed.
+    pub async fn disconnect(&mut self) -> Result<(), SessionError> {
+        self.layer.disconnect(self.target).await
+    }
+
     pub fn target(&self) -> NodeId {
         self.target
     }
