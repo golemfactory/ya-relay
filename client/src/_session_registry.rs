@@ -757,9 +757,9 @@ impl NodeAwaiting {
         loop {
             match state {
                 SessionState::Established(session) => {
-                    return Ok(session.upgrade().ok_or(SessionError::Unexpected(
+                    return session.upgrade().ok_or(SessionError::Unexpected(
                         "Session closed unexpectedly.".to_string(),
-                    ))?)
+                    ))
                 }
                 // TODO: We would like to return more meaningful error message.
                 SessionState::Closed => {
@@ -821,7 +821,9 @@ mod tests {
         };
     }
 
-    async fn mock_establish_outgoing(mut permit: SessionPermit) -> anyhow::Result<()> {
+    async fn mock_establish_outgoing(
+        mut permit: SessionPermit,
+    ) -> anyhow::Result<Arc<DirectSession>> {
         let node = permit.registry.clone();
         node.transition_outgoing(InitState::Initializing).await?;
         node.transition_outgoing(InitState::ChallengeHandshake)
@@ -834,9 +836,9 @@ mod tests {
             .await?;
         node.transition_outgoing(InitState::Ready).await?;
 
-        permit.results(Ok(mock_session(&permit).await));
+        let session = permit.results(Ok(mock_session(&permit).await)).unwrap();
         drop(permit);
-        Ok(())
+        Ok(session)
     }
 
     async fn mock_establish_incoming(
@@ -908,9 +910,9 @@ mod tests {
         // shouldn't affect second initialization.
         tokio::task::spawn_local(async move {
             tokio::time::sleep(Duration::from_millis(200)).await;
-            let _session = mock_establish_incoming(permit1).await.unwrap();
+            let _session = mock_establish_outgoing(permit1).await.unwrap();
             // Keep session so it won't be dropped and `await_for_finish` won't return error
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
         });
 
         timeout(Duration::from_millis(600), waiter1.await_for_finish())

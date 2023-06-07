@@ -47,7 +47,7 @@ pub struct VirtChannel {
 impl VirtNode {
     pub fn new(id: NodeId, layer: SessionLayer) -> VirtNode {
         let ip = IpAddress::from(to_ipv6(id.into_array()));
-        let routing = RoutingSender::empty(id, layer.clone());
+        let routing = RoutingSender::empty(id, layer);
 
         VirtNode {
             address: ip,
@@ -141,25 +141,22 @@ impl TcpRegistry {
     }
 
     pub async fn resolve_ip(&self, node: NodeId) -> Box<[u8]> {
-        IpAddress::from(to_ipv6(&node.into_array()))
+        IpAddress::from(to_ipv6(node.into_array()))
             .as_bytes()
             .into()
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
         // Removing all channels. Consider if we should remove channels one by one.
-        match self.resolve_node(node_id).await {
-            Ok(node) => {
-                node.transition(ChannelType::Messages, TcpState::Closed)
-                    .await
-                    .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Messages): {e}"))
-                    .ok();
-                node.transition(ChannelType::Transfer, TcpState::Closed)
-                    .await
-                    .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Transfer): {e}"))
-                    .ok();
-            }
-            Err(_) => {}
+        if let Ok(node) = self.resolve_node(node_id).await {
+            node.transition(ChannelType::Messages, TcpState::Closed)
+                .await
+                .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Messages): {e}"))
+                .ok();
+            node.transition(ChannelType::Transfer, TcpState::Closed)
+                .await
+                .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Transfer): {e}"))
+                .ok();
         };
 
         let mut state = self.state.write().await;
@@ -271,7 +268,7 @@ pub(crate) async fn async_drop(
         ChannelType::Messages => node.message.state_notifier.clone(),
         ChannelType::Transfer => node.message.state_notifier.clone(),
     }
-    .send(result.clone())
+    .send(result)
     .map_err(|_e| log::warn!("Failed to send connection finished broadcast"))
     .ok();
 }
@@ -294,7 +291,7 @@ pub struct TcpAwaiting {
 
 impl TcpAwaiting {
     pub async fn await_for_finish(&mut self) -> Result<Arc<TcpConnection>, TcpError> {
-        return match self.notifier.recv().await {
+        match self.notifier.recv().await {
             Ok(result) => result,
             Err(RecvError::Closed) => Err(TcpError::Generic(
                 "Waiting for tcp connection initialization: notifier dropped.".to_string(),
@@ -303,7 +300,7 @@ impl TcpAwaiting {
                 // TODO: Maybe we could handle lags better, by checking current state?
                 Err(TcpError::Generic(format!("Waiting for tcp connection initialization: notifier lagged. Lost {lost} state change(s).")))
             }
-        };
+        }
     }
 }
 
@@ -348,7 +345,7 @@ impl TcpSender {
             },
         };
         self.layer
-            .send(packet, routing.conn.clone())
+            .send(packet, routing.conn)
             .await
             .map_err(|e| TcpError::Generic(e.to_string()))
     }
