@@ -21,7 +21,7 @@ use crate::_encryption::Encryption;
 use crate::_error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
 use crate::_routing_session::{NodeRouting, RoutingSender};
-use crate::_session::RawSession;
+use crate::_session::{RawSession, SessionType};
 use crate::_session_protocol::SessionProtocol;
 use crate::_session_registry::{
     Registry, RelayedState, SessionLock, SessionPermit, SessionState, Validity,
@@ -159,6 +159,17 @@ impl SessionLayer {
         // self.drop_server_session().await;
         //
         // Ok(())
+    }
+
+    pub async fn is_p2p(&self, node_id: NodeId) -> bool {
+        match self.get_node_routing(node_id).await {
+            None => false,
+            Some(routing) => routing.session_type() == SessionType::P2P,
+        }
+    }
+
+    pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
+        self.registry.get_entry(node_id).await.map(|entry| entry.id)
     }
 
     pub async fn get_public_addr(&self) -> Option<SocketAddr> {

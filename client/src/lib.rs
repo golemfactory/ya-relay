@@ -13,8 +13,6 @@ pub use ya_relay_core::crypto;
 pub use ya_relay_proto::*;
 pub use ya_relay_stack::*;
 
-// TODO: Exposed for ya-relay-server. Should be made private after we merge implementations.
-pub use ya_relay_core::dispatch::{dispatch, Dispatcher, Handler};
 pub use ya_relay_core::server_session::TransportType;
 pub use ya_relay_core::session::{Session, SessionDesc};
 

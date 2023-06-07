@@ -14,16 +14,20 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
-use ya_relay_core::server_session::TransportType;
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Payload, SlotId};
-use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
 
-pub use crate::_config::{ClientBuilder, ClientConfig};
 use crate::_metrics::register_metrics;
-use crate::_session::SessionDesc;
-use crate::_transport_layer::{ForwardReceiver, ForwardSender, TransportLayer};
+use crate::_transport_layer::{ForwardSender, TransportLayer};
+
+pub use crate::_config::{ClientBuilder, ClientConfig, FailFast};
+pub use crate::_error::SessionError;
+pub use crate::_session::SessionDesc;
+pub use crate::_transport_layer::ForwardReceiver;
+
+pub use ya_relay_core::server_session::TransportType;
+pub use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
 
 #[derive(Clone)]
 pub struct Client {
