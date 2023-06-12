@@ -76,7 +76,7 @@ impl VirtNode {
     ) -> Result<(), TcpTransitionError> {
         let state = match channel {
             ChannelType::Messages => self.message.state.clone(),
-            ChannelType::Transfer => self.message.state.clone(),
+            ChannelType::Transfer => self.transfer.state.clone(),
         };
 
         let mut state = state.write().await;
@@ -114,7 +114,7 @@ impl TcpRegistry {
 
         let notifier = match channel {
             ChannelType::Messages => node.message.state_notifier.subscribe(),
-            ChannelType::Transfer => node.message.state_notifier.subscribe(),
+            ChannelType::Transfer => node.transfer.state_notifier.subscribe(),
         };
 
         match node.transition(channel, TcpState::Connecting).await {
