@@ -83,6 +83,23 @@ impl TransportLayer {
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        let channels = {
+            let mut state = self.state.write().await;
+
+            let channels1 = state.forward_unreliable.drain().collect::<Vec<_>>();
+            let channels2 = state.forward_transfer.drain().collect::<Vec<_>>();
+            let channels3 = state.forward_reliable.drain().collect::<Vec<_>>();
+
+            channels1
+                .into_iter()
+                .chain(channels2.into_iter())
+                .chain(channels3.into_iter())
+                .collect::<Vec<_>>()
+        };
+        for (_, mut channel) in channels {
+            channel.close().await.ok();
+        }
+
         self.virtual_tcp.shutdown().await;
         self.session_layer.shutdown().await
     }

@@ -66,6 +66,7 @@ impl<'a> From<&'a RawSession> for SessionDesc {
 
 impl RawSession {
     pub fn new(remote_addr: SocketAddr, id: SessionId, sink: OutStream) -> Arc<Self> {
+        log::debug!("Creating new `RawSession` {id} ({remote_addr})");
         Arc::new(Self {
             remote: remote_addr,
             id,
@@ -305,7 +306,7 @@ impl RawSession {
 
 impl Drop for RawSession {
     fn drop(&mut self) {
-        log::trace!("Dropping Session {} ({}).", self.id, self.remote);
+        log::debug!("Dropping `RawSession` {} ({}).", self.id, self.remote);
 
         let on_drop = self.drop_handler.lock().unwrap().take();
         if let Some(f) = on_drop {

@@ -55,7 +55,9 @@ pub enum ConnectionMethod {
 #[derive(Clone)]
 pub struct SessionLayer {
     pub config: Arc<ClientConfig>,
-    sink: Option<OutStream>,
+    /// Could be just `Option<OutStream>` but then we are not able to drop all senders
+    /// when we are copying `SessionLayer`, what prevents clean shutdown.
+    sink: Arc<Mutex<Option<OutStream>>>,
 
     pub(crate) state: Arc<RwLock<SessionLayerState>>,
 
@@ -90,7 +92,7 @@ impl SessionLayer {
         let state = SessionLayerState::default();
 
         SessionLayer {
-            sink: None,
+            sink: Arc::new(Mutex::new(None)),
             config,
             state: Arc::new(RwLock::new(state)),
             registry: Default::default(),
@@ -102,7 +104,9 @@ impl SessionLayer {
     pub async fn spawn(&mut self) -> anyhow::Result<SocketAddr> {
         let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
 
-        self.sink = Some(sink.clone());
+        {
+            *self.sink.lock().unwrap() = Some(sink.clone());
+        }
 
         let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
         let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
@@ -131,7 +135,7 @@ impl SessionLayer {
             abort_handle.abort();
         }
 
-        if let Some(starting) = starting {
+        if let Some(mut starting) = starting {
             starting.shutdown().await;
         }
 
@@ -154,9 +158,9 @@ impl SessionLayer {
         )
         .await;
 
-        if let Some(mut out_stream) = self.sink.take() {
+        if let Some(mut out_stream) = self.sink.lock().unwrap().take() {
             if let Err(e) = out_stream.close().await {
-                log::warn!("Error closing socket (output stream). {}", e);
+                log::warn!("Error closing socket (output stream). {e}");
             }
         }
 
@@ -498,8 +502,6 @@ impl SessionLayer {
         }
 
         // Query relay server for Node information, we need to find out default id and aliases.
-        // TODO: We could avoid querying the same information multiple times in case this function
-        //       is called from multiple places at the same time.
         let info = self
             .query_node_info(node_id)
             .await
@@ -568,8 +570,6 @@ impl SessionLayer {
         let session = match self.registry.lock_outgoing(remote_id, &[addr]).await {
             SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
-                // TODO: Use the same patter as in `session` function without getting waiter
-                let waiter = permit.registry.awaiting_notifier();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
                 // other threads can be waiting for initialization as well. That's why we initialize
@@ -1086,6 +1086,8 @@ impl SessionLayer {
 
     pub fn out_stream(&self) -> anyhow::Result<OutStream> {
         self.sink
+            .lock()
+            .unwrap()
             .clone()
             .ok_or_else(|| anyhow!("Network sink not initialized"))
     }

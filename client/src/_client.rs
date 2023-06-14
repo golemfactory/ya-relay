@@ -21,12 +21,11 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Payload, SlotId};
 
 use crate::_metrics::register_metrics;
-use crate::_transport_layer::{ForwardSender, TransportLayer};
 
 pub use crate::_config::{ClientBuilder, ClientConfig, FailFast};
 pub use crate::_error::SessionError;
 pub use crate::_session::SessionDesc;
-pub use crate::_transport_layer::ForwardReceiver;
+pub use crate::_transport_layer::{ForwardReceiver, ForwardSender, TransportLayer};
 
 use crate::_direct_session::DirectSession;
 pub use ya_relay_core::server_session::TransportType;
@@ -431,4 +430,53 @@ pub struct Forwarded {
     pub transport: TransportType,
     pub node_id: NodeId,
     pub payload: Payload,
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::_client::{ClientBuilder, FailFast};
+    use crate::testing::accessors::SessionLayerPrivate;
+
+    use std::time::Duration;
+
+    use ya_relay_core::utils::to_udp_url;
+    use ya_relay_server::testing::server::init_test_server;
+
+    /// Client should be able to use the same port after it was shutdown.
+    /// If it doesn't, it means that socket wasn't dropped correctly.
+    #[serial_test::serial]
+    async fn test_clean_shutdown() -> anyhow::Result<()> {
+        let wrapper = init_test_server().await?;
+
+        let mut client = ClientBuilder::from_url(wrapper.url())
+            .connect(FailFast::Yes)
+            .expire_session_after(Duration::from_secs(2))
+            .build()
+            .await?;
+
+        println!("Shutting down Client");
+
+        let addr2 = client.bind_addr().await?;
+        let crypto = client.config.crypto.clone();
+
+        client.shutdown().await.unwrap();
+
+        println!("Waiting for session cleanup.");
+
+        // Wait expiration timeout + ping timeout + 1s margin
+        tokio::time::sleep(Duration::from_secs(6)).await;
+
+        println!("Starting client");
+
+        // Start client on the same port as previously.
+        let mut _client = ClientBuilder::from_url(wrapper.url())
+            .listen(to_udp_url(addr2).unwrap())
+            .crypto(crypto)
+            .connect(FailFast::Yes)
+            .expire_session_after(Duration::from_secs(2))
+            .build()
+            .await?;
+
+        Ok(())
+    }
 }

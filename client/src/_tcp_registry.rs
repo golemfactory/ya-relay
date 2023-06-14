@@ -274,7 +274,7 @@ pub(crate) async fn async_drop(
     }
     .send(result)
     .map_err(|_e| {
-        log::debug!(
+        log::trace!(
             "No one was waiting for info about established tcp connection with [{}]",
             node.id()
         )

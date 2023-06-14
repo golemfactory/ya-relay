@@ -519,7 +519,7 @@ impl SessionProtocol {
         }
     }
 
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&mut self) {
         let handles = {
             let mut state = self.state.lock().unwrap();
             state.incoming_sessions.clear();
@@ -530,6 +530,8 @@ impl SessionProtocol {
         for handle in handles {
             handle.abort();
         }
+
+        self.sink.close().await.ok();
     }
 
     async fn solve_challenge<'a>(
