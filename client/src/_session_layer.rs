@@ -241,6 +241,8 @@ impl SessionLayer {
             };
         }
 
+        log::trace!("Querying Node [{node_id}] info, because it might be outdated.");
+
         let server_session = self
             .server_session()
             .await
@@ -483,6 +485,8 @@ impl SessionLayer {
     /// Creates session with Node if necessary. Function will choose the most optimal
     /// route to destination.
     pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
+        log::trace!("Requested session with [{node_id}]");
+
         if let Some(routing) = self.get_node_routing(node_id).await {
             // Why we need this ugly solution? Can't we just return `RoutingSender`?
             // The problem is that we can never have full knowledge about other Node's state.
@@ -500,6 +504,8 @@ impl SessionLayer {
             log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
             return Ok(routing);
         }
+
+        log::trace!("Node [{node_id}] not found in routing tables. Trying to establish session...");
 
         // Query relay server for Node information, we need to find out default id and aliases.
         let info = self
@@ -531,6 +537,7 @@ impl SessionLayer {
 
         match self.registry.lock_outgoing(remote_id, &addrs).await {
             SessionLock::Permit(mut permit) => {
+                log::trace!("Acquired `SessionPermit` to init session with [{remote_id}]");
                 let myself = self.clone();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
@@ -874,6 +881,10 @@ impl SessionLayer {
     }
 
     pub(crate) async fn await_connected(&self, node_id: NodeId) -> Result<(), SessionError> {
+        log::trace!(
+            "Session with Node [{node_id}] is registered. Waiting until it will be ready.."
+        );
+
         let entry = self
             .registry
             .get_entry(node_id)
@@ -1455,6 +1466,9 @@ mod tests {
         session.disconnect().await.unwrap();
         // Let other side receive and handle `Disconnected` packet.
         tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(layer1.layer.get_node_routing(layer2.id).await.is_none());
+        assert!(layer2.layer.get_node_routing(layer1.id).await.is_none());
 
         // We should be able to connect again to the same Node.
         session.connect().await.unwrap();

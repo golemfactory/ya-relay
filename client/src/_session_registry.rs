@@ -134,6 +134,8 @@ impl Registry {
     /// if we had only partial info about Nodes earlier.
     /// This is the reason we don't have update function on single `RegistryEntry`.
     pub async fn update_entry(&self, info: NodeInfo) -> anyhow::Result<()> {
+        log::trace!("Updating `RegistryEntry` for [{}]", info.node_id());
+
         // TODO: For now we use the simplest implementation possible.
         //       Apply considerations from comment later.
         let addrs = info
