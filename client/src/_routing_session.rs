@@ -16,8 +16,9 @@ use ya_relay_proto::proto::{Payload, SlotId};
 use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_encryption::Encryption;
 use crate::_error::SessionError;
-use crate::_session::{RawSession, SessionType};
+use crate::_raw_session::{RawSession, SessionType};
 use crate::_session_layer::SessionLayer;
+use crate::_session_traits::SessionDeregistration;
 
 /// Routing information about Node. Node can have either p2p session or relayed session.
 /// This struct hides `DirectSession` choice from caller.

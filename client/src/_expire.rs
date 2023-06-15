@@ -1,12 +1,9 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use crate::_direct_session::DirectSession;
 use std::sync::Arc;
 use tokio::time::Instant;
 
-use crate::_session::RawSession;
+use crate::_direct_session::DirectSession;
 use crate::_session_layer::SessionLayer;
+use crate::_session_traits::SessionDeregistration;
 
 pub async fn track_sessions_expiration(layer: SessionLayer) {
     let expiration = layer.config.session_expiration;

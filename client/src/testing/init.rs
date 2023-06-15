@@ -101,7 +101,11 @@ pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<Sess
 
 impl SessionLayerWrapper {
     pub async fn start_session(&self, with: &SessionLayerWrapper) -> anyhow::Result<SessionPermit> {
-        match self.guards.lock_outgoing(with.id, &[with.addr]).await {
+        match self
+            .guards
+            .lock_outgoing(with.id, &[with.addr], self.layer.clone())
+            .await
+        {
             SessionLock::Permit(permit) => Ok(permit),
             SessionLock::Wait(_) => bail!("Expected initialization permit"),
         }

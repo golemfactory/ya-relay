@@ -16,7 +16,7 @@ use ya_relay_proto::proto::{Forward, Payload, SlotId, FORWARD_SLOT_ID};
 use crate::_encryption::Encryption;
 use crate::_error::SessionError;
 use crate::_metrics::{RELAY_ID, SOURCE_ID, TARGET_ID};
-use crate::_session::{RawSession, SessionType};
+use crate::_raw_session::{RawSession, SessionType};
 
 /// Describes Node identity.
 /// `IdType` Could be either plain `NodeId` or `Identity` structure containing

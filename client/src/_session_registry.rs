@@ -17,8 +17,9 @@ use tokio::sync::{broadcast, RwLock};
 
 use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_error::{SessionError, SessionResult, TransitionError};
-use crate::_session::RawSession;
+use crate::_raw_session::RawSession;
 
+use crate::_session_traits::SessionDeregistration;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, LastSeen, NodeInfo, SessionId};
 use ya_relay_core::udp_stream::OutStream;
@@ -190,12 +191,22 @@ impl Registry {
         state.find_by_addr(remote)
     }
 
-    pub async fn lock_outgoing(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
-        self.guard(node_id, addrs).await.lock_outgoing().await
+    pub async fn lock_outgoing(
+        &self,
+        node_id: NodeId,
+        addrs: &[SocketAddr],
+        layer: impl SessionDeregistration,
+    ) -> SessionLock {
+        self.guard(node_id, addrs).await.lock_outgoing(layer).await
     }
 
-    pub async fn lock_incoming(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
-        self.guard(node_id, addrs).await.lock_incoming().await
+    pub async fn lock_incoming(
+        &self,
+        node_id: NodeId,
+        addrs: &[SocketAddr],
+        layer: impl SessionDeregistration,
+    ) -> SessionLock {
+        self.guard(node_id, addrs).await.lock_incoming(layer).await
     }
 
     pub async fn register_waiting_for_node(&self, node_id: NodeId) -> anyhow::Result<NodeAwaiting> {
@@ -634,13 +645,14 @@ impl RegistryEntry {
     /// Function either will return Lock granting you exclusive right to
     /// initialize this session or object for awaiting on session.
     /// TODO: Handle situation when we are attempting to connect and closing session at the same time.
-    pub async fn lock_outgoing(&self) -> SessionLock {
+    pub async fn lock_outgoing(&self, layer: impl SessionDeregistration) -> SessionLock {
         // We need to subscribe to state change events, before we will start transition,
         // otherwise a few events could be lost.
         let notifier = self.awaiting_notifier();
         match self.transition_outgoing(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
+                layer: Arc::new(Box::new(layer)),
                 result: None,
             }),
             Err(e) => {
@@ -660,13 +672,14 @@ impl RegistryEntry {
 
     /// See: `SessionGuard::lock_outgoing`
     /// TODO: Unify implementation with `lock_outgoing`.
-    pub async fn lock_incoming(&self) -> SessionLock {
+    pub async fn lock_incoming(&self, layer: impl SessionDeregistration) -> SessionLock {
         // We need to subscribe to state change events, before we will start transition,
         // otherwise a few events could be lost.
         let notifier = self.awaiting_notifier();
         match self.transition_incoming(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
+                layer: Arc::new(Box::new(layer)),
                 result: None,
             }),
             Err(e) => {
@@ -722,6 +735,7 @@ pub enum SessionLock {
 /// TODO: Struct should ensure clear Session state on drop.
 pub struct SessionPermit {
     pub registry: RegistryEntry,
+    layer: Arc<Box<dyn SessionDeregistration>>,
     pub(crate) result: Option<Result<Arc<DirectSession>, SessionError>>,
 }
 
@@ -854,6 +868,7 @@ mod tests {
     use std::time::Duration;
     use tokio::time::timeout;
 
+    use crate::testing::mocks::NoOpSessionLayer;
     use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
     use ya_relay_proto::codec::PacketKind;
 
@@ -938,24 +953,36 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_independent_permits() {
         let guards = Registry::default();
-        let permit1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let permit1 = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
-        let permit2 = match guards.lock_outgoing(*NODE_ID2, &[*ADDR2]).await {
+        let permit2 = match guards
+            .lock_outgoing(*NODE_ID2, &[*ADDR2], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
         /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
-        let mut waiter1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let mut waiter1 = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
 
         /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
-        let mut waiter2 = match guards.lock_outgoing(*NODE_ID2, &[*ADDR2]).await {
+        let mut waiter2 = match guards
+            .lock_outgoing(*NODE_ID2, &[*ADDR2], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
@@ -986,13 +1013,19 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_incoming() {
         let guards = Registry::default();
-        let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+        let permit = match guards
+            .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
         /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
-        let mut waiter = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+        let mut waiter = match guards
+            .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
@@ -1015,13 +1048,19 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_incoming_and_outgoing() {
         let guards = Registry::default();
-        let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+        let permit = match guards
+            .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
         /// We shouldn't get `Permit` if incoming session initialization started.
-        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let mut waiter = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
@@ -1042,14 +1081,20 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_already_established() {
         let guards = Registry::default();
-        let permit = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let permit = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
         let _session = mock_establish_outgoing(permit).await.unwrap();
 
-        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let mut waiter = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };

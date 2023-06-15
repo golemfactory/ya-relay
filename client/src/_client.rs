@@ -21,10 +21,11 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Payload, SlotId};
 
 use crate::_metrics::register_metrics;
+use crate::_session_traits::SessionDeregistration;
 
 pub use crate::_config::{ClientBuilder, ClientConfig, FailFast};
 pub use crate::_error::SessionError;
-pub use crate::_session::SessionDesc;
+pub use crate::_raw_session::SessionDesc;
 pub use crate::_transport_layer::{ForwardReceiver, ForwardSender, TransportLayer};
 
 use crate::_direct_session::DirectSession;

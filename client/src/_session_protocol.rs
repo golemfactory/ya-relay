@@ -20,14 +20,14 @@ use ya_relay_proto::proto::RequestId;
 use crate::_client::ClientConfig;
 use crate::_direct_session::DirectSession;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
-use crate::_session::RawSession;
-use crate::_session_layer::SessionLayer;
+use crate::_raw_session::RawSession;
 use crate::_session_registry::{InitState, SessionPermit};
+use crate::_session_traits::SessionRegistration;
 
 #[derive(Clone)]
 pub struct SessionProtocol {
     state: Arc<Mutex<SessionProtocolState>>,
-    layer: SessionLayer,
+    layer: Arc<Box<dyn SessionRegistration>>,
 
     simultaneous_challenges: Arc<Semaphore>,
     config: Arc<ClientConfig>,
@@ -49,7 +49,11 @@ pub struct SessionProtocolState {
 }
 
 impl SessionProtocol {
-    pub fn new(layer: SessionLayer, sink: OutStream) -> SessionProtocol {
+    pub(crate) fn new(
+        config: Arc<ClientConfig>,
+        layer: impl SessionRegistration + 'static,
+        sink: OutStream,
+    ) -> SessionProtocol {
         // We don't want to overwhelm CPU with challenge solving operations.
         // Leave at least 2 threads for yagna to work.
         let max_heavy_threads = std::cmp::max(num_cpus::get() - 2, 1);
@@ -57,8 +61,8 @@ impl SessionProtocol {
         SessionProtocol {
             state: Arc::new(Mutex::new(SessionProtocolState::default())),
             sink,
-            layer: layer.clone(),
-            config: layer.config,
+            layer: Arc::new(Box::new(layer)),
+            config,
             simultaneous_challenges: Arc::new(Semaphore::new(max_heavy_threads)),
         }
     }
@@ -305,6 +309,8 @@ impl SessionProtocol {
         let remote_id = permit.registry.id;
         let (sender, receiver) = mpsc::channel(1);
 
+        // TODO: We don't need abortability on this level, because we have this functionality
+        //       on external layers.
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         {
@@ -627,7 +633,11 @@ mod tests {
         let layer2 = network.new_layer().await.unwrap();
         let protocol = layer1.protocol;
 
-        let mut permit = match layer1.guards.lock_outgoing(layer2.id, &[layer2.addr]).await {
+        let mut permit = match layer1
+            .guards
+            .lock_outgoing(layer2.id, &[layer2.addr], layer1.layer.clone())
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization permit"),
         };
@@ -635,7 +645,7 @@ mod tests {
         let guard1 = permit.registry.clone();
         let mut waiter1 = guard1.awaiting_notifier();
 
-        let _ = permit.results(
+        let _ = permit.collect_results(
             protocol
                 .init_p2p_session(layer2.addr, &permit)
                 .await
@@ -645,7 +655,11 @@ mod tests {
         // Finishes the initialization by setting established state.
         drop(permit);
 
-        let mut waiter2 = match layer2.guards.lock_incoming(layer1.id, &[layer1.addr]).await {
+        let mut waiter2 = match layer2
+            .guards
+            .lock_incoming(layer1.id, &[layer1.addr], layer2.layer.clone())
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
