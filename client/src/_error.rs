@@ -28,6 +28,8 @@ pub enum SessionError {
     Network(String),
     #[error("Timeout: {0}")]
     Timeout(String),
+    #[error("Aborted: {0}")]
+    Aborted(String),
     #[error("Not Found: {0}")]
     NotFound(String),
     #[error("Relay error: {0}")]

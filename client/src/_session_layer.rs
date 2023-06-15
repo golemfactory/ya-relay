@@ -263,11 +263,18 @@ impl SessionLayer {
         Ok(info)
     }
 
+    /// Function doesn't wait for abort to finish.
     pub async fn abort_initializations(
         &self,
         session: Arc<RawSession>,
     ) -> Result<(), SessionError> {
-        unimplemented!()
+        let remote = session.remote;
+        if let Some(entry) = self.registry.get_entry_by_addr(&remote).await {
+            entry.abort_initialization().await;
+        }
+        Err(SessionError::NotFound(format!(
+            "Can't find `RegistryEntry` by addr {remote}"
+        )))
     }
 
     /// Disconnects from provided Node and all secondary identities.
@@ -366,6 +373,7 @@ impl SessionLayer {
             let mut state = self.state.write().await;
             for id in &session.owner.identities {
                 state.p2p_nodes.remove(id);
+                state.nodes.remove(id);
             }
             state.p2p_sessions.remove(&session.raw.remote);
 
@@ -545,7 +553,11 @@ impl SessionLayer {
                 // session in other task and wait for finish.
                 tokio::task::spawn_local(async move {
                     permit
-                        .results(myself.resolve(remote_id, &permit, &[]).await)
+                        .collect_results(
+                            permit
+                                .run_abortable(myself.resolve(remote_id, &permit, &[]))
+                                .await,
+                        )
                         .on_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
                 })
                 .await
@@ -583,7 +595,11 @@ impl SessionLayer {
                 // session in other task and wait for finish.
                 tokio::task::spawn_local(async move {
                     permit
-                        .results(myself.try_server_session(remote_id, addr, &permit).await)
+                        .collect_results(
+                            permit
+                                .run_abortable(myself.try_server_session(remote_id, addr, &permit))
+                                .await,
+                        )
                         .on_err(|e| {
                             log::info!(
                                 "Failed init relay session with {remote_id} ({addr}). Error: {e}"
@@ -912,9 +928,9 @@ impl SessionLayer {
 
             return match self.registry.lock_incoming(remote_id, &[from]).await {
                 SessionLock::Permit(mut permit) => {
-                    permit.results(
-                        protocol
-                            .new_session(request_id, from, &permit, request)
+                    permit.collect_results(
+                        permit
+                            .run_abortable(protocol.new_session(request_id, from, &permit, request))
                             .await,
                     )?;
                     Ok(())
@@ -961,7 +977,7 @@ impl SessionLayer {
         from: SocketAddr,
         by: By,
     ) -> anyhow::Result<()> {
-        log::debug!("Got `Disconnected` from {from}");
+        log::trace!("Handling `Disconnected` from {from}");
 
         // SessionId should be valid, otherwise this is some unknown session
         // so we should be cautious, when processing it.
@@ -1040,14 +1056,19 @@ impl SessionLayer {
             message.endpoints
         );
 
-        let permit = match self.registry.lock_outgoing(node_id, &endpoints).await {
+        let mut permit = match self.registry.lock_outgoing(node_id, &endpoints).await {
             SessionLock::Permit(permit) => permit,
+            // In this connection is already in progress
             SessionLock::Wait(waiter) => return Ok(()),
         };
 
         // Don't try to use `ReverseConnection`, when handling `ReverseConnection`.
-        self.resolve(node_id, &permit, &[ConnectionMethod::Reverse])
-            .await
+        permit
+            .collect_results(
+                permit
+                    .run_abortable(self.resolve(node_id, &permit, &[ConnectionMethod::Reverse]))
+                    .await,
+            )
             .map_err(|e| {
                 anyhow!("Failed to resolve ReverseConnection. node_id={node_id} error={e}")
             })?;

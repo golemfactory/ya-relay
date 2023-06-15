@@ -95,15 +95,13 @@ impl TcpLayer {
         self.registry.resolve_node(node).await
     }
 
-    pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn remove_node(&self, node_id: NodeId) {
         let remote_ip = self.registry.resolve_ip(node_id).await;
+        self.registry.remove_node(node_id).await;
 
         self.net
             .disconnect_all(remote_ip, TCP_DISCONN_TIMEOUT)
             .await;
-
-        self.registry.remove_node(node_id).await;
-        Ok(())
     }
 
     /// Connects to other Node and returns `TcpSender` for sending data.
@@ -384,7 +382,8 @@ impl TcpLayer {
                                 node.id(),
                                 error
                             );
-                            // TODO: Should we close TCP connection here?
+
+                            myself.remove_node(node.id()).await;
                         }
                     });
                 }

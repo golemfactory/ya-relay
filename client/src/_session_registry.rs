@@ -5,7 +5,7 @@ use anyhow::bail;
 use chrono::{DateTime, Duration, Utc};
 use derive_more::Display;
 use educe::Educe;
-use futures::future::LocalBoxFuture;
+use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
 use futures::FutureExt;
 use std::collections::HashMap;
 use std::future::Future;
@@ -14,12 +14,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
-use ya_relay_core::identity::Identity;
 
 use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_error::{SessionError, SessionResult, TransitionError};
 use crate::_session::RawSession;
 
+use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, LastSeen, NodeInfo, SessionId};
 use ya_relay_core::udp_stream::OutStream;
 use ya_relay_core::NodeId;
@@ -185,6 +185,11 @@ impl Registry {
         state.find(node_id, &[])
     }
 
+    pub async fn get_entry_by_addr(&self, remote: &SocketAddr) -> Option<RegistryEntry> {
+        let mut state = self.state.read().await;
+        state.find_by_addr(remote)
+    }
+
     pub async fn lock_outgoing(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
         self.guard(node_id, addrs).await.lock_outgoing().await
     }
@@ -264,6 +269,10 @@ impl RegistryState {
     fn find_by_id(&self, node_id: NodeId) -> Option<RegistryEntry> {
         self.by_node_id.get(&node_id).cloned()
     }
+
+    fn find_by_addr(&self, addr: &SocketAddr) -> Option<RegistryEntry> {
+        self.by_addr.get(addr).cloned()
+    }
 }
 
 #[derive(Clone)]
@@ -305,6 +314,9 @@ pub struct RegistryEntryState {
     /// In the future we should store here slot assigned by us, that can be used to forward packets
     /// through our Node.
     slot: SlotId,
+
+    /// Handle to abort initialization that's currently in progress.
+    abort_handle: Option<AbortHandle>,
 }
 
 impl RegistryEntry {
@@ -611,6 +623,7 @@ impl RegistryEntry {
                 supported_encryption: vec![],
                 state: SessionState::Closed,
                 slot: FORWARD_SLOT_ID,
+                abort_handle: None,
             })),
             state_notifier: Arc::new(notify_msg),
             config,
@@ -681,6 +694,21 @@ impl RegistryEntry {
     pub async fn state(&self) -> SessionState {
         self.state.read().await.state.clone()
     }
+
+    pub async fn register_abortable(&self, abort: AbortHandle) {
+        let mut state = self.state.write().await;
+        state.abort_handle = Some(abort);
+    }
+
+    pub async fn abort_initialization(&self) {
+        if let Some(handle) = {
+            let mut state = self.state.write().await;
+            state.abort_handle.take()
+        } {
+            log::debug!("Aborting session initialization with [{}]", self.id);
+            handle.abort();
+        }
+    }
 }
 
 /// Structure giving you exclusive right to initialize session (`Permit`)
@@ -692,8 +720,6 @@ pub enum SessionLock {
 
 /// Structure giving you exclusive right to initialize session.
 /// TODO: Struct should ensure clear Session state on drop.
-/// TODO: Rename `guard` in every place in the code, since it has completely
-///       different purpose now
 pub struct SessionPermit {
     pub registry: RegistryEntry,
     pub(crate) result: Option<Result<Arc<DirectSession>, SessionError>>,
@@ -726,12 +752,33 @@ impl SessionPermit {
         }
     }
 
-    pub fn results(
+    pub fn collect_results(
         &mut self,
         result: Result<Arc<DirectSession>, SessionError>,
     ) -> Result<Arc<DirectSession>, SessionError> {
         self.result = Some(result.clone());
         result
+    }
+
+    /// Run initialization as abort-able future.
+    ///
+    /// It would be nice to unify this function with `SessionPermit::collect_results`, but the problem
+    /// is that `collect_results` needs mut access to `SessionPermit` and abortable future needs reference
+    /// to the same `SessionPermit`.
+    pub async fn run_abortable<
+        'a,
+        F: Future<Output = Result<Arc<DirectSession>, SessionError>> + 'a,
+    >(
+        &'a self,
+        future: F,
+    ) -> Result<Arc<DirectSession>, SessionError> {
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+
+        self.registry.register_abortable(abort_handle).await;
+
+        Abortable::new(future, abort_registration)
+            .await
+            .map_err(|e| SessionError::Aborted(e.to_string()))?
     }
 }
 
@@ -840,7 +887,9 @@ mod tests {
             .await?;
         node.transition_outgoing(InitState::Ready).await?;
 
-        let session = permit.results(Ok(mock_session(&permit).await)).unwrap();
+        let session = permit
+            .collect_results(Ok(mock_session(&permit).await))
+            .unwrap();
         drop(permit);
         Ok(session)
     }
@@ -860,7 +909,9 @@ mod tests {
             .await?;
         node.transition_incoming(InitState::Ready).await?;
 
-        let session = permit.results(Ok(mock_session(&permit).await)).unwrap();
+        let session = permit
+            .collect_results(Ok(mock_session(&permit).await))
+            .unwrap();
         drop(permit);
         Ok(session)
     }
