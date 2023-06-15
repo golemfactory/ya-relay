@@ -346,7 +346,8 @@ impl SessionLayer {
         )
         .await;
 
-        if let Some(mut out_stream) = self.sink.lock().unwrap().take() {
+        let out_stream = { self.sink.lock().unwrap().take() };
+        if let Some(mut out_stream) = out_stream {
             if let Err(e) = out_stream.close().await {
                 log::warn!("Error closing socket (output stream). {e}");
             }
