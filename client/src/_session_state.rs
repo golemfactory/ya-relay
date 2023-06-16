@@ -171,3 +171,25 @@ impl SessionState {
         }
     }
 }
+
+#[allow(dead_code)]
+/// This enum describes our knowledge about other Nodes, when
+/// we are disconnected, or we have trouble keeping connection alive.
+pub enum NodeState {
+    /// We didn't try to communicate with this Node yet.
+    Unknown,
+    /// We don't get any response from other Node for longer period of time.
+    /// TODO: We should handle gracefully temporary network problems. Expiration tracker
+    ///       could have 2 phases: first finds Nodes not responding to ping. Than he tries
+    ///       to ping them in regular interval for certain period of time, hoping that Node will be back.
+    ///       This way we could stall connection for this period (pausing forwarding for example), but
+    ///       it could work seamlessly afterwards.
+    NotResponding,
+    /// Node can't be reached.
+    Unreachable,
+    /// Node was shutdown. How we can know this for sure? Maybe we could pass `Reason` in
+    /// `Disconnected` message?
+    Shutdown,
+    /// Node is reconnecting all the time and connection is unstable, can break at any time.
+    Unstable,
+}

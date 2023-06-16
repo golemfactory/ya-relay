@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, RwLock};
 
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
-use ya_relay_stack::ya_smoltcp::wire::IpAddress;
+use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpEndpoint};
 use ya_relay_stack::Connection;
 
 use crate::_error::{ResultExt, TcpError, TcpTransitionError};
@@ -363,6 +363,10 @@ impl TcpSender {
             .await
             .map_err(|e| TcpError::Generic(e.to_string()))
     }
+}
+
+pub(crate) fn channel_endpoint(id: NodeId, channel: ChannelType) -> IpEndpoint {
+    (to_ipv6(id), channel as u16).into()
 }
 
 pub(crate) fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {

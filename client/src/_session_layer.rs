@@ -965,6 +965,11 @@ impl SessionLayer {
             let remote_id = challenge::recover_default_node_id(&request)
                 .map_err(|e| ProtocolError::RecoverId(e.to_string()))?;
 
+            // TODO: Check if we don't have the session already. In such a case we should let other party
+            //       establish session, but we must replace session as gracefully as possible on our side,
+            //       to avoid breaking services that might use this connection (We shouldn't go through `Closed` state).
+            //       When removing session information, we can't send disconnect by accident.
+
             return match self.registry.lock_incoming(remote_id, &[from], this).await {
                 SessionLock::Permit(mut permit) => {
                     permit.collect_results(

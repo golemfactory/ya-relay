@@ -1,11 +1,12 @@
 use anyhow::Context;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -26,7 +27,8 @@ use crate::_client::Forwarded;
 use crate::_error::TcpError;
 use crate::_session_layer::SessionLayer;
 use crate::_tcp_registry::{
-    to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry, TcpSender, VirtNode,
+    channel_endpoint, to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry,
+    TcpSender, VirtNode,
 };
 use crate::_transport_layer::ForwardReceiver;
 
@@ -78,9 +80,8 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
-        let virt_endpoint: IpEndpoint = (to_ipv6(our_id), ChannelType::Messages as u16).into();
-        let virt_transfer_endpoint: IpEndpoint =
-            (to_ipv6(our_id), ChannelType::Transfer as u16).into();
+        let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
+        let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
 
         self.net.spawn_local();
         self.net.bind(Protocol::Tcp, virt_endpoint)?;
@@ -224,7 +225,38 @@ impl TcpLayer {
     }
 
     pub async fn shutdown(&self) {
-        // empty
+        let our_id = self.session_layer.config.node_id;
+        let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
+        let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
+
+        // Unbind listening sockets, so no new connection can be created.
+        self.net
+            .unbind(Protocol::Tcp, virt_endpoint)
+            .map_err(|e| log::warn!("Shutdown error when unbinding sockets (Messages): {e}"))
+            .ok();
+        self.net
+            .unbind(Protocol::Tcp, virt_transfer_endpoint)
+            .map_err(|e| log::warn!("Shutdown error when unbinding sockets (Transfer): {e}"))
+            .ok();
+
+        // Try to disconnect all connections gracefully. This requires sending TCP closing packets
+        // to other Nodes, that's why it is important to first close everything related to TCP and
+        // than shutdown `SessionLayer`.
+        let disconnect_futures = self
+            .net
+            .connections()
+            .keys()
+            .cloned()
+            .map(|conn| {
+                async move {
+                    self.net
+                        .disconnect_all(conn.remote.addr.as_bytes().into(), Duration::from_secs(2))
+                        .await
+                }
+                .boxed_local()
+            })
+            .collect::<Vec<_>>();
+        futures::future::join_all(disconnect_futures).await;
     }
 
     async fn spawn_ingress_router(&self) -> anyhow::Result<()> {
