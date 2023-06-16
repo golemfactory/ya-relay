@@ -8,7 +8,6 @@ use ya_relay_core::NodeId;
 
 use crate::_client::SessionError;
 use crate::_direct_session::DirectSession;
-use crate::_raw_session::RawSession;
 use crate::_routing_session::NodeRouting;
 
 /// Trait for decoupling `SessionProtocol` from `SessionLayer`.
@@ -29,7 +28,8 @@ pub(crate) trait SessionRegistration: 'static {
 /// Trait for decoupling `SessionPermit` from `SessionLayer`.
 #[async_trait(?Send)]
 pub trait SessionDeregistration: 'static {
-    async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError>;
-    async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError>;
-    async fn abort_initializations(&self, session: Arc<RawSession>) -> Result<(), SessionError>;
+    /// Unregisters all Node's data. Function can't fail, it has to handle errors internally.
+    async fn unregister(&self, node_id: NodeId);
+    async fn unregister_session(&self, session: Arc<DirectSession>);
+    async fn abort_initializations(&self, remote: SocketAddr) -> Result<(), SessionError>;
 }

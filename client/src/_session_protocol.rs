@@ -21,7 +21,8 @@ use crate::_client::ClientConfig;
 use crate::_direct_session::DirectSession;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::_raw_session::RawSession;
-use crate::_session_registry::{InitState, SessionPermit};
+use crate::_session_registry::SessionPermit;
+use crate::_session_state::InitState;
 use crate::_session_traits::SessionRegistration;
 
 #[derive(Clone)]
@@ -509,7 +510,7 @@ impl SessionProtocol {
         ))
     }
 
-    async fn cleanup_initialization(&self, session_id: &SessionId) {
+    pub(crate) async fn cleanup_initialization(&self, session_id: &SessionId) {
         let mut state = self.state.lock().unwrap();
 
         state.incoming_sessions.remove(session_id);
@@ -623,7 +624,8 @@ impl SessionProtocol {
 mod tests {
     use super::*;
 
-    use crate::_session_registry::{SessionLock, SessionState};
+    use crate::_session_registry::SessionLock;
+    use crate::_session_state::SessionState;
     use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]

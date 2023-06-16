@@ -64,17 +64,6 @@ async fn close_sessions(
             session.raw.remote
         );
 
-        layer
-            .close_session(session.clone())
-            .await
-            .map_err(|e| {
-                log::warn!(
-                    "Error closing session {} ({}): {}",
-                    session.raw.id,
-                    session.raw.remote,
-                    e
-                )
-            })
-            .ok();
+        layer.unregister_session(session.clone()).await;
     }
 }

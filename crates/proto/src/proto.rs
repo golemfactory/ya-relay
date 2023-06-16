@@ -159,14 +159,19 @@ impl std::fmt::Display for Request {
 
 impl std::fmt::Display for Session {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let challenge_req = match self.challenge_req {
+        let challenge_req = match &self.challenge_req {
             None => "None".to_string(),
-            Some(_) => format!("{}", self.challenge_req.as_ref().unwrap()),
+            Some(challenge_req) => format!("{}", challenge_req),
+        };
+
+        let challenge_resp = match &self.challenge_resp {
+            None => "None".to_string(),
+            Some(challenge_resp) => format!("{}", challenge_resp),
         };
 
         write!(f, "Session {{ ")?;
         write!(f, "challenge_req: {}, ", challenge_req)?;
-        write!(f, "challenge_resp: {:?}, ", self.challenge_resp)?;
+        write!(f, "challenge_resp: {}, ", challenge_resp)?;
         write!(
             f,
             "supported_encryptions: {:?}, ",
@@ -209,12 +214,11 @@ impl std::fmt::Display for ChallengeResponse {
         write!(f, "solution: {}, ", hex::encode(&self.solution))?;
         write!(
             f,
-            "signatures: [: {} ]",
+            "signatures: [ {} ]",
             hex::encode(
-                &self
-                    .signatures
+                self.signatures
                     .iter()
-                    .map(|sig| format!("{}, ", hex::encode(&sig)))
+                    .map(|sig| format!("{}, ", hex::encode(sig)))
                     .collect::<String>()
                     .trim_end_matches(", ")
             )

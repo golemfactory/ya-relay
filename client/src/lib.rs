@@ -30,6 +30,7 @@ mod _routing_session;
 mod _session_layer;
 mod _session_protocol;
 mod _session_registry;
+mod _session_state;
 mod _session_traits;
 mod _tcp_registry;
 mod _transport_layer;

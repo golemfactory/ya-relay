@@ -24,9 +24,8 @@ use crate::_expire::track_sessions_expiration;
 use crate::_raw_session::{RawSession, SessionType};
 use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{
-    Registry, RegistryEntry, RelayedState, SessionLock, SessionPermit, SessionState, Validity,
-};
+use crate::_session_registry::{Registry, RegistryEntry, SessionLock, SessionPermit, Validity};
+use crate::_session_state::{RelayedState, SessionState};
 use crate::_session_traits::{SessionDeregistration, SessionRegistration};
 use crate::_transport_layer::ForwardReceiver;
 
@@ -99,7 +98,7 @@ impl SessionRegistration for SessionLayer {
         node_id: NodeId,
         identities: Vec<Identity>,
     ) -> anyhow::Result<Arc<DirectSession>> {
-        log::trace!("Calling register_session {id} {addr} {node_id}");
+        log::trace!("Calling register_session {id} [{node_id}] ({addr})");
 
         let session = RawSession::new(addr, id, self.out_stream()?);
 
@@ -159,6 +158,11 @@ impl SessionRegistration for SessionLayer {
     }
 
     async fn register_routing(&self, routing: Arc<NodeRouting>) -> anyhow::Result<()> {
+        log::trace!(
+            "Calling `register_routing` for Node [{}]",
+            routing.node.default_id.node_id
+        );
+
         let route = match routing.route.upgrade() {
             None => bail!("`DirectSession` was closed"),
             Some(route) => route,
@@ -182,15 +186,8 @@ impl SessionRegistration for SessionLayer {
 
 #[async_trait(?Send)]
 impl SessionDeregistration for SessionLayer {
-    /// Disconnects from provided Node and all secondary identities.
-    /// If we had p2p session with Node, it will be closed.
-    /// TODO: Function should be abort-safe
-    async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
-        log::info!("Disconnecting Node [{node_id}]");
-
-        // Note: This function shouldn't return before changing state to `Closed`.
-        let entry = self.registry.guard(node_id, &[]).await;
-        entry.transition(SessionState::Closing).await?;
+    async fn unregister(&self, node_id: NodeId) {
+        log::debug!("Unregistering Node [{node_id}]");
 
         let direct = {
             let mut state = self.state.write().await;
@@ -237,37 +234,73 @@ impl SessionDeregistration for SessionLayer {
         };
 
         if let Some(direct) = direct {
-            self.close_session_internal(direct).await;
+            self.unregister_session(direct).await;
         }
-        entry.transition_closed().await?;
-        Ok(())
     }
 
-    async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError> {
-        let myself = self.clone();
-        // Make function abort-safe. Dropping this future won't stop execution
-        // of closing function.
-        tokio::task::spawn_local(async move {
-            let entry = myself.registry.guard(session.owner.default_id, &[]).await;
+    /// Closing session but without state changes.
+    /// Function is separated for 2 reasons:
+    /// - To allow spawning in separate thread, so dropping future that initiated disconnection
+    ///   won't result in unfinished
+    /// - To use this function as part of `unregister` (which changes state itself so we can't
+    ///   do this for the second time)
+    async fn unregister_session(&self, session: Arc<DirectSession>) {
+        log::info!(
+            "Closing session {} with [{}] ({})",
+            session.raw.id,
+            session.owner.default_id,
+            session.raw.remote
+        );
 
-            entry.transition(SessionState::Closing).await?;
-            myself.close_session_internal(session).await;
-            entry.transition_closed().await?;
-            Ok(())
-        })
-        .await
-        .map_err(|e| SessionError::Unexpected(e.to_string()))?
+        /// Notifies other Node that we are closing connection. This is only graceful optimization.
+        /// Node should handle disconnected Nodes properly even if he won't be notified.
+        session.raw.disconnect().await.ok();
+
+        let forwards = session.list();
+        {
+            let mut state = self.state.write().await;
+            for id in &session.owner.identities {
+                state.p2p_nodes.remove(id);
+                state.nodes.remove(id);
+            }
+            state.p2p_sessions.remove(&session.raw.remote);
+
+            for id in forwards.iter().flat_map(|entry| entry.identities.iter()) {
+                state.nodes.remove(id);
+            }
+        }
+
+        log::info!(
+            "Session {} with [{}] ({}) closed",
+            session.raw.id,
+            session.owner.default_id,
+            session.raw.remote
+        );
     }
 
     /// Function doesn't wait for abort to finish.
-    async fn abort_initializations(&self, session: Arc<RawSession>) -> Result<(), SessionError> {
-        let remote = session.remote;
-        if let Some(entry) = self.registry.get_entry_by_addr(&remote).await {
-            entry.abort_initialization().await;
+    async fn abort_initializations(&self, remote: SocketAddr) -> Result<(), SessionError> {
+        log::trace!("Called `abort_initializations` for {remote}");
+
+        let entry = match self.registry.get_entry_by_addr(&remote).await {
+            None => {
+                return Err(SessionError::NotFound(format!(
+                    "Can't find `RegistryEntry` by addr {remote}"
+                )))
+            }
+            Some(entry) => entry,
+        };
+
+        let state = entry.state().await;
+        entry.abort_initialization().await;
+
+        let protocol = self.get_protocol().await?;
+        if let Some(session) = protocol.get_temporary_session(&remote).await {
+            session.disconnect().await.ok();
+            protocol.cleanup_initialization(&session.id).await;
+            return Ok(());
         }
-        Err(SessionError::NotFound(format!(
-            "Can't find `RegistryEntry` by addr {remote}"
-        )))
+        Ok(())
     }
 }
 
@@ -333,16 +366,7 @@ impl SessionLayer {
             sessions
                 .into_iter()
                 .filter_map(|session| session.upgrade())
-                .map(|session| {
-                    self.close_session(session.clone()).map_err(move |err| {
-                        log::warn!(
-                            "Failed to close session {} ({}). {}",
-                            session.raw.id,
-                            session.raw.remote,
-                            err,
-                        )
-                    })
-                }),
+                .map(|session| self.unregister_session(session)),
         )
         .await;
 
@@ -452,47 +476,41 @@ impl SessionLayer {
         Ok(info)
     }
 
-    /// Closing session but without state changes.
-    /// Function is separated for 2 reasons:
-    /// - To allow spawning in separate thread, so dropping future that initiated disconnection
-    ///   won't result in unfinished
-    /// - To use this function as part if `disconnect_node` (which changes state itself so we can't
-    ///   do this for the second time)
-    async fn close_session_internal(&self, session: Arc<DirectSession>) {
-        log::info!(
-            "Closing session {} with [{}] ({})",
-            session.raw.id,
-            session.owner.default_id,
-            session.raw.remote
-        );
+    /// Disconnects from provided Node and all secondary identities.
+    /// If we had p2p session with Node, it will be closed.
+    /// TODO: Function should be abort-safe
+    /// TODO: `disconnect` shouldn't fail, because there is no reasonable reaction to this case.
+    ///       This function must leave everything in clean state.
+    pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
+        log::info!("Disconnecting Node [{node_id}]");
 
-        let forwards = session.list();
-        {
-            let mut state = self.state.write().await;
-            for id in &session.owner.identities {
-                state.p2p_nodes.remove(id);
-                state.nodes.remove(id);
-            }
-            state.p2p_sessions.remove(&session.raw.remote);
+        // Note: This function shouldn't return before changing state to `Closed` (abort-safety).
+        let entry = self.registry.guard(node_id, &[]).await;
+        entry.transition(SessionState::Closing).await?;
+        self.unregister(node_id).await;
+        entry.transition_closed().await?;
+        Ok(())
+    }
 
-            for id in forwards.iter().flat_map(|entry| entry.identities.iter()) {
-                state.nodes.remove(id);
-            }
-        }
+    pub async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError> {
+        let myself = self.clone();
+        // Makes function abort-safe. Dropping this future won't stop execution
+        // of closing function.
+        tokio::task::spawn_local(async move {
+            let entry = myself.registry.guard(session.owner.default_id, &[]).await;
 
-        session.raw.disconnect().await.ok();
-
-        log::info!(
-            "Session {} with [{}] ({}) closed",
-            session.raw.id,
-            session.owner.default_id,
-            session.raw.remote
-        );
+            entry.transition(SessionState::Closing).await?;
+            myself.unregister_session(session).await;
+            entry.transition_closed().await?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| SessionError::Unexpected(e.to_string()))?
     }
 
     pub(crate) async fn close_server_session(&self) -> bool {
         if let Ok(session) = self.server_session().await {
-            let _ = self.close_session(session).await;
+            self.close_session(session).await;
             return true;
         }
         false
@@ -593,9 +611,14 @@ impl SessionLayer {
         let addr = self.config.srv_addr;
         let this = self.clone();
 
+        log::trace!("Requested relay server session with [{remote_id}] ({addr}).");
+
         if let Some(session) = { self.state.read().await.p2p_sessions.get(&addr).cloned() } {
+            log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
             return Ok(session);
         }
+
+        log::trace!("Relay [{remote_id}] not found. Trying to establish session...");
 
         let session = match self.registry.lock_outgoing(remote_id, &[addr], this).await {
             SessionLock::Permit(mut permit) => {
@@ -930,10 +953,14 @@ impl SessionLayer {
         from: SocketAddr,
         request: proto::request::Session,
     ) -> Result<(), SessionError> {
+        log::trace!("Called `dispatch_session` by {from}.");
+
         let protocol = self.get_protocol().await?;
         let this = self.clone();
 
         if session_id.is_empty() {
+            log::trace!("Received `Session` packet with empty session id from {from}. Handling init attempt..");
+
             // Empty `session_id` indicates attempt to initialize session.
             let remote_id = challenge::recover_default_node_id(&request)
                 .map_err(|e| ProtocolError::RecoverId(e.to_string()))?;
@@ -947,11 +974,12 @@ impl SessionLayer {
                     )?;
                     Ok(())
                 }
-                SessionLock::Wait(_) => {
+                SessionLock::Wait(waiter) => {
                     // We didn't get lock, so probably other thread is in charge of initializing session.
                     // TODO: This could be situation, when both sides tried to initialize connection.
                     //       Maybe we should implement algorithm, which would decide, who has precedence.
                     //       It could be based on some kind of ordering according to NodeIds.
+                    log::debug!("Handling Session packet: Initialization is already in progress.. State: {}", waiter.registry.state().await);
                     Ok(())
                 }
             };
@@ -997,6 +1025,7 @@ impl SessionLayer {
 
         if let Ok(node) = match by {
             By::Slot(id) => match self.find_session(from).await {
+                // TODO: It's necessary to unregister routing as well.
                 Some(session) => session.remove_by_slot(id),
                 None => Err(anyhow!("Session with {from} not found")),
             },
@@ -1009,24 +1038,21 @@ impl SessionLayer {
                     bail!("Session id mismatch. Sender: {session_id}, session to close: {to_close}. Might be exploit attempt..")
                 }
 
-                match self.find_session(from).await {
+                return match self.find_session(from).await {
                     Some(session) => {
                         if session.raw.id != session_id {
                             bail!("Unexpected Session id: {session_id}")
                         }
 
-                        self.close_session(session).await?;
-                        return Ok(());
+                        self.close_session(session).await;
+                        Ok(())
                     }
                     None => {
                         // If we didn't find established session, maybe we have temporary session
                         // during initialization.
-                        if let Some(session) = self.dispatcher(from).await {
-                            return Ok(self.abort_initializations(session).await?);
-                        }
-                        Err(anyhow!("Session with {from} not found"))
+                        Ok(self.abort_initializations(from).await?)
                     }
-                }
+                };
             }
         } {
             log::info!("Node [{node}] disconnected from Relay. Stopping forwarding..");
@@ -1229,7 +1255,7 @@ impl Handler for SessionLayer {
                         myself
                             .on_disconnected(session_id, from, by)
                             .await
-                            .map_err(|e| log::debug!("Error handling `Disconnected`: {e}"))
+                            .map_err(|e| log::debug!("Handling `Disconnected`: {e}"))
                             .ok();
                     }
                     .boxed_local()
@@ -1250,7 +1276,7 @@ impl Handler for SessionLayer {
         request: proto::Request,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        log::trace!("Received request packet from {from}: {request:?}");
+        log::trace!("Received request packet from {from}: {request}");
 
         let (request_id, kind) = match request {
             proto::Request {
@@ -1496,6 +1522,9 @@ mod tests {
 
         assert_eq!(session.target(), layer2.id);
         assert_eq!(session.route(), layer2.id);
+
+        assert_eq!(session2.target(), layer1.id);
+        assert_eq!(session2.route(), layer1.id);
 
         session.disconnect().await.unwrap();
         // Let other side receive and handle `Disconnected` packet.
