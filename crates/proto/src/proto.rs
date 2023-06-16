@@ -203,6 +203,26 @@ impl std::fmt::Display for ChallengeRequest {
     }
 }
 
+impl std::fmt::Display for ChallengeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChallengeResponse {{ ")?;
+        write!(f, "solution: {}, ", hex::encode(&self.solution))?;
+        write!(
+            f,
+            "signatures: [: {} ]",
+            hex::encode(
+                &self
+                    .signatures
+                    .iter()
+                    .map(|sig| format!("{}, ", hex::encode(&sig)))
+                    .collect::<String>()
+                    .trim_end_matches(", ")
+            )
+        )?;
+        write!(f, " }}")
+    }
+}
+
 impl std::fmt::Display for Identity {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "Identity {{ ")?;
