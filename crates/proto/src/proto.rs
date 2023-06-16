@@ -11,6 +11,7 @@ use prost::encoding::{decode_key, encode_key, WireType};
 
 use crate::codec::DecodeError;
 
+use crate::proto::request::{Kind, Session};
 pub use ya_relay_util::Payload;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
@@ -135,6 +136,79 @@ impl std::fmt::Debug for Forward {
         )?;
         write_payload_fmt(f, &self.payload)?;
         write!(f, " )")
+    }
+}
+
+/// Implements Display for important parts of Request and prints the rest as Debug.
+/// You can extend this implementation according to your needs to make logs more
+/// readable.
+impl std::fmt::Display for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Request ( ")?;
+        write!(f, "request_id: {}, ", self.request_id)?;
+        match &self.kind {
+            None => write!(f, "kind: None")?,
+            Some(kind) => match kind {
+                Kind::Session(session) => write!(f, "{session}")?,
+                kind => write!(f, "kind: {kind:?}")?,
+            },
+        }
+        write!(f, " )")
+    }
+}
+
+impl std::fmt::Display for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let challenge_req = match self.challenge_req {
+            None => "None".to_string(),
+            Some(_) => format!("{}", self.challenge_req.as_ref().unwrap()),
+        };
+
+        write!(f, "Session {{ ")?;
+        write!(f, "challenge_req: {}, ", challenge_req)?;
+        write!(f, "challenge_resp: {:?}, ", self.challenge_resp)?;
+        write!(
+            f,
+            "supported_encryptions: {:?}, ",
+            self.supported_encryptions
+        )?;
+        write!(
+            f,
+            "identities: [ {}",
+            self.identities
+                .iter()
+                .map(|id| format!("{id}, "))
+                .collect::<String>()
+                .trim_end_matches(", ")
+        )?;
+
+        write!(f, "] }}")
+    }
+}
+
+impl std::fmt::Display for ChallengeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChallengeRequest {{ ")?;
+        write!(f, "version: {:2x?}, ", self.version)?;
+        write!(
+            f,
+            "version: {}, difficulty: {}, kind: {}, caps: {}, challenge: {}",
+            self.version,
+            self.difficulty,
+            self.kind,
+            self.caps,
+            hex::encode(&self.challenge)
+        )?;
+        write!(f, " }}")
+    }
+}
+
+impl std::fmt::Display for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Identity {{ ")?;
+        write!(f, "public_key: {}", hex::encode(&self.public_key))?;
+        write!(f, ", node_id: {}", hex::encode(&self.node_id))?;
+        write!(f, " }}")
     }
 }
 
