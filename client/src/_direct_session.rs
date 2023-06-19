@@ -1,22 +1,17 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use anyhow::{anyhow, bail};
-use derive_more::Display;
 use metrics::{counter, increment_counter};
 use std::collections::HashMap;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 
 use ya_relay_core::identity::Identity;
-use ya_relay_core::server_session::{SessionId, TransportType};
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, Payload, SlotId, FORWARD_SLOT_ID};
 
-use crate::_encryption::Encryption;
 use crate::_error::SessionError;
 use crate::_metrics::{RELAY_ID, SOURCE_ID, TARGET_ID};
-use crate::_raw_session::{RawSession, SessionType};
+use crate::_raw_session::RawSession;
 
 /// Describes Node identity.
 /// `IdType` Could be either plain `NodeId` or `Identity` structure containing
@@ -221,7 +216,7 @@ impl DirectSession {
     }
 
     pub fn list(&self) -> Vec<NodeEntry<NodeId>> {
-        let mut forwards = self.forwards.read().unwrap();
+        let forwards = self.forwards.read().unwrap();
         forwards.slots.values().cloned().collect()
     }
 
@@ -231,17 +226,17 @@ impl DirectSession {
     }
 
     pub fn get_by_slot(&self, slot: SlotId) -> Option<NodeEntry<NodeId>> {
-        let mut forwards = self.forwards.read().unwrap();
+        let forwards = self.forwards.read().unwrap();
         forwards.get_by_slot(slot)
     }
 
     pub fn get_by_id(&self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
-        let mut forwards = self.forwards.read().unwrap();
+        let forwards = self.forwards.read().unwrap();
         forwards.get_by_id(node_id)
     }
 
     pub fn find_slot(&self, node_id: &NodeId) -> Option<SlotId> {
-        let mut forwards = self.forwards.read().unwrap();
+        let forwards = self.forwards.read().unwrap();
         forwards.get_slot(node_id)
     }
 
@@ -295,12 +290,12 @@ impl DirectSession {
         let source = source.to_string();
         match transport {
             TransportType::Unreliable => {
-                counter!("ya-relay.packet.udp.incoming.size", size as u64, RELAY_ID => source.clone(), RELAY_ID => relay.clone());
-                increment_counter!("ya-relay.packet.udp.incoming.num", RELAY_ID => source, RELAY_ID => relay);
+                counter!("ya-relay.packet.udp.incoming.size", size as u64, SOURCE_ID => source.clone(), RELAY_ID => relay.clone());
+                increment_counter!("ya-relay.packet.udp.incoming.num", SOURCE_ID => source, RELAY_ID => relay);
             }
             TransportType::Reliable | TransportType::Transfer => {
-                counter!("ya-relay.packet.tcp.incoming.size", size as u64, RELAY_ID => source.clone(), RELAY_ID => relay.clone());
-                increment_counter!("ya-relay.packet.tcp.incoming.num", RELAY_ID => source, RELAY_ID => relay);
+                counter!("ya-relay.packet.tcp.incoming.size", size as u64, SOURCE_ID => source.clone(), RELAY_ID => relay.clone());
+                increment_counter!("ya-relay.packet.tcp.incoming.num", SOURCE_ID => source, RELAY_ID => relay);
             }
         }
     }
@@ -310,6 +305,7 @@ impl DirectSession {
 mod tests {
     use super::*;
 
+    use ya_relay_core::server_session::SessionId;
     use ya_relay_proto::codec::PacketKind;
 
     use lazy_static::lazy_static;
@@ -339,7 +335,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_direct_session_forwards_add_remove_entry() {
-        let mut session = mock_session();
+        let session = mock_session();
         let node = NodeEntry::<NodeId> {
             default_id: *NODE_ID1,
             identities: vec![*NODE_ID1],
@@ -359,7 +355,7 @@ mod tests {
         assert_eq!(entry.identities.len(), 1);
         assert_eq!(entry.identities[0], node.identities[0]);
 
-        session.remove(&*NODE_ID1);
+        session.remove(&*NODE_ID1).unwrap();
         assert!(session.get_by_slot(4).is_none());
         assert!(session.get_by_id(&*NODE_ID1).is_none());
         assert!(session.find_slot(&*NODE_ID1).is_none());
@@ -367,14 +363,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_direct_session_forwards_add_remove_entry_by_slot() {
-        let mut session = mock_session();
+        let session = mock_session();
         let node = NodeEntry::<NodeId> {
             default_id: *NODE_ID1,
             identities: vec![*NODE_ID1],
         };
 
         session.register(node.clone(), 4);
-        session.remove_by_slot(4);
+        session.remove_by_slot(4).unwrap();
 
         assert!(session.get_by_slot(4).is_none());
         assert!(session.get_by_id(&*NODE_ID1).is_none());
@@ -383,7 +379,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_direct_session_forwards_secondary_ids() {
-        let mut session = mock_session();
+        let session = mock_session();
         let node = NodeEntry::<NodeId> {
             default_id: *NODE_ID1,
             identities: vec![*NODE_ID1, *NODE_ID2],
@@ -415,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_direct_session_forwards_many_nodes() {
-        let mut session = mock_session();
+        let session = mock_session();
         let node1 = NodeEntry::<NodeId> {
             default_id: *NODE_ID1,
             identities: vec![*NODE_ID1, *NODE_ID2],
@@ -429,7 +425,7 @@ mod tests {
         session.register(node1.clone(), 4);
         session.register(node2.clone(), 5);
 
-        session.remove(&*NODE_ID1);
+        session.remove(&*NODE_ID1).unwrap();
 
         assert!(session.get_by_slot(4).is_none());
         assert!(session.get_by_id(&*NODE_ID1).is_none());

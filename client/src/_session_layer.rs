@@ -1,30 +1,24 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use anyhow::{anyhow, bail, Error};
+use anyhow::{anyhow, bail};
 use async_trait::async_trait;
-use chrono::Utc;
 use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
-use log::log;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::convert::{Infallible, TryFrom, TryInto};
-use std::future::Future;
+use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::RwLock;
 
 use crate::_client::{ClientConfig, Forwarded};
 use crate::_direct_session::{DirectSession, NodeEntry};
-use crate::_dispatch::{dispatch, Dispatcher, Handler};
+use crate::_dispatch::{dispatch, Handler};
 use crate::_encryption::Encryption;
 use crate::_error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
 use crate::_raw_session::{RawSession, SessionType};
 use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{Registry, RegistryEntry, SessionLock, SessionPermit, Validity};
+use crate::_session_registry::{Registry, SessionLock, SessionPermit, Validity};
 use crate::_session_state::{RelayedState, SessionState};
 use crate::_session_traits::{SessionDeregistration, SessionRegistration};
 use crate::_transport_layer::ForwardReceiver;
@@ -35,10 +29,10 @@ use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::{challenge, NodeId};
 use ya_relay_proto::codec::PacketKind;
+use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
 use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
-use ya_relay_proto::{codec, proto};
 use ya_relay_stack::Channel;
 
 type ReqFingerprint = (Vec<u8>, u64);
@@ -252,8 +246,8 @@ impl SessionDeregistration for SessionLayer {
             session.raw.remote
         );
 
-        /// Notifies other Node that we are closing connection. This is only graceful optimization.
-        /// Node should handle disconnected Nodes properly even if he won't be notified.
+        // Notifies other Node that we are closing connection. This is only graceful optimization.
+        // Node should handle disconnected Nodes properly even if he won't be notified.
         session.raw.disconnect().await.ok();
 
         let forwards = session.list();
@@ -291,7 +285,6 @@ impl SessionDeregistration for SessionLayer {
             Some(entry) => entry,
         };
 
-        let state = entry.state().await;
         entry.abort_initialization().await;
 
         let protocol = self.get_protocol().await?;
@@ -472,7 +465,7 @@ impl SessionLayer {
         self.registry
             .update_entry(info.clone())
             .await
-            .map_err(|e| SessionError::Internal("Registry update failed".to_string()))?;
+            .map_err(|e| SessionError::Internal(format!("Registry update failed: {e}")))?;
         Ok(info)
     }
 
@@ -510,8 +503,9 @@ impl SessionLayer {
 
     pub(crate) async fn close_server_session(&self) -> bool {
         if let Ok(session) = self.server_session().await {
-            self.close_session(session).await;
-            return true;
+            if self.close_session(session).await.is_ok() {
+                return true;
+            }
         }
         false
     }
@@ -748,7 +742,7 @@ impl SessionLayer {
 
     pub async fn try_server_session(
         &self,
-        node_id: NodeId,
+        _node_id: NodeId,
         addr: SocketAddr,
         permit: &SessionPermit,
     ) -> SessionResult<Arc<DirectSession>> {
@@ -814,7 +808,7 @@ impl SessionLayer {
     async fn try_reverse_connection(
         &self,
         node_id: NodeId,
-        permit: &SessionPermit,
+        _permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionError> {
         // We are trying to connect to Node without public IP. Send `ReverseConnection` message,
         // so Node will connect to us.
@@ -1049,7 +1043,7 @@ impl SessionLayer {
                             bail!("Unexpected Session id: {session_id}")
                         }
 
-                        self.close_session(session).await;
+                        self.close_session(session).await.ok();
                         Ok(())
                     }
                     None => {
@@ -1068,14 +1062,14 @@ impl SessionLayer {
 
     pub async fn on_reverse_connection(
         &self,
-        session_id: Vec<u8>,
+        _session_id: Vec<u8>,
         from: SocketAddr,
         message: ReverseConnection,
     ) -> anyhow::Result<()> {
         let this = self.clone();
         let node_id = NodeId::try_from(&message.node_id).map_err(|e| {
             anyhow!(
-                "ReverseConnection with invalid NodeId: {:?}",
+                "ReverseConnection with invalid NodeId: {:?}. {e}",
                 message.node_id
             )
         })?;
@@ -1103,7 +1097,7 @@ impl SessionLayer {
         let mut permit = match self.registry.lock_outgoing(node_id, &endpoints, this).await {
             SessionLock::Permit(permit) => permit,
             // In this connection is already in progress
-            SessionLock::Wait(waiter) => return Ok(()),
+            SessionLock::Wait(_waiter) => return Ok(()),
         };
 
         // Don't try to use `ReverseConnection`, when handling `ReverseConnection`.
@@ -1321,7 +1315,7 @@ impl Handler for SessionLayer {
         session: Option<Arc<DirectSession>>,
     ) -> Option<LocalBoxFuture<'static, ()>> {
         let reliable = forward.is_reliable();
-        let encrypted = forward.is_encrypted();
+        let _encrypted = forward.is_encrypted();
         let slot = forward.slot;
         let channel = self.ingress_channel.clone();
 
@@ -1404,7 +1398,7 @@ mod testing {
 
     use anyhow::bail;
     use futures::future::LocalBoxFuture;
-    use futures::{FutureExt, StreamExt};
+    use futures::FutureExt;
     use std::net::SocketAddr;
 
     impl SessionLayerPrivate for SessionLayer {
@@ -1434,13 +1428,11 @@ mod tests {
 
     use std::time::Duration;
     use tokio::time::timeout;
+
     use ya_relay_proto::proto::Payload;
 
     use crate::_raw_session::SessionType;
-    use crate::testing::accessors::SessionLayerPrivate;
     use crate::testing::init::MockSessionNetwork;
-
-    use ya_relay_server::testing::server::init_test_server;
 
     #[actix_rt::test]
     async fn test_session_layer_happy_path() {
@@ -1449,7 +1441,7 @@ mod tests {
         let layer2 = network.new_layer().await.unwrap();
 
         // Node-2 should be registered on relay
-        layer2.layer.server_session().await;
+        layer2.layer.server_session().await.unwrap();
         let session = layer1.layer.session(layer2.id).await.unwrap();
 
         // p2p session - target and route are the same.
@@ -1474,7 +1466,7 @@ mod tests {
         let mut receiver2 = layer2.layer.receiver().unwrap();
 
         // Node-2 should be registered on relay
-        layer2.layer.server_session().await;
+        layer2.layer.server_session().await.unwrap();
 
         // Send Node-1 -> Node-2
         let mut session = layer1.layer.session(layer2.id).await.unwrap();
@@ -1520,7 +1512,7 @@ mod tests {
         let layer2 = network.new_layer().await.unwrap();
 
         // Node-2 should be registered on relay
-        layer2.layer.server_session().await;
+        layer2.layer.server_session().await.unwrap();
         let mut session = layer1.layer.session(layer2.id).await.unwrap();
         // Wait until second Node will be ready with session
         let session2 = layer2.layer.session(layer1.id).await.unwrap();

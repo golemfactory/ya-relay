@@ -1,6 +1,3 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use anyhow::bail;
 use futures::channel::mpsc;
 use futures::{SinkExt, StreamExt};
@@ -13,13 +10,13 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{Forward, Payload};
-use ya_relay_stack::{Channel, Connection};
+use ya_relay_proto::proto::Payload;
+use ya_relay_stack::Channel;
 
 use crate::_client::{ClientConfig, Forwarded};
 use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
-use crate::_tcp_registry::{ChannelType, TcpConnection, TcpSender};
+use crate::_tcp_registry::{ChannelType, TcpSender};
 use crate::_virtual_layer::TcpLayer;
 
 pub type ForwardSender = mpsc::Sender<Payload>;

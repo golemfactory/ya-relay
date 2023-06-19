@@ -1,8 +1,4 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use anyhow::{anyhow, bail};
-use derive_more::From;
 use futures::future::{join_all, AbortHandle};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use std::collections::{HashMap, HashSet};
@@ -18,17 +14,15 @@ use tokio::sync::RwLock;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{Payload, SlotId};
+use ya_relay_proto::proto::Payload;
 
 use crate::_metrics::register_metrics;
-use crate::_session_traits::SessionDeregistration;
 
 pub use crate::_config::{ClientBuilder, ClientConfig, FailFast};
 pub use crate::_error::SessionError;
 pub use crate::_raw_session::SessionDesc;
 pub use crate::_transport_layer::{ForwardReceiver, ForwardSender, TransportLayer};
 
-use crate::_direct_session::DirectSession;
 pub use ya_relay_core::server_session::TransportType;
 pub use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
 
@@ -397,7 +391,7 @@ impl Client {
                 log::info!(
                     "Node [{neighbor}], which was earlier in our neighborhood, disconnected."
                 );
-                self.transport.session_layer.disconnect(neighbor).await;
+                self.transport.session_layer.disconnect(neighbor).await.ok();
             }
         }
 
@@ -436,7 +430,6 @@ pub struct Forwarded {
 #[cfg(test)]
 mod tests {
     use crate::_client::{ClientBuilder, FailFast};
-    use crate::testing::accessors::SessionLayerPrivate;
 
     use std::time::Duration;
 
