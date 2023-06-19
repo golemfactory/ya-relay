@@ -402,7 +402,8 @@ impl SessionProtocol {
 
         let tmp_session = self.temporary_session(&with).await;
 
-        let (packet, raw_challenge) = challenge::prepare_challenge_response();
+        let (packet, raw_challenge) =
+            challenge::prepare_challenge_response(config.challenge_difficulty);
         let challenge = proto::Packet::response(
             request_id,
             session_id.to_vec(),
@@ -573,7 +574,8 @@ impl SessionProtocol {
         &self,
         challenge: bool,
     ) -> SessionResult<(proto::request::Session, RawChallenge)> {
-        let (mut request, raw_challenge) = challenge::prepare_challenge_request();
+        let (mut request, raw_challenge) =
+            challenge::prepare_challenge_request(self.config.challenge_difficulty);
 
         let crypto = self
             .list_crypto()

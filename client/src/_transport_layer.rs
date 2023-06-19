@@ -7,6 +7,7 @@ use futures::{SinkExt, StreamExt};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -101,6 +102,11 @@ impl TransportLayer {
         }
 
         self.virtual_tcp.shutdown().await;
+
+        // After Tcp shutdown will return, we are sending last Tcp packet to notify other Node,
+        // that connection is closed. We shouldn't close sessions before we give them chance to be sent.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
         self.session_layer.shutdown().await
     }
 
@@ -192,6 +198,12 @@ impl TransportLayer {
         channel: TransportType,
     ) -> anyhow::Result<ForwardSender> {
         match self.forward_channel(node_id, channel).await {
+            // If connection was closed in the meantime, it will be initialized on demand.
+            // It will be problematic in some cases, because this can last up to a few seconds.
+            // In worst case scenario initialization will fail and we will wait 5s until timeout.
+            // Since user uses channel, sending will return immediately after item will be taken from
+            // queue, so he won't find out, but the response he expects won't come.
+            // This is argument for changing channels API to `TcpSender`.
             Some(tx) => Ok(tx),
             None => {
                 // Check if this isn't secondary identity. TcpLayer should always get default id.
@@ -258,6 +270,8 @@ impl TransportLayer {
         Ok(tx)
     }
 
+    /// If we will use `TcpSender` in external API, we won't need this function
+    /// anymore, because it only translates packets from channel to `TcpSender`.
     async fn forward_reliable_handler(
         self,
         mut sender: TcpSender,
@@ -265,13 +279,13 @@ impl TransportLayer {
     ) {
         while let Some(payload) = rx.next().await {
             log::trace!(
-                "Forwarding message to {} using Reliable transport",
+                "Forwarding message to [{}] using Reliable transport",
                 sender.target,
             );
 
             if let Err(err) = sender.send(payload).await {
                 log::debug!(
-                    "[{}] Reliable forward to {} failed: {err}",
+                    "[{}] Reliable forward to [{}] failed: {err}",
                     self.config.node_id,
                     sender.target,
                 );
@@ -288,6 +302,8 @@ impl TransportLayer {
         // TODO: Close Tcp connection.
     }
 
+    /// If we will use `RoutingSender` in external API, we won't need this function
+    /// anymore, because it only translates packets from channel to `RoutingSender`.
     async fn forward_unreliable_handler(
         self,
         mut session: RoutingSender,
@@ -296,7 +312,7 @@ impl TransportLayer {
         while let Some(payload) = rx.next().await {
             if let Err(error) = session.send(payload, TransportType::Unreliable).await {
                 log::debug!(
-                    "Forward (U) to {} through {} (session id: {}) failed: {error}",
+                    "Forward (U) to [{}] through [{}] (session id: {}) failed: {error}",
                     session.target(),
                     session.route(),
                     session.session_id()

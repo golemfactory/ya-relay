@@ -19,11 +19,28 @@ use crate::_virtual_layer::TcpLayer;
 
 // TODO: Try to unify with `TransportType`.
 // TODO: We could support any number of channels. User of the library could decide.
-#[derive(Clone, Copy, Display, Debug)]
+#[derive(Clone, Copy, Display, Debug, PartialEq, Hash, Eq)]
 pub enum ChannelType {
     Messages = 1,
     Transfer = 2,
 }
+
+#[derive(Clone, Copy, Display, Debug, PartialEq, Hash, Eq)]
+pub enum ChannelDirection {
+    Out,
+    In,
+}
+
+/// For communication with single Node we have max 4 channels:
+/// Separate channels for Messages and Transfer and each of them establishes
+/// separate connection in each direction.
+///
+/// Having one channel for both directions would be difficult, because you need to synchronize in cases
+/// when both parties are initializing connection at the same time. So maybe this choice requires more
+/// resources, but is less error prone and simpler in implementation.
+#[derive(Clone, Copy, Display, Debug, PartialEq, Hash, Eq)]
+#[display(fmt = "{}-{}", "_0", "_1")]
+pub struct ChannelDesc(pub ChannelType, pub ChannelDirection);
 
 /// Information about virtual node in TCP network built over UDP protocol.
 #[derive(Clone)]
@@ -33,15 +50,24 @@ pub struct VirtNode {
 
     /// We could support arbitrary number of channels, but this would require
     /// having dynamic data structure with locks, what is not worth at this moment.
-    pub transfer: VirtChannel,
-    pub message: VirtChannel,
+    pub channels: [VirtChannel; 4],
 }
 
 #[derive(Clone)]
 pub struct VirtChannel {
-    pub channel: ChannelType,
+    pub channel: ChannelDesc,
     pub state: Arc<RwLock<TcpState>>,
     pub state_notifier: Arc<broadcast::Sender<Result<Arc<TcpConnection>, TcpError>>>,
+}
+
+impl VirtChannel {
+    pub fn new(desc: ChannelDesc) -> VirtChannel {
+        VirtChannel {
+            channel: desc,
+            state: Arc::new(RwLock::new(TcpState::Closed)),
+            state_notifier: Arc::new(broadcast::channel(1).0),
+        }
+    }
 }
 
 impl VirtNode {
@@ -49,19 +75,30 @@ impl VirtNode {
         let ip = IpAddress::from(to_ipv6(id.into_array()));
         let routing = RoutingSender::empty(id, layer);
 
+        let msg_in_channel =
+            VirtChannel::new(ChannelDesc(ChannelType::Messages, ChannelDirection::In));
+        let msg_out_channel =
+            VirtChannel::new(ChannelDesc(ChannelType::Messages, ChannelDirection::Out));
+        let trans_in_channel =
+            VirtChannel::new(ChannelDesc(ChannelType::Transfer, ChannelDirection::In));
+        let trans_out_channel =
+            VirtChannel::new(ChannelDesc(ChannelType::Transfer, ChannelDirection::Out));
+
+        // This code should place channels according to index values returned by `ChannelDesc::index` function.
+        // We could use HashMap instead, but than we should handle case, when ChannelDesc is not in the array,
+        // what pollutes code with unnecessary Results.
+        // Assumption is checked by `test_virt_node_creation_assumption` test.
+        let channels = [
+            trans_in_channel,
+            trans_out_channel,
+            msg_in_channel,
+            msg_out_channel,
+        ];
+
         VirtNode {
             address: ip,
             routing,
-            transfer: VirtChannel {
-                channel: ChannelType::Transfer,
-                state: Arc::new(RwLock::new(TcpState::Closed)),
-                state_notifier: Arc::new(broadcast::channel(1).0),
-            },
-            message: VirtChannel {
-                channel: ChannelType::Messages,
-                state: Arc::new(RwLock::new(TcpState::Closed)),
-                state_notifier: Arc::new(broadcast::channel(1).0),
-            },
+            channels,
         }
     }
 
@@ -71,16 +108,23 @@ impl VirtNode {
 
     pub async fn transition(
         &self,
-        channel: ChannelType,
+        channel: ChannelDesc,
         new_state: TcpState,
     ) -> Result<(), TcpTransitionError> {
-        let state = match channel {
-            ChannelType::Messages => self.message.state.clone(),
-            ChannelType::Transfer => self.transfer.state.clone(),
-        };
-
-        let mut state = state.write().await;
+        let channel = self.channel(channel);
+        let mut state = channel.state.write().await;
         state.transition(new_state)
+    }
+
+    pub fn notifier(
+        &self,
+        channel: ChannelDesc,
+    ) -> Arc<broadcast::Sender<Result<Arc<TcpConnection>, TcpError>>> {
+        self.channel(channel).state_notifier
+    }
+
+    pub fn channel(&self, channel: ChannelDesc) -> VirtChannel {
+        self.channels[channel.index()].clone()
     }
 }
 
@@ -106,16 +150,13 @@ impl TcpRegistry {
         }
     }
 
-    pub async fn connect_attempt(&self, node: NodeId, channel: ChannelType) -> TcpLock {
+    pub async fn connect_attempt(&self, node: NodeId, channel: ChannelDesc) -> TcpLock {
         let node = match self.resolve_node(node).await {
             Ok(node) => node,
             Err(_) => self.add_virt_node(node).await,
         };
 
-        let notifier = match channel {
-            ChannelType::Messages => node.message.state_notifier.subscribe(),
-            ChannelType::Transfer => node.transfer.state_notifier.subscribe(),
-        };
+        let notifier = node.notifier(channel).subscribe();
 
         match node.transition(channel, TcpState::Connecting).await {
             Ok(_) => TcpLock::Permit(TcpPermit {
@@ -149,21 +190,27 @@ impl TcpRegistry {
     pub async fn remove_node(&self, node_id: NodeId) {
         // Removing all channels. Consider if we should remove channels one by one.
         if let Ok(node) = self.resolve_node(node_id).await {
-            node.transition(ChannelType::Messages, TcpState::Closed)
-                .await
-                .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Messages): {e}"))
-                .ok();
-            node.transition(ChannelType::Transfer, TcpState::Closed)
-                .await
-                .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Transfer): {e}"))
-                .ok();
+            node.transition(
+                (ChannelType::Messages, ChannelDirection::Out).into(),
+                TcpState::Closed,
+            )
+            .await
+            .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Messages): {e}"))
+            .ok();
+            node.transition(
+                (ChannelType::Transfer, ChannelDirection::Out).into(),
+                TcpState::Closed,
+            )
+            .await
+            .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Transfer): {e}"))
+            .ok();
         };
 
-        let mut state = self.state.write().await;
-        if let Some(remote_ip) = state.ips.remove(&node_id) {
-            log::debug!("[VirtualTcp] Disconnected from node [{node_id}]");
-            state.nodes.remove(&remote_ip);
-        }
+        // let mut state = self.state.write().await;
+        // if let Some(remote_ip) = state.ips.remove(&node_id) {
+        //     log::debug!("[VirtualTcp] Disconnected from node [{node_id}]");
+        //     state.nodes.remove(&remote_ip);
+        // }
     }
 
     pub async fn get_by_address(&self, addr: &[u8]) -> Option<VirtNode> {
@@ -194,6 +241,7 @@ pub enum TcpState {
     #[display(fmt = "Connected")]
     Connected(#[educe(PartialEq(ignore))] Arc<TcpConnection>),
     Failed,
+    Closing,
     Closed,
 }
 
@@ -204,7 +252,9 @@ impl TcpState {
             | (&TcpState::Failed, &TcpState::Connecting)
             | (&TcpState::Connecting, &TcpState::Failed)
             | (&TcpState::Connecting, &TcpState::Connected(_))
+            | (&TcpState::Connected(_), &TcpState::Closing)
             | (&TcpState::Connected(_), &TcpState::Closed) => (),
+            // | (&TcpState::Closing, &TcpState::Closed) => (),
             _ => {
                 return Err(TcpTransitionError::InvalidTransition(
                     self.clone(),
@@ -221,7 +271,7 @@ impl TcpState {
 pub struct TcpConnection {
     pub id: NodeId,
     pub conn: Connection,
-    pub channel: ChannelType,
+    pub channel: ChannelDesc,
 }
 
 /// Structure giving you exclusive right to initialize connection.
@@ -230,7 +280,7 @@ pub struct TcpConnection {
 /// without over-engineering.
 pub struct TcpPermit {
     pub node: VirtNode,
-    channel: ChannelType,
+    channel: ChannelDesc,
     pub(crate) result: Option<Result<Arc<TcpConnection>, TcpError>>,
 }
 
@@ -246,7 +296,7 @@ impl TcpPermit {
 
 pub(crate) async fn async_drop(
     node: VirtNode,
-    channel: ChannelType,
+    channel: ChannelDesc,
     result: Option<Result<Arc<TcpConnection>, TcpError>>,
 ) {
     let result = match result.clone() {
@@ -268,18 +318,15 @@ pub(crate) async fn async_drop(
         )),
     };
 
-    match channel {
-        ChannelType::Messages => node.message.state_notifier.clone(),
-        ChannelType::Transfer => node.message.state_notifier.clone(),
-    }
-    .send(result)
-    .map_err(|_e| {
-        log::trace!(
-            "No one was waiting for info about established tcp connection with [{}]",
-            node.id()
-        )
-    })
-    .ok();
+    node.notifier(channel)
+        .send(result)
+        .map_err(|_e| {
+            log::trace!(
+                "No one was waiting for info about established tcp connection with [{}]",
+                node.id()
+            )
+        })
+        .ok();
 }
 
 impl Drop for TcpPermit {
@@ -326,7 +373,7 @@ pub enum TcpLock {
 #[derive(Clone)]
 pub struct TcpSender {
     pub(crate) target: NodeId,
-    pub(crate) channel: ChannelType,
+    pub(crate) channel: ChannelDesc,
     pub(crate) connection: Weak<TcpConnection>,
     pub(crate) layer: TcpLayer,
 }
@@ -341,7 +388,7 @@ impl TcpSender {
             Some(conn) => conn,
             None => match self
                 .layer
-                .connect(self.target, self.channel)
+                .connect(self.target, self.channel.0)
                 .await
                 .map_err(|e| TcpError::Generic(format!("Establishing connection failed: {e}")))?
                 .connection
@@ -386,4 +433,45 @@ pub(crate) fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
     }
 
     Ipv6Addr::from(ipv6_bytes)
+}
+
+impl From<(ChannelType, ChannelDirection)> for ChannelDesc {
+    fn from(value: (ChannelType, ChannelDirection)) -> Self {
+        ChannelDesc(value.0, value.1)
+    }
+}
+
+impl ChannelDesc {
+    pub fn index(&self) -> usize {
+        match self {
+            ChannelDesc(ChannelType::Transfer, ChannelDirection::In) => 0,
+            ChannelDesc(ChannelType::Transfer, ChannelDirection::Out) => 1,
+            ChannelDesc(ChannelType::Messages, ChannelDirection::In) => 2,
+            ChannelDesc(ChannelType::Messages, ChannelDirection::Out) => 3,
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        self.0 as u16
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use crate::testing::init::MockSessionNetwork;
+
+    /// `VirtNode` code assumes that channels are residing under index, that can be returned
+    /// by `ChannelDesc::index` function.
+    #[actix_rt::test]
+    async fn test_virt_node_creation_assumption() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer = network.new_layer().await.unwrap().layer;
+
+        let virt = VirtNode::new(NodeId::default(), layer);
+        for i in 0..4 {
+            assert_eq!(virt.channels[i].channel.index(), i);
+        }
+    }
 }

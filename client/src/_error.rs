@@ -98,12 +98,16 @@ pub enum EncryptionError {
 pub enum TcpError {
     #[error("{0}")]
     Generic(String),
+    #[error("Programming error: {0}")]
+    ProgrammingError(String),
 }
 
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum TcpTransitionError {
     #[error("State transition not allowed from: {0} to {1}")]
     InvalidTransition(TcpState, TcpState),
+    #[error("Channel not found")]
+    ProgrammingError,
 }
 
 impl From<TransitionError> for SessionError {

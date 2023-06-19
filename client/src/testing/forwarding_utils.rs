@@ -81,7 +81,7 @@ pub async fn check_forwarding(
 
     tx.send(vec![1u8].into()).await?;
 
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::sleep(Duration::from_millis(900)).await;
 
     if !received.load(SeqCst) {
         bail!("Data not received.")

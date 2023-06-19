@@ -27,8 +27,8 @@ use crate::_client::Forwarded;
 use crate::_error::TcpError;
 use crate::_session_layer::SessionLayer;
 use crate::_tcp_registry::{
-    channel_endpoint, to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry,
-    TcpSender, VirtNode,
+    channel_endpoint, to_ipv6, ChannelDesc, ChannelDirection, ChannelType, TcpConnection, TcpLock,
+    TcpPermit, TcpRegistry, TcpSender, VirtNode,
 };
 use crate::_transport_layer::ForwardReceiver;
 
@@ -97,12 +97,14 @@ impl TcpLayer {
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
+        log::debug!("[VirtualTcp] Removing Node {node_id}");
+
         let remote_ip = self.registry.resolve_ip(node_id).await;
-        self.registry.remove_node(node_id).await;
 
         self.net
             .disconnect_all(remote_ip, TCP_DISCONN_TIMEOUT)
             .await;
+        self.registry.remove_node(node_id).await;
     }
 
     /// Connects to other Node and returns `TcpSender` for sending data.
@@ -117,6 +119,7 @@ impl TcpLayer {
     ) -> anyhow::Result<TcpSender> {
         print_sockets(&self.net);
 
+        let channel = (channel, ChannelDirection::Out).into();
         let myself = self.clone();
         let connection = match self.registry.connect_attempt(node_id, channel).await {
             TcpLock::Permit(mut permit) => {
@@ -141,10 +144,10 @@ impl TcpLayer {
 
     async fn connect_internal(
         &self,
-        channel: ChannelType,
+        channel: ChannelDesc,
         permit: &TcpPermit,
     ) -> Result<Arc<TcpConnection>, TcpError> {
-        let endpoint = IpEndpoint::new(permit.node.address, channel as u16);
+        let endpoint = IpEndpoint::new(permit.node.address, channel.port());
 
         // Make sure we have session with the Node. This allows us to
         // exit early if target Node is unreachable.
@@ -211,6 +214,8 @@ impl TcpLayer {
             &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
         });
 
+        // TODO: We need to change this function since, we distinguished between outgoing
+        //       and incoming connections. We have to change incoming connection state to Established.
         if self.registry.resolve_node(node).await.is_err() {
             log::debug!("[VirtualTcp] Incoming message from new Node [{node}]. Adding connection.");
             self.registry.add_virt_node(node).await;
@@ -287,7 +292,7 @@ impl TcpLayer {
                     let (desc, payload) = match event {
                         IngressEvent::InboundConnection { desc } => {
                             log::trace!(
-                                "[{}] new tcp connection from {:?} to {:?} ",
+                                "[{}] new tcp connection from {} to {} ",
                                 myself.net_id(),
                                 desc.remote,
                                 desc.local,
@@ -296,12 +301,18 @@ impl TcpLayer {
                         }
                         IngressEvent::Disconnected { desc } => {
                             log::trace!(
-                                "[{}] virtual tcp: ({}) {:?} disconnected from {:?}",
+                                "[{}] virtual tcp: ({}) {} disconnected from {}",
                                 myself.net_id(),
                                 desc.protocol,
-                                desc.remote,
                                 desc.local,
+                                desc.remote,
                             );
+
+                            if let Ok(endpoint)= desc.remote.ip_endpoint() {
+                                if let Some(node) = myself.registry.get_by_address(endpoint.addr.as_bytes()).await {
+                                    myself.remove_node(node.id()).await;
+                                }
+                            }
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => {
@@ -328,7 +339,7 @@ impl TcpLayer {
                         }
                         _ => {
                             log::trace!(
-                                "[{}] ingress router: remote endpoint {:?} is not supported",
+                                "[{}] ingress router: remote endpoint {} is not supported",
                                 myself.net_id(),
                                 desc.remote
                             );
@@ -409,7 +420,7 @@ impl TcpLayer {
                             //       wait until timeout. This makes error messages from this library
                             //       really poor, because everything from outside looks like a timeout.
                             log::trace!(
-                                "[{}] egress router: forward to {} failed: {}",
+                                "[{}] egress router: forward to [{}] failed: {}",
                                 myself.net_id(),
                                 node.id(),
                                 error

@@ -699,7 +699,7 @@ impl Server {
     ) -> ServerResult<()> {
         const REQ_DEDUPLICATE_BUF_SIZE: usize = 16;
 
-        let (packet, raw_challenge) = challenge::prepare_challenge_response();
+        let (packet, raw_challenge) = challenge::prepare_challenge_response(CHALLENGE_DIFFICULTY);
         let challenge =
             proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, packet);
 
