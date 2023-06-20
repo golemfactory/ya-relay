@@ -68,6 +68,15 @@ impl VirtChannel {
             state_notifier: Arc::new(broadcast::channel(1).0),
         }
     }
+
+    pub async fn transition(&self, new_state: TcpState) -> Result<(), TcpTransitionError> {
+        let mut state = self.state.write().await;
+        state.transition(new_state)
+    }
+
+    pub async fn state(&self) -> TcpState {
+        self.state.read().await.clone()
+    }
 }
 
 impl VirtNode {
@@ -164,7 +173,10 @@ impl TcpRegistry {
                 channel,
                 result: None,
             }),
-            Err(_) => TcpLock::Wait(TcpAwaiting { notifier }),
+            Err(_) => TcpLock::Wait(TcpAwaiting {
+                notifier,
+                channel: node.channel(channel),
+            }),
         }
     }
 
@@ -240,7 +252,7 @@ pub enum TcpState {
     /// TODO: Could we clean whole `TcpLayer` and `ya-relay-stack` state on drop??
     #[display(fmt = "Connected")]
     Connected(#[educe(PartialEq(ignore))] Arc<TcpConnection>),
-    Failed,
+    Failed(TcpError),
     Closing,
     Closed,
 }
@@ -249,8 +261,8 @@ impl TcpState {
     pub fn transition(&mut self, new_state: TcpState) -> Result<(), TcpTransitionError> {
         match (&self, &new_state) {
             (&TcpState::Closed, &TcpState::Connecting)
-            | (&TcpState::Failed, &TcpState::Connecting)
-            | (&TcpState::Connecting, &TcpState::Failed)
+            | (&TcpState::Failed(_), &TcpState::Connecting)
+            | (&TcpState::Connecting, &TcpState::Failed(_))
             | (&TcpState::Connecting, &TcpState::Connected(_))
             | (&TcpState::Connected(_), &TcpState::Closing)
             | (&TcpState::Connected(_), &TcpState::Closed) => (),
@@ -310,7 +322,9 @@ pub(crate) async fn async_drop(
             }
         }
         Some(Err(e)) => {
-            node.transition(channel, TcpState::Failed).await.ok();
+            node.transition(channel, TcpState::Failed(e.clone()))
+                .await
+                .ok();
             Err(e)
         }
         None => Err(TcpError::Generic(
@@ -342,11 +356,20 @@ impl Drop for TcpPermit {
 
 /// Structure for awaiting established connection.
 pub struct TcpAwaiting {
+    channel: VirtChannel,
     notifier: broadcast::Receiver<Result<Arc<TcpConnection>, TcpError>>,
 }
 
 impl TcpAwaiting {
     pub async fn await_for_finish(&mut self) -> Result<Arc<TcpConnection>, TcpError> {
+        match self.channel.state().await {
+            TcpState::Connected(result) => return Ok(result),
+            TcpState::Closed => return Err(TcpError::Closed),
+            TcpState::Failed(e) => return Err(TcpError::Generic(e.to_string())),
+            // In all other cases we will wait for notification.
+            _ => (),
+        };
+
         match self.notifier.recv().await {
             Ok(result) => result,
             Err(RecvError::Closed) => Err(TcpError::Generic(
@@ -409,6 +432,21 @@ impl TcpSender {
             .send(packet, routing.conn)
             .await
             .map_err(|e| TcpError::Generic(e.to_string()))
+    }
+
+    pub async fn connect(&mut self) -> Result<(), TcpError> {
+        self.layer
+            .connect(self.target, self.channel.0)
+            .await
+            .map_err(|e| TcpError::Generic(format!("Establishing connection failed: {e}")))?;
+        Ok(())
+    }
+
+    /// Closes connection to Node. In case of relayed connection only forwarding information
+    /// will be removed.
+    pub async fn disconnect(&mut self) -> Result<(), TcpError> {
+        self.layer.remove_node(self.target).await;
+        Ok(())
     }
 }
 

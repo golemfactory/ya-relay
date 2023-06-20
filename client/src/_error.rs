@@ -9,6 +9,20 @@ use crate::_tcp_registry::TcpState;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 
+/// Error returned on user facing API.
+/// TODO: Temporary implementation. This error should have variants according to potential
+///       user decisions, which he can make based on this. We shouldn't just forward
+///       underlying errors.
+/// TODO: We should use channel-like error where you can recover your payload
+///       from error message.
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+pub enum SenderError {
+    #[error("{0}")]
+    Session(#[from] SessionError),
+    #[error("{0}")]
+    Tcp(#[from] TcpError),
+}
+
 /// TODO: Organize this error better. We should be able to make decision
 ///       if we can recover from error or we should give up. I see at least
 ///       2 contexts for this:
@@ -99,6 +113,8 @@ pub enum EncryptionError {
 pub enum TcpError {
     #[error("{0}")]
     Generic(String),
+    #[error("Connection closed")]
+    Closed,
     #[error("Programming error: {0}")]
     ProgrammingError(String),
 }

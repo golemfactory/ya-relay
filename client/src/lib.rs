@@ -34,4 +34,5 @@ mod _session_state;
 mod _session_traits;
 mod _tcp_registry;
 mod _transport_layer;
+mod _transport_sender;
 mod _virtual_layer;

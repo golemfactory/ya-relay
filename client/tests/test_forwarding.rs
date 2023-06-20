@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Context};
-use futures::SinkExt;
 use futures::StreamExt;
 use std::rc::Rc;
 use std::sync::atomic::Ordering::SeqCst;
@@ -9,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::_client::Forwarded;
+use ya_relay_client::_client::{Forwarded, GenericSender};
 use ya_relay_client::testing::forwarding_utils::spawn_receive;
 use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_core::server_session::TransportType;

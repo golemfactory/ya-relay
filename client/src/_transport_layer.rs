@@ -1,6 +1,5 @@
 use anyhow::bail;
-use futures::channel::mpsc;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -10,16 +9,14 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::Payload;
 use ya_relay_stack::Channel;
 
 use crate::_client::{ClientConfig, Forwarded};
-use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
-use crate::_tcp_registry::{ChannelType, TcpSender};
+use crate::_tcp_registry::ChannelType;
+use crate::_transport_sender::{ForwardSender, GenericSender};
 use crate::_virtual_layer::TcpLayer;
 
-pub type ForwardSender = mpsc::Sender<Payload>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
 /// Responsible for sending data. Handles different kinds of transport types.
@@ -38,9 +35,6 @@ pub struct TransportLayer {
 
 struct TransportLayerState {
     /// Every default and secondary NodeId has separate entry here.
-    /// TODO: We ues `ForwardSenders` only for compatibility with previous implementation.
-    ///       It would be better to use always `RoutingSender` for unreliable and something
-    ///       with similar api and lazy connection functionality for reliable transport.
     forward_unreliable: HashMap<NodeId, ForwardSender>,
     forward_transfer: HashMap<NodeId, ForwardSender>,
     forward_reliable: HashMap<NodeId, ForwardSender>,
@@ -95,7 +89,7 @@ impl TransportLayer {
                 .collect::<Vec<_>>()
         };
         for (_, mut channel) in channels {
-            channel.close().await.ok();
+            channel.disconnect().await.ok();
         }
 
         self.virtual_tcp.shutdown().await;
@@ -218,19 +212,15 @@ impl TransportLayer {
                     _ => bail!("Programming error: `forward_generic` shouldn't been used for unreliable connection.")
                 };
 
-                let conn = self
+                let sender: ForwardSender = self
                     .virtual_tcp
                     .connect(info.node_id(), channel_port)
-                    .await?;
-                let (tx, rx) = mpsc::channel(1);
+                    .await?
+                    .into();
 
-                // TODO: If future will be dropped after connection is established, than we
-                //       won't spawn thread and everything will not work, but the connection will be
-                //       established, so the state will be inconsistent.
-                tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, rx));
-
-                self.set_forward_channel(node_id, channel, tx.clone()).await;
-                Ok(tx)
+                self.set_forward_channel(node_id, channel, sender.clone())
+                    .await;
+                Ok(sender)
             }
         }
     }
@@ -249,92 +239,19 @@ impl TransportLayer {
             return Ok(tx);
         }
 
-        let routing = self.session_layer.session(node_id).await?;
+        let routing: ForwardSender = self.session_layer.session(node_id).await?.into();
 
-        let (tx, rx) = {
+        let routing = {
             let mut state = self.state.write().await;
             match state.forward_unreliable.get(&node_id) {
                 Some(tx) => return Ok(tx.clone()),
                 None => {
-                    let (tx, rx) = mpsc::channel(1);
-                    state.forward_unreliable.insert(node_id, tx.clone());
-                    (tx, rx)
+                    state.forward_unreliable.insert(node_id, routing.clone());
+                    routing
                 }
             }
         };
 
-        tokio::task::spawn_local(self.clone().forward_unreliable_handler(routing, rx));
-        Ok(tx)
-    }
-
-    /// If we will use `TcpSender` in external API, we won't need this function
-    /// anymore, because it only translates packets from channel to `TcpSender`.
-    async fn forward_reliable_handler(
-        self,
-        mut sender: TcpSender,
-        mut rx: mpsc::Receiver<Payload>,
-    ) {
-        while let Some(payload) = rx.next().await {
-            log::trace!(
-                "Forwarding message to [{}] using Reliable transport",
-                sender.target,
-            );
-
-            if let Err(err) = sender.send(payload).await {
-                log::debug!(
-                    "[{}] Reliable forward to [{}] failed: {err}",
-                    self.config.node_id,
-                    sender.target,
-                );
-                break;
-            }
-        }
-
-        log::debug!(
-            "[{}] forward (Reliable): forward channel closed",
-            sender.target
-        );
-
-        rx.close();
-        // TODO: Close Tcp connection.
-    }
-
-    /// If we will use `RoutingSender` in external API, we won't need this function
-    /// anymore, because it only translates packets from channel to `RoutingSender`.
-    async fn forward_unreliable_handler(
-        self,
-        mut session: RoutingSender,
-        mut rx: mpsc::Receiver<Payload>,
-    ) {
-        while let Some(payload) = rx.next().await {
-            if let Err(error) = session.send(payload, TransportType::Unreliable).await {
-                log::debug!(
-                    "Forward (U) to [{}] through [{}] (session id: {}) failed: {error}",
-                    session.target(),
-                    session.route(),
-                    session.session_id()
-                );
-                break;
-            }
-        }
-
-        log::debug!(
-            "[{}] forward (Unreliable): forward channel closed",
-            session.target()
-        );
-
-        rx.close();
-        self.remove_node(session.target()).await;
-    }
-
-    async fn remove_node(&self, node_id: NodeId) {
-        // TODO: Should we remove forward channels for all other identities for this Node as well?
-        let rx = {
-            let mut state = self.state.write().await;
-            state.forward_unreliable.remove(&node_id)
-        };
-        if let Some(mut rx) = rx {
-            rx.close().await.ok();
-        }
+        Ok(routing)
     }
 }

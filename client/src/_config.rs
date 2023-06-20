@@ -1,12 +1,8 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::Duration;
 use url::Url;
 
-use ya_relay_core::challenge::CHALLENGE_DIFFICULTY;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;

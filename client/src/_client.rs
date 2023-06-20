@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail};
 use futures::future::{join_all, AbortHandle};
-use futures::{FutureExt, SinkExt, TryFutureExt};
+use futures::{FutureExt, TryFutureExt};
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::future::Future;
@@ -21,7 +21,8 @@ use crate::_metrics::register_metrics;
 pub use crate::_config::{ClientBuilder, ClientConfig, FailFast};
 pub use crate::_error::SessionError;
 pub use crate::_raw_session::SessionDesc;
-pub use crate::_transport_layer::{ForwardReceiver, ForwardSender, TransportLayer};
+pub use crate::_transport_layer::{ForwardReceiver, TransportLayer};
+pub use crate::_transport_sender::{ForwardSender, GenericSender};
 
 pub use ya_relay_core::server_session::TransportType;
 pub use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
