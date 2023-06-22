@@ -60,14 +60,24 @@ impl MockSessionNetwork {
 
     /// If Client will reconnect to relay server, he will have public IP again.
     pub async fn hack_make_ip_private(&self, client: &Client) {
+        self.hack_make_layer_ip_private_impl(&client.transport.session_layer)
+            .await
+    }
+
+    pub async fn hack_make_layer_ip_private(&self, wrapper: &SessionLayerWrapper) {
+        self.hack_make_layer_ip_private_impl(&wrapper.layer).await
+    }
+
+    /// If Client will reconnect to relay server, he will have public IP again.
+    async fn hack_make_layer_ip_private_impl(&self, layer: &SessionLayer) {
         log::info!(
             "Making Node's {} IP private on relay server",
-            client.node_id()
+            layer.config.node_id
         );
 
         let mut state = self.server.server.state.write().await;
 
-        let mut info = state.nodes.get_by_node_id(client.node_id()).unwrap();
+        let mut info = state.nodes.get_by_node_id(layer.config.node_id).unwrap();
         state.nodes.remove_session(info.info.slot);
 
         // Server won't return any endpoints, so Client won't try to connect directly.
@@ -75,7 +85,7 @@ impl MockSessionNetwork {
         state.nodes.register(info);
 
         drop(state);
-        client.transport.session_layer.set_public_addr(None).await;
+        layer.set_public_addr(None).await;
     }
 }
 

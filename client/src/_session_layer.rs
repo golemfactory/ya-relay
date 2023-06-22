@@ -19,7 +19,7 @@ use crate::_raw_session::{RawSession, SessionType};
 use crate::_routing_session::{NodeRouting, RoutingSender};
 use crate::_session_protocol::SessionProtocol;
 use crate::_session_registry::{Registry, SessionLock, SessionPermit, Validity};
-use crate::_session_state::{RelayedState, SessionState};
+use crate::_session_state::{RelayedState, ReverseState, SessionState};
 use crate::_session_traits::{SessionDeregistration, SessionRegistration};
 use crate::_transport_layer::ForwardReceiver;
 
@@ -808,7 +808,7 @@ impl SessionLayer {
     async fn try_reverse_connection(
         &self,
         node_id: NodeId,
-        _permit: &SessionPermit,
+        permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionError> {
         // We are trying to connect to Node without public IP. Send `ReverseConnection` message,
         // so Node will connect to us.
@@ -823,52 +823,61 @@ impl SessionLayer {
             self.config.node_id,
         );
 
-        Err(SessionError::NotApplicable(
-            "ReverseConnection not implemented.".to_string(),
-        ))
+        // Must be called before we send `ReverseConnection` otherwise we might miss event
+        // notifying us about incoming connection.
+        let mut awaiting = permit.registry.awaiting_notifier();
+        permit
+            .registry
+            .transition(SessionState::ReverseConnection(ReverseState::Awaiting))
+            .await?;
 
-        //
-        // let mut awaiting = self.guarded.register_waiting_for_node(node_id).await?;
-        //
-        // let server_session = self.server_session().await?;
-        // server_session.reverse_connection(node_id).await?;
-        //
-        // log::debug!("ReverseConnection requested with node [{node_id}]");
-        //
-        // // We don't want to wait for connection finish, because we need longer timeout for this.
-        // // But if we won't receive any message from other Node, we would like to exit early,
-        // // to try out different connection methods.
-        // tokio::time::timeout(
-        //     self.config.reverse_connection_tmp_timeout,
-        //     awaiting.wait_for_first_message(),
-        // )
-        // .await?;
-        //
-        // // If we have first handshake message from other node, we can wait with
-        // // longer timeout now, because we can hope, that this node is responsive.
-        // let result = tokio::time::timeout(
-        //     self.config.reverse_connection_real_timeout,
-        //     awaiting.wait_for_connection(),
-        // )
-        // .await;
-        //
-        // match result {
-        //     Ok(Ok(session)) => {
-        //         log::info!("ReverseConnection - got session with node: [{node_id}]");
-        //         Ok(session)
-        //     }
-        //     Ok(Err(e)) => {
-        //         log::info!("ReverseConnection - failed to establish session with: [{node_id}]");
-        //         Err(e.into())
-        //     }
-        //     Err(_) => {
-        //         log::info!(
-        //             "ReverseConnection - waiting for session timed out ({}). Node: [{node_id}]",
-        //             humantime::format_duration(self.config.reverse_connection_real_timeout)
-        //         );
-        //         bail!("Not able to setup ReverseConnection within timeout with node: [{node_id}]")
-        //     }
-        // }
+        let server_session = self.server_session().await?;
+        server_session.raw.reverse_connection(node_id).await?;
+
+        log::debug!("ReverseConnection requested with node [{node_id}]");
+
+        // We don't want to wait for connection finish, because we would need longer timeout for this.
+        // But if we won't receive any message from other Node, we would like to exit early,
+        // to try out different connection methods.
+        tokio::time::timeout(
+            self.config.reverse_connection_tmp_timeout,
+            awaiting.await_handshake(),
+        )
+        .await
+        .map_err(|e| {
+            SessionError::Timeout(format!(
+                "Timeout ({}) elapsed when waiting for `ReverseConnection` handshake. {e}",
+                humantime::format_duration(self.config.reverse_connection_tmp_timeout)
+            ))
+        })??;
+
+        // If we have first handshake message from other node, we can wait with
+        // longer timeout now, because we can hope, that this node is responsive.
+        let result = tokio::time::timeout(
+            self.config.reverse_connection_real_timeout,
+            awaiting.await_for_finish(),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(session)) => {
+                log::info!("ReverseConnection - got session with node: [{node_id}]");
+                Ok(session)
+            }
+            Ok(Err(e)) => {
+                log::info!("ReverseConnection - failed to establish session with: [{node_id}]");
+                Err(e.into())
+            }
+            Err(_) => {
+                log::info!(
+                    "ReverseConnection - waiting for session timed out ({}). Node: [{node_id}]",
+                    humantime::format_duration(self.config.reverse_connection_real_timeout)
+                );
+                return Err(SessionError::Timeout(format!(
+                    "Not able to setup ReverseConnection within timeout with node: [{node_id}]"
+                )));
+            }
+        }
     }
 
     async fn try_relayed_connection(
@@ -1101,10 +1110,15 @@ impl SessionLayer {
         };
 
         // Don't try to use `ReverseConnection`, when handling `ReverseConnection`.
+        // We don't want `Relayed` connection as well, because other Node can use it if he wants.
         permit
             .collect_results(
                 permit
-                    .run_abortable(self.resolve(node_id, &permit, &[ConnectionMethod::Reverse]))
+                    .run_abortable(self.resolve(
+                        node_id,
+                        &permit,
+                        &[ConnectionMethod::Reverse, ConnectionMethod::Relay],
+                    ))
                     .await,
             )
             .map_err(|e| {
@@ -1275,20 +1289,24 @@ impl Handler for SessionLayer {
         request: proto::Request,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        log::trace!("Received request packet from {from}: {request}");
-
         let (request_id, kind) = match request {
             proto::Request {
                 request_id,
                 kind: Some(kind),
             } => (request_id, kind),
-            _ => return None,
+            proto::Request { request_id, .. } => {
+                log::trace!("Empty request packet ({request_id}) from {from}");
+                return None;
+            }
         };
 
         if self.is_request_duplicate(&session_id, request_id) {
+            log::trace!("Dropping duplicated request packet ({request_id}) from {from}");
             return None;
         }
         self.record_duplicate(session_id.clone(), request_id);
+
+        log::trace!("Received request packet ({request_id}) from {from}: {kind}");
 
         let fut = match kind {
             proto::request::Kind::Ping(request) => {
@@ -1532,5 +1550,28 @@ mod tests {
 
         // We should be able to connect again to the same Node.
         session.connect().await.unwrap();
+    }
+
+    #[actix_rt::test]
+    async fn test_session_layer_reverse_connection() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await.unwrap();
+        network.hack_make_layer_ip_private(&layer2).await;
+
+        let session = layer1.layer.session(layer2.id).await.unwrap();
+        // Wait until second Node will be ready with session
+        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+
+        assert_eq!(session.target(), layer2.id);
+        assert_eq!(session.route(), layer2.id);
+        assert_eq!(session.session_type(), SessionType::P2P);
+
+        assert_eq!(session2.target(), layer1.id);
+        assert_eq!(session2.route(), layer1.id);
+        assert_eq!(session2.session_type(), SessionType::P2P);
     }
 }

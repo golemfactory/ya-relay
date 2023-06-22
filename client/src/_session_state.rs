@@ -13,7 +13,7 @@ pub enum SessionState {
     #[display(fmt = "Incoming-{}", _0)]
     Incoming(InitState),
     #[display(fmt = "Reverse-{}", _0)]
-    ReverseConnection(InitState),
+    ReverseConnection(ReverseState),
     #[display(fmt = "Relayed-{}", _0)]
     Relayed(RelayedState),
     /// Holds established session.
@@ -35,6 +35,13 @@ pub enum RelayedState {
 }
 
 #[derive(Clone, PartialEq, Display, Debug)]
+pub enum ReverseState {
+    Awaiting,
+    #[display(fmt = "{}", _0)]
+    InProgress(InitState),
+}
+
+#[derive(Clone, PartialEq, Display, Debug)]
 pub enum InitState {
     /// This state indicates that someone plans to initialize connection,
     /// so we are not allowed to do this. Instead we should wait until
@@ -42,7 +49,6 @@ pub enum InitState {
     ConnectIntent,
     /// State set on the beginning of initialization function.
     Initializing,
-    WaitingForReverseConnection,
     /// First round of `Session` requests, challenges sent.
     ChallengeHandshake,
     /// Second round of handshake, challenge response received.
@@ -84,6 +90,17 @@ impl RelayedState {
     }
 }
 
+impl ReverseState {
+    #[allow(clippy::match_like_matches_macro)]
+    pub fn allowed(&self, new_state: &ReverseState) -> bool {
+        match (self, &new_state) {
+            (ReverseState::Awaiting, ReverseState::InProgress(InitState::ConnectIntent)) => true,
+            (ReverseState::InProgress(prev), ReverseState::InProgress(next)) => prev.allowed(next),
+            _ => false,
+        }
+    }
+}
+
 impl SessionState {
     pub fn transition_incoming(
         &mut self,
@@ -94,7 +111,9 @@ impl SessionState {
         // That's why we need to translate `InitState` depending on the context.
         let new_state = match self {
             SessionState::Incoming(_) => SessionState::Incoming(new_state),
-            SessionState::ReverseConnection(_) => SessionState::ReverseConnection(new_state),
+            SessionState::ReverseConnection(ReverseState::InProgress(_)) => {
+                SessionState::ReverseConnection(ReverseState::InProgress(new_state))
+            }
             _ => SessionState::Incoming(new_state),
         };
         self.transition(new_state)
@@ -109,33 +128,36 @@ impl SessionState {
 
     pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
         let allowed = match (&self, &new_state) {
+            // Initialization can fail in any state.
             (SessionState::Relayed(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Incoming(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Outgoing(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::ReverseConnection(_), SessionState::FailedEstablish(_)) => true,
+            // Session can be moved to `Established` only if it was set to `Ready` by `SessionProtocol`.
             (SessionState::Incoming(InitState::Ready), SessionState::Established(_)) => true,
             (SessionState::Outgoing(InitState::Ready), SessionState::Established(_)) => true,
             (SessionState::Relayed(RelayedState::Ready), SessionState::Established(_)) => true,
+            (
+                SessionState::ReverseConnection(ReverseState::InProgress(InitState::Ready)),
+                SessionState::Established(_),
+            ) => true,
+            // Enables reverse connection. When establishing outgoing session, we send `ReverseConnection`
+            // and start waiting for other party to send handshake message.
+            (
+                SessionState::Outgoing(InitState::ConnectIntent),
+                SessionState::ReverseConnection(ReverseState::Awaiting),
+            ) => true,
             (
                 SessionState::Outgoing(InitState::ConnectIntent),
                 SessionState::Relayed(RelayedState::Initializing),
             ) => true,
             (
-                SessionState::ReverseConnection(InitState::ConnectIntent),
+                SessionState::ReverseConnection(ReverseState::InProgress(InitState::ConnectIntent)),
                 SessionState::Relayed(RelayedState::Initializing),
             ) => true,
-            (SessionState::ReverseConnection(InitState::Ready), SessionState::Established(_)) => {
-                true
-            }
-            (
-                SessionState::Outgoing(InitState::WaitingForReverseConnection),
-                SessionState::ReverseConnection(InitState::Initializing),
-            ) => true,
+            // We can start new session if it was closed, or if we failed to establish it previously.
             (SessionState::Closed, SessionState::Outgoing(InitState::ConnectIntent)) => true,
             (SessionState::Closed, SessionState::Incoming(InitState::ConnectIntent)) => true,
-            (SessionState::Established(_), SessionState::Established(_)) => true,
-            (SessionState::Established(_), SessionState::Closing) => true,
-            (SessionState::Closing, SessionState::Closed) => true,
             (
                 SessionState::FailedEstablish(_),
                 SessionState::Outgoing(InitState::ConnectIntent),
@@ -144,6 +166,12 @@ impl SessionState {
                 SessionState::FailedEstablish(_),
                 SessionState::Incoming(InitState::ConnectIntent),
             ) => true,
+            (SessionState::Established(_), SessionState::Established(_)) => true,
+            // We can start closing only Established session. In other cases we want to make
+            // transition to `FailedEstablish` state.
+            (SessionState::Established(_), SessionState::Closing) => true,
+            (SessionState::Closing, SessionState::Closed) => true,
+
             (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(next),
             (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(next),
             (SessionState::Relayed(prev), SessionState::Relayed(next)) => prev.allowed(next),

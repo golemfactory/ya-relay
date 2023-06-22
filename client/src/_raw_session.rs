@@ -172,7 +172,7 @@ impl RawSession {
         Ok(result.map(|_| ())?)
     }
 
-    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn reverse_connection(&self, node_id: NodeId) -> Result<(), RequestError> {
         let packet = proto::request::ReverseConnection {
             node_id: node_id.into_array().to_vec(),
         };

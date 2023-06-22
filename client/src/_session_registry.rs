@@ -10,7 +10,7 @@ use tokio::sync::{broadcast, RwLock};
 
 use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_error::{SessionError, TransitionError};
-use crate::_session_state::{InitState, SessionState};
+use crate::_session_state::{InitState, ReverseState, SessionState};
 use crate::_session_traits::SessionDeregistration;
 
 use ya_relay_core::identity::Identity;
@@ -147,25 +147,6 @@ impl Registry {
         self.guard(node_id, addrs).await.lock_incoming(layer).await
     }
 
-    pub async fn register_waiting_for_node(
-        &self,
-        _node_id: NodeId,
-    ) -> anyhow::Result<NodeAwaiting> {
-        todo!()
-        // let state = self.state.read().await;
-        // if let Some(target) = state.by_node_id.get(&node_id) {
-        //     target.wait_for_connection.store(true, Ordering::SeqCst);
-        //     Ok(NodeAwaiting {
-        //         notify_finish: target.notify_finish.subscribe(),
-        //         notify_msg: target.notify_msg.subscribe(),
-        //     })
-        // } else {
-        //     // If we are waiting for node to connect, we should already have entry
-        //     // initialized by function `guard_initialization`. So this is programming error.
-        //     bail!("Programming error. Waiting for node [{node_id}] to connect, without calling `guard_initialization` earlier.")
-        // }
-    }
-
     pub async fn transition(
         &self,
         node_id: NodeId,
@@ -264,7 +245,8 @@ pub struct RegistryEntryState {
     slot: SlotId,
 
     /// Handle to abort initialization that's currently in progress.
-    abort_handle: Option<AbortHandle>,
+    /// We will have 2 abort handles during `ReverseConnection` initialization.
+    abort_handle: Vec<AbortHandle>,
 }
 
 impl RegistryEntry {
@@ -458,7 +440,7 @@ impl RegistryEntry {
                 supported_encryption: vec![],
                 state: SessionState::Closed,
                 slot: FORWARD_SLOT_ID,
-                abort_handle: None,
+                abort_handle: vec![],
             })),
             state_notifier: Arc::new(notify_msg),
             config,
@@ -534,21 +516,25 @@ impl RegistryEntry {
 
     pub async fn register_abortable(&self, abort: AbortHandle) {
         let mut state = self.state.write().await;
-        state.abort_handle = Some(abort);
+        state.abort_handle.push(abort);
     }
 
     pub async fn unregister_abortable(&self) {
         let mut state = self.state.write().await;
-        state.abort_handle.take();
+        state.abort_handle.clear();
     }
 
     pub async fn abort_initialization(&self) {
-        if let Some(handle) = {
+        let handles = {
             let mut state = self.state.write().await;
-            state.abort_handle.take()
-        } {
+            state.abort_handle.drain(..).collect::<Vec<_>>()
+        };
+
+        if !handles.is_empty() {
             log::debug!("Aborting session initialization with [{}]", self.id);
-            handle.abort();
+            for handle in handles {
+                handle.abort();
+            }
         }
     }
 }
@@ -690,17 +676,52 @@ impl NodeAwaiting {
                 }
             };
 
-            state = match self.notifier.recv().await {
-                Ok(state) => state,
-                Err(RecvError::Closed) => {
-                    return Err(SessionError::Internal(
-                        "Waiting for session initialization: notifier dropped.".to_string(),
-                    ))
+            state = self.next().await?;
+        }
+    }
+
+    /// When state reaches `ChallengeHandshake`, we've got first response from other Node
+    /// so we know that it is responsive.
+    ///
+    /// Function assumes that `NodeAwaiting` was created, before the state change happened,
+    /// otherwise we might miss the event.
+    pub async fn await_handshake(&mut self) -> Result<(), SessionError> {
+        let mut state = self.registry.state().await;
+        let node_id = self.registry.id;
+
+        loop {
+            // This function is used for `ReverseConnection`, so we are interested only in
+            // `SessionState::ReverseConnection(InitState::ChallengeHandshake)` state, but it doesn't
+            // hurt us to include other Handshake states and this way we will have more general function, that
+            // can be used to wait for any first messages exchange between Nodes.
+            match state {
+                SessionState::Outgoing(InitState::ChallengeHandshake)
+                | SessionState::Incoming(InitState::ChallengeHandshake)
+                | SessionState::ReverseConnection(ReverseState::InProgress(
+                    InitState::ChallengeHandshake,
+                )) => {
+                    log::trace!("Finished waiting for first message from [{node_id}].");
+                    return Ok(());
                 }
-                Err(RecvError::Lagged(lost)) => {
-                    // TODO: Maybe we could handle lags better, by checking current state?
-                    return Err(SessionError::Internal(format!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")));
-                }
+                // Still waiting.
+                _ => (),
+            };
+
+            state = self.next().await?;
+        }
+    }
+
+    async fn next(&mut self) -> Result<SessionState, SessionError> {
+        match self.notifier.recv().await {
+            Ok(state) => Ok(state),
+            Err(RecvError::Closed) => {
+                return Err(SessionError::Internal(
+                    "Waiting for session initialization: notifier dropped.".to_string(),
+                ))
+            }
+            Err(RecvError::Lagged(lost)) => {
+                // TODO: Maybe we could handle lags better, by checking current state?
+                return Err(SessionError::Internal(format!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")));
             }
         }
     }
