@@ -1198,7 +1198,8 @@ impl SessionManager {
         &self,
         challenge: bool,
     ) -> SessionResult<(proto::request::Session, RawChallenge)> {
-        let (mut request, raw_challenge) = challenge::prepare_challenge_request();
+        let (mut request, raw_challenge) =
+            challenge::prepare_challenge_request(self.config.challenge_difficulty);
 
         let crypto = self
             .list_crypto()

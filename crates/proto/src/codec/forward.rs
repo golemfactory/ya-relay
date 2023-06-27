@@ -180,7 +180,7 @@ where
 
 const PREFIX_SIZE: usize = size_of::<u32>();
 
-fn encode(data: impl Into<Payload>) -> Payload {
+pub fn encode(data: impl Into<Payload>) -> Payload {
     // FIXME: handle Payload variants instead of converting to vec
     let mut payload = data.into();
     let len = payload.len() as u32;
@@ -189,7 +189,8 @@ fn encode(data: impl Into<Payload>) -> Payload {
     payload
 }
 
-fn decode(buf: &mut BytesMut) -> Result<BytesMut, ()> {
+#[allow(clippy::result_unit_err)]
+pub fn decode(buf: &mut BytesMut) -> Result<BytesMut, ()> {
     if buf.len() < PREFIX_SIZE {
         return Err(());
     }

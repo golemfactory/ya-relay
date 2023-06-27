@@ -1,22 +1,14 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use anyhow::{anyhow, bail};
-use derive_more::Display;
-use metrics::{counter, increment_counter};
-use std::collections::HashMap;
 use std::sync::{Arc, Weak};
-use tokio::sync::RwLock;
 
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{SessionId, TransportType};
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{Payload, SlotId};
+use ya_relay_proto::proto::Payload;
 
 use crate::_direct_session::{DirectSession, NodeEntry};
 use crate::_encryption::Encryption;
 use crate::_error::SessionError;
-use crate::_session::{RawSession, SessionType};
+use crate::_raw_session::SessionType;
 use crate::_session_layer::SessionLayer;
 
 /// Routing information about Node. Node can have either p2p session or relayed session.
@@ -59,7 +51,7 @@ impl NodeRouting {
     ) -> Result<(), SessionError> {
         if let Some(direct) = self.route.upgrade() {
             log::trace!(
-                "Forwarding message ({}) to {} through {} ({}) (session id: {})",
+                "Forwarding message ({}) to [{}] through [{}] ({}) (session id: {})",
                 transport,
                 self.node.default_id.node_id,
                 direct.owner.default_id,

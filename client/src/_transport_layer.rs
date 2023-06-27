@@ -1,27 +1,22 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use anyhow::bail;
-use futures::channel::mpsc;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{Forward, Payload};
-use ya_relay_stack::{Channel, Connection};
+use ya_relay_stack::Channel;
 
 use crate::_client::{ClientConfig, Forwarded};
-use crate::_routing_session::RoutingSender;
 use crate::_session_layer::SessionLayer;
-use crate::_tcp_registry::{ChannelType, TcpConnection, TcpSender};
+use crate::_tcp_registry::ChannelType;
+use crate::_transport_sender::{ForwardSender, GenericSender};
 use crate::_virtual_layer::TcpLayer;
 
-pub type ForwardSender = mpsc::Sender<Payload>;
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
 /// Responsible for sending data. Handles different kinds of transport types.
@@ -40,9 +35,6 @@ pub struct TransportLayer {
 
 struct TransportLayerState {
     /// Every default and secondary NodeId has separate entry here.
-    /// TODO: We ues `ForwardSenders` only for compatibility with previous implementation.
-    ///       It would be better to use always `RoutingSender` for unreliable and something
-    ///       with similar api and lazy connection functionality for reliable transport.
     forward_unreliable: HashMap<NodeId, ForwardSender>,
     forward_transfer: HashMap<NodeId, ForwardSender>,
     forward_reliable: HashMap<NodeId, ForwardSender>,
@@ -83,7 +75,29 @@ impl TransportLayer {
     }
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        let channels = {
+            let mut state = self.state.write().await;
+
+            let channels1 = state.forward_unreliable.drain().collect::<Vec<_>>();
+            let channels2 = state.forward_transfer.drain().collect::<Vec<_>>();
+            let channels3 = state.forward_reliable.drain().collect::<Vec<_>>();
+
+            channels1
+                .into_iter()
+                .chain(channels2.into_iter())
+                .chain(channels3.into_iter())
+                .collect::<Vec<_>>()
+        };
+        for (_, mut channel) in channels {
+            channel.disconnect().await.ok();
+        }
+
         self.virtual_tcp.shutdown().await;
+
+        // After Tcp shutdown will return, we are sending last Tcp packet to notify other Node,
+        // that connection is closed. We shouldn't close sessions before we give them chance to be sent.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
         self.session_layer.shutdown().await
     }
 
@@ -175,6 +189,12 @@ impl TransportLayer {
         channel: TransportType,
     ) -> anyhow::Result<ForwardSender> {
         match self.forward_channel(node_id, channel).await {
+            // If connection was closed in the meantime, it will be initialized on demand.
+            // It will be problematic in some cases, because this can last up to a few seconds.
+            // In worst case scenario initialization will fail and we will wait 5s until timeout.
+            // Since user uses channel, sending will return immediately after item will be taken from
+            // queue, so he won't find out, but the response he expects won't come.
+            // This is argument for changing channels API to `TcpSender`.
             Some(tx) => Ok(tx),
             None => {
                 // Check if this isn't secondary identity. TcpLayer should always get default id.
@@ -192,19 +212,15 @@ impl TransportLayer {
                     _ => bail!("Programming error: `forward_generic` shouldn't been used for unreliable connection.")
                 };
 
-                let conn = self
+                let sender: ForwardSender = self
                     .virtual_tcp
                     .connect(info.node_id(), channel_port)
-                    .await?;
-                let (tx, rx) = mpsc::channel(1);
+                    .await?
+                    .into();
 
-                // TODO: If future will be dropped after connection is established, than we
-                //       won't spawn thread and everything will not work, but the connection will be
-                //       established, so the state will be inconsistent.
-                tokio::task::spawn_local(self.clone().forward_reliable_handler(conn, rx));
-
-                self.set_forward_channel(node_id, channel, tx.clone()).await;
-                Ok(tx)
+                self.set_forward_channel(node_id, channel, sender.clone())
+                    .await;
+                Ok(sender)
             }
         }
     }
@@ -223,88 +239,19 @@ impl TransportLayer {
             return Ok(tx);
         }
 
-        let routing = self.session_layer.session(node_id).await?;
+        let routing: ForwardSender = self.session_layer.session(node_id).await?.into();
 
-        let (tx, rx) = {
+        let routing = {
             let mut state = self.state.write().await;
             match state.forward_unreliable.get(&node_id) {
                 Some(tx) => return Ok(tx.clone()),
                 None => {
-                    let (tx, rx) = mpsc::channel(1);
-                    state.forward_unreliable.insert(node_id, tx.clone());
-                    (tx, rx)
+                    state.forward_unreliable.insert(node_id, routing.clone());
+                    routing
                 }
             }
         };
 
-        tokio::task::spawn_local(self.clone().forward_unreliable_handler(routing, rx));
-        Ok(tx)
-    }
-
-    async fn forward_reliable_handler(
-        self,
-        mut sender: TcpSender,
-        mut rx: mpsc::Receiver<Payload>,
-    ) {
-        while let Some(payload) = rx.next().await {
-            log::trace!(
-                "Forwarding message to {} using Reliable transport",
-                sender.target,
-            );
-
-            if let Err(err) = sender.send(payload).await {
-                log::debug!(
-                    "[{}] Reliable forward to {} failed: {err}",
-                    self.config.node_id,
-                    sender.target,
-                );
-                break;
-            }
-        }
-
-        log::debug!(
-            "[{}] forward (Reliable): forward channel closed",
-            sender.target
-        );
-
-        rx.close();
-        // TODO: Close Tcp connection.
-    }
-
-    async fn forward_unreliable_handler(
-        self,
-        mut session: RoutingSender,
-        mut rx: mpsc::Receiver<Payload>,
-    ) {
-        while let Some(payload) = rx.next().await {
-            if let Err(error) = session.send(payload, TransportType::Unreliable).await {
-                log::debug!(
-                    "Forward (U) to {} through {} (session id: {}) failed: {error}",
-                    session.target(),
-                    session.route(),
-                    session.session_id()
-                );
-                break;
-            }
-        }
-
-        log::debug!(
-            "[{}] forward (Unreliable): forward channel closed",
-            session.target()
-        );
-
-        rx.close();
-        self.remove_node(session.target()).await;
-    }
-
-    async fn remove_node(&self, node_id: NodeId) {
-        // TODO: Should we remove forward channels for all other identities for this Node as well?
-        let rx = {
-            let mut state = self.state.write().await;
-            state.forward_unreliable.remove(&node_id)
-        };
-        if let Some(mut rx) = rx {
-            rx.close().await.ok();
-        }
+        Ok(routing)
     }
 }

@@ -1,27 +1,20 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use anyhow::bail;
-use chrono::{DateTime, Duration, Utc};
-use derive_more::Display;
-use educe::Educe;
-use futures::future::LocalBoxFuture;
-use futures::FutureExt;
+use chrono::Utc;
+use futures::future::{AbortHandle, Abortable};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
-use ya_relay_core::identity::Identity;
 
 use crate::_direct_session::{DirectSession, NodeEntry};
-use crate::_error::{SessionError, SessionResult, TransitionError};
-use crate::_session::RawSession;
+use crate::_error::{SessionError, TransitionError};
+use crate::_session_state::{InitState, SessionState};
+use crate::_session_traits::SessionDeregistration;
 
-use ya_relay_core::server_session::{Endpoint, LastSeen, NodeInfo, SessionId};
-use ya_relay_core::udp_stream::OutStream;
+use ya_relay_core::identity::Identity;
+use ya_relay_core::server_session::{Endpoint, LastSeen, NodeInfo};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{SlotId, FORWARD_SLOT_ID};
@@ -44,60 +37,6 @@ pub struct Registry {
 struct RegistryState {
     by_node_id: HashMap<NodeId, RegistryEntry>,
     by_addr: HashMap<SocketAddr, RegistryEntry>,
-}
-
-#[derive(Clone, Educe, Display, Debug)]
-#[educe(PartialEq)]
-pub enum SessionState {
-    #[display(fmt = "Outgoing-{}", _0)]
-    Outgoing(InitState),
-    #[display(fmt = "Incoming-{}", _0)]
-    Incoming(InitState),
-    #[display(fmt = "Reverse-{}", _0)]
-    ReverseConnection(InitState),
-    #[display(fmt = "Relayed-{}", _0)]
-    Relayed(RelayedState),
-    /// Holds established session.
-    #[display(fmt = "Established")]
-    Established(#[educe(PartialEq(ignore))] Weak<DirectSession>),
-    /// Last attempt to init session failed. Holds error.
-    #[display(fmt = "FailedEstablish")]
-    FailedEstablish(SessionError),
-    Closing,
-    /// Session was closed gracefully. (Still the reason
-    /// for closing could be some kind of failure)
-    Closed,
-}
-
-#[derive(Clone, PartialEq, Display, Debug)]
-pub enum RelayedState {
-    Initializing,
-    Ready,
-}
-
-#[derive(Clone, PartialEq, Display, Debug)]
-pub enum InitState {
-    /// This state indicates that someone plans to initialize connection,
-    /// so we are not allowed to do this. Instead we should wait until
-    /// connection will be ready.
-    ConnectIntent,
-    /// State set on the beginning of initialization function.
-    Initializing,
-    WaitingForReverseConnection,
-    /// First round of `Session` requests, challenges sent.
-    ChallengeHandshake,
-    /// Second round of handshake, challenge response received.
-    HandshakeResponse,
-    /// Challenge from other party is valid.
-    ChallengeVerified,
-    /// Session is registered in `SessionLayer`.
-    /// We should be ready to receive packets, but shouldn't send packets yet,
-    /// because we are waiting for `ResumeForwarding` packet.
-    SessionRegistered,
-    /// We received (or sent in case of initiator) `ResumeForwarding` packet,
-    /// so Protocol initialization part is finished.
-    /// From this state session can transition to established.
-    Ready,
 }
 
 impl Registry {
@@ -134,6 +73,8 @@ impl Registry {
     /// if we had only partial info about Nodes earlier.
     /// This is the reason we don't have update function on single `RegistryEntry`.
     pub async fn update_entry(&self, info: NodeInfo) -> anyhow::Result<()> {
+        log::trace!("Updating `RegistryEntry` for [{}]", info.node_id());
+
         // TODO: For now we use the simplest implementation possible.
         //       Apply considerations from comment later.
         let addrs = info
@@ -151,7 +92,7 @@ impl Registry {
             .collect::<Vec<_>>();
 
         // We are in correct state if all `RegistryEntries` are the same struct.
-        let mut entry = if !entries.is_empty() {
+        let entry = if !entries.is_empty() {
             let state = entries[0].state.clone();
             if !entries
                 .iter()
@@ -174,24 +115,42 @@ impl Registry {
             state.by_addr.insert(addr, entry.clone());
         }
 
-        entry.update_info(info.clone()).await;
+        entry.update_info(info.clone()).await.ok();
         Ok(())
     }
 
     pub async fn get_entry(&self, node_id: NodeId) -> Option<RegistryEntry> {
-        let mut state = self.state.read().await;
+        let state = self.state.read().await;
         state.find(node_id, &[])
     }
 
-    pub async fn lock_outgoing(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
-        self.guard(node_id, addrs).await.lock_outgoing().await
+    pub async fn get_entry_by_addr(&self, remote: &SocketAddr) -> Option<RegistryEntry> {
+        let state = self.state.read().await;
+        state.find_by_addr(remote)
     }
 
-    pub async fn lock_incoming(&self, node_id: NodeId, addrs: &[SocketAddr]) -> SessionLock {
-        self.guard(node_id, addrs).await.lock_incoming().await
+    pub async fn lock_outgoing(
+        &self,
+        node_id: NodeId,
+        addrs: &[SocketAddr],
+        layer: impl SessionDeregistration,
+    ) -> SessionLock {
+        self.guard(node_id, addrs).await.lock_outgoing(layer).await
     }
 
-    pub async fn register_waiting_for_node(&self, node_id: NodeId) -> anyhow::Result<NodeAwaiting> {
+    pub async fn lock_incoming(
+        &self,
+        node_id: NodeId,
+        addrs: &[SocketAddr],
+        layer: impl SessionDeregistration,
+    ) -> SessionLock {
+        self.guard(node_id, addrs).await.lock_incoming(layer).await
+    }
+
+    pub async fn register_waiting_for_node(
+        &self,
+        _node_id: NodeId,
+    ) -> anyhow::Result<NodeAwaiting> {
         todo!()
         // let state = self.state.read().await;
         // if let Some(target) = state.by_node_id.get(&node_id) {
@@ -259,8 +218,8 @@ impl RegistryState {
             .cloned()
     }
 
-    fn find_by_id(&self, node_id: NodeId) -> Option<RegistryEntry> {
-        self.by_node_id.get(&node_id).cloned()
+    fn find_by_addr(&self, addr: &SocketAddr) -> Option<RegistryEntry> {
+        self.by_addr.get(addr).cloned()
     }
 }
 
@@ -303,6 +262,9 @@ pub struct RegistryEntryState {
     /// In the future we should store here slot assigned by us, that can be used to forward packets
     /// through our Node.
     slot: SlotId,
+
+    /// Handle to abort initialization that's currently in progress.
+    abort_handle: Option<AbortHandle>,
 }
 
 impl RegistryEntry {
@@ -346,17 +308,17 @@ impl RegistryEntry {
     }
 
     pub async fn transition_closed(&self) -> Result<(), TransitionError> {
-        let new_state = {
+        {
             let mut target = self.state.write().await;
-            target.state.transition(SessionState::Closed)?
-        };
+            target.state.transition(SessionState::Closed)?;
+        }
 
         self.notify_change(SessionState::Closed);
         Ok(())
     }
 
     pub async fn public_addresses(&self) -> Vec<SocketAddr> {
-        let mut target = self.state.read().await;
+        let target = self.state.read().await;
         target.addresses.clone()
     }
 
@@ -418,7 +380,7 @@ impl RegistryEntry {
     }
 
     pub async fn identities(&self) -> anyhow::Result<NodeEntry<Identity>> {
-        let mut target = self.state.read().await;
+        let target = self.state.read().await;
         let ids = target.node.clone();
         if ids.is_empty() {
             bail!("Identities list is empty")
@@ -439,7 +401,7 @@ impl RegistryEntry {
 
         self.state_notifier
             .send(new_state)
-            .map_err(|_| log::trace!("Notifying state change for {}: No listeners", self.id))
+            .map_err(|_| log::trace!("Notifying state change for [{}]: No listeners", self.id))
             .ok();
     }
 }
@@ -483,119 +445,6 @@ impl RegistryEntryState {
     }
 }
 
-impl InitState {
-    #[allow(clippy::match_like_matches_macro)]
-    pub fn allowed(&self, new_state: &InitState) -> bool {
-        match (self, &new_state) {
-            (InitState::ConnectIntent, InitState::Initializing) => true,
-            (InitState::Initializing, InitState::ChallengeHandshake) => true,
-            (InitState::ChallengeHandshake, InitState::HandshakeResponse) => true,
-            (InitState::HandshakeResponse, InitState::ChallengeVerified) => true,
-            (InitState::ChallengeVerified, InitState::SessionRegistered) => true,
-            (InitState::SessionRegistered, InitState::Ready) => true,
-            _ => false,
-        }
-    }
-}
-
-impl RelayedState {
-    #[allow(clippy::match_like_matches_macro)]
-    pub fn allowed(&self, new_state: &RelayedState) -> bool {
-        match (self, &new_state) {
-            (RelayedState::Initializing, RelayedState::Ready) => true,
-            _ => false,
-        }
-    }
-}
-
-impl SessionState {
-    pub fn transition_incoming(
-        &mut self,
-        new_state: InitState,
-    ) -> Result<SessionState, TransitionError> {
-        // If we are initializing incoming session, we don't know if it is due to ReverseConnection
-        // message or other Node just started connection without reason.
-        // That's why we need to translate `InitState` depending on the context.
-        let new_state = match self {
-            SessionState::Incoming(_) => SessionState::Incoming(new_state),
-            SessionState::ReverseConnection(_) => SessionState::ReverseConnection(new_state),
-            _ => SessionState::Incoming(new_state),
-        };
-        self.transition(new_state)
-    }
-
-    pub fn transition_outgoing(
-        &mut self,
-        new_state: InitState,
-    ) -> Result<SessionState, TransitionError> {
-        self.transition(SessionState::Outgoing(new_state))
-    }
-
-    pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
-        let allowed = match (&self, &new_state) {
-            (SessionState::Relayed(_), SessionState::FailedEstablish(_)) => true,
-            (SessionState::Incoming(_), SessionState::FailedEstablish(_)) => true,
-            (SessionState::Outgoing(_), SessionState::FailedEstablish(_)) => true,
-            (SessionState::ReverseConnection(_), SessionState::FailedEstablish(_)) => true,
-            (SessionState::Incoming(InitState::Ready), SessionState::Established(_)) => true,
-            (SessionState::Outgoing(InitState::Ready), SessionState::Established(_)) => true,
-            (SessionState::Relayed(RelayedState::Ready), SessionState::Established(_)) => true,
-            (
-                SessionState::Outgoing(InitState::ConnectIntent),
-                SessionState::Relayed(RelayedState::Initializing),
-            ) => true,
-            (
-                SessionState::ReverseConnection(InitState::ConnectIntent),
-                SessionState::Relayed(RelayedState::Initializing),
-            ) => true,
-            (SessionState::ReverseConnection(InitState::Ready), SessionState::Established(_)) => {
-                true
-            }
-            (
-                SessionState::Outgoing(InitState::WaitingForReverseConnection),
-                SessionState::ReverseConnection(InitState::Initializing),
-            ) => true,
-            (SessionState::Closed, SessionState::Outgoing(InitState::ConnectIntent)) => true,
-            (SessionState::Closed, SessionState::Incoming(InitState::ConnectIntent)) => true,
-            (SessionState::Established(_), SessionState::Established(_)) => true,
-            (SessionState::Established(_), SessionState::Closing) => true,
-            (SessionState::Closing, SessionState::Closed) => true,
-            (
-                SessionState::FailedEstablish(_),
-                SessionState::Outgoing(InitState::ConnectIntent),
-            ) => true,
-            (
-                SessionState::FailedEstablish(_),
-                SessionState::Incoming(InitState::ConnectIntent),
-            ) => true,
-            (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(next),
-            (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(next),
-            (SessionState::Relayed(prev), SessionState::Relayed(next)) => prev.allowed(next),
-            (SessionState::ReverseConnection(prev), SessionState::ReverseConnection(next)) => {
-                prev.allowed(next)
-            }
-            _ => false,
-        };
-
-        if !allowed {
-            Err(TransitionError::InvalidTransition(self.clone(), new_state))
-        } else {
-            *self = new_state;
-            Ok(self.clone())
-        }
-    }
-
-    #[allow(clippy::match_like_matches_macro)]
-    pub fn is_finished(&self) -> bool {
-        match self {
-            SessionState::Established(_)
-            | SessionState::Closed
-            | SessionState::FailedEstablish(_) => true,
-            _ => false,
-        }
-    }
-}
-
 impl RegistryEntry {
     fn new(node_id: NodeId, addresses: Vec<SocketAddr>, config: Arc<RegistryConfig>) -> Self {
         let (notify_msg, _) = broadcast::channel(10);
@@ -609,6 +458,7 @@ impl RegistryEntry {
                 supported_encryption: vec![],
                 state: SessionState::Closed,
                 slot: FORWARD_SLOT_ID,
+                abort_handle: None,
             })),
             state_notifier: Arc::new(notify_msg),
             config,
@@ -619,13 +469,14 @@ impl RegistryEntry {
     /// Function either will return Lock granting you exclusive right to
     /// initialize this session or object for awaiting on session.
     /// TODO: Handle situation when we are attempting to connect and closing session at the same time.
-    pub async fn lock_outgoing(&self) -> SessionLock {
+    pub async fn lock_outgoing(&self, layer: impl SessionDeregistration) -> SessionLock {
         // We need to subscribe to state change events, before we will start transition,
         // otherwise a few events could be lost.
         let notifier = self.awaiting_notifier();
         match self.transition_outgoing(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
+                layer: Arc::new(Box::new(layer)),
                 result: None,
             }),
             Err(e) => {
@@ -645,13 +496,14 @@ impl RegistryEntry {
 
     /// See: `SessionGuard::lock_outgoing`
     /// TODO: Unify implementation with `lock_outgoing`.
-    pub async fn lock_incoming(&self) -> SessionLock {
+    pub async fn lock_incoming(&self, layer: impl SessionDeregistration) -> SessionLock {
         // We need to subscribe to state change events, before we will start transition,
         // otherwise a few events could be lost.
         let notifier = self.awaiting_notifier();
         match self.transition_incoming(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
+                layer: Arc::new(Box::new(layer)),
                 result: None,
             }),
             Err(e) => {
@@ -679,6 +531,26 @@ impl RegistryEntry {
     pub async fn state(&self) -> SessionState {
         self.state.read().await.state.clone()
     }
+
+    pub async fn register_abortable(&self, abort: AbortHandle) {
+        let mut state = self.state.write().await;
+        state.abort_handle = Some(abort);
+    }
+
+    pub async fn unregister_abortable(&self) {
+        let mut state = self.state.write().await;
+        state.abort_handle.take();
+    }
+
+    pub async fn abort_initialization(&self) {
+        if let Some(handle) = {
+            let mut state = self.state.write().await;
+            state.abort_handle.take()
+        } {
+            log::debug!("Aborting session initialization with [{}]", self.id);
+            handle.abort();
+        }
+    }
 }
 
 /// Structure giving you exclusive right to initialize session (`Permit`)
@@ -689,20 +561,20 @@ pub enum SessionLock {
 }
 
 /// Structure giving you exclusive right to initialize session.
-/// TODO: Struct should ensure clear Session state on drop.
-/// TODO: Rename `guard` in every place in the code, since it has completely
-///       different purpose now
+/// Ensures clear Session state on drop including un-registration from `SessionLayer`.
 pub struct SessionPermit {
     pub registry: RegistryEntry,
+    layer: Arc<Box<dyn SessionDeregistration>>,
     pub(crate) result: Option<Result<Arc<DirectSession>, SessionError>>,
 }
 
 impl SessionPermit {
     pub(crate) async fn async_drop(
-        guard: RegistryEntry,
+        node: RegistryEntry,
+        layer: Arc<Box<dyn SessionDeregistration>>,
         result: Option<Result<Arc<DirectSession>, SessionError>>,
     ) {
-        let node_id = guard.id;
+        let node_id = node.id;
         let new_state = match result {
             None => SessionState::FailedEstablish(SessionError::ProgrammingError(
                 "Dropping `SessionPermit` without result.".to_string(),
@@ -711,25 +583,68 @@ impl SessionPermit {
             Some(Err(e)) => SessionState::FailedEstablish(e),
         };
 
+        if let SessionState::FailedEstablish(_) = &new_state {
+            Self::clean_state(&node, layer.clone()).await;
+        } else {
+            node.unregister_abortable().await;
+        }
+
         // We don't expect to fail here, so if we do, something has gone really bad.
-        if let Err(e) = guard.transition(new_state.clone()).await {
+        if let Err(e) = node.transition(new_state.clone()).await {
             log::warn!("Dropping Permit for Node {node_id}: {e}");
-            guard
-                .transition(SessionState::FailedEstablish(
-                    SessionError::ProgrammingError(format!(
-                        "Failed to transition to state: {new_state}: {e}"
-                    )),
-                ))
-                .await;
+
+            Self::clean_state(&node, layer).await;
+
+            // Error really shouldn't happen here.
+            node.transition(SessionState::FailedEstablish(
+                SessionError::ProgrammingError(format!(
+                    "Failed to transition to state: {new_state}: {e}"
+                )),
+            ))
+            .await
+            .ok();
         }
     }
 
-    pub fn results(
+    /// Makes sure we deregister all data about this Node and abort all futures
+    /// that might be during initialization.
+    pub(crate) async fn clean_state(
+        node: &RegistryEntry,
+        layer: Arc<Box<dyn SessionDeregistration>>,
+    ) {
+        for addr in node.public_addresses().await {
+            layer.abort_initializations(addr).await.ok();
+        }
+        layer.unregister(node.id).await;
+    }
+
+    pub fn collect_results(
         &mut self,
         result: Result<Arc<DirectSession>, SessionError>,
     ) -> Result<Arc<DirectSession>, SessionError> {
         self.result = Some(result.clone());
         result
+    }
+
+    /// Run initialization as abort-able future.
+    ///
+    /// It would be nice to unify this function with `SessionPermit::collect_results`, but the problem
+    /// is that `collect_results` needs mut access to `SessionPermit` and abortable future needs reference
+    /// to the same `SessionPermit`.
+    pub async fn run_abortable<
+        'a,
+        F: Future<Output = Result<Arc<DirectSession>, SessionError>> + 'a,
+    >(
+        &'a self,
+        future: F,
+    ) -> Result<Arc<DirectSession>, SessionError> {
+        let (abort_handle, abort_registration) = AbortHandle::new_pair();
+
+        self.registry.register_abortable(abort_handle).await;
+
+        Abortable::new(future, abort_registration)
+            .await
+            .map_err(|e| SessionError::Aborted(e.to_string()))?
     }
 }
 
@@ -738,6 +653,7 @@ impl Drop for SessionPermit {
         log::trace!("Dropping `SessionPermit` for {}.", self.registry.id);
         tokio::task::spawn_local(SessionPermit::async_drop(
             self.registry.clone(),
+            self.layer.clone(),
             self.result.take(),
         ));
     }
@@ -759,16 +675,19 @@ impl NodeAwaiting {
         loop {
             match state {
                 SessionState::Established(session) => {
+                    log::trace!("Finished waiting for established session with [{node_id}].");
                     return session.upgrade().ok_or(SessionError::Unexpected(
                         "Session closed unexpectedly.".to_string(),
-                    ))
+                    ));
                 }
                 // TODO: We would like to return more meaningful error message.
                 SessionState::Closed => {
                     return Err(SessionError::Unexpected("Connection closed.".to_string()))
                 }
                 SessionState::FailedEstablish(e) => return Err(e),
-                _ => log::trace!("Waiting for established session with {node_id}: state: {state}"),
+                _ => {
+                    log::trace!("Waiting for established session with [{node_id}]: state: {state}")
+                }
             };
 
             state = match self.notifier.recv().await {
@@ -805,7 +724,11 @@ mod tests {
     use std::time::Duration;
     use tokio::time::timeout;
 
+    use crate::_raw_session::RawSession;
+    use crate::_session_state::InitState;
+    use crate::testing::mocks::NoOpSessionLayer;
     use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
+    use ya_relay_core::server_session::SessionId;
     use ya_relay_proto::codec::PacketKind;
 
     lazy_static! {
@@ -838,7 +761,9 @@ mod tests {
             .await?;
         node.transition_outgoing(InitState::Ready).await?;
 
-        let session = permit.results(Ok(mock_session(&permit).await)).unwrap();
+        let session = permit
+            .collect_results(Ok(mock_session(&permit).await))
+            .unwrap();
         drop(permit);
         Ok(session)
     }
@@ -858,7 +783,9 @@ mod tests {
             .await?;
         node.transition_incoming(InitState::Ready).await?;
 
-        let session = permit.results(Ok(mock_session(&permit).await)).unwrap();
+        let session = permit
+            .collect_results(Ok(mock_session(&permit).await))
+            .unwrap();
         drop(permit);
         Ok(session)
     }
@@ -885,24 +812,36 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_independent_permits() {
         let guards = Registry::default();
-        let permit1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let permit1 = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
-        let permit2 = match guards.lock_outgoing(*NODE_ID2, &[*ADDR2]).await {
+        let _permit2 = match guards
+            .lock_outgoing(*NODE_ID2, &[*ADDR2], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
-        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
-        let mut waiter1 = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        // Second call to `lock_outgoing` should give us `SessionLock::Wait`
+        let mut waiter1 = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
 
-        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
-        let mut waiter2 = match guards.lock_outgoing(*NODE_ID2, &[*ADDR2]).await {
+        // Second call to `lock_outgoing` should give us `SessionLock::Wait`
+        let mut waiter2 = match guards
+            .lock_outgoing(*NODE_ID2, &[*ADDR2], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
@@ -933,13 +872,19 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_incoming() {
         let guards = Registry::default();
-        let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+        let permit = match guards
+            .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
-        /// Second call to `lock_outgoing` should give us `SessionLock::Wait`
-        let mut waiter = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+        // Second call to `lock_outgoing` should give us `SessionLock::Wait`
+        let mut waiter = match guards
+            .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
@@ -962,13 +907,19 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_incoming_and_outgoing() {
         let guards = Registry::default();
-        let permit = match guards.lock_incoming(*NODE_ID1, &[*ADDR1]).await {
+        let permit = match guards
+            .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
-        /// We shouldn't get `Permit` if incoming session initialization started.
-        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        // We shouldn't get `Permit` if incoming session initialization started.
+        let mut waiter = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };
@@ -989,14 +940,20 @@ mod tests {
     #[actix_rt::test]
     async fn test_session_guards_already_established() {
         let guards = Registry::default();
-        let permit = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let permit = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(permit) => permit,
             SessionLock::Wait(_) => panic!("Expected initialization Permit"),
         };
 
         let _session = mock_establish_outgoing(permit).await.unwrap();
 
-        let mut waiter = match guards.lock_outgoing(*NODE_ID1, &[*ADDR1]).await {
+        let mut waiter = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
             SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
             SessionLock::Wait(waiter) => waiter,
         };

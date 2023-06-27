@@ -1,12 +1,8 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::Duration;
 use url::Url;
 
-use ya_relay_core::challenge::CHALLENGE_DIFFICULTY;
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
@@ -135,7 +131,7 @@ impl ClientBuilder {
             node_id: default_id,
             node_pub_key: default_pub_key,
             crypto,
-            challenge_difficulty: CHALLENGE_DIFFICULTY,
+            challenge_difficulty: 1,
             bind_url,
             srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
             auto_connect: self.auto_connect,

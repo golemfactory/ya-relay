@@ -102,6 +102,14 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
                 log::warn!("Error sending packet: {e}");
             }
         }
+
+        log::debug!(
+            "Udp socket ({}) closed",
+            socket
+                .local_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or("None".to_string())
+        )
     });
 
     Ok(tx)
