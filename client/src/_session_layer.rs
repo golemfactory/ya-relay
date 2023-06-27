@@ -856,7 +856,7 @@ impl SessionLayer {
         // longer timeout now, because we can hope, that this node is responsive.
         let result = tokio::time::timeout(
             self.config.reverse_connection_real_timeout,
-            awaiting.await_for_finish(),
+            awaiting.await_reverse_finish(),
         )
         .await;
 

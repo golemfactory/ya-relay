@@ -1,6 +1,6 @@
 use derive_more::Display;
 use educe::Educe;
-use std::sync::Weak;
+use std::sync::{Arc, Weak};
 
 use crate::_direct_session::DirectSession;
 use crate::_error::{SessionError, TransitionError};
@@ -34,13 +34,26 @@ pub enum RelayedState {
     Ready,
 }
 
-#[derive(Clone, PartialEq, Display, Debug)]
+#[derive(Clone, Educe, Display)]
+#[educe(PartialEq, Debug)]
 pub enum ReverseState {
     /// `ReverseConnection` message was sent and we are waiting for other Node
     /// to init connection with us.
     Awaiting,
     #[display(fmt = "{}", _0)]
     InProgress(InitState),
+    /// Incoming connection is ready, now we need to return control to code
+    /// which requested `ReverseConnection`. This intermediate step will be set,
+    /// when reverse `SessionPermit` will be dropped.
+    #[display(
+        fmt = "Finished-{}",
+        "_0.as_ref().map_or_else(|_| \"Err\", |_| \"Ok\")"
+    )]
+    Finished(
+        #[educe(PartialEq(ignore))]
+        #[educe(Debug(ignore))]
+        Result<Arc<DirectSession>, SessionError>,
+    ),
 }
 
 #[derive(Clone, PartialEq, Display, Debug)]
@@ -98,6 +111,8 @@ impl ReverseState {
         match (self, &new_state) {
             (ReverseState::Awaiting, ReverseState::InProgress(InitState::ConnectIntent)) => true,
             (ReverseState::InProgress(prev), ReverseState::InProgress(next)) => prev.allowed(next),
+            (ReverseState::InProgress(InitState::Ready), ReverseState::Finished(Ok(_))) => true,
+            (ReverseState::InProgress(_), ReverseState::Finished(Err(_))) => true,
             _ => false,
         }
     }
@@ -135,12 +150,13 @@ impl SessionState {
             (SessionState::Incoming(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::Outgoing(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::ReverseConnection(_), SessionState::FailedEstablish(_)) => true,
-            // Session can be moved to `Established` only if it was set to `Ready` by `SessionProtocol`.
+            // Session can be moved to `Established` only if it was set to `Ready` by `SessionProtocol`
+            // or in case of `ReverseConnection`, when reverse `SessionPermit` sets `Reverse-Finished` state.
             (SessionState::Incoming(InitState::Ready), SessionState::Established(_)) => true,
             (SessionState::Outgoing(InitState::Ready), SessionState::Established(_)) => true,
             (SessionState::Relayed(RelayedState::Ready), SessionState::Established(_)) => true,
             (
-                SessionState::ReverseConnection(ReverseState::InProgress(InitState::Ready)),
+                SessionState::ReverseConnection(ReverseState::Finished(Ok(_))),
                 SessionState::Established(_),
             ) => true,
             // Enables reverse connection. When establishing outgoing session, we send `ReverseConnection`

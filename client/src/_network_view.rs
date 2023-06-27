@@ -463,7 +463,7 @@ impl NodeView {
         match self.transition_outgoing(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
-                _reverse: false,
+                reverse: false,
                 layer: Arc::new(Box::new(layer)),
                 result: None,
             }),
@@ -491,7 +491,7 @@ impl NodeView {
         match self.transition_incoming(InitState::ConnectIntent).await {
             Ok(state) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
-                _reverse: matches!(
+                reverse: matches!(
                     state,
                     SessionState::ReverseConnection(ReverseState::InProgress(
                         InitState::ConnectIntent
@@ -565,7 +565,7 @@ pub struct SessionPermit {
     /// Flag is set to true, if the Permit was created for incoming connection in response
     /// to `ReverseConnection`. In this case we have 2 permits existing at the same time, because
     /// at the same time other part of code is waiting for incoming connection.
-    _reverse: bool,
+    reverse: bool,
     layer: Arc<Box<dyn SessionDeregistration>>,
     pub(crate) result: Option<Result<Arc<DirectSession>, SessionError>>,
 }
@@ -573,9 +573,20 @@ pub struct SessionPermit {
 impl SessionPermit {
     fn final_state(&mut self) -> SessionState {
         match self.result.take() {
-            None => SessionState::FailedEstablish(SessionError::ProgrammingError(
-                "Dropping `SessionPermit` without result.".to_string(),
-            )),
+            None => {
+                let err = SessionError::ProgrammingError(
+                    "Dropping `SessionPermit` without result.".to_string(),
+                );
+
+                if self.reverse {
+                    SessionState::ReverseConnection(ReverseState::Finished(Err(err)))
+                } else {
+                    SessionState::FailedEstablish(err)
+                }
+            }
+            Some(result) if self.reverse => {
+                SessionState::ReverseConnection(ReverseState::Finished(result))
+            }
             Some(Ok(session)) => SessionState::Established(Arc::downgrade(&session)),
             Some(Err(e)) => SessionState::FailedEstablish(e),
         }
@@ -587,15 +598,20 @@ impl SessionPermit {
         new_state: SessionState,
     ) {
         let node_id = node.id;
+        let reverse = matches!(&new_state, SessionState::ReverseConnection(_));
 
-        if let SessionState::FailedEstablish(_) = &new_state {
-            Self::clean_state(&node, layer.clone()).await;
-        } else {
-            node.unregister_abortable().await;
+        match &new_state {
+            SessionState::FailedEstablish(_) => Self::clean_state(&node, layer.clone()).await,
+            SessionState::ReverseConnection(ReverseState::Finished(_)) => {}
+            _ => node.unregister_abortable().await,
         }
 
         // We don't expect to fail here, so if we do, something has gone really bad.
         if let Err(e) = node.transition(new_state.clone()).await {
+            if reverse {
+                return;
+            }
+
             log::warn!("Dropping Permit for Node {node_id}: {e}");
 
             Self::clean_state(&node, layer).await;
@@ -652,7 +668,14 @@ impl SessionPermit {
 
 impl Drop for SessionPermit {
     fn drop(&mut self) {
-        log::trace!("Dropping `SessionPermit` for [{}].", self.registry.id);
+        let is_reverse = match self.reverse {
+            true => " reverse",
+            false => "",
+        };
+        log::trace!(
+            "Dropping{is_reverse} `SessionPermit` for [{}].",
+            self.registry.id
+        );
         tokio::task::spawn_local(SessionPermit::async_drop(
             self.registry.clone(),
             self.layer.clone(),
@@ -721,6 +744,17 @@ impl NodeAwaiting {
                 }
                 // Still waiting.
                 _ => (),
+            };
+
+            state = self.next().await?;
+        }
+    }
+
+    pub async fn await_reverse_finish(&mut self) -> Result<Arc<DirectSession>, SessionError> {
+        let mut state = self.registry.state().await;
+        loop {
+            if let SessionState::ReverseConnection(ReverseState::Finished(result)) = state {
+                return result;
             };
 
             state = self.next().await?;
