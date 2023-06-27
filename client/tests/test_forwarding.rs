@@ -1,16 +1,17 @@
-use anyhow::Context;
-use futures::SinkExt;
+use anyhow::{anyhow, Context};
 use futures::StreamExt;
 use std::rc::Rc;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::_client::Forwarded;
+use ya_relay_client::_client::{Forwarded, GenericSender};
 use ya_relay_client::testing::forwarding_utils::spawn_receive;
 use ya_relay_client::testing::init::MockSessionNetwork;
+use ya_relay_core::server_session::TransportType;
 
 #[serial_test::serial]
 async fn test_forward_unreliable_relayed() -> anyhow::Result<()> {
@@ -173,6 +174,48 @@ async fn test_p2p_reliable() -> anyhow::Result<()> {
     assert!(received1.load(SeqCst));
     assert!(received2.load(SeqCst));
 
+    Ok(())
+}
+
+/// Test checks if there are no problems with establishing connections to the same Node
+/// using different channels.
+#[serial_test::serial]
+async fn test_p2p_reliable_and_transfer() -> anyhow::Result<()> {
+    let mut network = MockSessionNetwork::new().await.unwrap();
+
+    let client1 = network.new_client().await?;
+    let client2 = network.new_client().await?;
+
+    let mut rx = client2
+        .forward_receiver()
+        .await
+        .context("no forward receiver")?;
+
+    let mut tx1 = client1.forward(client2.node_id()).await?;
+    let mut tx2 = client1.forward_transfer(client2.node_id()).await?;
+
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let result1 = timeout(Duration::from_millis(200), rx.recv())
+        .await?
+        .ok_or(anyhow!("Receiver expected value"))?;
+
+    let result2 = timeout(Duration::from_millis(200), rx.recv())
+        .await?
+        .ok_or(anyhow!("Receiver expected value"))?;
+
+    // We can't depend on ordering, because channels are completely separate.
+    let (result1, result2) = match result1.transport {
+        TransportType::Unreliable => panic!("`TransportType::Unreliable` unexpected"),
+        TransportType::Reliable => (result1, result2),
+        TransportType::Transfer => (result2, result1),
+    };
+
+    assert_eq!(result1.payload.into_vec(), vec![1u8]);
+    assert_eq!(result2.payload.into_vec(), vec![2u8]);
     Ok(())
 }
 

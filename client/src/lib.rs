@@ -13,8 +13,6 @@ pub use ya_relay_core::crypto;
 pub use ya_relay_proto::*;
 pub use ya_relay_stack::*;
 
-// TODO: Exposed for ya-relay-server. Should be made private after we merge implementations.
-pub use ya_relay_core::dispatch::{dispatch, Dispatcher, Handler};
 pub use ya_relay_core::server_session::TransportType;
 pub use ya_relay_core::session::{Session, SessionDesc};
 
@@ -27,11 +25,14 @@ mod _encryption;
 mod _error;
 mod _expire;
 mod _metrics;
+mod _raw_session;
 mod _routing_session;
-mod _session;
 mod _session_layer;
 mod _session_protocol;
 mod _session_registry;
+mod _session_state;
+mod _session_traits;
 mod _tcp_registry;
 mod _transport_layer;
+mod _transport_sender;
 mod _virtual_layer;

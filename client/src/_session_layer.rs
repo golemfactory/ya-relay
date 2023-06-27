@@ -1,43 +1,38 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use anyhow::{anyhow, bail, Error};
-use chrono::Utc;
+use anyhow::{anyhow, bail};
+use async_trait::async_trait;
 use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
-use log::log;
-use std::collections::{HashMap, VecDeque};
-use std::convert::{Infallible, TryFrom, TryInto};
-use std::future::Future;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
-use tokio::sync::{RwLock, Semaphore};
+use std::sync::{Arc, Mutex, Weak};
+use tokio::sync::RwLock;
 
 use crate::_client::{ClientConfig, Forwarded};
 use crate::_direct_session::{DirectSession, NodeEntry};
-use crate::_dispatch::{dispatch, Dispatcher, Handler};
+use crate::_dispatch::{dispatch, Handler};
 use crate::_encryption::Encryption;
 use crate::_error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
+use crate::_raw_session::{RawSession, SessionType};
 use crate::_routing_session::{NodeRouting, RoutingSender};
-use crate::_session::RawSession;
 use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{
-    Registry, RelayedState, SessionLock, SessionPermit, SessionState, Validity,
-};
-
+use crate::_session_registry::{Registry, SessionLock, SessionPermit, Validity};
+use crate::_session_state::{RelayedState, SessionState};
+use crate::_session_traits::{SessionDeregistration, SessionRegistration};
 use crate::_transport_layer::ForwardReceiver;
+
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::{challenge, NodeId};
 use ya_relay_proto::codec::PacketKind;
+use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
 use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
-use ya_relay_proto::{codec, proto};
 use ya_relay_stack::Channel;
 
 type ReqFingerprint = (Vec<u8>, u64);
@@ -55,7 +50,9 @@ pub enum ConnectionMethod {
 #[derive(Clone)]
 pub struct SessionLayer {
     pub config: Arc<ClientConfig>,
-    sink: Option<OutStream>,
+    /// Could be just `Option<OutStream>` but then we are not able to drop all senders
+    /// when we are copying `SessionLayer`, what prevents clean shutdown.
+    sink: Arc<Mutex<Option<OutStream>>>,
 
     pub(crate) state: Arc<RwLock<SessionLayerState>>,
 
@@ -74,8 +71,10 @@ pub struct SessionLayerState {
     /// Equals to `None` when not listening
     pub(crate) bind_addr: Option<SocketAddr>,
 
+    /// Maps contains mapping for default and secondary identities.
     pub nodes: HashMap<NodeId, Arc<NodeRouting>>,
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
+    pub p2p_nodes: HashMap<NodeId, Arc<DirectSession>>,
 
     pub(crate) init_protocol: Option<SessionProtocol>,
 
@@ -83,170 +82,18 @@ pub struct SessionLayerState {
     pub handles: Vec<AbortHandle>,
 }
 
-impl SessionLayer {
-    pub fn new(config: Arc<ClientConfig>) -> SessionLayer {
-        let state = SessionLayerState::default();
-
-        SessionLayer {
-            sink: None,
-            config,
-            state: Arc::new(RwLock::new(state)),
-            registry: Default::default(),
-            ingress_channel: Default::default(),
-            processed_requests: Arc::new(Mutex::new(VecDeque::new())),
-        }
-    }
-
-    pub async fn spawn(&mut self) -> anyhow::Result<SocketAddr> {
-        let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
-
-        self.sink = Some(sink.clone());
-
-        let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
-        let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
-
-        {
-            let mut state = self.state.write().await;
-
-            state.bind_addr.replace(bind_addr);
-            state.handles.push(abort_dispatcher);
-            state.handles.push(abort_expiration);
-            state.init_protocol = Some(SessionProtocol::new(self.clone(), sink));
-        }
-
-        Ok(bind_addr)
-    }
-
-    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
-        todo!()
-        // let (starting, abort_handles) = {
-        //     let mut state = self.state.write().await;
-        //     let starting = state.starting_sessions.take();
-        //     let handles = std::mem::take(&mut state.handles);
-        //     (starting, handles)
-        // };
-        //
-        // for abort_handle in abort_handles {
-        //     abort_handle.abort();
-        // }
-        //
-        // if let Some(starting) = starting {
-        //     starting.shutdown().await;
-        // }
-        //
-        // // Close sessions simultaneously, otherwise shutdown could last too long.
-        // let sessions = self.sessions().await;
-        // futures::future::join_all(sessions.into_iter().map(|session| {
-        //     self.drop_session(session.clone()).map_err(move |err| {
-        //         log::warn!(
-        //             "Failed to close session {} ({}). {}",
-        //             session.id,
-        //             session.remote,
-        //             err,
-        //         )
-        //     })
-        // }))
-        //     .await;
-        //
-        // self.virtual_tcp.shutdown().await;
-        // if let Some(mut out_stream) = self.sink.take() {
-        //     if let Err(e) = out_stream.close().await {
-        //         log::warn!("Error closing socket (output stream). {}", e);
-        //     }
-        // }
-        //
-        // self.guarded.shutdown().await;
-        // self.drop_server_session().await;
-        //
-        // Ok(())
-    }
-
-    pub async fn get_public_addr(&self) -> Option<SocketAddr> {
-        self.state.read().await.public_addr
-    }
-
-    pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
-        self.state.write().await.public_addr = addr;
-    }
-
-    pub async fn get_local_addr(&self) -> Option<SocketAddr> {
-        self.state.read().await.bind_addr
-    }
-
-    pub fn receiver(&self) -> Option<ForwardReceiver> {
-        self.ingress_channel.receiver()
-    }
-
-    /// Doesn't try to initialize session. `None` if session didn't exist.
-    pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
-        let state = self.state.read().await;
-        state
-            .nodes
-            .get(&node_id)
-            .cloned()
-            .map(|routing| RoutingSender::from_node_routing(node_id, routing, self.clone()))
-    }
-
-    pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<DirectSession>> {
-        let state = self.state.read().await;
-        state.p2p_sessions.get(&addr).cloned()
-    }
-
-    /// Queries information about Node from relay server.
-    /// Information is cached in `Registry` and will be returned from there.
-    /// From time to time query to relay server will be made to check if it is up to date.
-    pub async fn query_node_info(&self, node_id: NodeId) -> anyhow::Result<NodeInfo> {
-        if let Some(entry) = self.registry.get_entry(node_id).await {
-            // TODO: Probably we should still use outdated info if we are not able to query
-            //       relay server. This could make network more resilient.
-            match entry.info().await {
-                Validity::UpToDate(info) => return Ok(info),
-                Validity::UpdateRecommended(_) => {}
-            };
-        }
-
-        let server_session = self
-            .server_session()
-            .await
-            .map_err(|e| anyhow!("Failed to get relay server session: {e}"))?;
-        let node = server_session
-            .raw
-            .find_node(node_id)
-            .await
-            .map_err(|e| anyhow!("Failed to find Node on relay server: {e}"))?;
-
-        let info =
-            NodeInfo::try_from(node).map_err(|e| anyhow!("Failed to convert NodeInfo: {e}"))?;
-
-        self.registry
-            .update_entry(info.clone())
-            .await
-            .map_err(|e| SessionError::Internal("Registry update failed".to_string()))?;
-        Ok(info)
-    }
-
-    pub async fn abort_initializations(
-        &self,
-        session: Arc<RawSession>,
-    ) -> Result<(), SessionError> {
-        unimplemented!()
-    }
-
-    pub async fn disconnect_node(&self, node_id: NodeId) -> Result<(), SessionError> {
-        unimplemented!()
-    }
-
+#[async_trait(?Send)]
+impl SessionRegistration for SessionLayer {
     /// Registers initialized session to be ready to use.
-    pub(crate) async fn register_session(
+    async fn register_session(
         &self,
         addr: SocketAddr,
         id: SessionId,
         node_id: NodeId,
-        identities: impl IntoIterator<Item = Identity>,
+        identities: Vec<Identity>,
     ) -> anyhow::Result<Arc<DirectSession>> {
-        log::trace!("Calling register_session {id} {addr} {node_id}");
+        log::trace!("Calling register_session {id} [{node_id}] ({addr})");
 
-        let identities = identities.into_iter().collect::<Vec<Identity>>();
         let session = RawSession::new(addr, id, self.out_stream()?);
 
         // I hate that we need a check like this, but relay doesn't return identities list
@@ -289,9 +136,11 @@ impl SessionLayer {
 
         {
             let mut state = self.state.write().await;
-
             state.p2p_sessions.insert(session.remote, direct.clone());
+
             for id in &direct.owner.identities {
+                state.p2p_nodes.insert(*id, direct.clone());
+
                 if let Some(routing) = routing.clone() {
                     state.nodes.insert(*id, routing);
                 }
@@ -302,7 +151,12 @@ impl SessionLayer {
         Ok(direct)
     }
 
-    pub(crate) async fn register_routing(&self, routing: Arc<NodeRouting>) -> anyhow::Result<()> {
+    async fn register_routing(&self, routing: Arc<NodeRouting>) -> anyhow::Result<()> {
+        log::trace!(
+            "Calling `register_routing` for Node [{}]",
+            routing.node.default_id.node_id
+        );
+
         let route = match routing.route.upgrade() {
             None => bail!("`DirectSession` was closed"),
             Some(route) => route,
@@ -322,20 +176,367 @@ impl SessionLayer {
         }
         Ok(())
     }
+}
+
+#[async_trait(?Send)]
+impl SessionDeregistration for SessionLayer {
+    async fn unregister(&self, node_id: NodeId) {
+        log::debug!("Unregistering Node [{node_id}]");
+
+        let direct = {
+            let mut state = self.state.write().await;
+
+            let mut ids = HashSet::<NodeId>::new();
+            let routing = state.nodes.get(&node_id).cloned();
+            let direct = state.p2p_nodes.get(&node_id).cloned();
+
+            if let Some(routing) = &routing {
+                ids.extend(routing.node.identities.iter().map(|entry| entry.node_id))
+            }
+
+            if let Some(direct) = &direct {
+                log::debug!(
+                    "Disconnecting [{node_id}] - removing session: {} ({})",
+                    direct.raw.id,
+                    direct.raw.remote
+                );
+
+                state.p2p_sessions.remove(&direct.raw.remote);
+
+                // List of ids should be the same in `NodeRouting` and `DirectSession`
+                // we are using both to make sure we removed everything.
+                ids.extend(direct.owner.identities.iter())
+            }
+
+            for id in ids {
+                log::debug!("Disconnecting [{node_id}] - removing entries for identity: {id}");
+
+                state.p2p_nodes.remove(&id);
+                // `NodeRouting` will be dropped here and all `RoutingSender` containing `Weak<NodeRouting>`
+                // pointing to this Node will lose connection.
+                if let Some(direct) = state
+                    .nodes
+                    .remove(&id)
+                    .and_then(|routing| routing.route.upgrade())
+                {
+                    // In case we had relayed connection, we remove entry from session used for this.
+                    direct.remove(&id).ok();
+                }
+            }
+
+            direct
+        };
+
+        if let Some(direct) = direct {
+            self.unregister_session(direct).await;
+        }
+    }
+
+    /// Closing session but without state changes.
+    /// Function is separated for 2 reasons:
+    /// - To allow spawning in separate thread, so dropping future that initiated disconnection
+    ///   won't result in unfinished
+    /// - To use this function as part of `unregister` (which changes state itself so we can't
+    ///   do this for the second time)
+    async fn unregister_session(&self, session: Arc<DirectSession>) {
+        log::info!(
+            "Closing session {} with [{}] ({})",
+            session.raw.id,
+            session.owner.default_id,
+            session.raw.remote
+        );
+
+        // Notifies other Node that we are closing connection. This is only graceful optimization.
+        // Node should handle disconnected Nodes properly even if he won't be notified.
+        session.raw.disconnect().await.ok();
+
+        let forwards = session.list();
+        {
+            let mut state = self.state.write().await;
+            for id in &session.owner.identities {
+                state.p2p_nodes.remove(id);
+                state.nodes.remove(id);
+            }
+            state.p2p_sessions.remove(&session.raw.remote);
+
+            for id in forwards.iter().flat_map(|entry| entry.identities.iter()) {
+                state.nodes.remove(id);
+            }
+        }
+
+        log::info!(
+            "Session {} with [{}] ({}) closed",
+            session.raw.id,
+            session.owner.default_id,
+            session.raw.remote
+        );
+    }
+
+    /// Function doesn't wait for abort to finish.
+    async fn abort_initializations(&self, remote: SocketAddr) -> Result<(), SessionError> {
+        log::trace!("Called `abort_initializations` for {remote}");
+
+        let entry = match self.registry.get_entry_by_addr(&remote).await {
+            None => {
+                return Err(SessionError::NotFound(format!(
+                    "Can't find `RegistryEntry` by addr {remote}"
+                )))
+            }
+            Some(entry) => entry,
+        };
+
+        entry.abort_initialization().await;
+
+        let protocol = self.get_protocol().await?;
+        if let Some(session) = protocol.get_temporary_session(&remote).await {
+            session.disconnect().await.ok();
+            protocol.cleanup_initialization(&session.id).await;
+            return Ok(());
+        }
+        Ok(())
+    }
+}
+
+impl SessionLayer {
+    pub fn new(config: Arc<ClientConfig>) -> SessionLayer {
+        let state = SessionLayerState::default();
+
+        SessionLayer {
+            sink: Arc::new(Mutex::new(None)),
+            config,
+            state: Arc::new(RwLock::new(state)),
+            registry: Default::default(),
+            ingress_channel: Default::default(),
+            processed_requests: Arc::new(Mutex::new(VecDeque::new())),
+        }
+    }
+
+    pub async fn spawn(&mut self) -> anyhow::Result<SocketAddr> {
+        let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
+
+        {
+            *self.sink.lock().unwrap() = Some(sink.clone());
+        }
+
+        let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
+        let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
+
+        {
+            let mut state = self.state.write().await;
+
+            state.bind_addr.replace(bind_addr);
+            state.handles.push(abort_dispatcher);
+            state.handles.push(abort_expiration);
+            state.init_protocol = Some(SessionProtocol::new(
+                self.config.clone(),
+                self.clone(),
+                sink,
+            ));
+        }
+
+        Ok(bind_addr)
+    }
+
+    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+        let (starting, abort_handles) = {
+            let mut state = self.state.write().await;
+            let starting = state.init_protocol.take();
+            let handles = std::mem::take(&mut state.handles);
+            (starting, handles)
+        };
+
+        for abort_handle in abort_handles {
+            abort_handle.abort();
+        }
+
+        if let Some(mut starting) = starting {
+            starting.shutdown().await;
+        }
+
+        // Close sessions simultaneously, otherwise shutdown could last too long.
+        let sessions = self.sessions().await;
+        futures::future::join_all(
+            sessions
+                .into_iter()
+                .filter_map(|session| session.upgrade())
+                .map(|session| self.unregister_session(session)),
+        )
+        .await;
+
+        let out_stream = { self.sink.lock().unwrap().take() };
+        if let Some(mut out_stream) = out_stream {
+            if let Err(e) = out_stream.close().await {
+                log::warn!("Error closing socket (output stream). {e}");
+            }
+        }
+
+        self.registry.shutdown().await;
+        Ok(())
+    }
+
+    pub async fn is_p2p(&self, node_id: NodeId) -> bool {
+        match self.get_node_routing(node_id).await {
+            None => false,
+            Some(routing) => routing.session_type() == SessionType::P2P,
+        }
+    }
+
+    pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
+        let state = self.state.read().await;
+        state
+            .p2p_sessions
+            .get(addr)
+            .map(|direct| direct.owner.default_id)
+    }
+
+    pub async fn list_connected(&self) -> Vec<NodeId> {
+        let state = self.state.read().await;
+        state.nodes.keys().cloned().collect()
+    }
+
+    pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
+        self.registry.get_entry(node_id).await.map(|entry| entry.id)
+    }
+
+    pub async fn get_public_addr(&self) -> Option<SocketAddr> {
+        self.state.read().await.public_addr
+    }
+
+    pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
+        self.state.write().await.public_addr = addr;
+    }
+
+    pub async fn get_local_addr(&self) -> Option<SocketAddr> {
+        self.state.read().await.bind_addr
+    }
+
+    pub fn receiver(&self) -> Option<ForwardReceiver> {
+        self.ingress_channel.receiver()
+    }
+
+    /// Doesn't try to initialize session. `None` if session didn't exist.
+    pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
+        let state = self.state.read().await;
+        state
+            .nodes
+            .get(&node_id)
+            .cloned()
+            .map(|routing| RoutingSender::from_node_routing(node_id, routing, self.clone()))
+    }
+
+    pub async fn sessions(&self) -> Vec<Weak<DirectSession>> {
+        let state = self.state.read().await;
+        state.p2p_sessions.values().map(Arc::downgrade).collect()
+    }
+
+    pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<DirectSession>> {
+        let state = self.state.read().await;
+        state.p2p_sessions.get(&addr).cloned()
+    }
+
+    /// Queries information about Node from relay server.
+    /// Information is cached in `Registry` and will be returned from there.
+    /// From time to time query to relay server will be made to check if it is up to date.
+    pub async fn query_node_info(&self, node_id: NodeId) -> anyhow::Result<NodeInfo> {
+        if let Some(entry) = self.registry.get_entry(node_id).await {
+            // TODO: Probably we should still use outdated info if we are not able to query
+            //       relay server. This could make network more resilient.
+            match entry.info().await {
+                Validity::UpToDate(info) => return Ok(info),
+                Validity::UpdateRecommended(_) => {}
+            };
+        }
+
+        log::trace!("Querying Node [{node_id}] info, because it might be outdated.");
+
+        let server_session = self
+            .server_session()
+            .await
+            .map_err(|e| anyhow!("Failed to get relay server session: {e}"))?;
+        let node = server_session
+            .raw
+            .find_node(node_id)
+            .await
+            .map_err(|e| anyhow!("Failed to find Node on relay server: {e}"))?;
+
+        let info =
+            NodeInfo::try_from(node).map_err(|e| anyhow!("Failed to convert NodeInfo: {e}"))?;
+
+        self.registry
+            .update_entry(info.clone())
+            .await
+            .map_err(|e| SessionError::Internal(format!("Registry update failed: {e}")))?;
+        Ok(info)
+    }
+
+    /// Disconnects from provided Node and all secondary identities.
+    /// If we had p2p session with Node, it will be closed.
+    /// TODO: Function should be abort-safe
+    /// TODO: `disconnect` shouldn't fail, because there is no reasonable reaction to this case.
+    ///       This function must leave everything in clean state.
+    pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
+        log::info!("Disconnecting Node [{node_id}]");
+
+        // Note: This function shouldn't return before changing state to `Closed` (abort-safety).
+        let entry = self.registry.guard(node_id, &[]).await;
+        entry.transition(SessionState::Closing).await?;
+        self.unregister(node_id).await;
+        entry.transition_closed().await?;
+        Ok(())
+    }
+
+    pub async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError> {
+        let myself = self.clone();
+        // Makes function abort-safe. Dropping this future won't stop execution
+        // of closing function.
+        tokio::task::spawn_local(async move {
+            let entry = myself.registry.guard(session.owner.default_id, &[]).await;
+
+            entry.transition(SessionState::Closing).await?;
+            myself.unregister_session(session).await;
+            entry.transition_closed().await?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| SessionError::Unexpected(e.to_string()))?
+    }
+
+    pub(crate) async fn close_server_session(&self) -> bool {
+        if let Ok(session) = self.server_session().await {
+            if self.close_session(session).await.is_ok() {
+                return true;
+            }
+        }
+        false
+    }
 
     /// Returns `RoutingSender` which can be used to send packets to desired Node.
     /// Creates session with Node if necessary. Function will choose the most optimal
     /// route to destination.
     pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
-        if let Some(routing) = self.get_node_routing(node_id).await {
-            log::debug!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
+        log::trace!("Requested session with [{node_id}]");
 
+        if let Some(routing) = self.get_node_routing(node_id).await {
+            // Why we need this ugly solution? Can't we just return `RoutingSender`?
+            // The problem is that we can never have full knowledge about other Node's state.
+            // And we don't know what he knows about our state. It is possible, that other Node will
+            // send packets earlier, because he thinks, that connection is ready.
+            // To handle this, we need to have routing already registered in `SessionLayer`.
+            // But at the same time, we don't know if we can start sending packets, so from our
+            // perspective session is not established fully.
+            // That's why we need to wait here for established state, despite having all data structures
+            // in place.
+            // And there is second reason: if we have many threads waiting for session, than someone who
+            // will come later, will get through, but the rest of threads would wait for `Established` state.
+            self.await_connected(node_id).await?;
+
+            log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
             return Ok(routing);
         }
 
+        log::trace!("Node [{node_id}] not found in routing tables. Trying to establish session...");
+
         // Query relay server for Node information, we need to find out default id and aliases.
-        // TODO: We could avoid querying the same information multiple times in case this function
-        //       is called from multiple places at the same time.
         let info = self
             .query_node_info(node_id)
             .await
@@ -362,9 +563,11 @@ impl SessionLayer {
         // TODO: Should we filter addresses or reject attempt to connect?
         //       In previous implementation we were filtering, but I don't know the rationale.
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
+        let this = self.clone();
 
-        match self.registry.lock_outgoing(remote_id, &addrs).await {
+        match self.registry.lock_outgoing(remote_id, &addrs, this).await {
             SessionLock::Permit(mut permit) => {
+                log::trace!("Acquired `SessionPermit` to init session with [{remote_id}]");
                 let myself = self.clone();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
@@ -372,7 +575,11 @@ impl SessionLayer {
                 // session in other task and wait for finish.
                 tokio::task::spawn_local(async move {
                     permit
-                        .results(myself.resolve(remote_id, &permit, &[]).await)
+                        .collect_results(
+                            permit
+                                .run_abortable(myself.resolve(remote_id, &permit, &[]))
+                                .await,
+                        )
                         .on_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
                 })
                 .await
@@ -396,23 +603,31 @@ impl SessionLayer {
         // TODO: In the future relays should have regular NodeId
         let remote_id = NodeId::default();
         let addr = self.config.srv_addr;
+        let this = self.clone();
+
+        log::trace!("Requested relay server session with [{remote_id}] ({addr}).");
 
         if let Some(session) = { self.state.read().await.p2p_sessions.get(&addr).cloned() } {
+            log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
             return Ok(session);
         }
 
-        let session = match self.registry.lock_outgoing(remote_id, &[addr]).await {
+        log::trace!("Relay [{remote_id}] not found. Trying to establish session...");
+
+        let session = match self.registry.lock_outgoing(remote_id, &[addr], this).await {
             SessionLock::Permit(mut permit) => {
                 let myself = self.clone();
-                // TODO: Use the same patter as in `session` function without getting waiter
-                let waiter = permit.registry.awaiting_notifier();
 
                 // Caller of `SessionLayer:session` can drop function execution at any time, but
                 // other threads can be waiting for initialization as well. That's why we initialize
                 // session in other task and wait for finish.
                 tokio::task::spawn_local(async move {
                     permit
-                        .results(myself.try_server_session(remote_id, addr, &permit).await)
+                        .collect_results(
+                            permit
+                                .run_abortable(myself.try_server_session(remote_id, addr, &permit))
+                                .await,
+                        )
                         .on_err(|e| {
                             log::info!(
                                 "Failed init relay session with {remote_id} ({addr}). Error: {e}"
@@ -446,10 +661,6 @@ impl SessionLayer {
         // });
 
         Ok(session)
-    }
-
-    pub async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError> {
-        unimplemented!()
     }
 
     /// Resolves connection to target Node using the best method available.
@@ -531,7 +742,7 @@ impl SessionLayer {
 
     pub async fn try_server_session(
         &self,
-        node_id: NodeId,
+        _node_id: NodeId,
         addr: SocketAddr,
         permit: &SessionPermit,
     ) -> SessionResult<Arc<DirectSession>> {
@@ -589,15 +800,15 @@ impl SessionLayer {
             }
         }
 
-        Err(SessionError::Generic(
-            "All attempts to establish direct session with node [{node_id}] failed".to_string(),
-        ))
+        Err(SessionError::Generic(format!(
+            "All attempts to establish direct session with node [{node_id}] failed"
+        )))
     }
 
     async fn try_reverse_connection(
         &self,
         node_id: NodeId,
-        permit: &SessionPermit,
+        _permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionError> {
         // We are trying to connect to Node without public IP. Send `ReverseConnection` message,
         // so Node will connect to us.
@@ -612,7 +823,9 @@ impl SessionLayer {
             self.config.node_id,
         );
 
-        todo!()
+        Err(SessionError::NotApplicable(
+            "ReverseConnection not implemented.".to_string(),
+        ))
 
         //
         // let mut awaiting = self.guarded.register_waiting_for_node(node_id).await?;
@@ -690,7 +903,7 @@ impl SessionLayer {
 
         log::info!("Using relay server [{server_id}] ({addr}) to forward packets to [{node_id}] (slot {slot})");
 
-        server.register(ids.clone().into(), slot).await;
+        server.register(ids.clone().into(), slot);
 
         let routing = NodeRouting::new(
             ids.clone(),
@@ -711,6 +924,22 @@ impl SessionLayer {
         Ok(server)
     }
 
+    pub(crate) async fn await_connected(&self, node_id: NodeId) -> Result<(), SessionError> {
+        log::trace!(
+            "Session with Node [{node_id}] is registered. Waiting until it will be ready.."
+        );
+
+        let entry = self
+            .registry
+            .get_entry(node_id)
+            .await
+            .ok_or(SessionError::Internal(format!(
+                "Entry for Node [{node_id}] not found, despite it should exits."
+            )))?;
+        entry.awaiting_notifier().await_for_finish().await?;
+        Ok(())
+    }
+
     pub async fn dispatch_session<'a>(
         &self,
         session_id: Vec<u8>,
@@ -718,27 +947,38 @@ impl SessionLayer {
         from: SocketAddr,
         request: proto::request::Session,
     ) -> Result<(), SessionError> {
+        log::trace!("Called `dispatch_session` by {from}.");
+
         let protocol = self.get_protocol().await?;
+        let this = self.clone();
 
         if session_id.is_empty() {
+            log::trace!("Received `Session` packet with empty session id from {from}. Handling init attempt..");
+
             // Empty `session_id` indicates attempt to initialize session.
             let remote_id = challenge::recover_default_node_id(&request)
                 .map_err(|e| ProtocolError::RecoverId(e.to_string()))?;
 
-            return match self.registry.lock_incoming(remote_id, &[from]).await {
+            // TODO: Check if we don't have the session already. In such a case we should let other party
+            //       establish session, but we must replace session as gracefully as possible on our side,
+            //       to avoid breaking services that might use this connection (We shouldn't go through `Closed` state).
+            //       When removing session information, we can't send disconnect by accident.
+
+            return match self.registry.lock_incoming(remote_id, &[from], this).await {
                 SessionLock::Permit(mut permit) => {
-                    permit.results(
-                        protocol
-                            .new_session(request_id, from, &permit, request)
+                    permit.collect_results(
+                        permit
+                            .run_abortable(protocol.new_session(request_id, from, &permit, request))
                             .await,
                     )?;
                     Ok(())
                 }
-                SessionLock::Wait(_) => {
+                SessionLock::Wait(waiter) => {
                     // We didn't get lock, so probably other thread is in charge of initializing session.
                     // TODO: This could be situation, when both sides tried to initialize connection.
                     //       Maybe we should implement algorithm, which would decide, who has precedence.
                     //       It could be based on some kind of ordering according to NodeIds.
+                    log::debug!("Handling Session packet: Initialization is already in progress.. State: {}", waiter.registry.state().await);
                     Ok(())
                 }
             };
@@ -776,7 +1016,7 @@ impl SessionLayer {
         from: SocketAddr,
         by: By,
     ) -> anyhow::Result<()> {
-        log::debug!("Got `Disconnected` from {from}");
+        log::trace!("Handling `Disconnected` from {from}");
 
         // SessionId should be valid, otherwise this is some unknown session
         // so we should be cautious, when processing it.
@@ -784,7 +1024,8 @@ impl SessionLayer {
 
         if let Ok(node) = match by {
             By::Slot(id) => match self.find_session(from).await {
-                Some(session) => session.remove_by_slot(id).await,
+                // TODO: It's necessary to unregister routing as well.
+                Some(session) => session.remove_by_slot(id),
                 None => Err(anyhow!("Session with {from} not found")),
             },
             By::NodeId(id) => NodeId::try_from(&id).map_err(anyhow::Error::from),
@@ -796,41 +1037,39 @@ impl SessionLayer {
                     bail!("Session id mismatch. Sender: {session_id}, session to close: {to_close}. Might be exploit attempt..")
                 }
 
-                match self.find_session(from).await {
+                return match self.find_session(from).await {
                     Some(session) => {
                         if session.raw.id != session_id {
                             bail!("Unexpected Session id: {session_id}")
                         }
 
-                        self.close_session(session).await?;
-                        return Ok(());
+                        self.close_session(session).await.ok();
+                        Ok(())
                     }
                     None => {
                         // If we didn't find established session, maybe we have temporary session
                         // during initialization.
-                        if let Some(session) = self.dispatcher(from).await {
-                            return Ok(self.abort_initializations(session).await?);
-                        }
-                        Err(anyhow!("Session with {from} not found"))
+                        Ok(self.abort_initializations(from).await?)
                     }
-                }
+                };
             }
         } {
             log::info!("Node [{node}] disconnected from Relay. Stopping forwarding..");
-            self.disconnect_node(node).await.ok();
+            self.disconnect(node).await.ok();
         }
         Ok(())
     }
 
     pub async fn on_reverse_connection(
         &self,
-        session_id: Vec<u8>,
+        _session_id: Vec<u8>,
         from: SocketAddr,
         message: ReverseConnection,
     ) -> anyhow::Result<()> {
+        let this = self.clone();
         let node_id = NodeId::try_from(&message.node_id).map_err(|e| {
             anyhow!(
-                "ReverseConnection with invalid NodeId: {:?}",
+                "ReverseConnection with invalid NodeId: {:?}. {e}",
                 message.node_id
             )
         })?;
@@ -855,14 +1094,19 @@ impl SessionLayer {
             message.endpoints
         );
 
-        let permit = match self.registry.lock_outgoing(node_id, &endpoints).await {
+        let mut permit = match self.registry.lock_outgoing(node_id, &endpoints, this).await {
             SessionLock::Permit(permit) => permit,
-            SessionLock::Wait(waiter) => return Ok(()),
+            // In this connection is already in progress
+            SessionLock::Wait(_waiter) => return Ok(()),
         };
 
         // Don't try to use `ReverseConnection`, when handling `ReverseConnection`.
-        self.resolve(node_id, &permit, &[ConnectionMethod::Reverse])
-            .await
+        permit
+            .collect_results(
+                permit
+                    .run_abortable(self.resolve(node_id, &permit, &[ConnectionMethod::Reverse]))
+                    .await,
+            )
             .map_err(|e| {
                 anyhow!("Failed to resolve ReverseConnection. node_id={node_id} error={e}")
             })?;
@@ -912,6 +1156,8 @@ impl SessionLayer {
 
     pub fn out_stream(&self) -> anyhow::Result<OutStream> {
         self.sink
+            .lock()
+            .unwrap()
             .clone()
             .ok_or_else(|| anyhow!("Network sink not initialized"))
     }
@@ -1008,7 +1254,7 @@ impl Handler for SessionLayer {
                         myself
                             .on_disconnected(session_id, from, by)
                             .await
-                            .map_err(|e| log::debug!("Error handling `Disconnected`: {e}"))
+                            .map_err(|e| log::debug!("Handling `Disconnected`: {e}"))
                             .ok();
                     }
                     .boxed_local()
@@ -1029,7 +1275,7 @@ impl Handler for SessionLayer {
         request: proto::Request,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        log::trace!("Received request packet from {from}: {request:?}");
+        log::trace!("Received request packet from {from}: {request}");
 
         let (request_id, kind) = match request {
             proto::Request {
@@ -1069,7 +1315,7 @@ impl Handler for SessionLayer {
         session: Option<Arc<DirectSession>>,
     ) -> Option<LocalBoxFuture<'static, ()>> {
         let reliable = forward.is_reliable();
-        let encrypted = forward.is_encrypted();
+        let _encrypted = forward.is_encrypted();
         let slot = forward.slot;
         let channel = self.ingress_channel.clone();
 
@@ -1099,7 +1345,7 @@ impl Handler for SessionLayer {
                 session.owner.default_id
             } else {
                 // Messages forwarded through relay server or other relay Node.
-                match { session.get_by_slot(slot).await } {
+                match { session.get_by_slot(slot) } {
                     Some(node) => node.default_id,
                     None => {
                         log::debug!(
@@ -1152,7 +1398,7 @@ mod testing {
 
     use anyhow::bail;
     use futures::future::LocalBoxFuture;
-    use futures::{FutureExt, StreamExt};
+    use futures::FutureExt;
     use std::net::SocketAddr;
 
     impl SessionLayerPrivate for SessionLayer {
@@ -1182,13 +1428,11 @@ mod tests {
 
     use std::time::Duration;
     use tokio::time::timeout;
+
     use ya_relay_proto::proto::Payload;
 
-    use crate::_session::SessionType;
-    use crate::testing::accessors::SessionLayerPrivate;
+    use crate::_raw_session::SessionType;
     use crate::testing::init::MockSessionNetwork;
-
-    use ya_relay_server::testing::server::init_test_server;
 
     #[actix_rt::test]
     async fn test_session_layer_happy_path() {
@@ -1197,7 +1441,7 @@ mod tests {
         let layer2 = network.new_layer().await.unwrap();
 
         // Node-2 should be registered on relay
-        layer2.layer.server_session().await;
+        layer2.layer.server_session().await.unwrap();
         let session = layer1.layer.session(layer2.id).await.unwrap();
 
         // p2p session - target and route are the same.
@@ -1222,7 +1466,7 @@ mod tests {
         let mut receiver2 = layer2.layer.receiver().unwrap();
 
         // Node-2 should be registered on relay
-        layer2.layer.server_session().await;
+        layer2.layer.server_session().await.unwrap();
 
         // Send Node-1 -> Node-2
         let mut session = layer1.layer.session(layer2.id).await.unwrap();
@@ -1259,5 +1503,34 @@ mod tests {
         assert_eq!(forwarded.node_id, layer2.id);
         assert_eq!(forwarded.transport, TransportType::Unreliable);
         assert_eq!(forwarded.payload, packet);
+    }
+
+    #[actix_rt::test]
+    async fn test_session_layer_close_p2p_session() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await.unwrap();
+        let mut session = layer1.layer.session(layer2.id).await.unwrap();
+        // Wait until second Node will be ready with session
+        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+
+        assert_eq!(session.target(), layer2.id);
+        assert_eq!(session.route(), layer2.id);
+
+        assert_eq!(session2.target(), layer1.id);
+        assert_eq!(session2.route(), layer1.id);
+
+        session.disconnect().await.unwrap();
+        // Let other side receive and handle `Disconnected` packet.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(layer1.layer.get_node_routing(layer2.id).await.is_none());
+        assert!(layer2.layer.get_node_routing(layer1.id).await.is_none());
+
+        // We should be able to connect again to the same Node.
+        session.connect().await.unwrap();
     }
 }

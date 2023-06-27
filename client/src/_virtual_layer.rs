@@ -1,11 +1,12 @@
 use anyhow::Context;
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
@@ -26,7 +27,8 @@ use crate::_client::Forwarded;
 use crate::_error::TcpError;
 use crate::_session_layer::SessionLayer;
 use crate::_tcp_registry::{
-    to_ipv6, ChannelType, TcpConnection, TcpLock, TcpPermit, TcpRegistry, TcpSender,
+    channel_endpoint, to_ipv6, ChannelDesc, ChannelDirection, ChannelType, TcpConnection, TcpLock,
+    TcpPermit, TcpRegistry, TcpSender, VirtNode,
 };
 use crate::_transport_layer::ForwardReceiver;
 
@@ -78,9 +80,8 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
-        let virt_endpoint: IpEndpoint = (to_ipv6(our_id), ChannelType::Messages as u16).into();
-        let virt_transfer_endpoint: IpEndpoint =
-            (to_ipv6(our_id), ChannelType::Transfer as u16).into();
+        let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
+        let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
 
         self.net.spawn_local();
         self.net.bind(Protocol::Tcp, virt_endpoint)?;
@@ -91,15 +92,19 @@ impl TcpLayer {
         Ok(())
     }
 
-    pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
+        self.registry.resolve_node(node).await
+    }
+
+    pub async fn remove_node(&self, node_id: NodeId) {
+        log::debug!("[VirtualTcp] Removing Node {node_id}");
+
         let remote_ip = self.registry.resolve_ip(node_id).await;
 
         self.net
             .disconnect_all(remote_ip, TCP_DISCONN_TIMEOUT)
             .await;
-
         self.registry.remove_node(node_id).await;
-        Ok(())
     }
 
     /// Connects to other Node and returns `TcpSender` for sending data.
@@ -112,13 +117,14 @@ impl TcpLayer {
         node_id: NodeId,
         channel: ChannelType,
     ) -> anyhow::Result<TcpSender> {
-        log::debug!("[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.");
-
         print_sockets(&self.net);
 
+        let channel = (channel, ChannelDirection::Out).into();
         let myself = self.clone();
         let connection = match self.registry.connect_attempt(node_id, channel).await {
             TcpLock::Permit(mut permit) => {
+                log::debug!("[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.");
+
                 // Spawning task protects us from dropping future during initialization.
                 tokio::task::spawn_local(async move {
                     permit.finish(myself.connect_internal(channel, &permit).await)
@@ -138,10 +144,10 @@ impl TcpLayer {
 
     async fn connect_internal(
         &self,
-        channel: ChannelType,
+        channel: ChannelDesc,
         permit: &TcpPermit,
     ) -> Result<Arc<TcpConnection>, TcpError> {
-        let endpoint = IpEndpoint::new(permit.node.address, channel as u16);
+        let endpoint = IpEndpoint::new(permit.node.address, channel.port());
 
         // Make sure we have session with the Node. This allows us to
         // exit early if target Node is unreachable.
@@ -208,6 +214,8 @@ impl TcpLayer {
             &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
         });
 
+        // TODO: We need to change this function since, we distinguished between outgoing
+        //       and incoming connections. We have to change incoming connection state to Established.
         if self.registry.resolve_node(node).await.is_err() {
             log::debug!("[VirtualTcp] Incoming message from new Node [{node}]. Adding connection.");
             self.registry.add_virt_node(node).await;
@@ -222,7 +230,38 @@ impl TcpLayer {
     }
 
     pub async fn shutdown(&self) {
-        // empty
+        let our_id = self.session_layer.config.node_id;
+        let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
+        let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
+
+        // Unbind listening sockets, so no new connection can be created.
+        self.net
+            .unbind(Protocol::Tcp, virt_endpoint)
+            .map_err(|e| log::warn!("Shutdown error when unbinding sockets (Messages): {e}"))
+            .ok();
+        self.net
+            .unbind(Protocol::Tcp, virt_transfer_endpoint)
+            .map_err(|e| log::warn!("Shutdown error when unbinding sockets (Transfer): {e}"))
+            .ok();
+
+        // Try to disconnect all connections gracefully. This requires sending TCP closing packets
+        // to other Nodes, that's why it is important to first close everything related to TCP and
+        // than shutdown `SessionLayer`.
+        let disconnect_futures = self
+            .net
+            .connections()
+            .keys()
+            .cloned()
+            .map(|conn| {
+                async move {
+                    self.net
+                        .disconnect_all(conn.remote.addr.as_bytes().into(), Duration::from_secs(2))
+                        .await
+                }
+                .boxed_local()
+            })
+            .collect::<Vec<_>>();
+        futures::future::join_all(disconnect_futures).await;
     }
 
     async fn spawn_ingress_router(&self) -> anyhow::Result<()> {
@@ -253,7 +292,7 @@ impl TcpLayer {
                     let (desc, payload) = match event {
                         IngressEvent::InboundConnection { desc } => {
                             log::trace!(
-                                "[{}] new tcp connection from {:?} to {:?} ",
+                                "[{}] new tcp connection from {} to {} ",
                                 myself.net_id(),
                                 desc.remote,
                                 desc.local,
@@ -262,12 +301,18 @@ impl TcpLayer {
                         }
                         IngressEvent::Disconnected { desc } => {
                             log::trace!(
-                                "[{}] virtual tcp: ({}) {:?} disconnected from {:?}",
+                                "[{}] virtual tcp: ({}) {} disconnected from {}",
                                 myself.net_id(),
                                 desc.protocol,
-                                desc.remote,
                                 desc.local,
+                                desc.remote,
                             );
+
+                            if let Ok(endpoint)= desc.remote.ip_endpoint() {
+                                if let Some(node) = myself.registry.get_by_address(endpoint.addr.as_bytes()).await {
+                                    myself.remove_node(node.id()).await;
+                                }
+                            }
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => {
@@ -294,7 +339,7 @@ impl TcpLayer {
                         }
                         _ => {
                             log::trace!(
-                                "[{}] ingress router: remote endpoint {:?} is not supported",
+                                "[{}] ingress router: remote endpoint {} is not supported",
                                 myself.net_id(),
                                 desc.remote
                             );
@@ -375,12 +420,13 @@ impl TcpLayer {
                             //       wait until timeout. This makes error messages from this library
                             //       really poor, because everything from outside looks like a timeout.
                             log::trace!(
-                                "[{}] egress router: forward to {} failed: {}",
+                                "[{}] egress router: forward to [{}] failed: {}",
                                 myself.net_id(),
                                 node.id(),
                                 error
                             );
-                            // TODO: Should we close TCP connection here?
+
+                            myself.remove_node(node.id()).await;
                         }
                     });
                 }
@@ -454,17 +500,17 @@ impl From<u16> for ChannelType {
 }
 
 pub fn print_sockets(network: &Network) {
-    log::debug!("[inet] existing sockets:");
+    log::trace!("[inet] existing sockets:");
     for (handle, meta, state) in network.sockets_meta() {
-        log::debug!("[inet] socket: {handle} ({}) {meta}", state.to_string());
+        log::trace!("[inet] socket: {handle} ({}) {meta}", state.to_string());
     }
-    log::debug!("[inet] existing connections:");
+    log::trace!("[inet] existing connections:");
     for (handle, meta) in network.handles.borrow_mut().iter() {
-        log::debug!("[inet] connection: {handle} {meta}");
+        log::trace!("[inet] connection: {handle} {meta}");
     }
 
-    log::debug!("[inet] listening sockets:");
+    log::trace!("[inet] listening sockets:");
     for handle in network.bindings.borrow_mut().iter() {
-        log::debug!("[inet] listening socket: {handle}");
+        log::trace!("[inet] listening socket: {handle}");
     }
 }
