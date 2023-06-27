@@ -201,13 +201,13 @@ impl Client {
         Ok(())
     }
 
-    pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+    pub async fn forward_reliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         log::trace!(
             "Forward reliable from [{}] to [{}]",
             self.config.node_id,
             node_id
         );
-        self.transport.forward(node_id).await
+        self.transport.forward_reliable(node_id).await
     }
 
     pub async fn forward_transfer(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {

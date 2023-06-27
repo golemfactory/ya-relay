@@ -29,6 +29,10 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 pub type RequestId = u64;
 pub type SlotId = u32;
 
+pub fn is_direct_message(slot: SlotId) -> bool {
+    slot == FORWARD_SLOT_ID
+}
+
 #[derive(Clone, Default, PartialEq)]
 #[repr(C)]
 pub struct Forward {

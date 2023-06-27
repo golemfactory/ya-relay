@@ -15,10 +15,10 @@ use crate::_dispatch::{dispatch, Handler};
 use crate::_encryption::Encryption;
 use crate::_error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
+use crate::_network_view::{NetworkView, SessionLock, SessionPermit, Validity};
 use crate::_raw_session::{RawSession, SessionType};
 use crate::_routing_session::{NodeRouting, RoutingSender};
-use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{Registry, SessionLock, SessionPermit, Validity};
+use crate::_session_protocol::SessionInitializer;
 use crate::_session_state::{RelayedState, ReverseState, SessionState};
 use crate::_session_traits::{SessionDeregistration, SessionRegistration};
 use crate::_transport_layer::ForwardReceiver;
@@ -32,7 +32,7 @@ use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
-use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
+use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
 
 type ReqFingerprint = (Vec<u8>, u64);
@@ -56,7 +56,7 @@ pub struct SessionLayer {
 
     pub(crate) state: Arc<RwLock<SessionLayerState>>,
 
-    pub(crate) registry: Registry,
+    pub(crate) registry: NetworkView,
     ingress_channel: Channel<Forwarded>,
 
     // TODO: Could be per `Session`.
@@ -76,7 +76,7 @@ pub struct SessionLayerState {
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
     pub p2p_nodes: HashMap<NodeId, Arc<DirectSession>>,
 
-    pub(crate) init_protocol: Option<SessionProtocol>,
+    pub(crate) init_protocol: Option<SessionInitializer>,
 
     // Collection of background tasks that must be stopped on shutdown.
     pub handles: Vec<AbortHandle>,
@@ -279,7 +279,7 @@ impl SessionDeregistration for SessionLayer {
         let entry = match self.registry.get_entry_by_addr(&remote).await {
             None => {
                 return Err(SessionError::NotFound(format!(
-                    "Can't find `RegistryEntry` by addr {remote}"
+                    "Can't find `NodeView` by addr {remote}"
                 )))
             }
             Some(entry) => entry,
@@ -327,7 +327,7 @@ impl SessionLayer {
             state.bind_addr.replace(bind_addr);
             state.handles.push(abort_dispatcher);
             state.handles.push(abort_expiration);
-            state.init_protocol = Some(SessionProtocol::new(
+            state.init_protocol = Some(SessionInitializer::new(
                 self.config.clone(),
                 self.clone(),
                 sink,
@@ -435,7 +435,7 @@ impl SessionLayer {
     }
 
     /// Queries information about Node from relay server.
-    /// Information is cached in `Registry` and will be returned from there.
+    /// Information is cached in `NetworkView` and will be returned from there.
     /// From time to time query to relay server will be made to check if it is up to date.
     pub async fn query_node_info(&self, node_id: NodeId) -> anyhow::Result<NodeInfo> {
         if let Some(entry) = self.registry.get_entry(node_id).await {
@@ -465,7 +465,7 @@ impl SessionLayer {
         self.registry
             .update_entry(info.clone())
             .await
-            .map_err(|e| SessionError::Internal(format!("Registry update failed: {e}")))?;
+            .map_err(|e| SessionError::Internal(format!("NetworkView update failed: {e}")))?;
         Ok(info)
     }
 
@@ -836,6 +836,7 @@ impl SessionLayer {
 
         log::debug!("ReverseConnection requested with node [{node_id}]");
 
+        // Waiting for any message from other Node.
         // We don't want to wait for connection finish, because we would need longer timeout for this.
         // But if we won't receive any message from other Node, we would like to exit early,
         // to try out different connection methods.
@@ -866,16 +867,16 @@ impl SessionLayer {
             }
             Ok(Err(e)) => {
                 log::info!("ReverseConnection - failed to establish session with: [{node_id}]");
-                Err(e.into())
+                Err(e)
             }
             Err(_) => {
                 log::info!(
                     "ReverseConnection - waiting for session timed out ({}). Node: [{node_id}]",
                     humantime::format_duration(self.config.reverse_connection_real_timeout)
                 );
-                return Err(SessionError::Timeout(format!(
+                Err(SessionError::Timeout(format!(
                     "Not able to setup ReverseConnection within timeout with node: [{node_id}]"
-                )));
+                )))
             }
         }
     }
@@ -1152,7 +1153,7 @@ impl SessionLayer {
             .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
     }
 
-    async fn get_protocol(&self) -> Result<SessionProtocol, SessionError> {
+    async fn get_protocol(&self) -> Result<SessionInitializer, SessionError> {
         match self.state.read().await.init_protocol.clone() {
             None => Err(SessionError::Internal(
                 "`SessionProtocol` empty (not initialized?)".to_string(),
@@ -1358,7 +1359,7 @@ impl Handler for SessionLayer {
                 Some(session) => session,
             };
 
-            let node = if slot == FORWARD_SLOT_ID {
+            let sender = if is_direct_message(slot) {
                 // Direct message from other Node.
                 session.owner.default_id
             } else {
@@ -1374,6 +1375,8 @@ impl Handler for SessionLayer {
                         let node = session.raw.find_slot(slot).await?;
                         let ident = Identity::try_from(&node)?;
 
+                        // TODO: Consider just adding node to `DirectSession` forwards list. If the other Node couldn't
+                        //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
                         let session = myself
                             .session(ident.node_id)
@@ -1393,13 +1396,13 @@ impl Handler for SessionLayer {
             };
             let packet = Forwarded {
                 transport,
-                node_id: node,
+                node_id: sender,
                 payload: forward.payload,
             };
 
             channel.tx.send(packet).map_err(|e| anyhow!("SessionLayer can't pass packet to other layers: {e}"))?;
 
-            session.record_incoming(node, transport, size);
+            session.record_incoming(sender, transport, size);
             anyhow::Result::<()>::Ok(())
         }
         .map_err(move |e| log::debug!("Forward from {from} failed: {e}"))
@@ -1411,7 +1414,7 @@ impl Handler for SessionLayer {
 
 mod testing {
     use crate::_session_layer::SessionLayer;
-    use crate::_session_protocol::SessionProtocol;
+    use crate::_session_protocol::SessionInitializer;
     use crate::testing::accessors::SessionLayerPrivate;
 
     use anyhow::bail;
@@ -1420,7 +1423,7 @@ mod testing {
     use std::net::SocketAddr;
 
     impl SessionLayerPrivate for SessionLayer {
-        fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionProtocol>> {
+        fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionInitializer>> {
             let myself = self.clone();
             async move { Ok(myself.get_protocol().await?) }.boxed_local()
         }

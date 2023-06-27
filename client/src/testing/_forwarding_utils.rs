@@ -66,7 +66,11 @@ pub async fn check_forwarding(
     received.store(false, SeqCst);
 
     let mut tx = match mode {
-        Mode::Reliable => sender_client.forward(receiver_client.node_id()).await?,
+        Mode::Reliable => {
+            sender_client
+                .forward_reliable(receiver_client.node_id())
+                .await?
+        }
         Mode::Unreliable => {
             sender_client
                 .forward_unreliable(receiver_client.node_id())

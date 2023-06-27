@@ -20,28 +20,33 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::{SlotId, FORWARD_SLOT_ID};
 
 #[derive(Clone)]
-pub struct RegistryConfig {
+pub struct NetworkViewConfig {
     pub node_info_ttl: chrono::Duration,
 }
 
+/// Collects our local knowledge about the network. Responsible for ensuring
+/// that we won't attempt to initialize 2 sessions with the same Node at the same time.
+///
+/// In p2p network we can never have full knowledge about the network state, so although this struct
+/// will attempt to keep information updated, we can't ever be sure that the information is fully correct.
 #[derive(Clone, Default)]
-pub struct Registry {
-    config: Arc<RegistryConfig>,
-    state: Arc<RwLock<RegistryState>>,
+pub struct NetworkView {
+    config: Arc<NetworkViewConfig>,
+    state: Arc<RwLock<NetworkViewState>>,
 }
 
 /// TODO: We never remove entries from State. In general we should keep entries
-///       as long as possible, because removal could break uniqueness of RegistryEntry
+///       as long as possible, because removal could break uniqueness of NodeView
 ///       in case other threads will attempt to initialize session at this exact moment.
 #[derive(Default)]
-struct RegistryState {
-    by_node_id: HashMap<NodeId, RegistryEntry>,
-    by_addr: HashMap<SocketAddr, RegistryEntry>,
+struct NetworkViewState {
+    by_node_id: HashMap<NodeId, NodeView>,
+    by_addr: HashMap<SocketAddr, NodeView>,
 }
 
-impl Registry {
-    pub fn new(config: Arc<RegistryConfig>) -> Registry {
-        Registry {
+impl NetworkView {
+    pub fn new(config: Arc<NetworkViewConfig>) -> NetworkView {
+        NetworkView {
             config,
             state: Arc::new(Default::default()),
         }
@@ -51,13 +56,13 @@ impl Registry {
     /// you should get the same object in all places in the code.
     /// `SessionGuard` should be stored even if connection was closed,
     /// to avoid having multiple objects pointing to the same Node.
-    pub async fn guard(&self, node_id: NodeId, addrs: &[SocketAddr]) -> RegistryEntry {
+    pub async fn guard(&self, node_id: NodeId, addrs: &[SocketAddr]) -> NodeView {
         let mut state = self.state.write().await;
         if let Some(target) = state.find(node_id, addrs) {
             return target;
         }
 
-        let target = RegistryEntry::new(node_id, addrs.to_vec(), self.config.clone());
+        let target = NodeView::new(node_id, addrs.to_vec(), self.config.clone());
 
         state.by_node_id.insert(target.id, target.clone());
         for addr in addrs.iter() {
@@ -68,12 +73,12 @@ impl Registry {
     }
 
     /// Updates information about given Node.
-    /// This function must keep data in `Registry` consistent. It should check all NodeIds,
-    /// because some of them may already been in separate `RegistryEntries`. This could happen
+    /// This function must keep data in `NetworkView` consistent. It should check all NodeIds,
+    /// because some of them may already been in separate `NodeViews`. This could happen
     /// if we had only partial info about Nodes earlier.
-    /// This is the reason we don't have update function on single `RegistryEntry`.
+    /// This is the reason we don't have update function on single `NodeView`.
     pub async fn update_entry(&self, info: NodeInfo) -> anyhow::Result<()> {
-        log::trace!("Updating `RegistryEntry` for [{}]", info.node_id());
+        log::trace!("Updating `NodeView` for [{}]", info.node_id());
 
         // TODO: For now we use the simplest implementation possible.
         //       Apply considerations from comment later.
@@ -91,7 +96,7 @@ impl Registry {
             .filter_map(|node| state.find(node, &[]))
             .collect::<Vec<_>>();
 
-        // We are in correct state if all `RegistryEntries` are the same struct.
+        // We are in correct state if all `NodeViews` are the same struct.
         let entry = if !entries.is_empty() {
             let state = entries[0].state.clone();
             if !entries
@@ -100,11 +105,11 @@ impl Registry {
             {
                 // Maybe in some cases (when Node identities are changing) we could recover from this
                 // but it is safer to just return error for now.
-                bail!("Inconsistent `Registry` state. A few entries are pointing to the same Node.")
+                bail!("Inconsistent `NetworkView` state. A few entries are pointing to the same Node.")
             }
             entries[0].clone()
         } else {
-            RegistryEntry::new(info.node_id(), addrs.clone(), self.config.clone())
+            NodeView::new(info.node_id(), addrs.clone(), self.config.clone())
         };
 
         for id in &info.identities {
@@ -119,12 +124,12 @@ impl Registry {
         Ok(())
     }
 
-    pub async fn get_entry(&self, node_id: NodeId) -> Option<RegistryEntry> {
+    pub async fn get_entry(&self, node_id: NodeId) -> Option<NodeView> {
         let state = self.state.read().await;
         state.find(node_id, &[])
     }
 
-    pub async fn get_entry_by_addr(&self, remote: &SocketAddr) -> Option<RegistryEntry> {
+    pub async fn get_entry_by_addr(&self, remote: &SocketAddr) -> Option<NodeView> {
         let state = self.state.read().await;
         state.find_by_addr(remote)
     }
@@ -181,7 +186,7 @@ impl Registry {
     }
 
     // TODO: Use other error type than `TransitionError`
-    async fn session_target(&self, node_id: NodeId) -> Result<RegistryEntry, TransitionError> {
+    async fn session_target(&self, node_id: NodeId) -> Result<NodeView, TransitionError> {
         match { self.state.read().await.by_node_id.get(&node_id) } {
             None => Err(TransitionError::NodeNotFound(node_id)),
             Some(target) => Ok(target.clone()),
@@ -191,43 +196,43 @@ impl Registry {
     pub async fn shutdown(&self) {}
 }
 
-impl RegistryState {
-    fn find(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<RegistryEntry> {
+impl NetworkViewState {
+    fn find(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<NodeView> {
         self.by_node_id
             .get(&node_id)
             .or_else(|| addrs.iter().filter_map(|a| self.by_addr.get(a)).next())
             .cloned()
     }
 
-    fn find_by_addr(&self, addr: &SocketAddr) -> Option<RegistryEntry> {
+    fn find_by_addr(&self, addr: &SocketAddr) -> Option<NodeView> {
         self.by_addr.get(addr).cloned()
     }
 }
 
 #[derive(Clone)]
-pub struct RegistryEntry {
+pub struct NodeView {
     /// Node default id. Duplicates information in state, but can be accessed
     /// without acquiring and awaiting RwLock.  
     pub id: NodeId,
 
-    state: Arc<RwLock<RegistryEntryState>>,
+    state: Arc<RwLock<NodeViewState>>,
     state_notifier: Arc<broadcast::Sender<SessionState>>,
 
     /// Last update of information about Node.
     last_info_update: LastSeen,
 
-    pub config: Arc<RegistryConfig>,
+    pub config: Arc<NetworkViewConfig>,
 }
 
-pub struct RegistryEntryState {
+pub struct NodeViewState {
     /// TODO: We need to store public keys here. Using `NodeEntry<Identity>` is problematic
     ///       here, because we not always have full information, when initializing this
     ///       struct. To have full info, we need to query it from relay server. In case we got
     ///       `ReverseConnection` this could increase time to receiving first message by initiator.
     ///       On the other side if we don't have all Node identities, than we risk that we won't
     ///       protect ourselves from attempting to initialize 2 sessions at the same time.
-    ///       For example we could create 2 separate RegistryEntries for default and secondary identity.
-    ///       The second problem is the fact, that relay server doesn't have public key, so NodeEntry
+    ///       For example we could create 2 separate `NodeViews` for default and secondary identity.
+    ///       The second problem is the fact, that relay server doesn't have public key, so `NodeView`
     ///       structure is not suitable for this case.
     ///       As a compromise I'm using `Vec<Identity>` with hope that we can replace it with
     ///       `NodeEntry<Identity>` in the future.
@@ -249,7 +254,7 @@ pub struct RegistryEntryState {
     abort_handle: Vec<AbortHandle>,
 }
 
-impl RegistryEntry {
+impl NodeView {
     pub async fn transition(
         &self,
         new_state: SessionState,
@@ -329,7 +334,7 @@ impl RegistryEntry {
     }
 
     /// This function should be kept accessible only for this module, since the registry
-    /// consistency depends on checks in `Registry`. Updating individual `RegistryEntry`
+    /// consistency depends on checks in `NetworkView`. Updating individual `NodeView`
     /// could result in de-synchronization.
     pub(self) async fn update_info(&self, info: NodeInfo) -> anyhow::Result<()> {
         if !info.identities.is_empty() {
@@ -355,7 +360,7 @@ impl RegistryEntry {
         // TODO: What should we do if identity lists differ? Is new list always better?
         state.node = info.identities;
         // TODO: We should distinguish between public IPs and addresses assigned temporarily
-        //       by routers. `Registry` contains addresses from which we received packets.
+        //       by routers. `NetworkView` contains addresses from which we received packets.
         //       Here we assign only public, but earlier (`guard_initialization`) we added mapped addresses
         state.addresses = info.endpoints.into_iter().map(|e| e.address).collect();
         Ok(())
@@ -409,7 +414,7 @@ where
     }
 }
 
-impl RegistryEntryState {
+impl NodeViewState {
     pub fn info(&self) -> NodeInfo {
         NodeInfo {
             identities: self.node.clone(),
@@ -427,14 +432,14 @@ impl RegistryEntryState {
     }
 }
 
-impl RegistryEntry {
-    fn new(node_id: NodeId, addresses: Vec<SocketAddr>, config: Arc<RegistryConfig>) -> Self {
+impl NodeView {
+    fn new(node_id: NodeId, addresses: Vec<SocketAddr>, config: Arc<NetworkViewConfig>) -> Self {
         let (notify_msg, _) = broadcast::channel(10);
 
         Self {
             id: node_id,
             last_info_update: LastSeen::now(),
-            state: Arc::new(RwLock::new(RegistryEntryState {
+            state: Arc::new(RwLock::new(NodeViewState {
                 node: vec![],
                 addresses,
                 supported_encryption: vec![],
@@ -458,6 +463,7 @@ impl RegistryEntry {
         match self.transition_outgoing(InitState::ConnectIntent).await {
             Ok(_) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
+                _reverse: false,
                 layer: Arc::new(Box::new(layer)),
                 result: None,
             }),
@@ -483,8 +489,14 @@ impl RegistryEntry {
         // otherwise a few events could be lost.
         let notifier = self.awaiting_notifier();
         match self.transition_incoming(InitState::ConnectIntent).await {
-            Ok(_) => SessionLock::Permit(SessionPermit {
+            Ok(state) => SessionLock::Permit(SessionPermit {
                 registry: self.clone(),
+                _reverse: matches!(
+                    state,
+                    SessionState::ReverseConnection(ReverseState::InProgress(
+                        InitState::ConnectIntent
+                    ))
+                ),
                 layer: Arc::new(Box::new(layer)),
                 result: None,
             }),
@@ -549,25 +561,32 @@ pub enum SessionLock {
 /// Structure giving you exclusive right to initialize session.
 /// Ensures clear Session state on drop including un-registration from `SessionLayer`.
 pub struct SessionPermit {
-    pub registry: RegistryEntry,
+    pub registry: NodeView,
+    /// Flag is set to true, if the Permit was created for incoming connection in response
+    /// to `ReverseConnection`. In this case we have 2 permits existing at the same time, because
+    /// at the same time other part of code is waiting for incoming connection.
+    _reverse: bool,
     layer: Arc<Box<dyn SessionDeregistration>>,
     pub(crate) result: Option<Result<Arc<DirectSession>, SessionError>>,
 }
 
 impl SessionPermit {
-    pub(crate) async fn async_drop(
-        node: RegistryEntry,
-        layer: Arc<Box<dyn SessionDeregistration>>,
-        result: Option<Result<Arc<DirectSession>, SessionError>>,
-    ) {
-        let node_id = node.id;
-        let new_state = match result {
+    fn final_state(&mut self) -> SessionState {
+        match self.result.take() {
             None => SessionState::FailedEstablish(SessionError::ProgrammingError(
                 "Dropping `SessionPermit` without result.".to_string(),
             )),
             Some(Ok(session)) => SessionState::Established(Arc::downgrade(&session)),
             Some(Err(e)) => SessionState::FailedEstablish(e),
-        };
+        }
+    }
+
+    pub(crate) async fn async_drop(
+        node: NodeView,
+        layer: Arc<Box<dyn SessionDeregistration>>,
+        new_state: SessionState,
+    ) {
+        let node_id = node.id;
 
         if let SessionState::FailedEstablish(_) = &new_state {
             Self::clean_state(&node, layer.clone()).await;
@@ -594,10 +613,7 @@ impl SessionPermit {
 
     /// Makes sure we deregister all data about this Node and abort all futures
     /// that might be during initialization.
-    pub(crate) async fn clean_state(
-        node: &RegistryEntry,
-        layer: Arc<Box<dyn SessionDeregistration>>,
-    ) {
+    pub(crate) async fn clean_state(node: &NodeView, layer: Arc<Box<dyn SessionDeregistration>>) {
         for addr in node.public_addresses().await {
             layer.abort_initializations(addr).await.ok();
         }
@@ -636,18 +652,18 @@ impl SessionPermit {
 
 impl Drop for SessionPermit {
     fn drop(&mut self) {
-        log::trace!("Dropping `SessionPermit` for {}.", self.registry.id);
+        log::trace!("Dropping `SessionPermit` for [{}].", self.registry.id);
         tokio::task::spawn_local(SessionPermit::async_drop(
             self.registry.clone(),
             self.layer.clone(),
-            self.result.take(),
+            self.final_state(),
         ));
     }
 }
 
 /// Structure for awaiting established connection.
 pub struct NodeAwaiting {
-    pub registry: RegistryEntry,
+    pub registry: NodeView,
     notifier: broadcast::Receiver<SessionState>,
 }
 
@@ -714,22 +730,20 @@ impl NodeAwaiting {
     async fn next(&mut self) -> Result<SessionState, SessionError> {
         match self.notifier.recv().await {
             Ok(state) => Ok(state),
-            Err(RecvError::Closed) => {
-                return Err(SessionError::Internal(
-                    "Waiting for session initialization: notifier dropped.".to_string(),
-                ))
-            }
+            Err(RecvError::Closed) => Err(SessionError::Internal(
+                "Waiting for session initialization: notifier dropped.".to_string(),
+            )),
             Err(RecvError::Lagged(lost)) => {
                 // TODO: Maybe we could handle lags better, by checking current state?
-                return Err(SessionError::Internal(format!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")));
+                Err(SessionError::Internal(format!("Waiting for session initialization: notifier lagged. Lost {lost} state change(s).")))
             }
         }
     }
 }
 
-impl Default for RegistryConfig {
+impl Default for NetworkViewConfig {
     fn default() -> Self {
-        RegistryConfig {
+        NetworkViewConfig {
             node_info_ttl: chrono::Duration::seconds(300),
         }
     }
@@ -832,7 +846,7 @@ mod tests {
     /// Checks if `Permits` and `NodeAwaiting` work independently.
     #[actix_rt::test]
     async fn test_session_guards_independent_permits() {
-        let guards = Registry::default();
+        let guards = NetworkView::default();
         let permit1 = match guards
             .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
             .await
@@ -892,7 +906,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn test_session_guards_incoming() {
-        let guards = Registry::default();
+        let guards = NetworkView::default();
         let permit = match guards
             .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
             .await
@@ -927,7 +941,7 @@ mod tests {
     /// both incoming and outgoing session.
     #[actix_rt::test]
     async fn test_session_guards_incoming_and_outgoing() {
-        let guards = Registry::default();
+        let guards = NetworkView::default();
         let permit = match guards
             .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
             .await
@@ -960,7 +974,7 @@ mod tests {
 
     #[actix_rt::test]
     async fn test_session_guards_already_established() {
-        let guards = Registry::default();
+        let guards = NetworkView::default();
         let permit = match guards
             .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
             .await

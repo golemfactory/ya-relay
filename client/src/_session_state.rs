@@ -36,6 +36,8 @@ pub enum RelayedState {
 
 #[derive(Clone, PartialEq, Display, Debug)]
 pub enum ReverseState {
+    /// `ReverseConnection` message was sent and we are waiting for other Node
+    /// to init connection with us.
     Awaiting,
     #[display(fmt = "{}", _0)]
     InProgress(InitState),
@@ -111,7 +113,7 @@ impl SessionState {
         // That's why we need to translate `InitState` depending on the context.
         let new_state = match self {
             SessionState::Incoming(_) => SessionState::Incoming(new_state),
-            SessionState::ReverseConnection(ReverseState::InProgress(_)) => {
+            SessionState::ReverseConnection(_) => {
                 SessionState::ReverseConnection(ReverseState::InProgress(new_state))
             }
             _ => SessionState::Incoming(new_state),

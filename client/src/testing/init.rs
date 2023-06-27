@@ -5,9 +5,9 @@ use url::Url;
 
 use crate::_client::Client;
 use crate::_config::{ClientBuilder, ClientConfig, FailFast};
+use crate::_network_view::{NetworkView, SessionLock, SessionPermit};
 use crate::_session_layer::SessionLayer;
-use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{Registry, SessionLock, SessionPermit};
+use crate::_session_protocol::SessionInitializer;
 use crate::testing::accessors::SessionLayerPrivate;
 
 use ya_relay_core::NodeId;
@@ -30,8 +30,8 @@ pub struct SessionLayerWrapper {
     pub addr: SocketAddr,
 
     pub layer: SessionLayer,
-    pub protocol: SessionProtocol,
-    pub guards: Registry,
+    pub protocol: SessionInitializer,
+    pub guards: NetworkView,
 }
 
 impl MockSessionNetwork {
