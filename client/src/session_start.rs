@@ -214,7 +214,8 @@ impl StartingSessions {
 
         let tmp_session = self.temporary_session(with).await;
 
-        let (packet, raw_challenge) = challenge::prepare_challenge_response();
+        let (packet, raw_challenge) =
+            challenge::prepare_challenge_response(self.layer.config.challenge_difficulty);
         let challenge = proto::Packet::response(
             request_id,
             session_id.to_vec(),

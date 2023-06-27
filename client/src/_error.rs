@@ -1,11 +1,27 @@
 use anyhow::Error;
 use std::net::SocketAddr;
+
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
 
-use crate::_session_registry::SessionState;
+use crate::_session_state::SessionState;
+use crate::_tcp_registry::TcpState;
 
 pub type SessionResult<T> = Result<T, SessionError>;
+
+/// Error returned on user facing API.
+/// TODO: Temporary implementation. This error should have variants according to potential
+///       user decisions, which he can make based on this. We shouldn't just forward
+///       underlying errors.
+/// TODO: We should use channel-like error where you can recover your payload
+///       from error message.
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+pub enum SenderError {
+    #[error("{0}")]
+    Session(#[from] SessionError),
+    #[error("{0}")]
+    Tcp(#[from] TcpError),
+}
 
 /// TODO: Organize this error better. We should be able to make decision
 ///       if we can recover from error or we should give up. I see at least
@@ -27,6 +43,8 @@ pub enum SessionError {
     Network(String),
     #[error("Timeout: {0}")]
     Timeout(String),
+    #[error("Aborted: {0}")]
+    Aborted(String),
     #[error("Not Found: {0}")]
     NotFound(String),
     #[error("Relay error: {0}")]
@@ -91,6 +109,24 @@ pub enum EncryptionError {
     Generic(String),
 }
 
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+pub enum TcpError {
+    #[error("{0}")]
+    Generic(String),
+    #[error("Connection closed")]
+    Closed,
+    #[error("Programming error: {0}")]
+    ProgrammingError(String),
+}
+
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+pub enum TcpTransitionError {
+    #[error("State transition not allowed from: {0} to {1}")]
+    InvalidTransition(TcpState, TcpState),
+    #[error("Channel not found")]
+    ProgrammingError,
+}
+
 impl From<TransitionError> for SessionError {
     fn from(value: TransitionError) -> Self {
         SessionError::Internal(value.to_string())
@@ -114,5 +150,21 @@ impl From<SessionInitError> for SessionError {
 impl From<anyhow::Error> for RequestError {
     fn from(value: Error) -> Self {
         RequestError::Generic(value.to_string())
+    }
+}
+
+pub trait ResultExt<T, E> {
+    fn on_err<O: FnOnce(&E)>(self, op: O) -> Result<T, E>;
+}
+
+impl<T, E> ResultExt<T, E> for Result<T, E> {
+    fn on_err<O: FnOnce(&E)>(self, op: O) -> Result<T, E> {
+        match self {
+            Ok(t) => Ok(t),
+            Err(e) => {
+                op(&e);
+                Err(e)
+            }
+        }
     }
 }

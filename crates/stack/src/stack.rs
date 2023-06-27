@@ -148,7 +148,7 @@ impl<'a> Stack<'a> {
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
-        log::trace!("Unbinding {protocol:?} {endpoint:?}");
+        log::trace!("Unbinding {protocol:?} {endpoint}");
         let mut iface = self.iface.borrow_mut();
         let mut sockets = iface.sockets_mut();
 

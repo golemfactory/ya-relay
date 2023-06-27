@@ -12,7 +12,7 @@ use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
 
 use crate::_direct_session::DirectSession;
-use crate::_session::RawSession;
+use crate::_raw_session::RawSession;
 
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};

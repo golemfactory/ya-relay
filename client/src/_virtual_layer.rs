@@ -1,37 +1,35 @@
-#![allow(dead_code)]
-#![allow(unused)]
-
-use anyhow::{anyhow, Context};
-use derive_more::Display;
-use futures::channel::mpsc;
-use futures::StreamExt;
-use metrics::{counter, increment_counter};
+use anyhow::Context;
+use futures::{FutureExt, StreamExt};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::io::Write;
-use std::net::Ipv6Addr;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::server_session::TransportType;
-use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
 use ya_relay_stack::ya_smoltcp::iface::Route;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
-use ya_relay_stack::*;
+use ya_relay_stack::{
+    Channel, ChannelMetrics, Connection, EgressEvent, IngressEvent, Network, Protocol, SocketDesc,
+    SocketState, Stack, StackConfig,
+};
 
 use crate::_client::Forwarded;
-use crate::_routing_session::RoutingSender;
+use crate::_error::TcpError;
 use crate::_session_layer::SessionLayer;
-use crate::_tcp_registry::{ChannelType, VirtConnection, VirtNode};
+use crate::_tcp_registry::{
+    channel_endpoint, to_ipv6, ChannelDesc, ChannelDirection, ChannelType, TcpConnection, TcpLock,
+    TcpPermit, TcpRegistry, TcpSender, VirtNode,
+};
 use crate::_transport_layer::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;
@@ -45,15 +43,10 @@ pub struct TcpLayer {
     pub(crate) net: Network,
     session_layer: SessionLayer,
 
-    state: Arc<RwLock<TcpLayerState>>,
+    registry: TcpRegistry,
 
     ingress: Channel<Forwarded>,
     virtual_tcp_fast_lane: Rc<RefCell<HashSet<NodeId>>>,
-}
-
-struct TcpLayerState {
-    nodes: HashMap<Box<[u8]>, VirtNode>,
-    ips: HashMap<NodeId, Box<[u8]>>,
 }
 
 impl TcpLayer {
@@ -72,10 +65,7 @@ impl TcpLayer {
         TcpLayer {
             net,
             ingress: ingress.clone(),
-            state: Arc::new(RwLock::new(TcpLayerState {
-                nodes: Default::default(),
-                ips: Default::default(),
-            })),
+            registry: TcpRegistry::new(session_layer.clone()),
             virtual_tcp_fast_lane: Rc::new(RefCell::new(Default::default())),
             session_layer,
         }
@@ -90,9 +80,8 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
-        let virt_endpoint: IpEndpoint = (to_ipv6(our_id), ChannelType::Messages as u16).into();
-        let virt_transfer_endpoint: IpEndpoint =
-            (to_ipv6(our_id), ChannelType::Transfer as u16).into();
+        let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
+        let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
 
         self.net.spawn_local();
         self.net.bind(Protocol::Tcp, virt_endpoint)?;
@@ -104,64 +93,21 @@ impl TcpLayer {
     }
 
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
-        let state = self.state.read().await;
-        let ip = state
-            .ips
-            .get(&node)
-            .ok_or_else(|| anyhow!("Virtual node for id [{node}] not found."))?;
-        state
-            .nodes
-            .get(ip)
-            .cloned()
-            .ok_or_else(|| anyhow!("Virtual node for ip {ip:?} not found."))
+        self.registry.resolve_node(node).await
     }
 
-    pub fn new_virtual_node(&self, id: NodeId) -> VirtNode {
-        let ip = IpAddress::from(to_ipv6(id.into_array()));
-        let endpoint = (ip, ChannelType::Messages as u16).into();
-        let session = RoutingSender::empty(id, self.session_layer.clone());
+    pub async fn remove_node(&self, node_id: NodeId) {
+        log::debug!("[VirtualTcp] Removing Node {node_id}");
 
-        VirtNode {
-            id,
-            endpoint,
-            session,
-        }
-    }
-
-    pub async fn add_virt_node(&self, node_id: NodeId) -> VirtNode {
-        let node = self.new_virtual_node(node_id);
-        {
-            let mut state = self.state.write().await;
-            let ip: Box<[u8]> = node.endpoint.addr.as_bytes().into();
-
-            state.nodes.insert(ip.clone(), node.clone());
-            state.ips.insert(node_id, ip);
-        }
-        node
-    }
-
-    pub async fn remove_node(&self, node_id: NodeId) -> anyhow::Result<()> {
-        let remote_ip = {
-            let state = self.state.read().await;
-            match state.ips.get(&node_id).cloned() {
-                Some(ip) => ip,
-                _ => return Ok(()),
-            }
-        };
+        let remote_ip = self.registry.resolve_ip(node_id).await;
 
         self.net
             .disconnect_all(remote_ip, TCP_DISCONN_TIMEOUT)
             .await;
-
-        let mut state = self.state.write().await;
-        if let Some(remote_ip) = state.ips.remove(&node_id) {
-            log::debug!("[VirtualTcp] Disconnected from node [{node_id}]");
-            state.nodes.remove(&remote_ip);
-        }
-        Ok(())
+        self.registry.remove_node(node_id).await;
     }
 
-    /// Connects to other Node and returns `Connection` for sending data.
+    /// Connects to other Node and returns `TcpSender` for sending data.
     /// TODO: We need to ensure that only one single connection can be established
     ///       at the same time and rest of attempts will wait for finish.
     /// TODO: Currently we create separate TCP connection for each identity on other Node.
@@ -169,33 +115,56 @@ impl TcpLayer {
     pub async fn connect(
         &self,
         node_id: NodeId,
-        port: ChannelType,
-    ) -> anyhow::Result<VirtConnection> {
-        log::debug!("[VirtualTcp] Connecting to node [{node_id}], channel: {port}.",);
-
+        channel: ChannelType,
+    ) -> anyhow::Result<TcpSender> {
         print_sockets(&self.net);
+
+        let channel = (channel, ChannelDirection::Out).into();
+        let myself = self.clone();
+        let connection = match self.registry.connect_attempt(node_id, channel).await {
+            TcpLock::Permit(mut permit) => {
+                log::debug!("[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.");
+
+                // Spawning task protects us from dropping future during initialization.
+                tokio::task::spawn_local(async move {
+                    permit.finish(myself.connect_internal(channel, &permit).await)
+                })
+                .await?
+            }
+            TcpLock::Wait(mut waiter) => waiter.await_for_finish().await,
+        }?;
+
+        Ok(TcpSender {
+            target: connection.id,
+            channel,
+            connection: Arc::downgrade(&connection),
+            layer: self.clone(),
+        })
+    }
+
+    async fn connect_internal(
+        &self,
+        channel: ChannelDesc,
+        permit: &TcpPermit,
+    ) -> Result<Arc<TcpConnection>, TcpError> {
+        let endpoint = IpEndpoint::new(permit.node.address, channel.port());
 
         // Make sure we have session with the Node. This allows us to
         // exit early if target Node is unreachable.
-        self.new_virtual_node(node_id)
-            .session
-            .connect()
+        self.session_layer
+            .session(permit.node.id())
             .await
-            .map_err(|e| anyhow!("Creating `VirtNode`: {e}"))?;
+            .map_err(|e| TcpError::Generic(e.to_string()))?;
 
-        let node = self.add_virt_node(node_id).await;
-        let endpoint = IpEndpoint::new(node.endpoint.addr, port as u16);
-
-        // TODO: Guard creating TCP connection. `connect` can be called from many
-        //       functions at the same time.
-        Ok(VirtConnection {
-            id: node_id,
+        Ok(Arc::new(TcpConnection {
+            id: permit.node.id(),
             conn: self
                 .net
                 .connect(endpoint, TCP_CONN_TIMEOUT)
                 .await
-                .map_err(|e| anyhow!("Establishing Tcp connection: {e}"))?,
-        })
+                .map_err(|e| TcpError::Generic(format!("Establishing Tcp connection: {e}")))?,
+            channel,
+        }))
     }
 
     #[inline]
@@ -245,9 +214,11 @@ impl TcpLayer {
             &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
         });
 
-        if self.resolve_node(node).await.is_err() {
+        // TODO: We need to change this function since, we distinguished between outgoing
+        //       and incoming connections. We have to change incoming connection state to Established.
+        if self.registry.resolve_node(node).await.is_err() {
             log::debug!("[VirtualTcp] Incoming message from new Node [{node}]. Adding connection.");
-            self.add_virt_node(node).await;
+            self.registry.add_virt_node(node).await;
         }
         self.inject(payload);
     }
@@ -259,7 +230,38 @@ impl TcpLayer {
     }
 
     pub async fn shutdown(&self) {
-        // empty
+        let our_id = self.session_layer.config.node_id;
+        let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
+        let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
+
+        // Unbind listening sockets, so no new connection can be created.
+        self.net
+            .unbind(Protocol::Tcp, virt_endpoint)
+            .map_err(|e| log::warn!("Shutdown error when unbinding sockets (Messages): {e}"))
+            .ok();
+        self.net
+            .unbind(Protocol::Tcp, virt_transfer_endpoint)
+            .map_err(|e| log::warn!("Shutdown error when unbinding sockets (Transfer): {e}"))
+            .ok();
+
+        // Try to disconnect all connections gracefully. This requires sending TCP closing packets
+        // to other Nodes, that's why it is important to first close everything related to TCP and
+        // than shutdown `SessionLayer`.
+        let disconnect_futures = self
+            .net
+            .connections()
+            .keys()
+            .cloned()
+            .map(|conn| {
+                async move {
+                    self.net
+                        .disconnect_all(conn.remote.addr.as_bytes().into(), Duration::from_secs(2))
+                        .await
+                }
+                .boxed_local()
+            })
+            .collect::<Vec<_>>();
+        futures::future::join_all(disconnect_futures).await;
     }
 
     async fn spawn_ingress_router(&self) -> anyhow::Result<()> {
@@ -290,7 +292,7 @@ impl TcpLayer {
                     let (desc, payload) = match event {
                         IngressEvent::InboundConnection { desc } => {
                             log::trace!(
-                                "[{}] ingress router: new connection from {:?} to {:?} ",
+                                "[{}] new tcp connection from {} to {} ",
                                 myself.net_id(),
                                 desc.remote,
                                 desc.local,
@@ -299,12 +301,18 @@ impl TcpLayer {
                         }
                         IngressEvent::Disconnected { desc } => {
                             log::trace!(
-                                "[{}] ingress router: ({}) {:?} disconnected from {:?}",
+                                "[{}] virtual tcp: ({}) {} disconnected from {}",
                                 myself.net_id(),
                                 desc.protocol,
-                                desc.remote,
                                 desc.local,
+                                desc.remote,
                             );
+
+                            if let Ok(endpoint)= desc.remote.ip_endpoint() {
+                                if let Some(node) = myself.registry.get_by_address(endpoint.addr.as_bytes()).await {
+                                    myself.remove_node(node.id()).await;
+                                }
+                            }
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => {
@@ -331,7 +339,7 @@ impl TcpLayer {
                         }
                         _ => {
                             log::trace!(
-                                "[{}] ingress router: remote endpoint {:?} is not supported",
+                                "[{}] ingress router: remote endpoint {} is not supported",
                                 myself.net_id(),
                                 desc.remote
                             );
@@ -341,11 +349,8 @@ impl TcpLayer {
 
                     match {
                         // Nodes are populated via `VirtualLayer::dispatch`
-                        let state = myself.state.read().await;
-                        state
-                            .nodes
-                            .get(remote_address.as_bytes())
-                            .map(|node| (node.id, myself.ingress.tx.clone()))
+                        myself.registry.get_by_address(remote_address.as_bytes()).await
+                            .map(|node| (node.id(), myself.ingress.tx.clone()))
                     } {
                         Some((node_id, tx)) => {
                             let payload_len = payload.len();
@@ -385,10 +390,7 @@ impl TcpLayer {
             .for_each(move |egress| {
                 let myself = self.clone();
                 async move {
-                    let mut node = match {
-                        let state = myself.state.read().await;
-                        state.nodes.get(&egress.remote).cloned()
-                    } {
+                    let mut node = match myself.registry.get_by_address(&egress.remote).await {
                         Some(node) => node,
                         None => {
                             log::trace!(
@@ -409,7 +411,7 @@ impl TcpLayer {
                     // implementation we disconnected TCP and all GSB messages in queue were lost.
                     tokio::task::spawn_local(async move {
                         if let Err(error) = node
-                            .session
+                            .routing
                             .send(egress.payload.into(), TransportType::Reliable)
                             .await
                         {
@@ -418,37 +420,19 @@ impl TcpLayer {
                             //       wait until timeout. This makes error messages from this library
                             //       really poor, because everything from outside looks like a timeout.
                             log::trace!(
-                                "[{}] egress router: forward to {} failed: {}",
+                                "[{}] egress router: forward to [{}] failed: {}",
                                 myself.net_id(),
-                                node.id,
+                                node.id(),
                                 error
                             );
-                            // TODO: Should we close TCP connection here?
+
+                            myself.remove_node(node.id()).await;
                         }
                     });
                 }
             })
             .await
     }
-}
-
-fn to_ipv6(bytes: impl AsRef<[u8]>) -> Ipv6Addr {
-    const IPV6_ADDRESS_LEN: usize = 16;
-
-    let bytes = bytes.as_ref();
-    let len = IPV6_ADDRESS_LEN.min(bytes.len());
-    let mut ipv6_bytes = [0u8; IPV6_ADDRESS_LEN];
-
-    // copy source bytes
-    ipv6_bytes[..len].copy_from_slice(&bytes[..len]);
-    // no multicast addresses
-    ipv6_bytes[0] %= 0xff;
-    // no unspecified or localhost addresses
-    if ipv6_bytes[0..15] == [0u8; 15] && ipv6_bytes[15] < 0x02 {
-        ipv6_bytes[15] = 0x02;
-    }
-
-    Ipv6Addr::from(ipv6_bytes)
 }
 
 fn pcap_writer(path: PathBuf) -> anyhow::Result<Box<dyn Write>> {
@@ -516,17 +500,17 @@ impl From<u16> for ChannelType {
 }
 
 pub fn print_sockets(network: &Network) {
-    log::debug!("[inet] existing sockets:");
+    log::trace!("[inet] existing sockets:");
     for (handle, meta, state) in network.sockets_meta() {
-        log::debug!("[inet] socket: {handle} ({}) {meta}", state.to_string());
+        log::trace!("[inet] socket: {handle} ({}) {meta}", state.to_string());
     }
-    log::debug!("[inet] existing connections:");
+    log::trace!("[inet] existing connections:");
     for (handle, meta) in network.handles.borrow_mut().iter() {
-        log::debug!("[inet] connection: {handle} {meta}");
+        log::trace!("[inet] connection: {handle} {meta}");
     }
 
-    log::debug!("[inet] listening sockets:");
+    log::trace!("[inet] listening sockets:");
     for handle in network.bindings.borrow_mut().iter() {
-        log::debug!("[inet] listening socket: {handle}");
+        log::trace!("[inet] listening socket: {handle}");
     }
 }
