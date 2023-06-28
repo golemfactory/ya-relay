@@ -11,7 +11,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
-use ya_relay_core::identity::Identity;
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
@@ -324,13 +323,17 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Error establishing session with relay: {e}"))?
             .raw
-            .neighbours(count)
+            .neighbours(count, false)
             .await?;
 
         let nodes = neighbours
             .nodes
             .into_iter()
-            .filter_map(|n| Identity::try_from(&n).map(|ident| ident.node_id).ok())
+            .filter_map(|n| {
+                n.identities
+                    .get(0)
+                    .and_then(|ident| NodeId::try_from(&ident.node_id).ok())
+            })
             .collect::<Vec<_>>();
 
         let prev_neighborhood = {
