@@ -10,6 +10,7 @@ use crate::_session_layer::SessionLayer;
 use crate::_session_protocol::SessionInitializer;
 use crate::testing::accessors::SessionLayerPrivate;
 
+use crate::testing::mocks::MockHandler;
 use ya_relay_core::NodeId;
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
@@ -30,6 +31,7 @@ pub struct SessionLayerWrapper {
     pub addr: SocketAddr,
 
     pub layer: SessionLayer,
+    pub capturer: MockHandler,
     pub protocol: SessionInitializer,
     pub guards: NetworkView,
 }
@@ -92,7 +94,8 @@ impl MockSessionNetwork {
 pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<SessionLayerWrapper> {
     let config = Arc::new(test_default_config(wrapper.server.inner.url.clone()).await?);
     let mut layer = SessionLayer::new(config);
-    layer.spawn().await?;
+    let capturer = MockHandler::new(layer.clone());
+    layer.spawn_with_dispatcher(capturer.clone()).await?;
 
     let node_id = layer.config.node_id;
     let addr = layer.get_test_socket_addr().await?;
@@ -104,6 +107,7 @@ pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<Sess
         id: node_id,
         addr,
         layer,
+        capturer,
         protocol,
         guards,
     })

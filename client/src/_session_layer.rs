@@ -317,13 +317,21 @@ impl SessionLayer {
     }
 
     pub async fn spawn(&mut self) -> anyhow::Result<SocketAddr> {
+        self.spawn_with_dispatcher(self.clone()).await
+    }
+
+    /// Function split from `spawn` to enable mocking and capturing packets, before they reach `SessionLayer`.
+    pub(crate) async fn spawn_with_dispatcher(
+        &mut self,
+        handler: impl Handler + Clone + 'static,
+    ) -> anyhow::Result<SocketAddr> {
         let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
 
         {
             *self.sink.lock().unwrap() = Some(sink.clone());
         }
 
-        let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
+        let abort_dispatcher = spawn_local_abortable(dispatch(handler, stream));
         let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
 
         {
@@ -610,7 +618,7 @@ impl SessionLayer {
         let addr = self.config.srv_addr;
         let this = self.clone();
 
-        log::trace!("Requested relay server session with [{remote_id}] ({addr}).");
+        log::trace!("Requested Relay server session with [{remote_id}] ({addr}).");
 
         if let Some(session) = { self.state.read().await.p2p_sessions.get(&addr).cloned() } {
             log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
@@ -1158,7 +1166,7 @@ impl SessionLayer {
         Ok(stream.send((packet.into(), addr)).await?)
     }
 
-    fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
+    pub(crate) fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
         const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
 
         let mut processed_requests = self.processed_requests.lock().unwrap();
@@ -1168,7 +1176,7 @@ impl SessionLayer {
         }
     }
 
-    fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
+    pub(crate) fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
         self.processed_requests
             .lock()
             .unwrap()
@@ -1609,5 +1617,48 @@ mod tests {
         assert_eq!(session2.target(), layer1.id);
         assert_eq!(session2.route(), layer1.id);
         assert_eq!(session2.session_type(), SessionType::P2P);
+    }
+
+    #[actix_rt::test]
+    async fn test_session_layer_reverse_connection_timeout_handshake() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await.unwrap();
+        network.hack_make_layer_ip_private(&layer2).await;
+
+        layer2.capturer.captures.reverse_connection.drop_all();
+
+        // Function should return in timeout and return error.
+        assert!(
+            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    /// Establishing session with node should fail if we got timeout waiting for first
+    /// handshake message. In this case making relayed connection doesn't make sense, because
+    /// Node seems inaccessible.
+    #[actix_rt::test]
+    async fn test_session_layer_p2p_timeout_handshake() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await.unwrap();
+        layer2.capturer.captures.session_request.drop_all();
+
+        // Function should return in timeout and return error.
+        assert!(
+            timeout(Duration::from_millis(3500), layer1.layer.session(layer2.id))
+                .await
+                .unwrap()
+                .is_err()
+        );
     }
 }
