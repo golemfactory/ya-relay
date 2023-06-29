@@ -700,6 +700,7 @@ impl SessionLayer {
                 // We can still try other methods.
                 Err(SessionError::NotApplicable(e)) => {
                     log::debug!("Can't establish direct p2p session with [{node_id}]. {e}");
+                    permit.registry.restart_initialization().await?;
                 }
                 // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
@@ -722,6 +723,7 @@ impl SessionLayer {
                 // We can still try other methods.
                 Err(SessionError::NotApplicable(e)) => {
                     log::debug!("Can't establish reverse p2p session with [{node_id}]. {e}");
+                    permit.registry.restart_initialization().await?;
                 }
                 // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
@@ -1631,7 +1633,7 @@ mod tests {
 
         layer2.capturer.captures.reverse_connection.drop_all();
 
-        // Function should return in timeout and return error.
+        // Function should finish in timeout and return error.
         assert!(
             timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
                 .await
@@ -1653,9 +1655,9 @@ mod tests {
         layer2.layer.server_session().await.unwrap();
         layer2.capturer.captures.session_request.drop_all();
 
-        // Function should return in timeout and return error.
+        // Function should finish in timeout and return error.
         assert!(
-            timeout(Duration::from_millis(3500), layer1.layer.session(layer2.id))
+            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
                 .await
                 .unwrap()
                 .is_err()

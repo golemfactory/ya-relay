@@ -26,6 +26,10 @@ pub enum SessionState {
     /// Session was closed gracefully. (Still the reason
     /// for closing could be some kind of failure)
     Closed,
+    /// Current initialization method failed, but we could try other methods.
+    /// This state is equivalent of `ConnectIntent`, but moving to this state doesn't
+    /// give you `SessionPermit`.
+    RestartConnect,
 }
 
 #[derive(Clone, PartialEq, Display, Debug)]
@@ -166,13 +170,18 @@ impl SessionState {
                 SessionState::ReverseConnection(ReverseState::Awaiting),
             ) => true,
             (
+                SessionState::RestartConnect,
+                SessionState::ReverseConnection(ReverseState::Awaiting),
+            ) => true,
+            // We can establish Relayed connection if we made connect intent or we tried other methods
+            // that failed and we are in restating state.
+            (
                 SessionState::Outgoing(InitState::ConnectIntent),
                 SessionState::Relayed(RelayedState::Initializing),
             ) => true,
-            (
-                SessionState::ReverseConnection(ReverseState::InProgress(InitState::ConnectIntent)),
-                SessionState::Relayed(RelayedState::Initializing),
-            ) => true,
+            (SessionState::RestartConnect, SessionState::Relayed(RelayedState::Initializing)) => {
+                true
+            }
             // We can start new session if it was closed, or if we failed to establish it previously.
             (SessionState::Closed, SessionState::Outgoing(InitState::ConnectIntent)) => true,
             (SessionState::Closed, SessionState::Incoming(InitState::ConnectIntent)) => true,
@@ -184,12 +193,22 @@ impl SessionState {
                 SessionState::FailedEstablish(_),
                 SessionState::Incoming(InitState::ConnectIntent),
             ) => true,
+            // If session is established, we don't want to block this transition to avoid unexpected
+            // behaviors. On the other side when in `Established` state, getting transition request
+            // to `Established` is already unexpected.
             (SessionState::Established(_), SessionState::Established(_)) => true,
+            // In case of every initialization method we can retry using other method.
+            (SessionState::Relayed(_), SessionState::RestartConnect) => true,
+            (SessionState::Incoming(_), SessionState::RestartConnect) => true,
+            (SessionState::Outgoing(_), SessionState::RestartConnect) => true,
+            (SessionState::ReverseConnection(_), SessionState::RestartConnect) => true,
+            (SessionState::RestartConnect, SessionState::RestartConnect) => true,
+            // We can attempt to make p2p connection, when previous initialization method failed.
+            (SessionState::RestartConnect, SessionState::Outgoing(InitState::Initializing)) => true,
             // We can start closing only Established session. In other cases we want to make
             // transition to `FailedEstablish` state.
             (SessionState::Established(_), SessionState::Closing) => true,
             (SessionState::Closing, SessionState::Closed) => true,
-
             (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(next),
             (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(next),
             (SessionState::Relayed(prev), SessionState::Relayed(next)) => prev.allowed(next),
