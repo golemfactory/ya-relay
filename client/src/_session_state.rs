@@ -1,11 +1,12 @@
 use derive_more::Display;
 use educe::Educe;
 use std::sync::{Arc, Weak};
+use strum_macros::EnumCount;
 
 use crate::_direct_session::DirectSession;
 use crate::_error::{SessionError, TransitionError};
 
-#[derive(Clone, Educe, Display, Debug)]
+#[derive(Clone, Educe, Display, Debug, EnumCount)]
 #[educe(PartialEq)]
 pub enum SessionState {
     #[display(fmt = "Outgoing-{}", _0)]
@@ -32,13 +33,13 @@ pub enum SessionState {
     RestartConnect,
 }
 
-#[derive(Clone, PartialEq, Display, Debug)]
+#[derive(Clone, PartialEq, Display, Debug, EnumCount)]
 pub enum RelayedState {
     Initializing,
     Ready,
 }
 
-#[derive(Clone, Educe, Display)]
+#[derive(Clone, Educe, Display, EnumCount)]
 #[educe(PartialEq, Debug)]
 pub enum ReverseState {
     /// `ReverseConnection` message was sent and we are waiting for other Node
@@ -60,7 +61,7 @@ pub enum ReverseState {
     ),
 }
 
-#[derive(Clone, PartialEq, Display, Debug)]
+#[derive(Clone, PartialEq, Display, Debug, EnumCount)]
 pub enum InitState {
     /// This state indicates that someone plans to initialize connection,
     /// so we are not allowed to do this. Instead we should wait until

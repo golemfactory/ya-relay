@@ -801,11 +801,13 @@ mod tests {
 
     use std::str::FromStr;
     use std::time::Duration;
+    use strum::EnumCount;
     use tokio::time::timeout;
 
     use crate::_raw_session::RawSession;
-    use crate::_session_state::InitState;
+    use crate::_session_state::{InitState, RelayedState};
     use crate::testing::mocks::NoOpSessionLayer;
+
     use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
     use ya_relay_core::server_session::SessionId;
     use ya_relay_proto::codec::PacketKind;
@@ -873,6 +875,10 @@ mod tests {
         let node_id = permit.registry.id;
         let addr = permit.registry.public_addresses().await[0];
 
+        mock_session_from_id_addr(node_id, addr).await
+    }
+
+    async fn mock_session_from_id_addr(node_id: NodeId, addr: SocketAddr) -> Arc<DirectSession> {
         let crypto_provider = *CRYPTOS.get(&node_id).unwrap();
         let crypto = crypto_provider.get(node_id).await.unwrap();
         let public_key = crypto.public_key().await.unwrap();
@@ -884,12 +890,12 @@ mod tests {
         let (sink, _) = futures::channel::mpsc::channel::<(PacketKind, SocketAddr)>(1);
 
         let raw = RawSession::new(addr, SessionId::generate(), sink);
-        DirectSession::new(permit.registry.id, vec![identity].into_iter(), raw).unwrap()
+        DirectSession::new(node_id, vec![identity].into_iter(), raw).unwrap()
     }
 
     /// Checks if `Permits` and `NodeAwaiting` work independently.
     #[actix_rt::test]
-    async fn test_session_guards_independent_permits() {
+    async fn test_network_view_independent_permits() {
         let guards = NetworkView::default();
         let permit1 = match guards
             .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
@@ -949,7 +955,7 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn test_session_guards_incoming() {
+    async fn test_network_view_incoming() {
         let guards = NetworkView::default();
         let permit = match guards
             .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
@@ -984,7 +990,7 @@ mod tests {
     /// Checks if permits work correctly in case of attempts to initialize
     /// both incoming and outgoing session.
     #[actix_rt::test]
-    async fn test_session_guards_incoming_and_outgoing() {
+    async fn test_network_view_incoming_and_outgoing() {
         let guards = NetworkView::default();
         let permit = match guards
             .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
@@ -1017,7 +1023,7 @@ mod tests {
     }
 
     #[actix_rt::test]
-    async fn test_session_guards_already_established() {
+    async fn test_network_view_already_established() {
         let guards = NetworkView::default();
         let permit = match guards
             .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
@@ -1040,5 +1046,87 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    /// There are only 2 states from which transition to `ConnectIntent` should give us permit.
+    /// Moreover from `ReverseState::Awaiting` we can get reverse `SessionPermit`, when calling
+    /// `lock_incoming` (`lock_outgoing` doesn't give Permit).
+    /// If this test fails, we are in danger of double session initialization.
+    #[actix_rt::test]
+    async fn test_network_view_permits_for_different_states() {
+        let session = mock_session_from_id_addr(*NODE_ID1, *ADDR1).await;
+        let mock_err = Err(SessionError::Unexpected("".to_string()));
+
+        // Sanity checks. If the number of variants doesn't match, we need to update this test,
+        // because we introduced or removed states.
+        assert_eq!(SessionState::COUNT, 9);
+        assert_eq!(InitState::COUNT, 7);
+        assert_eq!(ReverseState::COUNT, 3);
+        assert_eq!(RelayedState::COUNT, 2);
+
+        // It is hard to generate all variants automatically if SessionState has sub-enums
+        // and some variants contain additional data.
+        let not_permitted_states = [
+            SessionState::RestartConnect,
+            SessionState::Closing,
+            SessionState::Established(Arc::downgrade(&session)),
+            SessionState::Outgoing(InitState::ChallengeHandshake),
+            SessionState::Outgoing(InitState::ConnectIntent),
+            SessionState::Outgoing(InitState::Initializing),
+            SessionState::Outgoing(InitState::HandshakeResponse),
+            SessionState::Outgoing(InitState::ChallengeVerified),
+            SessionState::Outgoing(InitState::Ready),
+            SessionState::Outgoing(InitState::SessionRegistered),
+            SessionState::Incoming(InitState::ChallengeHandshake),
+            SessionState::Incoming(InitState::ConnectIntent),
+            SessionState::Incoming(InitState::Initializing),
+            SessionState::Incoming(InitState::HandshakeResponse),
+            SessionState::Incoming(InitState::ChallengeVerified),
+            SessionState::Incoming(InitState::Ready),
+            SessionState::Incoming(InitState::SessionRegistered),
+            SessionState::Relayed(RelayedState::Initializing),
+            SessionState::Relayed(RelayedState::Ready),
+            SessionState::ReverseConnection(ReverseState::Awaiting),
+            SessionState::ReverseConnection(ReverseState::Finished(mock_err)),
+            SessionState::ReverseConnection(ReverseState::InProgress(
+                InitState::ChallengeHandshake,
+            )),
+            SessionState::ReverseConnection(ReverseState::InProgress(InitState::ConnectIntent)),
+            SessionState::ReverseConnection(ReverseState::InProgress(InitState::Initializing)),
+            SessionState::ReverseConnection(ReverseState::InProgress(InitState::HandshakeResponse)),
+            SessionState::ReverseConnection(ReverseState::InProgress(InitState::ChallengeVerified)),
+            SessionState::ReverseConnection(ReverseState::InProgress(InitState::Ready)),
+            SessionState::ReverseConnection(ReverseState::InProgress(InitState::SessionRegistered)),
+            // These 2 states will give us `SessionPermit`
+            //SessionState::Closed,
+            //SessionState::FailedEstablish(mock_err),
+        ];
+
+        for state in not_permitted_states {
+            let view = NetworkView::default();
+            let node_view = view.guard(*NODE_ID1, &[*ADDR1]).await;
+
+            {
+                node_view.state.write().await.state = state.clone();
+            }
+
+            if let SessionLock::Permit(_permit) = view
+                .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+                .await
+            {
+                panic!("We shouldn't get Permit from state: {}", state);
+            }
+
+            if state == SessionState::ReverseConnection(ReverseState::Awaiting) {
+                continue;
+            }
+
+            if let SessionLock::Permit(_permit) = view
+                .lock_incoming(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+                .await
+            {
+                panic!("We shouldn't get Permit from state: {}", state);
+            }
+        }
     }
 }
