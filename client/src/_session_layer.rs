@@ -1599,6 +1599,43 @@ mod tests {
     }
 
     #[actix_rt::test]
+    async fn test_session_layer_close_relayed_routing() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+        let relay_id = NodeId::default();
+
+        // Node-2 should be registered on relay
+        layer1.layer.server_session().await.unwrap();
+        layer2.layer.server_session().await.unwrap();
+        network.hack_make_layer_ip_private(&layer2).await;
+        network.hack_make_layer_ip_private(&layer1).await;
+
+        let mut session = layer1.layer.session(layer2.id).await.unwrap();
+        // Wait until second Node will be ready with session
+        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+
+        assert_eq!(session.target(), layer2.id);
+        assert_eq!(session.route(), relay_id);
+        assert_eq!(session.session_type(), SessionType::Relay);
+
+        assert_eq!(session2.target(), layer1.id);
+        assert_eq!(session2.route(), relay_id);
+        assert_eq!(session2.session_type(), SessionType::Relay);
+
+        session.disconnect().await.unwrap();
+        // Let other side receive and handle `Disconnected` packet.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(layer1.layer.get_node_routing(layer2.id).await.is_none());
+        // There is no way Node-2 will know that relayed connection was closed.
+        //assert!(layer2.layer.get_node_routing(layer1.id).await.is_none());
+
+        // We should be able to connect again to the same Node.
+        session.connect().await.unwrap();
+    }
+
+    #[actix_rt::test]
     async fn test_session_layer_reverse_connection() {
         let mut network = MockSessionNetwork::new().await.unwrap();
         let layer1 = network.new_layer().await.unwrap();
