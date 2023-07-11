@@ -84,8 +84,8 @@ async fn test_forward_reliable_relayed() -> anyhow::Result<()> {
 
     println!("Forwarding: reliable");
 
-    let mut tx1 = client1.forward(client2.node_id()).await.unwrap();
-    let mut tx2 = client2.forward(client1.node_id()).await.unwrap();
+    let mut tx1 = client1.forward_reliable(client2.node_id()).await.unwrap();
+    let mut tx2 = client2.forward_reliable(client1.node_id()).await.unwrap();
 
     tx1.send(vec![1u8].into()).await?;
     tx2.send(vec![2u8].into()).await?;
@@ -163,8 +163,8 @@ async fn test_p2p_reliable() -> anyhow::Result<()> {
 
     println!("Forwarding: reliable");
 
-    let mut tx1 = client1.forward(client2.node_id()).await?;
-    let mut tx2 = client2.forward(client1.node_id()).await?;
+    let mut tx1 = client1.forward_reliable(client2.node_id()).await?;
+    let mut tx2 = client2.forward_reliable(client1.node_id()).await?;
 
     tx1.send(vec![1u8].into()).await?;
     tx2.send(vec![2u8].into()).await?;
@@ -191,7 +191,7 @@ async fn test_p2p_reliable_and_transfer() -> anyhow::Result<()> {
         .await
         .context("no forward receiver")?;
 
-    let mut tx1 = client1.forward(client2.node_id()).await?;
+    let mut tx1 = client1.forward_reliable(client2.node_id()).await?;
     let mut tx2 = client1.forward_transfer(client2.node_id()).await?;
 
     tx1.send(vec![1u8].into()).await?;
@@ -257,7 +257,7 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     }
     spawn_receive_counted(">> 2", received2.clone(), rx2);
 
-    let mut tx1 = client1.forward(client2.node_id()).await?;
+    let mut tx1 = client1.forward_reliable(client2.node_id()).await?;
     let big_payload = (0..255).collect::<Vec<u8>>();
     let iterations = (2048 / 256) + 1;
     let mut send_cnt = 0;

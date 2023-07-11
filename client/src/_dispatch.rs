@@ -76,12 +76,11 @@ where
             },
             codec::PacketKind::Forward(forward) => {
                 // In case of temporary sessions we shouldn't get `Forward` packets,
-                // so we can safely ignore this case.
-                if let Some(session) = session {
-                    handler
-                        .on_forward(forward, from, Some(session))
-                        .map(spawn_local);
-                }
+                // so we can safely ignore this case. But we can get `Forward` from unknown
+                // session. This can happen if:
+                // - Other Node had session established with us previously
+                // - Incorrect behavior
+                handler.on_forward(forward, from, session).map(spawn_local);
             }
             _ => log::warn!("Unable to dispatch packet from {from}: not supported"),
         };

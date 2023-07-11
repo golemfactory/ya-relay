@@ -140,11 +140,15 @@ impl RawSession {
         Ok(response)
     }
 
-    pub async fn neighbours(&self, count: u32) -> anyhow::Result<proto::response::Neighbours> {
-        let packet = proto::request::Neighbours {
-            count,
-            public_key: true,
-        };
+    /// Returns closest Nodes to ours according to arbitrary metric implemented
+    /// by relay server.
+    ///
+    pub async fn neighbours(
+        &self,
+        count: u32,
+        public_key: bool,
+    ) -> anyhow::Result<proto::response::Neighbours> {
+        let packet = proto::request::Neighbours { count, public_key };
         let neighbours = self
             .request::<proto::response::Neighbours>(
                 packet.into(),
@@ -172,7 +176,7 @@ impl RawSession {
         Ok(result.map(|_| ())?)
     }
 
-    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn reverse_connection(&self, node_id: NodeId) -> Result<(), RequestError> {
         let packet = proto::request::ReverseConnection {
             node_id: node_id.into_array().to_vec(),
         };

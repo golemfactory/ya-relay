@@ -20,14 +20,15 @@ use ya_relay_proto::proto::RequestId;
 use crate::_client::ClientConfig;
 use crate::_direct_session::DirectSession;
 use crate::_error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
+use crate::_network_view::SessionPermit;
 use crate::_raw_session::RawSession;
-use crate::_session_registry::SessionPermit;
 use crate::_session_state::InitState;
 use crate::_session_traits::SessionRegistration;
 
+/// TODO: Rename to `SessionInitializer`
 #[derive(Clone)]
-pub struct SessionProtocol {
-    state: Arc<Mutex<SessionProtocolState>>,
+pub struct SessionInitializer {
+    state: Arc<Mutex<SessionInitializerState>>,
     layer: Arc<Box<dyn SessionRegistration>>,
 
     simultaneous_challenges: Arc<Semaphore>,
@@ -36,7 +37,7 @@ pub struct SessionProtocol {
 }
 
 #[derive(Default)]
-pub struct SessionProtocolState {
+pub struct SessionInitializerState {
     /// Initialization of session started by other peers.
     incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
 
@@ -49,18 +50,18 @@ pub struct SessionProtocolState {
     handles: Vec<AbortHandle>,
 }
 
-impl SessionProtocol {
+impl SessionInitializer {
     pub(crate) fn new(
         config: Arc<ClientConfig>,
         layer: impl SessionRegistration + 'static,
         sink: OutStream,
-    ) -> SessionProtocol {
+    ) -> SessionInitializer {
         // We don't want to overwhelm CPU with challenge solving operations.
         // Leave at least 2 threads for yagna to work.
         let max_heavy_threads = std::cmp::max(num_cpus::get() - 2, 1);
 
-        SessionProtocol {
-            state: Arc::new(Mutex::new(SessionProtocolState::default())),
+        SessionInitializer {
+            state: Arc::new(Mutex::new(SessionInitializerState::default())),
             sink,
             layer: Arc::new(Box::new(layer)),
             config,
@@ -116,7 +117,7 @@ impl SessionProtocol {
 
         log::debug!("[{this_id}] initializing session with [{node_id}] ({addr})");
 
-        let (request, raw_challenge) = self.prepare_challenge_request(challenge).await?;
+        let (request, raw_challenge) = self.prepare_session_request(challenge).await?;
         let response = tmp_session
             .request::<proto::response::Session>(
                 request.into(),
@@ -570,7 +571,7 @@ impl SessionProtocol {
         .boxed_local()
     }
 
-    async fn prepare_challenge_request(
+    async fn prepare_session_request(
         &self,
         challenge: bool,
     ) -> SessionResult<(proto::request::Session, RawChallenge)> {
@@ -626,7 +627,7 @@ impl SessionProtocol {
 mod tests {
     use super::*;
 
-    use crate::_session_registry::SessionLock;
+    use crate::_network_view::SessionLock;
     use crate::_session_state::SessionState;
     use crate::testing::init::MockSessionNetwork;
 

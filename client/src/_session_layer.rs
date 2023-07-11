@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
+use metrics::{gauge, increment_counter};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
@@ -15,11 +16,12 @@ use crate::_dispatch::{dispatch, Handler};
 use crate::_encryption::Encryption;
 use crate::_error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
 use crate::_expire::track_sessions_expiration;
+use crate::_metrics::{metric_session_established, TARGET_ID};
+use crate::_network_view::{NetworkView, SessionLock, SessionPermit, Validity};
 use crate::_raw_session::{RawSession, SessionType};
 use crate::_routing_session::{NodeRouting, RoutingSender};
-use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{Registry, SessionLock, SessionPermit, Validity};
-use crate::_session_state::{RelayedState, SessionState};
+use crate::_session_protocol::SessionInitializer;
+use crate::_session_state::{RelayedState, ReverseState, SessionState};
 use crate::_session_traits::{SessionDeregistration, SessionRegistration};
 use crate::_transport_layer::ForwardReceiver;
 
@@ -32,16 +34,18 @@ use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
-use ya_relay_proto::proto::{Forward, RequestId, SlotId, FORWARD_SLOT_ID};
+use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
 
 type ReqFingerprint = (Vec<u8>, u64);
 
+/// Describes which method was used to establish connection.
+/// Numbers mapping is used on Grafana metrics. 0 is reserved for no session.
 #[derive(Copy, Clone, Display, PartialEq, Eq)]
 pub enum ConnectionMethod {
-    Direct,
-    Reverse,
-    Relay,
+    Direct = 1,
+    Reverse = 2,
+    Relay = 3,
     // Here should be NAT punching type(s) defined in the future
 }
 
@@ -56,7 +60,7 @@ pub struct SessionLayer {
 
     pub(crate) state: Arc<RwLock<SessionLayerState>>,
 
-    pub(crate) registry: Registry,
+    pub(crate) registry: NetworkView,
     ingress_channel: Channel<Forwarded>,
 
     // TODO: Could be per `Session`.
@@ -76,7 +80,7 @@ pub struct SessionLayerState {
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
     pub p2p_nodes: HashMap<NodeId, Arc<DirectSession>>,
 
-    pub(crate) init_protocol: Option<SessionProtocol>,
+    pub(crate) init_protocol: Option<SessionInitializer>,
 
     // Collection of background tasks that must be stopped on shutdown.
     pub handles: Vec<AbortHandle>,
@@ -229,6 +233,8 @@ impl SessionDeregistration for SessionLayer {
 
         if let Some(direct) = direct {
             self.unregister_session(direct).await;
+        } else {
+            increment_counter!("ya-relay.client.session.closed", TARGET_ID => node_id.to_string());
         }
     }
 
@@ -264,6 +270,10 @@ impl SessionDeregistration for SessionLayer {
             }
         }
 
+        let target_id = session.owner.default_id.to_string();
+        gauge!("ya-relay.client.session.type", ConnectionMethod::no_connection(), TARGET_ID => target_id.clone());
+        increment_counter!("ya-relay.client.session.closed", TARGET_ID => target_id);
+
         log::info!(
             "Session {} with [{}] ({}) closed",
             session.raw.id,
@@ -279,7 +289,7 @@ impl SessionDeregistration for SessionLayer {
         let entry = match self.registry.get_entry_by_addr(&remote).await {
             None => {
                 return Err(SessionError::NotFound(format!(
-                    "Can't find `RegistryEntry` by addr {remote}"
+                    "Can't find `NodeView` by addr {remote}"
                 )))
             }
             Some(entry) => entry,
@@ -312,13 +322,21 @@ impl SessionLayer {
     }
 
     pub async fn spawn(&mut self) -> anyhow::Result<SocketAddr> {
+        self.spawn_with_dispatcher(self.clone()).await
+    }
+
+    /// Function split from `spawn` to enable mocking and capturing packets, before they reach `SessionLayer`.
+    pub(crate) async fn spawn_with_dispatcher(
+        &mut self,
+        handler: impl Handler + Clone + 'static,
+    ) -> anyhow::Result<SocketAddr> {
         let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
 
         {
             *self.sink.lock().unwrap() = Some(sink.clone());
         }
 
-        let abort_dispatcher = spawn_local_abortable(dispatch(self.clone(), stream));
+        let abort_dispatcher = spawn_local_abortable(dispatch(handler, stream));
         let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
 
         {
@@ -327,7 +345,7 @@ impl SessionLayer {
             state.bind_addr.replace(bind_addr);
             state.handles.push(abort_dispatcher);
             state.handles.push(abort_expiration);
-            state.init_protocol = Some(SessionProtocol::new(
+            state.init_protocol = Some(SessionInitializer::new(
                 self.config.clone(),
                 self.clone(),
                 sink,
@@ -435,7 +453,7 @@ impl SessionLayer {
     }
 
     /// Queries information about Node from relay server.
-    /// Information is cached in `Registry` and will be returned from there.
+    /// Information is cached in `NetworkView` and will be returned from there.
     /// From time to time query to relay server will be made to check if it is up to date.
     pub async fn query_node_info(&self, node_id: NodeId) -> anyhow::Result<NodeInfo> {
         if let Some(entry) = self.registry.get_entry(node_id).await {
@@ -465,7 +483,7 @@ impl SessionLayer {
         self.registry
             .update_entry(info.clone())
             .await
-            .map_err(|e| SessionError::Internal(format!("Registry update failed: {e}")))?;
+            .map_err(|e| SessionError::Internal(format!("NetworkView update failed: {e}")))?;
         Ok(info)
     }
 
@@ -605,7 +623,7 @@ impl SessionLayer {
         let addr = self.config.srv_addr;
         let this = self.clone();
 
-        log::trace!("Requested relay server session with [{remote_id}] ({addr}).");
+        log::trace!("Requested Relay server session with [{remote_id}] ({addr}).");
 
         if let Some(session) = { self.state.read().await.p2p_sessions.get(&addr).cloned() } {
             log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
@@ -680,10 +698,14 @@ impl SessionLayer {
             log::debug!("Attempting to establish direct p2p connection with [{node_id}].");
 
             match self.try_direct_session(node_id, permit).await {
-                Ok(session) => return Ok(session),
+                Ok(session) => {
+                    metric_session_established(node_id, ConnectionMethod::Direct);
+                    return Ok(session);
+                }
                 // We can still try other methods.
                 Err(SessionError::NotApplicable(e)) => {
                     log::debug!("Can't establish direct p2p session with [{node_id}]. {e}");
+                    permit.registry.restart_initialization().await?;
                 }
                 // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
@@ -699,10 +721,14 @@ impl SessionLayer {
             log::debug!("Attempting to establish reverse p2p connection with [{node_id}].");
 
             match self.try_reverse_connection(node_id, permit).await {
-                Ok(session) => return Ok(session),
+                Ok(session) => {
+                    metric_session_established(node_id, ConnectionMethod::Reverse);
+                    return Ok(session);
+                }
                 // We can still try other methods.
                 Err(SessionError::NotApplicable(e)) => {
                     log::debug!("Can't establish reverse p2p session with [{node_id}]. {e}");
+                    permit.registry.restart_initialization().await?;
                 }
                 // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
@@ -727,7 +753,10 @@ impl SessionLayer {
             log::info!("Attempting to use relay Server to forward packets to [{node_id}]");
 
             match self.try_relayed_connection(node_id, permit).await {
-                Ok(session) => return Ok(session),
+                Ok(session) => {
+                    metric_session_established(node_id, ConnectionMethod::Relay);
+                    return Ok(session);
+                }
                 Err(e) => log::debug!("Can't use relayed connection with [{node_id}]. {e}"),
             }
         } else {
@@ -742,7 +771,7 @@ impl SessionLayer {
 
     pub async fn try_server_session(
         &self,
-        _node_id: NodeId,
+        node_id: NodeId,
         addr: SocketAddr,
         permit: &SessionPermit,
     ) -> SessionResult<Arc<DirectSession>> {
@@ -759,9 +788,13 @@ impl SessionLayer {
             .into_iter()
             .find_map(|endpoint| endpoint.try_into().ok())
         {
+            gauge!("ya-relay.client.public-address", 1.0);
             self.set_public_addr(Some(addr)).await;
+        } else {
+            gauge!("ya-relay.client.public-address", 0.0);
         }
 
+        gauge!("ya-relay.client.session.type", ConnectionMethod::Direct.metric(), TARGET_ID => node_id.to_string());
         Ok(session)
     }
 
@@ -808,7 +841,7 @@ impl SessionLayer {
     async fn try_reverse_connection(
         &self,
         node_id: NodeId,
-        _permit: &SessionPermit,
+        permit: &SessionPermit,
     ) -> Result<Arc<DirectSession>, SessionError> {
         // We are trying to connect to Node without public IP. Send `ReverseConnection` message,
         // so Node will connect to us.
@@ -823,52 +856,62 @@ impl SessionLayer {
             self.config.node_id,
         );
 
-        Err(SessionError::NotApplicable(
-            "ReverseConnection not implemented.".to_string(),
-        ))
+        // Must be called before we send `ReverseConnection` otherwise we might miss event
+        // notifying us about incoming connection.
+        let mut awaiting = permit.registry.awaiting_notifier();
+        permit
+            .registry
+            .transition(SessionState::ReverseConnection(ReverseState::Awaiting))
+            .await?;
 
-        //
-        // let mut awaiting = self.guarded.register_waiting_for_node(node_id).await?;
-        //
-        // let server_session = self.server_session().await?;
-        // server_session.reverse_connection(node_id).await?;
-        //
-        // log::debug!("ReverseConnection requested with node [{node_id}]");
-        //
-        // // We don't want to wait for connection finish, because we need longer timeout for this.
-        // // But if we won't receive any message from other Node, we would like to exit early,
-        // // to try out different connection methods.
-        // tokio::time::timeout(
-        //     self.config.reverse_connection_tmp_timeout,
-        //     awaiting.wait_for_first_message(),
-        // )
-        // .await?;
-        //
-        // // If we have first handshake message from other node, we can wait with
-        // // longer timeout now, because we can hope, that this node is responsive.
-        // let result = tokio::time::timeout(
-        //     self.config.reverse_connection_real_timeout,
-        //     awaiting.wait_for_connection(),
-        // )
-        // .await;
-        //
-        // match result {
-        //     Ok(Ok(session)) => {
-        //         log::info!("ReverseConnection - got session with node: [{node_id}]");
-        //         Ok(session)
-        //     }
-        //     Ok(Err(e)) => {
-        //         log::info!("ReverseConnection - failed to establish session with: [{node_id}]");
-        //         Err(e.into())
-        //     }
-        //     Err(_) => {
-        //         log::info!(
-        //             "ReverseConnection - waiting for session timed out ({}). Node: [{node_id}]",
-        //             humantime::format_duration(self.config.reverse_connection_real_timeout)
-        //         );
-        //         bail!("Not able to setup ReverseConnection within timeout with node: [{node_id}]")
-        //     }
-        // }
+        let server_session = self.server_session().await?;
+        server_session.raw.reverse_connection(node_id).await?;
+
+        log::debug!("ReverseConnection requested with node [{node_id}]");
+
+        // Waiting for any message from other Node.
+        // We don't want to wait for connection finish, because we would need longer timeout for this.
+        // But if we won't receive any message from other Node, we would like to exit early,
+        // to try out different connection methods.
+        tokio::time::timeout(
+            self.config.reverse_connection_tmp_timeout,
+            awaiting.await_handshake(),
+        )
+        .await
+        .map_err(|e| {
+            SessionError::Timeout(format!(
+                "Timeout ({}) elapsed when waiting for `ReverseConnection` handshake. {e}",
+                humantime::format_duration(self.config.reverse_connection_tmp_timeout)
+            ))
+        })??;
+
+        // If we have first handshake message from other node, we can wait with
+        // longer timeout now, because we can hope, that this node is responsive.
+        let result = tokio::time::timeout(
+            self.config.reverse_connection_real_timeout,
+            awaiting.await_reverse_finish(),
+        )
+        .await;
+
+        match result {
+            Ok(Ok(session)) => {
+                log::info!("ReverseConnection - got session with node: [{node_id}]");
+                Ok(session)
+            }
+            Ok(Err(e)) => {
+                log::info!("ReverseConnection - failed to establish session with: [{node_id}]");
+                Err(e)
+            }
+            Err(_) => {
+                log::info!(
+                    "ReverseConnection - waiting for session timed out ({}). Node: [{node_id}]",
+                    humantime::format_duration(self.config.reverse_connection_real_timeout)
+                );
+                Err(SessionError::Timeout(format!(
+                    "Not able to setup ReverseConnection within timeout with node: [{node_id}]"
+                )))
+            }
+        }
     }
 
     async fn try_relayed_connection(
@@ -971,6 +1014,7 @@ impl SessionLayer {
                             .run_abortable(protocol.new_session(request_id, from, &permit, request))
                             .await,
                     )?;
+                    gauge!("ya-relay.client.session.type", ConnectionMethod::Direct.metric(), TARGET_ID => remote_id.to_string());
                     Ok(())
                 }
                 SessionLock::Wait(waiter) => {
@@ -991,6 +1035,10 @@ impl SessionLayer {
             .await
     }
 
+    /// TODO: Don't respond to ping when we don't have session with other Node.
+    ///       In this case we should probably send disconnect, so the other Node will re-establish
+    ///       session.
+    ///       This doesn't work with relay, which sends ping to find out if we have public IP.
     pub async fn on_ping(
         &self,
         session_id: Vec<u8>,
@@ -1101,10 +1149,15 @@ impl SessionLayer {
         };
 
         // Don't try to use `ReverseConnection`, when handling `ReverseConnection`.
+        // We don't want `Relayed` connection as well, because other Node can use it if he wants.
         permit
             .collect_results(
                 permit
-                    .run_abortable(self.resolve(node_id, &permit, &[ConnectionMethod::Reverse]))
+                    .run_abortable(self.resolve(
+                        node_id,
+                        &permit,
+                        &[ConnectionMethod::Reverse, ConnectionMethod::Relay],
+                    ))
                     .await,
             )
             .map_err(|e| {
@@ -1120,7 +1173,7 @@ impl SessionLayer {
         Ok(stream.send((packet.into(), addr)).await?)
     }
 
-    fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
+    pub(crate) fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
         const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
 
         let mut processed_requests = self.processed_requests.lock().unwrap();
@@ -1130,7 +1183,7 @@ impl SessionLayer {
         }
     }
 
-    fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
+    pub(crate) fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
         self.processed_requests
             .lock()
             .unwrap()
@@ -1138,7 +1191,7 @@ impl SessionLayer {
             .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
     }
 
-    async fn get_protocol(&self) -> Result<SessionProtocol, SessionError> {
+    async fn get_protocol(&self) -> Result<SessionInitializer, SessionError> {
         match self.state.read().await.init_protocol.clone() {
             None => Err(SessionError::Internal(
                 "`SessionProtocol` empty (not initialized?)".to_string(),
@@ -1275,20 +1328,24 @@ impl Handler for SessionLayer {
         request: proto::Request,
         from: SocketAddr,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        log::trace!("Received request packet from {from}: {request}");
-
         let (request_id, kind) = match request {
             proto::Request {
                 request_id,
                 kind: Some(kind),
             } => (request_id, kind),
-            _ => return None,
+            proto::Request { request_id, .. } => {
+                log::trace!("Empty request packet ({request_id}) from {from}");
+                return None;
+            }
         };
 
         if self.is_request_duplicate(&session_id, request_id) {
+            log::trace!("Dropping duplicated request packet ({request_id}) from {from}");
             return None;
         }
         self.record_duplicate(session_id.clone(), request_id);
+
+        log::trace!("Received request packet ({request_id}) from {from}: {kind}");
 
         let fut = match kind {
             proto::request::Kind::Ping(request) => {
@@ -1340,7 +1397,7 @@ impl Handler for SessionLayer {
                 Some(session) => session,
             };
 
-            let node = if slot == FORWARD_SLOT_ID {
+            let sender = if is_direct_message(slot) {
                 // Direct message from other Node.
                 session.owner.default_id
             } else {
@@ -1356,6 +1413,8 @@ impl Handler for SessionLayer {
                         let node = session.raw.find_slot(slot).await?;
                         let ident = Identity::try_from(&node)?;
 
+                        // TODO: Consider just adding node to `DirectSession` forwards list. If the other Node couldn't
+                        //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
                         let session = myself
                             .session(ident.node_id)
@@ -1375,13 +1434,13 @@ impl Handler for SessionLayer {
             };
             let packet = Forwarded {
                 transport,
-                node_id: node,
+                node_id: sender,
                 payload: forward.payload,
             };
 
             channel.tx.send(packet).map_err(|e| anyhow!("SessionLayer can't pass packet to other layers: {e}"))?;
 
-            session.record_incoming(node, transport, size);
+            session.record_incoming(sender, transport, size);
             anyhow::Result::<()>::Ok(())
         }
         .map_err(move |e| log::debug!("Forward from {from} failed: {e}"))
@@ -1391,9 +1450,19 @@ impl Handler for SessionLayer {
     }
 }
 
+impl ConnectionMethod {
+    pub fn metric(&self) -> f64 {
+        (*self as u16) as f64
+    }
+
+    pub fn no_connection() -> f64 {
+        0.0
+    }
+}
+
 mod testing {
     use crate::_session_layer::SessionLayer;
-    use crate::_session_protocol::SessionProtocol;
+    use crate::_session_protocol::SessionInitializer;
     use crate::testing::accessors::SessionLayerPrivate;
 
     use anyhow::bail;
@@ -1402,7 +1471,7 @@ mod testing {
     use std::net::SocketAddr;
 
     impl SessionLayerPrivate for SessionLayer {
-        fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionProtocol>> {
+        fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionInitializer>> {
             let myself = self.clone();
             async move { Ok(myself.get_protocol().await?) }.boxed_local()
         }
@@ -1532,5 +1601,108 @@ mod tests {
 
         // We should be able to connect again to the same Node.
         session.connect().await.unwrap();
+    }
+
+    #[actix_rt::test]
+    async fn test_session_layer_close_relayed_routing() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+        let relay_id = NodeId::default();
+
+        // Node-2 should be registered on relay
+        layer1.layer.server_session().await.unwrap();
+        layer2.layer.server_session().await.unwrap();
+        network.hack_make_layer_ip_private(&layer2).await;
+        network.hack_make_layer_ip_private(&layer1).await;
+
+        let mut session = layer1.layer.session(layer2.id).await.unwrap();
+        // Wait until second Node will be ready with session
+        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+
+        assert_eq!(session.target(), layer2.id);
+        assert_eq!(session.route(), relay_id);
+        assert_eq!(session.session_type(), SessionType::Relay);
+
+        assert_eq!(session2.target(), layer1.id);
+        assert_eq!(session2.route(), relay_id);
+        assert_eq!(session2.session_type(), SessionType::Relay);
+
+        session.disconnect().await.unwrap();
+        // Let other side receive and handle `Disconnected` packet.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        assert!(layer1.layer.get_node_routing(layer2.id).await.is_none());
+        // There is no way Node-2 will know that relayed connection was closed.
+        //assert!(layer2.layer.get_node_routing(layer1.id).await.is_none());
+
+        // We should be able to connect again to the same Node.
+        session.connect().await.unwrap();
+    }
+
+    #[actix_rt::test]
+    async fn test_session_layer_reverse_connection() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await.unwrap();
+        network.hack_make_layer_ip_private(&layer2).await;
+
+        let session = layer1.layer.session(layer2.id).await.unwrap();
+        // Wait until second Node will be ready with session
+        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+
+        assert_eq!(session.target(), layer2.id);
+        assert_eq!(session.route(), layer2.id);
+        assert_eq!(session.session_type(), SessionType::P2P);
+
+        assert_eq!(session2.target(), layer1.id);
+        assert_eq!(session2.route(), layer1.id);
+        assert_eq!(session2.session_type(), SessionType::P2P);
+    }
+
+    #[actix_rt::test]
+    async fn test_session_layer_reverse_connection_timeout_handshake() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await.unwrap();
+        network.hack_make_layer_ip_private(&layer2).await;
+
+        layer2.capturer.captures.reverse_connection.drop_all();
+
+        // Function should finish in timeout and return error.
+        assert!(
+            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+                .await
+                .unwrap()
+                .is_err()
+        );
+    }
+
+    /// Establishing session with node should fail if we got timeout waiting for first
+    /// handshake message. In this case making relayed connection doesn't make sense, because
+    /// Node seems inaccessible.
+    #[actix_rt::test]
+    async fn test_session_layer_p2p_timeout_handshake() {
+        let mut network = MockSessionNetwork::new().await.unwrap();
+        let layer1 = network.new_layer().await.unwrap();
+        let layer2 = network.new_layer().await.unwrap();
+
+        // Node-2 should be registered on relay
+        layer2.layer.server_session().await.unwrap();
+        layer2.capturer.captures.session_request.drop_all();
+
+        // Function should finish in timeout and return error.
+        assert!(
+            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+                .await
+                .unwrap()
+                .is_err()
+        );
     }
 }

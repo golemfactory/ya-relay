@@ -29,6 +29,10 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 pub type RequestId = u64;
 pub type SlotId = u32;
 
+pub fn is_direct_message(slot: SlotId) -> bool {
+    slot == FORWARD_SLOT_ID
+}
+
 #[derive(Clone, Default, PartialEq)]
 #[repr(C)]
 pub struct Forward {
@@ -148,12 +152,19 @@ impl std::fmt::Display for Request {
         write!(f, "request_id: {}, ", self.request_id)?;
         match &self.kind {
             None => write!(f, "kind: None")?,
-            Some(kind) => match kind {
-                Kind::Session(session) => write!(f, "{session}")?,
-                kind => write!(f, "kind: {kind:?}")?,
-            },
+            Some(kind) => write!(f, "kind: {kind}")?,
         }
         write!(f, " )")
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            Kind::Session(session) => write!(f, "{session}")?,
+            kind => write!(f, "{kind:?}")?,
+        }
+        Ok(())
     }
 }
 

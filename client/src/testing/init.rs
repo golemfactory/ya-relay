@@ -5,11 +5,12 @@ use url::Url;
 
 use crate::_client::Client;
 use crate::_config::{ClientBuilder, ClientConfig, FailFast};
+use crate::_network_view::{NetworkView, SessionLock, SessionPermit};
 use crate::_session_layer::SessionLayer;
-use crate::_session_protocol::SessionProtocol;
-use crate::_session_registry::{Registry, SessionLock, SessionPermit};
+use crate::_session_protocol::SessionInitializer;
 use crate::testing::accessors::SessionLayerPrivate;
 
+use crate::testing::mocks::MockHandler;
 use ya_relay_core::NodeId;
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
@@ -30,8 +31,9 @@ pub struct SessionLayerWrapper {
     pub addr: SocketAddr,
 
     pub layer: SessionLayer,
-    pub protocol: SessionProtocol,
-    pub guards: Registry,
+    pub capturer: MockHandler,
+    pub protocol: SessionInitializer,
+    pub guards: NetworkView,
 }
 
 impl MockSessionNetwork {
@@ -60,14 +62,24 @@ impl MockSessionNetwork {
 
     /// If Client will reconnect to relay server, he will have public IP again.
     pub async fn hack_make_ip_private(&self, client: &Client) {
+        self.hack_make_layer_ip_private_impl(&client.transport.session_layer)
+            .await
+    }
+
+    pub async fn hack_make_layer_ip_private(&self, wrapper: &SessionLayerWrapper) {
+        self.hack_make_layer_ip_private_impl(&wrapper.layer).await
+    }
+
+    /// If Client will reconnect to relay server, he will have public IP again.
+    async fn hack_make_layer_ip_private_impl(&self, layer: &SessionLayer) {
         log::info!(
             "Making Node's {} IP private on relay server",
-            client.node_id()
+            layer.config.node_id
         );
 
         let mut state = self.server.server.state.write().await;
 
-        let mut info = state.nodes.get_by_node_id(client.node_id()).unwrap();
+        let mut info = state.nodes.get_by_node_id(layer.config.node_id).unwrap();
         state.nodes.remove_session(info.info.slot);
 
         // Server won't return any endpoints, so Client won't try to connect directly.
@@ -75,14 +87,15 @@ impl MockSessionNetwork {
         state.nodes.register(info);
 
         drop(state);
-        client.transport.session_layer.set_public_addr(None).await;
+        layer.set_public_addr(None).await;
     }
 }
 
 pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<SessionLayerWrapper> {
     let config = Arc::new(test_default_config(wrapper.server.inner.url.clone()).await?);
     let mut layer = SessionLayer::new(config);
-    layer.spawn().await?;
+    let capturer = MockHandler::new(layer.clone());
+    layer.spawn_with_dispatcher(capturer.clone()).await?;
 
     let node_id = layer.config.node_id;
     let addr = layer.get_test_socket_addr().await?;
@@ -94,6 +107,7 @@ pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<Sess
         id: node_id,
         addr,
         layer,
+        capturer,
         protocol,
         guards,
     })

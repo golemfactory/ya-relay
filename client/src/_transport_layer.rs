@@ -17,6 +17,8 @@ use crate::_tcp_registry::ChannelType;
 use crate::_transport_sender::{ForwardSender, GenericSender};
 use crate::_virtual_layer::TcpLayer;
 
+/// TODO: Consider using bounded channel. Tcp could have impression that we are receiving
+///       messages, despite we are only putting them into channel.
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
 /// Responsible for sending data. Handles different kinds of transport types.
@@ -173,7 +175,7 @@ impl TransportLayer {
         };
     }
 
-    pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
+    pub async fn forward_reliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         self.forward_generic(node_id, TransportType::Reliable).await
     }
 
@@ -199,6 +201,7 @@ impl TransportLayer {
             None => {
                 // Check if this isn't secondary identity. TcpLayer should always get default id.
                 // TODO: Consider how to handle changing identities.
+                // TODO: Maybe we should call `self.session_layer::session` and pass it to `connect`.
                 let info = self.session_layer.query_node_info(node_id).await?;
 
                 if let Some(tx) = self.forward_channel(info.node_id(), channel).await {

@@ -12,7 +12,7 @@ use ya_relay_proto::proto::{Forward, MAX_TAG_SIZE};
 use ya_relay_stack::StackConfig;
 
 use crate::_client::Client;
-use crate::_session_registry::RegistryConfig;
+use crate::_network_view::NetworkViewConfig;
 
 #[derive(Clone, Copy)]
 pub enum FailFast {
@@ -42,7 +42,7 @@ pub struct ClientConfig {
     pub reverse_connection_real_timeout: Duration,
     pub incoming_session_timeout: Duration,
     pub neighbourhood_ttl: Duration,
-    pub registry_config: RegistryConfig,
+    pub registry_config: NetworkViewConfig,
 }
 
 pub struct ClientBuilder {

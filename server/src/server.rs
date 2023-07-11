@@ -1059,7 +1059,15 @@ pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, St
 pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::response::Node {
     let identities = match public_key {
         true => node_info.info.identities.iter().map(Into::into).collect(),
-        false => vec![],
+        false => node_info
+            .info
+            .identities
+            .iter()
+            .map(|ident| proto::Identity {
+                public_key: vec![],
+                node_id: ident.node_id.into_array().to_vec(),
+            })
+            .collect(),
     };
 
     proto::response::Node {
