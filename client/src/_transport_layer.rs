@@ -35,6 +35,7 @@ pub struct TransportLayer {
     ingress_channel: Channel<Forwarded>,
 }
 
+#[derive(Default)]
 struct TransportLayerState {
     /// Every default and secondary NodeId has separate entry here.
     forward_unreliable: HashMap<NodeId, ForwardSender>,
@@ -57,11 +58,7 @@ impl TransportLayer {
             config,
             session_layer,
             virtual_tcp,
-            state: Arc::new(RwLock::new(TransportLayerState {
-                forward_unreliable: Default::default(),
-                forward_transfer: Default::default(),
-                forward_reliable: Default::default(),
-            })),
+            state: Default::default(),
             ingress_channel: out,
         }
     }
