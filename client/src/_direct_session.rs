@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail};
+use anyhow::anyhow;
 use metrics::{counter, increment_counter};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -193,26 +193,20 @@ impl DirectSession {
 
     pub fn remove_by_slot(&self, id: SlotId) -> anyhow::Result<NodeId> {
         let mut forwards = self.forwards.write().unwrap();
-        if let Some(node_id) = forwards.remove_by_slot(id) {
-            return Ok(node_id);
-        }
-        bail!(
+        forwards.remove_by_slot(id).ok_or(anyhow!(
             "Slot {id} not found in session: {} ({})",
             self.raw.id,
             self.owner.default_id
-        )
+        ))
     }
 
     pub fn remove(&self, node_id: &NodeId) -> anyhow::Result<NodeEntry<NodeId>> {
         let mut forwards = self.forwards.write().unwrap();
-        match forwards.remove(node_id) {
-            Some(node_id) => Ok(node_id),
-            None => bail!(
-                "Node {node_id} not found in session: {} ({})",
-                self.raw.id,
-                self.owner.default_id
-            ),
-        }
+        forwards.remove(node_id).ok_or(anyhow!(
+            "Node {node_id} not found in session: {} ({})",
+            self.raw.id,
+            self.owner.default_id
+        ))
     }
 
     pub fn list(&self) -> Vec<NodeEntry<NodeId>> {
