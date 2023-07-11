@@ -174,16 +174,18 @@ impl TransportLayer {
     }
 
     pub async fn forward_reliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        self.forward_generic(node_id, TransportType::Reliable).await
+        self.forward_virtual_tcp(node_id, TransportType::Reliable)
+            .await
     }
 
     pub async fn forward_transfer(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        self.forward_generic(node_id, TransportType::Transfer).await
+        self.forward_virtual_tcp(node_id, TransportType::Transfer)
+            .await
     }
 
     /// NodeId can be either default or secondary.
     /// TODO: Make this function resistant to dropping future
-    pub async fn forward_generic(
+    pub async fn forward_virtual_tcp(
         &self,
         node_id: NodeId,
         channel: TransportType,
