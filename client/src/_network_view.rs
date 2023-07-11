@@ -244,7 +244,7 @@ pub struct NodeViewState {
     supported_encryption: Vec<String>,
     state: SessionState,
     /// Currently we are storing slot of Node on relay server. This assumes, that there is only
-    /// one relay server, what I hope, will not be true forever.
+    /// one relay server, what we hope that it will not be true forever.
     /// In the future we should store here slot assigned by us, that can be used to forward packets
     /// through our Node.
     slot: SlotId,

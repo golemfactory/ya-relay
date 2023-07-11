@@ -39,7 +39,7 @@ impl AllowedForwards {
         // We are removing all identities and slot. This is redundant, because in most cases
         // using default id should be enough. This protects from situations, when `NodeEntries`
         // for different Nodes overlap. In theory it shouldn't happen, because only one Node should
-        // have access to private key, but I think it's better to ensure data consistency here.
+        // have access to private key, but it's better to ensure data consistency here.
         self.remove_by_slot(slot);
         self.remove(&node.default_id);
         for id in &node.identities {

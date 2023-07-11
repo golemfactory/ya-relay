@@ -288,7 +288,7 @@ pub struct TcpConnection {
 
 /// Structure giving you exclusive right to initialize connection.
 ///
-/// This duplicates `SessionPermit`, but I don't see an easy way to unify them
+/// This duplicates `SessionPermit`, but there is no easy way to unify them
 /// without over-engineering.
 pub struct TcpPermit {
     pub node: VirtNode,

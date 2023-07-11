@@ -24,7 +24,7 @@ pub enum SenderError {
 }
 
 /// TODO: Organize this error better. We should be able to make decision
-///       if we can recover from error or we should give up. I see at least
+///       if we can recover from error or we should give up. There are at least
 ///       2 contexts for this:
 ///       - p2p session initialization has to decide if it should continue
 ///         testing other public addresses.

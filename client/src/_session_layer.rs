@@ -100,7 +100,7 @@ impl SessionRegistration for SessionLayer {
 
         let session = RawSession::new(addr, id, self.out_stream()?);
 
-        // I hate that we need a check like this, but relay doesn't return identities list
+        // We need a check this, because relay doesn't return identities list
         // and we don't have its public key (because relay doesn't have one).
         // We should move into direction, that there is no difference between p2p session and relay.
         // It could be possible to do this in backward compatibility manner, meaning that both new and
@@ -579,7 +579,7 @@ impl SessionLayer {
         }
 
         // TODO: Should we filter addresses or reject attempt to connect?
-        //       In previous implementation we were filtering, but I don't know the rationale.
+        //       In previous implementation we were filtering, but rationale is unknown.
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
         let this = self.clone();
 
