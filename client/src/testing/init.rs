@@ -6,8 +6,8 @@ use url::Url;
 use crate::_client::Client;
 use crate::_config::{ClientBuilder, ClientConfig, FailFast};
 use crate::_network_view::{NetworkView, SessionLock, SessionPermit};
+use crate::_session_initializer::SessionInitializer;
 use crate::_session_layer::SessionLayer;
-use crate::_session_protocol::SessionInitializer;
 use crate::testing::accessors::SessionLayerPrivate;
 
 use crate::testing::mocks::MockHandler;

@@ -20,7 +20,7 @@ use crate::_metrics::{metric_session_established, TARGET_ID};
 use crate::_network_view::{NetworkView, SessionLock, SessionPermit, Validity};
 use crate::_raw_session::{RawSession, SessionType};
 use crate::_routing_session::{NodeRouting, RoutingSender};
-use crate::_session_protocol::SessionInitializer;
+use crate::_session_initializer::SessionInitializer;
 use crate::_session_state::{RelayedState, ReverseState, SessionState};
 use crate::_session_traits::{SessionDeregistration, SessionRegistration};
 use crate::_transport_layer::ForwardReceiver;
@@ -1461,8 +1461,8 @@ impl ConnectionMethod {
 }
 
 mod testing {
+    use crate::_session_initializer::SessionInitializer;
     use crate::_session_layer::SessionLayer;
-    use crate::_session_protocol::SessionInitializer;
     use crate::testing::accessors::SessionLayerPrivate;
 
     use anyhow::bail;
