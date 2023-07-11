@@ -94,7 +94,7 @@ impl AllowedForwards {
 /// than session owner.
 #[derive(Clone)]
 pub struct DirectSession {
-    /// I would prefer to use `NodeEntry<Identity>` here, but current implementation of
+    /// It would be preferred to use `NodeEntry<Identity>` here, but current implementation of
     /// relay server doesn't provide public key.
     pub owner: NodeEntry<NodeId>,
     pub raw: Arc<RawSession>,
