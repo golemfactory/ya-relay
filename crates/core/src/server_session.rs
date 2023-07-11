@@ -44,7 +44,7 @@ pub struct NodeInfo {
 }
 
 impl NodeInfo {
-    pub fn node_id(&self) -> NodeId {
+    pub fn default_node_id(&self) -> NodeId {
         self.identities.get(0).map(|ident| ident.node_id).unwrap()
     }
 

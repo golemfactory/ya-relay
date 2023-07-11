@@ -78,7 +78,7 @@ impl NetworkView {
     /// if we had only partial info about Nodes earlier.
     /// This is the reason we don't have update function on single `NodeView`.
     pub async fn update_entry(&self, info: NodeInfo) -> anyhow::Result<()> {
-        log::trace!("Updating `NodeView` for [{}]", info.node_id());
+        log::trace!("Updating `NodeView` for [{}]", info.default_node_id());
 
         // TODO: For now we use the simplest implementation possible.
         //       Apply considerations from comment later.
@@ -109,7 +109,7 @@ impl NetworkView {
             }
             entries[0].clone()
         } else {
-            NodeView::new(info.node_id(), addrs.clone(), self.config.clone())
+            NodeView::new(info.default_node_id(), addrs.clone(), self.config.clone())
         };
 
         for id in &info.identities {

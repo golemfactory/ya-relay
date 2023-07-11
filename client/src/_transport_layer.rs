@@ -204,7 +204,7 @@ impl TransportLayer {
                 // TODO: Maybe we should call `self.session_layer::session` and pass it to `connect`.
                 let info = self.session_layer.query_node_info(node_id).await?;
 
-                if let Some(tx) = self.forward_channel(info.node_id(), channel).await {
+                if let Some(tx) = self.forward_channel(info.default_node_id(), channel).await {
                     self.set_forward_channel(node_id, channel, tx.clone()).await;
                     return Ok(tx);
                 }
@@ -217,7 +217,7 @@ impl TransportLayer {
 
                 let sender: ForwardSender = self
                     .virtual_tcp
-                    .connect(info.node_id(), channel_port)
+                    .connect(info.default_node_id(), channel_port)
                     .await?
                     .into();
 
