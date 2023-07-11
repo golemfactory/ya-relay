@@ -1398,7 +1398,6 @@ impl Handler for SessionLayer {
             };
 
             let sender = if is_direct_message(slot) {
-                // Direct message from other Node.
                 session.owner.default_id
             } else {
                 // Messages forwarded through relay server or other relay Node.
