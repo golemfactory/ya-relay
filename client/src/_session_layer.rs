@@ -161,10 +161,10 @@ impl SessionRegistration for SessionLayer {
             routing.node.default_id.node_id
         );
 
-        let route = match routing.route.upgrade() {
-            None => bail!("`DirectSession` was closed"),
-            Some(route) => route,
-        };
+        let route = routing
+            .route
+            .upgrade()
+            .ok_or(anyhow!("`DirectSession` was closed"))?;
 
         let server_id = route.owner.default_id;
         let addr = route.raw.remote;
