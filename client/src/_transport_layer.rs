@@ -146,7 +146,7 @@ impl TransportLayer {
             .await
     }
 
-    async fn forward_channel(
+    async fn get_forward_channel(
         &self,
         node_id: NodeId,
         channel: TransportType,
@@ -190,7 +190,7 @@ impl TransportLayer {
         node_id: NodeId,
         channel: TransportType,
     ) -> anyhow::Result<ForwardSender> {
-        match self.forward_channel(node_id, channel).await {
+        match self.get_forward_channel(node_id, channel).await {
             // If connection was closed in the meantime, it will be initialized on demand.
             // It will be problematic in some cases, because this can last up to a few seconds.
             // In worst case scenario initialization will fail and we will wait 5s until timeout.
@@ -204,7 +204,10 @@ impl TransportLayer {
                 // TODO: Maybe we should call `self.session_layer::session` and pass it to `connect`.
                 let info = self.session_layer.query_node_info(node_id).await?;
 
-                if let Some(tx) = self.forward_channel(info.default_node_id(), channel).await {
+                if let Some(tx) = self
+                    .get_forward_channel(info.default_node_id(), channel)
+                    .await
+                {
                     self.set_forward_channel(node_id, channel, tx.clone()).await;
                     return Ok(tx);
                 }
@@ -236,7 +239,7 @@ impl TransportLayer {
         // but this way we avoid querying write lock and asking session layer for `RoutingSender`
         // on every attempt to send message.
         if let Some(tx) = self
-            .forward_channel(node_id, TransportType::Unreliable)
+            .get_forward_channel(node_id, TransportType::Unreliable)
             .await
         {
             return Ok(tx);
