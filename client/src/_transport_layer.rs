@@ -77,14 +77,14 @@ impl TransportLayer {
         let channels = {
             let mut state = self.state.write().await;
 
-            let channels1 = state.forward_unreliable.drain().collect::<Vec<_>>();
-            let channels2 = state.forward_transfer.drain().collect::<Vec<_>>();
-            let channels3 = state.forward_reliable.drain().collect::<Vec<_>>();
+            let unreliable = state.forward_unreliable.drain().collect::<Vec<_>>();
+            let transfer = state.forward_transfer.drain().collect::<Vec<_>>();
+            let reliable = state.forward_reliable.drain().collect::<Vec<_>>();
 
-            channels1
+            unreliable
                 .into_iter()
-                .chain(channels2.into_iter())
-                .chain(channels3.into_iter())
+                .chain(transfer.into_iter())
+                .chain(reliable.into_iter())
                 .collect::<Vec<_>>()
         };
         for (_, mut channel) in channels {
