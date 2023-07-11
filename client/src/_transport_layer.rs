@@ -114,8 +114,9 @@ impl TransportLayer {
         match &packet.transport {
             TransportType::Unreliable => self.dispatch_unreliable(packet).await,
             TransportType::Reliable => self.virtual_tcp.dispatch(packet).await,
-            // We shouldn't get this transport type from `SessionLayer`, because only TcpLayer
+            // Currently `SessionLayer` responds only with `Unreliable` and `Reliable`, because only TcpLayer
             // can distinguish packets between `Reliable` and `Transfer`.
+            // Nevertheless this function will work correctly even when getting `Transfer` variant.
             TransportType::Transfer => self.virtual_tcp.dispatch(packet).await,
         }
     }
