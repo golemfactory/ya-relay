@@ -136,6 +136,7 @@ impl Session {
     pub async fn neighbours(&self, count: u32) -> anyhow::Result<proto::response::Neighbours> {
         let packet = proto::request::Neighbours {
             count,
+            distance: 0,
             public_key: true,
         };
         let neighbours = self

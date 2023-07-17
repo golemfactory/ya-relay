@@ -146,9 +146,14 @@ impl RawSession {
     pub async fn neighbours(
         &self,
         count: u32,
+        distance: u32,
         public_key: bool,
     ) -> anyhow::Result<proto::response::Neighbours> {
-        let packet = proto::request::Neighbours { count, public_key };
+        let packet = proto::request::Neighbours {
+            count,
+            public_key,
+            distance,
+        };
         let neighbours = self
             .request::<proto::response::Neighbours>(
                 packet.into(),

@@ -60,7 +60,12 @@ impl NodesState {
         counter!("ya-relay.session.created", 1);
     }
 
-    pub fn neighbours(&self, id: SessionId, count: u32) -> ServerResult<Vec<NodeSession>> {
+    pub fn neighbours(
+        &self,
+        id: SessionId,
+        count: u32,
+        distance: u32,
+    ) -> ServerResult<Vec<NodeSession>> {
         let slot = *self
             .sessions
             .get(&id)
@@ -76,7 +81,7 @@ impl NodesState {
         // Neighbourhood of each node should differ as much as possible, because
         // when it will be used for broadcasts, messages should reach whole network
         // with as low number of steps as possible.
-        let neighbours: Vec<usize> = self
+        let neighbours = self
             .slots
             .iter()
             .enumerate()
@@ -85,6 +90,7 @@ impl NodesState {
                 Slot::Some(entry) => Some((idx, entry.info.node_id())),
                 Slot::Purgatory(_) => None,
             })
+            .filter(|(_idx, node)| hamming_distance(*node, ref_node_id) > distance)
             .sorted_by(|(_, id1), (_, id2)| {
                 Ord::cmp(
                     &hamming_distance(*id1, ref_node_id),
@@ -92,14 +98,8 @@ impl NodesState {
                 )
             })
             .map(|(idx, _)| idx)
-            .collect();
-
-        // First node will be always the node for which we are computing neighbourhood, because
-        // it has hamming distance 0 from himself.
-        let count = std::cmp::min(neighbours.len() - 1, count as usize);
-        let neighbours = neighbours[1..=count]
-            .iter()
-            .filter_map(|&slot| self.slots[slot].active())
+            .take(count as usize)
+            .filter_map(|slot| self.slots[slot].active())
             .collect();
 
         Ok(neighbours)

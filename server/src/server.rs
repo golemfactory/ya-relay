@@ -1,5 +1,6 @@
 use std::collections::{BTreeSet, HashMap};
 use std::convert::{TryFrom, TryInto};
+use std::mem::take;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -24,7 +25,7 @@ use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
 use ya_relay_core::server_session::{LastSeen, NodeInfo, NodeSession, RequestHistory, SessionId};
-use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
+use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream, DEFAULT_MTU};
 use ya_relay_core::utils::{to_udp_url, ResultExt};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
@@ -469,13 +470,15 @@ impl Server {
                 .read()
                 .await
                 .nodes
-                .neighbours(session_id, params.count)?
+                .neighbours(session_id, params.count, params.distance)?
         };
 
         let nodes = nodes
             .into_iter()
             .map(|node_info| to_node_response(node_info, params.public_key))
+            .take(estimate_max_neighbors(params.public_key))
             .collect::<Vec<_>>();
+
         let return_count = nodes.len();
 
         self.send_to(
@@ -1081,6 +1084,27 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
         seen_ts: node_info.last_seen.time().timestamp() as u32,
         slot: node_info.info.slot,
         supported_encryptions: node_info.info.supported_encryption,
+    }
+}
+
+/// Heuristic telling how many neighbors we can fit into single
+/// Udp packet with maximal MTU = 1460.
+/// Many routers will drop larger packets, so it is better to limit number
+/// of Nodes than send packet that will be dropped.
+///
+/// Nodes with many identities would require much better heuristic.  
+fn estimate_max_neighbors(public_key: bool) -> usize {
+    // These are experimental pretty safe values. We could compute exact
+    // numbers based on Neighborhood packet, but I don't think it is worth
+    // the effort.
+    let bytes_per_node_with_key = 130;
+    let bytes_per_node_without_key = 70;
+    let mtu = 1460;
+
+    if public_key {
+        mtu / bytes_per_node_with_key
+    } else {
+        mtu / bytes_per_node_without_key
     }
 }
 

@@ -130,6 +130,9 @@ message Request {
         uint32 count = 1;
         /* Whether to include public keys */
         bool public_key = 2;
+        /* Setting to value higher than 0 will give Nodes starting at this distance
+           according to metric used by receiver.*/
+        uint32 distance = 3;
     }
 
     message ReverseConnection {

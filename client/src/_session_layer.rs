@@ -1663,7 +1663,7 @@ mod tests {
         assert_eq!(session2.session_type(), SessionType::P2P);
     }
 
-    #[actix_rt::test]
+    #[serial_test::serial]
     async fn test_session_layer_reverse_connection_timeout_handshake() {
         let mut network = MockSessionNetwork::new().await.unwrap();
         let layer1 = network.new_layer().await.unwrap();

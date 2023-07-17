@@ -9,9 +9,16 @@ use futures::StreamExt;
 use itertools::Itertools;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
+use tokio_util::codec::Encoder;
 
 use ya_relay_client::{client::Forwarded, Client, ClientBuilder};
+use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
+use ya_relay_proto::codec::datagram::Codec;
+use ya_relay_proto::codec::forward::encode;
+use ya_relay_proto::codec::{BytesMut, PacketKind, MAX_PACKET_SIZE};
+use ya_relay_proto::proto;
+use ya_relay_proto::proto::StatusCode;
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
@@ -64,7 +71,7 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
 
     assert_eq!(ids, ids2);
 
-    // When we take bigger neighbourhood it should contain smaller neighbouthood.
+    // When we take bigger neighbourhood it should contain smaller neighbourhood.
     let ids3: Vec<NodeId> = session
         .neighbours(8)
         .await
@@ -149,3 +156,40 @@ async fn test_broadcast() -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+// #[serial_test::serial]
+// async fn test_neighbourhood_response_size() -> anyhow::Result<()> {
+//     let wrapper = init_test_server().await.unwrap();
+//     let clients = start_clients(&wrapper, 50).await;
+//
+//     let node_id = clients[0].node_id();
+//     let session = clients[0].sessions.server_session().await?;
+//
+//     let mut codec = Codec::default();
+//     let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
+//
+//     let mut request_id = 1;
+//
+//     for count in 1..50 {
+//         let response = session.neighbours(count).await.unwrap();
+//         //println!("{response:?}");
+//         let response: PacketKind = proto::Packet::response(
+//             request_id,
+//             SessionId::generate().to_vec(),
+//             StatusCode::Ok,
+//             response,
+//         )
+//         .into();
+//         codec.encode(response.into(), &mut buf).unwrap();
+//         println!(
+//             "Encoded packet size for neighbors count: {count} = {}. Size per Node: {}",
+//             buf.len(),
+//             buf.len() / count as usize,
+//         );
+//
+//         buf.clear();
+//         request_id += 1;
+//     }
+//
+//     Ok(())
+// }
