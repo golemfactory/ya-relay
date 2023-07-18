@@ -1,7 +1,8 @@
+#![cfg(feature = "mock")]
 use std::time::Duration;
 
-use ya_relay_client::_client::{ClientBuilder, FailFast};
-use ya_relay_client::testing::_forwarding_utils::{
+use ya_relay_client::{ClientBuilder, FailFast};
+use ya_relay_client::testing::forwarding_utils::{
     check_broadcast, check_forwarding, spawn_receive_for_client, Mode,
 };
 use ya_relay_core::utils::to_udp_url;

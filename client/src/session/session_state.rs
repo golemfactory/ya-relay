@@ -3,8 +3,8 @@ use educe::Educe;
 use std::sync::{Arc, Weak};
 use strum_macros::EnumCount;
 
-use crate::_direct_session::DirectSession;
-use crate::_error::{SessionError, TransitionError};
+use crate::direct_session::DirectSession;
+use crate::error::{SessionError, TransitionError};
 
 #[derive(Clone, Educe, Display, Debug, EnumCount)]
 #[educe(PartialEq)]

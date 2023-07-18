@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
 
-use crate::_session_state::SessionState;
-use crate::_tcp_registry::TcpState;
+use super::transport::tcp_registry::TcpState;
+use crate::session::session_state::SessionState;
 
 pub type SessionResult<T> = Result<T, SessionError>;
 

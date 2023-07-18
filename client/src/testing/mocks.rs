@@ -1,6 +1,6 @@
-use crate::_client::SessionError;
-use crate::_direct_session::DirectSession;
-use crate::_session_traits::SessionDeregistration;
+use crate::client::SessionError;
+use crate::direct_session::DirectSession;
+use crate::session::session_traits::SessionDeregistration;
 
 use async_trait::async_trait;
 use futures::future::LocalBoxFuture;
@@ -9,9 +9,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::_dispatch::Handler;
-use crate::_raw_session::RawSession;
-use crate::_session_layer::SessionLayer;
+use crate::dispatch::Handler;
+use crate::raw_session::RawSession;
+use crate::session::SessionLayer;
 
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto;

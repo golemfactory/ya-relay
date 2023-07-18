@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use chrono::Utc;
-use futures::{SinkExt, StreamExt};
+use futures::prelude::*;
 use log::LevelFilter;
 use prettytable::format::consts::FORMAT_BOX_CHARS;
 use prettytable::format::TableFormat;
@@ -18,12 +18,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::client::ForwardSender;
+use ya_relay_client::ForwardSender;
 use ya_relay_client::{ClientBuilder, ForwardReceiver};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
 use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
+use ya_relay_client::GenericSender;
 
 #[derive(StructOpt)]
 #[structopt(about = "Client performance test")]
@@ -399,7 +400,6 @@ async fn run() -> anyhow::Result<()> {
     let receiver = client.forward_receiver().await.unwrap();
     tokio::task::spawn(receive(receiver, state.clone()));
 
-    let _ = client.sessions.server_session().await?;
     println!("Client {} is listening on {}", node_id, address);
 
     match cli.command {

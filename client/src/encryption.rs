@@ -3,7 +3,7 @@ use std::rc::Rc;
 use ya_relay_core::crypto::CryptoProvider;
 use ya_relay_proto::proto::Payload;
 
-use crate::_error::EncryptionError;
+use crate::error::EncryptionError;
 
 /// Encrypting packets, solving challenges, proving identity.
 #[derive(Clone)]

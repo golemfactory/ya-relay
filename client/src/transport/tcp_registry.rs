@@ -12,10 +12,10 @@ use ya_relay_proto::proto::Payload;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpEndpoint};
 use ya_relay_stack::Connection;
 
-use crate::_error::{ResultExt, TcpError, TcpTransitionError};
-use crate::_routing_session::RoutingSender;
-use crate::_session_layer::SessionLayer;
-use crate::_virtual_layer::TcpLayer;
+use super::virtual_layer::TcpLayer;
+use crate::error::{ResultExt, TcpError, TcpTransitionError};
+use crate::routing_session::RoutingSender;
+use crate::session::SessionLayer;
 
 // TODO: Try to unify with `TransportType`.
 // TODO: We could support any number of channels. User of the library could decide.

@@ -2,7 +2,8 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use futures::future::join_all;
+use futures::prelude::*;
+
 use rand::seq::SliceRandom;
 use structopt::{clap, StructOpt};
 
@@ -121,7 +122,7 @@ mod util {
             ClientBuilder::from_url(address)
         };
 
-        let client = builder.connect().build().await?;
+        let client = builder.build().await?;
 
         Ok(client)
     }
@@ -510,7 +511,7 @@ mod load_test {
                     random_plan.tasks.shuffle(&mut rand::thread_rng());
                     futures.push(run_plan_on_client(normalized_delay, client, random_plan));
                 }
-                let results = join_all(futures.into_iter()).await;
+                let results = future::join_all(futures.into_iter()).await;
 
                 // Process the results
                 let mut request_rates = Vec::new();
@@ -575,8 +576,6 @@ mod relaying {
     use crate::load_test::{limit_rate, Plan, Request};
 
     use anyhow::{anyhow, bail};
-    use futures::StreamExt;
-    use futures::{FutureExt, SinkExt};
     use rand::distributions::{Distribution, Uniform};
     use serde::{Deserialize, Serialize};
     use std::collections::{HashMap, HashSet};
@@ -849,7 +848,7 @@ mod relaying {
             .collect::<Result<Vec<Scenario>, _>>()?;
 
         log::info!("Running idle discovery calls.");
-        let idle = tokio::task::spawn_local(async move { join_all(futures.into_iter()).await });
+        let idle = tokio::task::spawn_local(async move { future::join_all(futures.into_iter()).await });
 
         log::info!("Running {} scenario(s) (Requestor(s))", scenarios.len());
 
@@ -888,7 +887,7 @@ mod relaying {
             }
             .boxed_local()
         });
-        join_all(futures)
+        future::join_all(futures)
             .await
             .into_iter()
             .collect::<anyhow::Result<Vec<_>>>()?
@@ -928,7 +927,7 @@ mod relaying {
             .collect::<Vec<_>>();
 
         let providers_handle =
-            tokio::task::spawn_local(async move { join_all(provider_futures.into_iter()).await });
+            tokio::task::spawn_local(async move { future::join_all(provider_futures.into_iter()).await });
 
         // TODO: Should be asynchronous, we can't wait for operation finish.
         let start = tokio::time::Instant::now();

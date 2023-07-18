@@ -9,9 +9,9 @@ use ya_relay_core::sync::Actuator;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, Payload, SlotId, FORWARD_SLOT_ID};
 
-use crate::_error::SessionError;
-use crate::_metrics::{RELAY_ID, SOURCE_ID, TARGET_ID};
-use crate::_raw_session::RawSession;
+use crate::error::SessionError;
+use crate::metrics::{RELAY_ID, SOURCE_ID, TARGET_ID};
+use crate::raw_session::RawSession;
 
 /// Describes Node identity.
 /// `IdType` Could be either plain `NodeId` or `Identity` structure containing

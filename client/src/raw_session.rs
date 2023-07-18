@@ -6,8 +6,8 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
 
-use crate::_dispatch::{Dispatched, Dispatcher};
-use crate::_error::RequestError;
+use crate::dispatch::{Dispatched, Dispatcher};
+use crate::error::RequestError;
 
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::udp_stream::OutStream;

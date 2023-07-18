@@ -1,5 +1,5 @@
 use anyhow::{bail, Context};
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::SeqCst;
@@ -7,8 +7,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::client::ForwardSender;
-use crate::Client;
+use crate::client::{Client, ForwardSender, GenericSender};
 
 pub enum Mode {
     Reliable,
@@ -66,7 +65,11 @@ pub async fn check_forwarding(
     received.store(false, SeqCst);
 
     let mut tx = match mode {
-        Mode::Reliable => sender_client.forward(receiver_client.node_id()).await?,
+        Mode::Reliable => {
+            sender_client
+                .forward_reliable(receiver_client.node_id())
+                .await?
+        }
         Mode::Unreliable => {
             sender_client
                 .forward_unreliable(receiver_client.node_id())
@@ -79,9 +82,11 @@ pub async fn check_forwarding(
         receiver_client.node_id()
     );
 
+    // Avoid lazy initialization. If we aren't connected now, 100ms sleep is not enough in most cases.
+    tx.connect().await?;
     tx.send(vec![1u8].into()).await?;
 
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     if !received.load(SeqCst) {
         bail!("Data not received.")

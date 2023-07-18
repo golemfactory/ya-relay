@@ -32,7 +32,7 @@ tokio-stream = "0.1.8"
 url = "2.1"
 
 # Necessary for testing purposes
-ya-relay-server = { path="../server"}
+ya-relay-server = { path="../server", optional = true }
 
 [dev-dependencies]
 actix-rt = "2.7"
@@ -52,5 +52,6 @@ structopt = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "signal"] }
 
 [features]
-packet-trace-enable = ["ya-packet-trace/enable"]
 default = []
+packet-trace-enable = ["ya-packet-trace/enable"]
+mock = ['ya-relay-server']
