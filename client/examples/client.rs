@@ -1,6 +1,6 @@
 use structopt::{clap, StructOpt};
 
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::legacy::ClientBuilder;
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
 use ya_relay_core::NodeId;

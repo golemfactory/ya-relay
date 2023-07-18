@@ -16,8 +16,8 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
 
-use crate::session_guard::GuardedSessions;
-use crate::session_manager::SessionManager;
+use crate::legacy::session_guard::GuardedSessions;
+use crate::legacy::session_manager::SessionManager;
 
 #[derive(Clone)]
 pub(crate) struct StartingSessions {

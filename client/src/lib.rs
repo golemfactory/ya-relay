@@ -1,13 +1,3 @@
-pub mod client;
-mod expire;
-mod registry;
-mod session_guard;
-mod session_manager;
-mod session_start;
-pub mod testing;
-mod virtual_layer;
-
-pub use client::{Client, ClientBuilder, ForwardReceiver};
 pub use ya_relay_core::crypto;
 
 pub use ya_relay_proto::*;
@@ -36,3 +26,7 @@ mod _tcp_registry;
 mod _transport_layer;
 mod _transport_sender;
 mod _virtual_layer;
+pub mod testing;
+
+// Legacy
+pub mod legacy;

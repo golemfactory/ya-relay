@@ -24,9 +24,9 @@ use ya_relay_stack::ya_smoltcp::iface::Route;
 use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::*;
 
-use crate::client::Forwarded;
-use crate::registry::NodeEntry;
-use crate::ForwardReceiver;
+use crate::legacy::client::Forwarded;
+use crate::legacy::registry::NodeEntry;
+use crate::legacy::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;
 

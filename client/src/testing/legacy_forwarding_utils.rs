@@ -7,8 +7,8 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use crate::client::ForwardSender;
-use crate::Client;
+use crate::legacy::client::Client;
+use crate::legacy::client::ForwardSender;
 
 pub enum Mode {
     Reliable,

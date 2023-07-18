@@ -26,7 +26,7 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, Payload, SlotId, MAX_TAG_SIZE};
 use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState, StackConfig};
 
-use crate::session_manager::SessionManager;
+use crate::legacy::session_manager::SessionManager;
 use ya_relay_core::session::SessionDesc;
 
 pub type ForwardSender = mpsc::Sender<Payload>;

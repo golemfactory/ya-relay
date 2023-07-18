@@ -6,7 +6,7 @@ use futures::future::join_all;
 use rand::seq::SliceRandom;
 use structopt::{clap, StructOpt};
 
-use ya_relay_client::{Client, ClientBuilder};
+use ya_relay_client::legacy::{Client, ClientBuilder};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
 

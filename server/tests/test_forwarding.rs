@@ -9,9 +9,9 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::client::Forwarded;
-use ya_relay_client::testing::forwarding_utils::spawn_receive;
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::legacy::client::Forwarded;
+use ya_relay_client::legacy::ClientBuilder;
+use ya_relay_client::testing::legacy_forwarding_utils::spawn_receive;
 use ya_relay_server::testing::server::init_test_server;
 
 use helpers::hack_make_ip_private;

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tokio::time::Instant;
 
-use crate::session_manager::SessionManager;
+use crate::legacy::session_manager::SessionManager;
 
 use ya_relay_core::session::Session;
 

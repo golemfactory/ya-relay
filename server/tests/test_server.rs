@@ -1,6 +1,8 @@
 use std::net::UdpSocket;
-use ya_relay_client::testing::forwarding_utils::{check_broadcast, spawn_receive_for_client};
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::legacy::ClientBuilder;
+use ya_relay_client::testing::legacy_forwarding_utils::{
+    check_broadcast, spawn_receive_for_client,
+};
 use ya_relay_server::testing::server::init_test_server;
 
 /// Server should not shutdown when receives junks (single, garbage bytes).

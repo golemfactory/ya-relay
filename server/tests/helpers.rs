@@ -1,4 +1,4 @@
-use ya_relay_client::Client;
+use ya_relay_client::legacy::Client;
 use ya_relay_server::testing::server::ServerWrapper;
 
 /// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.

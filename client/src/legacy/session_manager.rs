@@ -25,12 +25,12 @@ use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::{Forward, Payload, RequestId, SlotId, FORWARD_SLOT_ID};
 use ya_relay_stack::{Channel, Connection};
 
-use crate::client::{ClientConfig, ForwardSender, Forwarded};
-use crate::expire::track_sessions_expiration;
-use crate::registry::{NodeEntry, NodesRegistry};
-use crate::session_guard::GuardedSessions;
-use crate::session_start::StartingSessions;
-use crate::virtual_layer::{PortType, TcpLayer};
+use crate::legacy::client::{ClientConfig, ForwardSender, Forwarded};
+use crate::legacy::expire::track_sessions_expiration;
+use crate::legacy::registry::{NodeEntry, NodesRegistry};
+use crate::legacy::session_guard::GuardedSessions;
+use crate::legacy::session_start::StartingSessions;
+use crate::legacy::virtual_layer::{PortType, TcpLayer};
 
 type ReqFingerprint = (Vec<u8>, u64);
 
