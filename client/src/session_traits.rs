@@ -6,9 +6,9 @@ use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
 
-use crate::_client::SessionError;
-use crate::_direct_session::DirectSession;
-use crate::_routing_session::NodeRouting;
+use crate::client::SessionError;
+use crate::direct_session::DirectSession;
+use crate::routing_session::NodeRouting;
 
 /// Trait for decoupling `SessionProtocol` from `SessionLayer`.
 /// Thanks to this we can test `SessionProtocol` independently.

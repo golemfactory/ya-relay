@@ -8,7 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::_client::{Forwarded, GenericSender};
+use ya_relay_client::client::{Forwarded, GenericSender};
 use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_client::testing::legacy_forwarding_utils::spawn_receive;
 use ya_relay_core::server_session::TransportType;

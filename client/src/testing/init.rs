@@ -3,11 +3,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use url::Url;
 
-use crate::_client::Client;
-use crate::_config::{ClientBuilder, ClientConfig, FailFast};
-use crate::_network_view::{NetworkView, SessionLock, SessionPermit};
-use crate::_session_initializer::SessionInitializer;
-use crate::_session_layer::SessionLayer;
+use crate::client::Client;
+use crate::config::{ClientBuilder, ClientConfig, FailFast};
+use crate::network_view::{NetworkView, SessionLock, SessionPermit};
+use crate::session_initializer::SessionInitializer;
+use crate::session_layer::SessionLayer;
 use crate::testing::accessors::SessionLayerPrivate;
 
 use crate::testing::mocks::MockHandler;

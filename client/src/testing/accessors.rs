@@ -1,7 +1,7 @@
 use futures::future::LocalBoxFuture;
 use std::net::SocketAddr;
 
-use crate::_session_initializer::SessionInitializer;
+use crate::session_initializer::SessionInitializer;
 
 /// Give access to private fields for testing purposes.
 pub trait SessionLayerPrivate {

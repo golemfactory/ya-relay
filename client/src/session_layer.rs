@@ -10,20 +10,20 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::RwLock;
 
-use crate::_client::{ClientConfig, Forwarded};
-use crate::_direct_session::{DirectSession, NodeEntry};
-use crate::_dispatch::{dispatch, Handler};
-use crate::_encryption::Encryption;
-use crate::_error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
-use crate::_expire::track_sessions_expiration;
-use crate::_metrics::{metric_session_established, TARGET_ID};
-use crate::_network_view::{NetworkView, SessionLock, SessionPermit, Validity};
-use crate::_raw_session::{RawSession, SessionType};
-use crate::_routing_session::{NodeRouting, RoutingSender};
-use crate::_session_initializer::SessionInitializer;
-use crate::_session_state::{RelayedState, ReverseState, SessionState};
-use crate::_session_traits::{SessionDeregistration, SessionRegistration};
-use crate::_transport_layer::ForwardReceiver;
+use crate::client::{ClientConfig, Forwarded};
+use crate::direct_session::{DirectSession, NodeEntry};
+use crate::dispatch::{dispatch, Handler};
+use crate::encryption::Encryption;
+use crate::error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
+use crate::expire::track_sessions_expiration;
+use crate::metrics::{metric_session_established, TARGET_ID};
+use crate::network_view::{NetworkView, SessionLock, SessionPermit, Validity};
+use crate::raw_session::{RawSession, SessionType};
+use crate::routing_session::{NodeRouting, RoutingSender};
+use crate::session_initializer::SessionInitializer;
+use crate::session_state::{RelayedState, ReverseState, SessionState};
+use crate::session_traits::{SessionDeregistration, SessionRegistration};
+use crate::transport_layer::ForwardReceiver;
 
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
@@ -1460,8 +1460,8 @@ impl ConnectionMethod {
 }
 
 mod testing {
-    use crate::_session_initializer::SessionInitializer;
-    use crate::_session_layer::SessionLayer;
+    use crate::session_initializer::SessionInitializer;
+    use crate::session_layer::SessionLayer;
     use crate::testing::accessors::SessionLayerPrivate;
 
     use anyhow::bail;
@@ -1499,7 +1499,7 @@ mod tests {
 
     use ya_relay_proto::proto::Payload;
 
-    use crate::_raw_session::SessionType;
+    use crate::raw_session::SessionType;
     use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]

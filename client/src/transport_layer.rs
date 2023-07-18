@@ -11,11 +11,11 @@ use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 use ya_relay_stack::Channel;
 
-use crate::_client::{ClientConfig, Forwarded};
-use crate::_session_layer::SessionLayer;
-use crate::_tcp_registry::ChannelType;
-use crate::_transport_sender::{ForwardSender, GenericSender};
-use crate::_virtual_layer::TcpLayer;
+use crate::client::{ClientConfig, Forwarded};
+use crate::session_layer::SessionLayer;
+use crate::tcp_registry::ChannelType;
+use crate::transport_sender::{ForwardSender, GenericSender};
+use crate::virtual_layer::TcpLayer;
 
 /// TODO: Consider using bounded channel. Tcp could have impression that we are receiving
 ///       messages, despite we are only putting them into channel.

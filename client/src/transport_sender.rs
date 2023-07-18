@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use derive_more::From;
 
-use crate::_error::SenderError;
-use crate::_routing_session::RoutingSender;
-use crate::_tcp_registry::TcpSender;
+use crate::error::SenderError;
+use crate::routing_session::RoutingSender;
+use crate::tcp_registry::TcpSender;
 
 use ya_relay_core::server_session::TransportType;
 use ya_relay_proto::codec::forward::encode;

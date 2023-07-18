@@ -23,14 +23,14 @@ use ya_relay_stack::{
     SocketState, Stack, StackConfig,
 };
 
-use crate::_client::Forwarded;
-use crate::_error::TcpError;
-use crate::_session_layer::SessionLayer;
-use crate::_tcp_registry::{
+use crate::client::Forwarded;
+use crate::error::TcpError;
+use crate::session_layer::SessionLayer;
+use crate::tcp_registry::{
     channel_endpoint, to_ipv6, ChannelDesc, ChannelDirection, ChannelType, TcpConnection, TcpLock,
     TcpPermit, TcpRegistry, TcpSender, VirtNode,
 };
-use crate::_transport_layer::ForwardReceiver;
+use crate::transport_layer::ForwardReceiver;
 
 const IPV6_DEFAULT_CIDR: u8 = 0;
 

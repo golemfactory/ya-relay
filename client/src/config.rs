@@ -11,8 +11,8 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{Forward, MAX_TAG_SIZE};
 use ya_relay_stack::StackConfig;
 
-use crate::_client::Client;
-use crate::_network_view::NetworkViewConfig;
+use crate::client::Client;
+use crate::network_view::NetworkViewConfig;
 
 #[derive(Clone, Copy)]
 pub enum FailFast {

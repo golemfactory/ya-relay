@@ -1,4 +1,4 @@
-use crate::_session_layer::ConnectionMethod;
+use crate::session_layer::ConnectionMethod;
 use metrics::{
     describe_counter, describe_gauge, gauge, increment_counter, register_counter, register_gauge,
     Unit,

@@ -15,13 +15,13 @@ use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 
-use crate::_metrics::register_metrics;
+use crate::metrics::register_metrics;
 
-pub use crate::_config::{ClientBuilder, ClientConfig, FailFast};
-pub use crate::_error::SessionError;
-pub use crate::_raw_session::SessionDesc;
-pub use crate::_transport_layer::{ForwardReceiver, TransportLayer};
-pub use crate::_transport_sender::{ForwardSender, GenericSender};
+pub use crate::config::{ClientBuilder, ClientConfig, FailFast};
+pub use crate::error::SessionError;
+pub use crate::raw_session::SessionDesc;
+pub use crate::transport_layer::{ForwardReceiver, TransportLayer};
+pub use crate::transport_sender::{ForwardSender, GenericSender};
 
 pub use ya_relay_core::server_session::TransportType;
 pub use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
@@ -433,7 +433,7 @@ pub struct Forwarded {
 
 #[cfg(test)]
 mod tests {
-    use crate::_client::{ClientBuilder, FailFast};
+    use crate::client::{ClientBuilder, FailFast};
 
     use std::time::Duration;
 

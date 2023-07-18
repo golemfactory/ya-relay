@@ -1,9 +1,9 @@
 use std::sync::Arc;
 use tokio::time::Instant;
 
-use crate::_direct_session::DirectSession;
-use crate::_session_layer::SessionLayer;
-use crate::_session_traits::SessionDeregistration;
+use crate::direct_session::DirectSession;
+use crate::session_layer::SessionLayer;
+use crate::session_traits::SessionDeregistration;
 
 pub async fn track_sessions_expiration(layer: SessionLayer) {
     let expiration = layer.config.session_expiration;

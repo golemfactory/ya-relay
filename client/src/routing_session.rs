@@ -5,11 +5,11 @@ use ya_relay_core::server_session::{SessionId, TransportType};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 
-use crate::_direct_session::{DirectSession, NodeEntry};
-use crate::_encryption::Encryption;
-use crate::_error::SessionError;
-use crate::_raw_session::SessionType;
-use crate::_session_layer::SessionLayer;
+use crate::direct_session::{DirectSession, NodeEntry};
+use crate::encryption::Encryption;
+use crate::error::SessionError;
+use crate::raw_session::SessionType;
+use crate::session_layer::SessionLayer;
 
 /// Routing information about Node. Node can have either p2p session or relayed session.
 /// This struct hides `DirectSession` choice from caller.

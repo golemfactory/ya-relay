@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use ya_relay_client::_client::{ClientBuilder, FailFast};
+use ya_relay_client::client::{ClientBuilder, FailFast};
 use ya_relay_client::testing::_forwarding_utils::{
     check_broadcast, check_forwarding, spawn_receive_for_client, Mode,
 };
