@@ -21,7 +21,14 @@ use crate::virtual_layer::TcpLayer;
 ///       messages, despite we are only putting them into channel.
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
 
-/// Responsible for sending data. Handles different kinds of transport types.
+/// Responsible for sending data. Handles different kinds of transport types:
+/// - Unreliable [`TransportLayer::forward_unreliable`] - send raw packets without any delivery
+///   guarantees. It is equivalent of using UDP.
+/// - Reliable [`TransportLayer::forward_reliable`] - send messages with TCP delivery and ordering
+///   guarantees.
+/// - Transfer [`TransportLayer::forward_transfer`] - uses the same transport as reliable protocol,
+///   but should be used for heavier transfers. Packets are sent using separate channel, what helps
+///   with avoiding blocking more important messages in sending queue.
 #[derive(Clone)]
 pub struct TransportLayer {
     pub config: Arc<ClientConfig>,

@@ -20,12 +20,21 @@ use crate::metrics::register_metrics;
 pub use crate::config::{ClientBuilder, ClientConfig, FailFast};
 pub use crate::error::SessionError;
 pub use crate::raw_session::SessionDesc;
+pub use crate::session_layer::SessionLayer;
 pub use crate::transport_layer::{ForwardReceiver, TransportLayer};
-pub use crate::transport_sender::{ForwardSender, GenericSender};
+pub use crate::transport_sender::{ForwardSender, FramedSender, GenericSender};
+pub use crate::virtual_layer::TcpLayer;
 
 pub use ya_relay_core::server_session::TransportType;
 pub use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
 
+/// Client library for hybrid NET - p2p library with relay server responsible for Nodes discovery
+/// and allowing to forward network traffic between Nodes in case p2p connection is not possible.
+///
+/// Supports unreliable transport using Udp directly or reliable transport using embedded Tcp
+/// protocol on top of Udp.
+///
+/// To read about different connection methods see [`SessionLayer`].   
 #[derive(Clone)]
 pub struct Client {
     pub config: Arc<ClientConfig>,

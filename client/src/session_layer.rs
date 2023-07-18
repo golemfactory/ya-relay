@@ -49,8 +49,26 @@ pub enum ConnectionMethod {
     // Here should be NAT punching type(s) defined in the future
 }
 
-/// Responsible for establishing/receiving connections from other Nodes.
-/// Hides from upper layers the decisions, how to route packets to desired location
+/// Responsible for establishing/receiving connections from other Nodes and providing API,
+/// that hides details, how the packets are routed to desired location.
+///
+/// There are 3 methods `SessionLayer` can use, to establish communication with other Node:
+/// - Direct p2p connection - method is used when other Node has public ports and we can connect
+///   with him directly
+/// - Reverse connection - used when we have public ports but other Node doesn't. In this scenario
+///   we use relay server to facilitate the connection. Our Node sends `ReverseConnection` message
+///   which is proxied to other Node by relay. Than other Node tries to connect to us.
+/// - Relayed connection - we use relay server to forward packets to destination Node. This method
+///   is used when other options are not available.
+///
+/// Calling [`SessionLayer::session`] establishes session and returns [`RoutingSender`] struct, which should
+/// be used to send data to destination Node. [`RoutingSender`] has ability to re-establish session,
+/// if it was lost in the meantime.
+///
+/// [`RoutingSender`] is designed with possibility to use many relay servers at the same time.
+/// If session with one relay will be closed, [`RoutingSender`] can update it's routing information
+/// in a transparent way, so external layers won't notice the change, when sending subsequent packets.
+/// Thanks to this [`TcpLayer`] doesn't have to close Tcp connection even if underlying session is closed.   
 #[derive(Clone)]
 pub struct SessionLayer {
     pub config: Arc<ClientConfig>,
