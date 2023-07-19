@@ -1,8 +1,8 @@
 mod expire;
-pub mod session_traits;
-pub mod session_state;
 pub mod network_view;
 pub mod session_initializer;
+pub mod session_state;
+pub mod session_traits;
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
@@ -17,32 +17,31 @@ use std::sync::{Arc, Mutex, Weak};
 use tokio::sync::RwLock;
 
 use self::expire::track_sessions_expiration;
+use self::network_view::{NetworkView, SessionLock, SessionPermit, Validity};
+use self::session_state::{RelayedState, ReverseState, SessionState};
 use crate::client::{ClientConfig, Forwarded};
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::dispatch::{dispatch, Handler};
 use crate::encryption::Encryption;
 use crate::error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
 use crate::metrics::{metric_session_established, TARGET_ID};
-use self::network_view::{NetworkView, SessionLock, SessionPermit, Validity};
 use crate::raw_session::{RawSession, SessionType};
 use crate::routing_session::{NodeRouting, RoutingSender};
 use crate::session::session_initializer::SessionInitializer;
-use self::session_state::{RelayedState, ReverseState, SessionState};
 use crate::transport::ForwardReceiver;
 
+use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
-use ya_relay_core::udp_stream::{OutStream, udp_bind};
+use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::{challenge, NodeId};
 use ya_relay_proto::codec::PacketKind;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
-use ya_relay_proto::proto::{Forward, is_direct_message, RequestId, SlotId};
+use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
-use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
-use tokio::time::timeout;
 
 type ReqFingerprint = (Vec<u8>, u64);
 
@@ -1468,8 +1467,8 @@ impl ConnectionMethod {
 
 #[cfg(any(test, feature = "mock"))]
 mod testing {
-    use crate::session::SessionLayer;
     use crate::session::session_initializer::SessionInitializer;
+    use crate::session::SessionLayer;
     use crate::testing::accessors::SessionLayerPrivate;
 
     use anyhow::bail;
@@ -1500,8 +1499,15 @@ mod testing {
 
 #[cfg(test)]
 mod tests {
-    use crate::testing::init::MockSessionNetwork;
+    use std::time::Duration;
+
+    use tokio::time::timeout;
+    use ya_relay_core::server_session::TransportType;
+    use ya_relay_core::NodeId;
+    use ya_relay_proto::proto::Payload;
+
     use crate::raw_session::SessionType;
+    use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]
     async fn test_session_layer_happy_path() {
