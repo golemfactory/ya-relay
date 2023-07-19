@@ -31,7 +31,6 @@ use crate::session::session_initializer::SessionInitializer;
 use crate::transport::ForwardReceiver;
 
 use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
-use tokio::time::timeout;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
@@ -1500,12 +1499,15 @@ mod testing {
 
 #[cfg(test)]
 mod tests {
-    use crate::raw_session::SessionType;
-    use crate::testing::init::MockSessionNetwork;
     use std::time::Duration;
+
+    use tokio::time::timeout;
     use ya_relay_core::server_session::TransportType;
     use ya_relay_core::NodeId;
     use ya_relay_proto::proto::Payload;
+
+    use crate::raw_session::SessionType;
+    use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]
     async fn test_session_layer_happy_path() {
@@ -1550,7 +1552,7 @@ mod tests {
             .await
             .unwrap();
 
-        let forwarded = tokio::time::timeout(Duration::from_millis(300), receiver2.recv())
+        let forwarded = timeout(Duration::from_millis(300), receiver2.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1568,7 +1570,7 @@ mod tests {
             .await
             .unwrap();
 
-        let forwarded = tokio::time::timeout(Duration::from_millis(300), receiver1.recv())
+        let forwarded = timeout(Duration::from_millis(300), receiver1.recv())
             .await
             .unwrap()
             .unwrap();
@@ -1681,7 +1683,7 @@ mod tests {
 
         // Function should finish in timeout and return error.
         assert!(
-            tokio::time::timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
                 .await
                 .unwrap()
                 .is_err()
@@ -1703,7 +1705,7 @@ mod tests {
 
         // Function should finish in timeout and return error.
         assert!(
-            tokio::time::timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
                 .await
                 .unwrap()
                 .is_err()

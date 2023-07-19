@@ -804,8 +804,8 @@ mod tests {
     use strum::EnumCount;
     use tokio::time::timeout;
 
+    use super::super::session_state::{InitState, RelayedState};
     use crate::raw_session::RawSession;
-    use crate::session::session_state::{InitState, RelayedState};
     use crate::testing::mocks::NoOpSessionLayer;
 
     use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};

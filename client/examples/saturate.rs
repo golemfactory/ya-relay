@@ -196,7 +196,7 @@ fn send(
             }
 
             let mut inner = state.inner.write().await;
-            let mut node_stats = inner.entry(node_id.clone()).or_default();
+            let node_stats = inner.entry(node_id.clone()).or_default();
 
             let now = Instant::now();
             let dt = now - node_stats.started;

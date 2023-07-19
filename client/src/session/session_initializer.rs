@@ -627,8 +627,8 @@ impl SessionInitializer {
 mod tests {
     use super::*;
 
-    use crate::session::network_view::SessionLock;
-    use crate::session::session_state::SessionState;
+    use super::super::network_view::SessionLock;
+    use super::super::session_state::SessionState;
     use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]

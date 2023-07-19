@@ -7,10 +7,8 @@ mod encryption;
 mod error;
 mod metrics;
 mod raw_session;
-mod registry;
 mod routing_session;
 mod session;
-mod session_guard;
 mod transport;
 
 pub use client::{
