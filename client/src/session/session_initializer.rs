@@ -17,10 +17,10 @@ use ya_relay_core::udp_stream::OutStream;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::RequestId;
 
+use super::network_view::SessionPermit;
 use crate::client::ClientConfig;
 use crate::direct_session::DirectSession;
 use crate::error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
-use super::network_view::SessionPermit;
 use crate::raw_session::RawSession;
 use crate::session::session_state::InitState;
 use crate::session::session_traits::SessionRegistration;
@@ -627,8 +627,8 @@ impl SessionInitializer {
 mod tests {
     use super::*;
 
-    use super::network_view::SessionLock;
-    use super::session_state::SessionState;
+    use super::super::network_view::SessionLock;
+    use super::super::session_state::SessionState;
     use crate::testing::init::MockSessionNetwork;
 
     #[actix_rt::test]
