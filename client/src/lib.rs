@@ -6,13 +6,13 @@ mod encryption;
 mod error;
 mod metrics;
 mod raw_session;
-mod registry;
 mod routing_session;
 mod session;
-mod session_guard;
 mod transport;
 
-pub use client::{Client, ClientBuilder, FailFast, Forwarded, ForwardReceiver, ForwardSender, GenericSender};
+pub use client::{
+    Client, ClientBuilder, FailFast, ForwardReceiver, ForwardSender, Forwarded, GenericSender,
+};
 pub use ya_relay_core::crypto;
 
 pub use ya_relay_proto::*;
