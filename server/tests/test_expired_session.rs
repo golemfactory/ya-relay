@@ -3,7 +3,7 @@ use std::time::Duration;
 use ya_relay_client::testing::forwarding_utils::{
     check_broadcast, check_forwarding, spawn_receive_for_client, Mode,
 };
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::utils::to_udp_url;
 use ya_relay_server::testing::server::{
     init_test_server, init_test_server_with_config, test_default_config,
@@ -14,12 +14,12 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -54,7 +54,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     let mut client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto)
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -88,7 +88,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     let client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto)
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -110,12 +110,12 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -150,7 +150,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     let mut client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -182,7 +182,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     let client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -204,12 +204,12 @@ async fn test_restart_server() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -255,12 +255,12 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     let wrapper = init_test_server_with_config(config).await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -310,7 +310,7 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     let client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -342,12 +342,12 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server_with_config(config).await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(15))
         .build()
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(15))
         .build()
         .await?;
@@ -380,7 +380,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     let client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto.clone())
-        .connect()
+        .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;

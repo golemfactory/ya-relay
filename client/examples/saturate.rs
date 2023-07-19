@@ -19,12 +19,12 @@ use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_client::ForwardSender;
+use ya_relay_client::GenericSender;
 use ya_relay_client::{ClientBuilder, ForwardReceiver};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
 use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
-use ya_relay_client::GenericSender;
 
 #[derive(StructOpt)]
 #[structopt(about = "Client performance test")]
@@ -417,14 +417,14 @@ async fn run() -> anyhow::Result<()> {
             println!("Connecting to {}", node_id);
 
             let node_id = NodeId::from_str(node_id.as_str()).context("Invalid NodeId")?;
-            let sender = client.forward(node_id).await?;
+            let sender = client.forward_reliable(node_id).await?;
 
             tokio::task::spawn(print_state(node_id, state.clone(), cli.interval));
 
             if let Some(time) = time {
                 let _ = tokio::time::timeout(time, send(sender, node_id, state.clone())).await;
             } else {
-                tokio::task::spawn(send(sender, node_id, state.clone()));
+                tokio::task::spawn_local(send(sender, node_id, state.clone()));
                 let _ = tokio::signal::ctrl_c().await;
             }
         }

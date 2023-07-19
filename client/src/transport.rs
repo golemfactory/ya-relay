@@ -20,7 +20,6 @@ use self::virtual_layer::TcpLayer;
 use crate::client::{ClientConfig, ForwardSender, Forwarded, GenericSender};
 use crate::session::SessionLayer;
 
-
 /// TODO: Consider using bounded channel. Tcp could have impression that we are receiving
 ///       messages, despite we are only putting them into channel.
 pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;

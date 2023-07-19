@@ -74,7 +74,6 @@ async fn run() -> anyhow::Result<()> {
         }
         Commands::Ping(_) => {
             let _ = client.ping_sessions().await;
-
         }
     };
 

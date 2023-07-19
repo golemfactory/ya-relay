@@ -8,9 +8,9 @@ use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
 
+use super::session_state::{InitState, ReverseState, SessionState};
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::error::{SessionError, TransitionError};
-use super::session_state::{InitState, ReverseState, SessionState};
 use crate::session::session_traits::SessionDeregistration;
 
 use ya_relay_core::identity::Identity;
@@ -805,7 +805,7 @@ mod tests {
     use tokio::time::timeout;
 
     use crate::raw_session::RawSession;
-    use super::session_state::{InitState, RelayedState};
+    use crate::session::session_state::{InitState, RelayedState};
     use crate::testing::mocks::NoOpSessionLayer;
 
     use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};

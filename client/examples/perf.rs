@@ -848,7 +848,8 @@ mod relaying {
             .collect::<Result<Vec<Scenario>, _>>()?;
 
         log::info!("Running idle discovery calls.");
-        let idle = tokio::task::spawn_local(async move { future::join_all(futures.into_iter()).await });
+        let idle =
+            tokio::task::spawn_local(async move { future::join_all(futures.into_iter()).await });
 
         log::info!("Running {} scenario(s) (Requestor(s))", scenarios.len());
 
@@ -926,8 +927,9 @@ mod relaying {
             })
             .collect::<Vec<_>>();
 
-        let providers_handle =
-            tokio::task::spawn_local(async move { future::join_all(provider_futures.into_iter()).await });
+        let providers_handle = tokio::task::spawn_local(async move {
+            future::join_all(provider_futures.into_iter()).await
+        });
 
         // TODO: Should be asynchronous, we can't wait for operation finish.
         let start = tokio::time::Instant::now();
@@ -938,8 +940,9 @@ mod relaying {
             log::info!("Sending {} bytes to: {}", action.size, action.remote_id);
 
             let data = (0..action.size).map(|n| n as u8).collect();
+            use ya_relay_client::GenericSender as _;
 
-            let mut sender = requestor.forward(action.remote_id).await?;
+            let mut sender = requestor.forward_reliable(action.remote_id).await?;
             sender.send(Payload::Vec(data)).await.ok();
         }
 

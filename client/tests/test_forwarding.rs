@@ -10,13 +10,11 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-
 use ya_relay_client::{Forwarded, GenericSender};
 
 use ya_relay_client::testing::forwarding_utils::spawn_receive;
 use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_core::server_session::TransportType;
-use ya_relay_proto::proto::Forward;
 
 #[serial_test::serial]
 async fn test_forward_unreliable_relayed() -> anyhow::Result<()> {
@@ -46,13 +44,14 @@ async fn test_forward_unreliable_relayed() -> anyhow::Result<()> {
     spawn_receive(">> 2", received2.clone(), rx2);
 
     println!("Forwarding: unreliable");
+    use ya_relay_client::GenericSender;
 
     let mut tx1 = client1.forward_unreliable(client2.node_id()).await.unwrap();
     let mut tx2 = client2.forward_unreliable(client1.node_id()).await.unwrap();
 
     // TODO: implement this
-    //tx1.send(vec![1u8].into()).await?;
-    //tx2.send(vec![2u8].into()).await?;
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
