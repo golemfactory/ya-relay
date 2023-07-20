@@ -37,7 +37,6 @@ async fn find_node(node_id: web::Path<String>) -> impl Responder {
     HttpResponse::Ok().body(msg)
 }
 #[tokio::main(flavor = "current_thread")]
-// #[actix_web::main]
 async fn main() -> Result<()> {
     env_logger::init();
 
@@ -45,9 +44,9 @@ async fn main() -> Result<()> {
 
     let client = build_client(cli.relay_addr, &cli.key_file, cli.password).await?;
 
-    let app_data = std::sync::Arc::new(std::sync::Mutex::new(client));
+    let app_data = client;
 
-    let server = HttpServer::new(|| App::new().app_data(app_data).service(find_node));
+    let server = HttpServer::new(|| App::new().app_data(app_data.clone()).service(find_node));
 
     server.bind(("0.0.0.0", cli.port))?.run().await?;
 
