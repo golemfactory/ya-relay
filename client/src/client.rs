@@ -24,20 +24,19 @@ pub use crate::transport::transport_sender::{ForwardSender, GenericSender};
 pub use crate::transport::{ForwardReceiver, TransportLayer};
 
 pub use ya_relay_core::server_session::TransportType;
-pub use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState};
+use crate::metrics::{ChannelMetrics};
+pub use ya_relay_stack::{SocketDesc, SocketState};
 
 #[derive(Clone)]
 pub struct Client {
-    pub config: Arc<ClientConfig>,
-
+    config: Arc<ClientConfig>,
     state: Arc<RwLock<ClientState>>,
-    pub transport: TransportLayer,
+    pub(crate) transport: TransportLayer,
 }
 
 pub(crate) struct ClientState {
     bind_addr: Option<SocketAddr>,
     neighbours: Option<Neighbourhood>,
-
     handles: Vec<AbortHandle>,
 }
 
@@ -78,6 +77,11 @@ impl Client {
         self.transport.session_layer.get_public_addr().await
     }
 
+    pub async fn set_public_addr(&self, addr : Option<SocketAddr>) {
+        self.transport.session_layer.set_public_addr(None).await;
+    }
+
+
     pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
         self.transport.session_layer.remote_id(addr).await
     }
@@ -98,7 +102,7 @@ impl Client {
     pub async fn find_node(
         &self,
         node_id: NodeId,
-    ) -> anyhow::Result<ya_relay_proto::proto::response::Node> {
+    ) -> anyhow::Result<crate::model::Node> {
         let session = self.transport.session_layer.server_session().await?;
         let find_node = session.raw.find_node(node_id);
 
@@ -109,7 +113,7 @@ impl Client {
     }
 
     #[inline]
-    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<crate::metrics::ChannelMetrics>)> {
         self.transport.virtual_tcp.sockets()
     }
 

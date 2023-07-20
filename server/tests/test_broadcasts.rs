@@ -9,7 +9,8 @@ use itertools::Itertools;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::{Client, ClientBuilder, FailFast, Forwarded};
+use ya_relay_client::{Client, ClientBuilder, FailFast};
+use ya_relay_client::channels::Forwarded;
 use ya_relay_core::NodeId;
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 

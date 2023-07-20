@@ -50,6 +50,7 @@ serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "act
 simple-logging = "2.0"
 structopt = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "signal"] }
+ya-relay-server = { path="../server" }
 
 [features]
 default = []

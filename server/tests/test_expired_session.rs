@@ -4,6 +4,7 @@ use ya_relay_client::testing::forwarding_utils::{
     check_broadcast, check_forwarding, spawn_receive_for_client, Mode,
 };
 use ya_relay_client::{ClientBuilder, FailFast};
+use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::utils::to_udp_url;
 use ya_relay_server::testing::server::{
     init_test_server, init_test_server_with_config, test_default_config,
@@ -13,12 +14,15 @@ use ya_relay_server::testing::server::{
 async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
+    let crypto2 = FallbackCryptoProvider::default();
+
     let client1 = ClientBuilder::from_url(wrapper.url())
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
+        .crypto(crypto2.clone())
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
@@ -38,7 +42,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     println!("Shutting down Client2");
 
     let addr2 = client2.bind_addr().await?;
-    let crypto = client2.config.crypto.clone();
+    let crypto = crypto2.clone();
 
     client2.shutdown().await.unwrap();
     drop(_keep2);
@@ -72,7 +76,6 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     println!("Shutting down Client2");
 
     let addr2 = client2.bind_addr().await?;
-    let crypto = client2.config.crypto.clone();
 
     client2.shutdown().await.unwrap();
     drop(_keep2);
@@ -87,7 +90,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     // Start client on the same port as previously.
     let client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
-        .crypto(crypto)
+        .crypto(crypto2)
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
@@ -109,12 +112,15 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
 async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
+    let crypto2 = FallbackCryptoProvider::default();
+
     let client1 = ClientBuilder::from_url(wrapper.url())
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
+        .crypto(crypto2.clone())
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
@@ -134,7 +140,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     println!("Shutting down Client2");
 
     let addr2 = client2.bind_addr().await?;
-    let crypto = client2.config.crypto.clone();
+    let crypto = crypto2.clone();
 
     client2.shutdown().await.unwrap();
     drop(_keep2);
@@ -253,6 +259,7 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     config.session_timeout = chrono::Duration::seconds(8);
 
     let wrapper = init_test_server_with_config(config).await?;
+    let crypto2 = FallbackCryptoProvider::default();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
         .connect(FailFast::Yes)
@@ -261,6 +268,7 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
         .connect(FailFast::Yes)
+        .crypto(crypto2.clone())
         .expire_session_after(Duration::from_secs(2))
         .build()
         .await?;
@@ -279,7 +287,7 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     println!("Shutting down Client2");
 
     let addr2 = client2.bind_addr().await?;
-    let crypto = client2.config.crypto.clone();
+    let crypto = crypto2.clone();
 
     client2.shutdown().await.unwrap();
 
@@ -340,6 +348,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     config.session_timeout = chrono::Duration::seconds(15);
 
     let wrapper = init_test_server_with_config(config).await?;
+    let crypto2 = FallbackCryptoProvider::default();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
         .connect(FailFast::Yes)
@@ -348,6 +357,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
         .connect(FailFast::Yes)
+        .crypto(crypto2.clone())
         .expire_session_after(Duration::from_secs(15))
         .build()
         .await?;
@@ -366,7 +376,7 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     println!("Shutting down Client2");
 
     let addr2 = client2.bind_addr().await?;
-    let crypto = client2.config.crypto.clone();
+    let crypto = crypto2.clone();
 
     client2.shutdown().await.unwrap();
 

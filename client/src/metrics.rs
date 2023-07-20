@@ -5,11 +5,11 @@ use metrics::{
 };
 use ya_relay_core::NodeId;
 
-pub static SOURCE_ID: &str = "SourceId";
-pub static TARGET_ID: &str = "TargetId";
-pub static RELAY_ID: &str = "RelayId";
+pub(crate) static SOURCE_ID: &str = "SourceId";
+pub(crate) static TARGET_ID: &str = "TargetId";
+pub(crate) static RELAY_ID: &str = "RelayId";
 
-pub fn register_metrics() {
+pub(crate) fn register_metrics() {
     register_counter!("ya-relay.packet.tcp.outgoing.size");
     register_counter!("ya-relay.packet.tcp.outgoing.num");
     register_counter!("ya-relay.packet.tcp.incoming.size");
@@ -51,7 +51,10 @@ pub fn register_metrics() {
     );
 }
 
-pub fn metric_session_established(node_id: NodeId, method: ConnectionMethod) {
+pub(crate) fn metric_session_established(node_id: NodeId, method: ConnectionMethod) {
     gauge!("ya-relay.client.session.type", method.metric(), TARGET_ID => node_id.to_string());
     increment_counter!("ya-relay.client.session.established", TARGET_ID => node_id.to_string());
 }
+
+#[doc(inline)]
+pub use ya_relay_stack::ChannelMetrics;
