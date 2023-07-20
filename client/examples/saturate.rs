@@ -18,9 +18,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::ForwardSender;
-use ya_relay_client::GenericSender;
-use ya_relay_client::{ClientBuilder, ForwardReceiver};
+use ya_relay_client::channels::*;
+use ya_relay_client::*;
+
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
 use ya_relay_core::server_session::TransportType;

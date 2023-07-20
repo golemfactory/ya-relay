@@ -585,7 +585,7 @@ mod relaying {
     use std::sync::atomic::{AtomicBool, AtomicUsize};
     use std::sync::Arc;
     use tokio_stream::wrappers::UnboundedReceiverStream;
-    use ya_relay_client::proto::Payload;
+    use ya_relay_client::model::Payload;
     use ya_relay_core::NodeId;
 
     #[derive(Clone, Debug, Default, Serialize)]
