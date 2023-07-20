@@ -19,14 +19,16 @@ use crate::metrics::register_metrics;
 
 pub use crate::config::{ClientBuilder, ClientConfig, FailFast};
 pub use crate::error::SessionError;
-pub use crate::raw_session::SessionDesc;
+pub use crate::model::{SessionDesc, SocketDesc, SocketState};
 pub use crate::transport::transport_sender::{ForwardSender, GenericSender};
 pub use crate::transport::{ForwardReceiver, TransportLayer};
 
 use crate::metrics::ChannelMetrics;
 pub use ya_relay_core::server_session::TransportType;
-pub use ya_relay_stack::{SocketDesc, SocketState};
 
+/// A Hybrid NET client that handles connections, sessions and relay operations.
+/// It provides high-level methods for networking tasks such as forwarding
+/// data, managing session metrics, pinging sessions, and broadcasting data.
 #[derive(Clone)]
 pub struct Client {
     config: Arc<ClientConfig>,
@@ -34,6 +36,8 @@ pub struct Client {
     pub(crate) transport: TransportLayer,
 }
 
+/// The state of a Hybrid NET client, containing the address it is bound to,
+/// its current neighbours and its abort handles.
 pub(crate) struct ClientState {
     bind_addr: Option<SocketAddr>,
     neighbours: Option<Neighbourhood>,
@@ -58,6 +62,7 @@ impl Client {
         }
     }
 
+    /// Returns the unique identifier (`NodeId`) of the client.
     pub fn node_id(&self) -> NodeId {
         self.config.node_id
     }
@@ -73,18 +78,65 @@ impl Client {
             .ok_or_else(|| anyhow!("client not started"))
     }
 
+    /// Returns the public address (`SocketAddr`) of the client, as seen by
+    /// the rest of the network. This address is usually set during the
+    /// initialization process and can be used by other nodes to establish
+    /// connections with this client.
+    ///
+    /// # Returns
+    ///
+    /// * `SocketAddr`: The public address of the client. This can be either an IPv4 or an IPv6 address.
+    ///
     pub async fn public_addr(&self) -> Option<SocketAddr> {
         self.transport.session_layer.get_public_addr().await
     }
 
+    /// Sets the public address (`SocketAddr`) of the client, as seen by
+    /// the rest of the network. This address is used by other nodes to
+    /// establish connections with this client. This function should be
+    /// used with care as changing the public address can affect ongoing
+    /// connections and overall network functionality.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr: Option<SocketAddr>` - The new public address to be set for the client.
+    ///     This can be either an IPv4 or an IPv6 address or None if node has no
+    ///     public address.
+    ///
     pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
         self.transport.session_layer.set_public_addr(None).await;
     }
 
+    #[doc(hidden)]
     pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
         self.transport.session_layer.remote_id(addr).await
     }
 
+    /// Returns a vector of descriptions for all currently active sessions.
+    /// A session represents an active connection with a remote node.
+    /// Each description (`SessionDesc`) contains information about the session,
+    /// such as the remote node's address, session type, and status.
+    ///
+    /// This method is asynchronous and it should be awaited to get the result.
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<SessionDesc>`: A vector of session descriptions. If there are no active sessions,
+    /// the vector will be empty.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ya_relay_client::ClientBuilder;
+    ///  async {
+    ///     let client = ClientBuilder::from_url("udp://52.48.158.112:7477".parse().unwrap()).build().await.unwrap();
+    ///     let sessions = client.sessions().await;
+    ///     for session in sessions {
+    ///         println!("Session: {:?}", session);
+    ///     }
+    /// }
+    /// ```
+    ///
     pub async fn sessions(&self) -> Vec<SessionDesc> {
         self.transport
             .session_layer
@@ -98,6 +150,19 @@ impl Client {
             .collect()
     }
 
+    /// Returns information about a node given its identifier (`NodeId`).
+    /// This method uses the underlying network protocol to find the node
+    /// and collect information about it.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id: NodeId` - The identifier of the node to find.
+    ///
+    /// # Returns
+    ///
+    /// * `Option<NodeInfo>`: An option containing the `NodeInfo` if found,
+    ///     or `None` if the node was not found.
+    ///
     pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<crate::model::Node> {
         let session = self.transport.session_layer.server_session().await?;
         let find_node = session.raw.find_node(node_id);
@@ -108,12 +173,17 @@ impl Client {
         }
     }
 
-    #[inline]
+    /// Returns a vector of all currently opened sockets.
+    /// Each socket (`SocketInfo`) includes information such as its local and remote addresses,
+    /// and the current state of the socket.
     pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<crate::metrics::ChannelMetrics>)> {
         self.transport.virtual_tcp.sockets()
     }
 
-    #[inline]
+    /// Returns a set of metrics for all currently active sessions.
+    /// Each metric (`SessionMetric`) includes information about the session,
+    /// such as the amount of data transferred, the duration of the session,
+    /// and other relevant statistics.
     pub async fn session_metrics(&self) -> HashMap<NodeId, ChannelMetrics> {
         let mut session_metrics = HashMap::new();
 
@@ -228,7 +298,7 @@ impl Client {
         self.transport.forward_unreliable(node_id).await
     }
 
-    pub async fn ping_sessions(&self) {
+    pub(crate) async fn ping_sessions(&self) {
         let sessions = self.transport.session_layer.sessions().await;
         let ping_futures = sessions
             .iter()
@@ -263,6 +333,18 @@ impl Client {
         }
     }
 
+    /// Broadcasts a byte array to a certain number of neighbours in the network.
+    /// This method sends the same byte array to the specified number of neighbour nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `data: Vec<u8>` - The data to be broadcasted
+    /// * `count: u32` - The number of neighbour nodes to broadcast the data to.
+    ///
+    /// # Returns
+    ///
+    /// * `anyhow::Result<()>`: A Result object indicating the success or failure of the broadcast operation.
+    ///
     pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
         let node_ids = self
             .neighbours(count)
@@ -302,6 +384,17 @@ impl Client {
         Ok(())
     }
 
+    /// Retrieves a certain number of neighbour nodes in the network.
+    /// This method returns a vector of NodeId objects representing neighbour nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `count: u32` - The number of neighbour nodes to be returned.
+    ///
+    /// # Returns
+    ///
+    /// * `anyhow::Result<Vec<NodeId>>`: A Result object containing a vector of neighbour NodeIds or an error.
+    ///
     pub async fn neighbours(&self, count: u32) -> anyhow::Result<Vec<NodeId>> {
         if let Some(neighbours) = {
             let state = self.state.read().await;
@@ -356,7 +449,7 @@ impl Client {
         Ok(nodes)
     }
 
-    pub async fn invalidate_neighbourhood_cache(&self) {
+    pub(crate) async fn invalidate_neighbourhood_cache(&self) {
         self.state.write().await.neighbours = None;
     }
 

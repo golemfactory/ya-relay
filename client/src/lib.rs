@@ -1,4 +1,7 @@
 #![allow(unused)]
+#![deny(unused_crate_dependencies)]
+//#![deny(missing_docs)]
+
 mod client;
 mod config;
 mod direct_session;
@@ -13,11 +16,14 @@ mod transport;
 
 pub use client::{Client, ClientBuilder, FailFast, GenericSender};
 
+/// This module is a public re-export cryptographic abstractions.
 pub use ya_relay_core::crypto;
 
 #[cfg(any(test, feature = "mock"))]
+#[allow(missing_docs)]
 pub mod testing;
 
+/// Provides a unified interface to the various model types used in `ya_relay`.
 pub mod model {
     #[doc(inline)]
     pub use ya_relay_core::NodeId;
@@ -25,15 +31,23 @@ pub mod model {
     pub use ya_relay_proto::proto::response::Node;
 
     #[doc(inline)]
+    pub use ya_relay_stack::{SocketDesc, SocketState};
+
+    #[doc(inline)]
     pub use ya_relay_core::server_session::TransportType;
 
     #[doc(inline)]
-    pub use ya_relay_core::session::{Session, SessionDesc};
+    pub use ya_relay_core::session::Session;
+
+    pub use crate::raw_session::SessionDesc;
+
+    pub use ya_relay_core::server_session::SessionId;
 
     #[doc(inline)]
     pub use ya_relay_proto::proto::Payload;
 }
 
+/// Re-exports several channel related items from the client module.
 pub mod channels {
     #[doc(inline)]
     pub use crate::client::{ForwardReceiver, ForwardSender, Forwarded};

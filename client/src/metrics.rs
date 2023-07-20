@@ -1,3 +1,5 @@
+//! Metrics support data structures.
+
 use crate::session::ConnectionMethod;
 use metrics::{
     describe_counter, describe_gauge, gauge, increment_counter, register_counter, register_gauge,
@@ -57,4 +59,4 @@ pub(crate) fn metric_session_established(node_id: NodeId, method: ConnectionMeth
 }
 
 #[doc(inline)]
-pub use ya_relay_stack::ChannelMetrics;
+pub use ya_relay_stack::{ChannelMetrics, Ewma, Metrics};
