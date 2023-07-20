@@ -8,6 +8,7 @@ use url::Url;
 
 use crate::server::Server;
 
+#[derive(Clone)]
 pub struct ServerWrapper {
     pub server: Server,
     handle: AbortHandle,

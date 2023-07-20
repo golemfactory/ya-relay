@@ -17,9 +17,8 @@ path = "src/main.rs"
 
 
 [dependencies]
-ya-relay-proto = "0.4.2"
+ya-relay-proto = "0.4.1"
 ya-relay-core = "0.4.0"
-ya-relay-client = "0.6"
 
 actix-rt = "2.7"
 anyhow = "1.0"
@@ -31,8 +30,8 @@ governor = "0.3.2"
 humantime = "2.1"
 itertools = "0.10.1"
 log = "0.4"
-metrics = "0.19"
-metrics-exporter-prometheus = { version = "0.10", features = ["http-listener"] }
+metrics = "0.21"
+metrics-exporter-prometheus = { version = "0.12", features = ["http-listener"] }
 rand = { version = "0.8", features = ["std"] }
 structopt = "0.3"
 thiserror = "1.0"
@@ -43,4 +42,6 @@ url = "2.1"
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = ["actix-rt2"]}
 tokio-stream = "0.1.8"
-test-case = "3"
+test-case = "3.1"
+
+ya-relay-client = { version = "0.6.0", path = "../client", features = ["mock"] }

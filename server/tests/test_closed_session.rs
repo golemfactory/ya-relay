@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::time::Duration;
 use test_case::test_case;
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider};
 use ya_relay_core::key::generate;
 use ya_relay_server::testing::server::init_test_server;
@@ -24,11 +24,11 @@ async fn test_closed_session(node_to_shutdown: Node) -> anyhow::Result<()> {
     let alias = crypto.aliases().await.unwrap()[0];
 
     let mut client = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
     let mut client_w_alias = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .crypto(crypto)
         .build()
         .await?;
@@ -44,13 +44,13 @@ async fn test_closed_session(node_to_shutdown: Node) -> anyhow::Result<()> {
 
     let nodes = tuples_vec_to_map(client.connected_nodes().await);
     let expected_nodes = HashMap::from([
-        (node_2.clone(), HashSet::new()),
+        (node_2.clone(), HashSet::from([node_2.clone()])),
         (alias.clone(), HashSet::from([node_2.clone()])),
     ]);
     assert_eq!(nodes, expected_nodes, "1 sees 2's default id and alias");
 
     let nodes = tuples_vec_to_map(client_w_alias.connected_nodes().await);
-    let expected_nodes = HashMap::from([(node_1.clone(), HashSet::new())]);
+    let expected_nodes = HashMap::from([(node_1.clone(), HashSet::from([node_1.clone()]))]);
     assert_eq!(nodes, expected_nodes, "2 sees only 1's default id");
 
     // Closing session

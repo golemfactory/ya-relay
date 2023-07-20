@@ -1,3 +1,4 @@
+#![cfg(feature = "mock")]
 use std::time::Duration;
 
 use ya_relay_client::testing::forwarding_utils::{

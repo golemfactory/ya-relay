@@ -1,41 +1,46 @@
+use derive_more::Display;
 use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
-use std::cell::RefCell;
 use std::convert::TryInto;
-use std::fmt;
 use std::net::SocketAddr;
-use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
 
 use crate::dispatch::{Dispatched, Dispatcher};
-use crate::server_session::SessionId;
-use crate::sync::Actuator;
-use crate::udp_stream::OutStream;
-use crate::NodeId;
+use crate::error::RequestError;
 
+use ya_relay_core::server_session::SessionId;
+use ya_relay_core::udp_stream::OutStream;
+use ya_relay_core::NodeId;
 use ya_relay_proto::proto::{RequestId, SlotId};
 use ya_relay_proto::{codec, proto};
 
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_millis(3000);
 const DEFAULT_PING_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub type SessionResult<T> = Result<T, SessionError>;
-pub type DropHandler = Box<dyn FnOnce()>;
+pub type DropHandler = Box<dyn FnOnce() + Send>;
 
-/// Udp connection to other Node. It is either peer-to-peer connection
-/// or central server session. Implements functions for sending
-/// protocol messages or forwarding generic messages.
+#[derive(Clone, Display, PartialEq, Debug, Copy)]
+pub enum SessionType {
+    #[display(fmt = "p2p")]
+    P2P,
+    #[display(fmt = "relay")]
+    Relay,
+}
+
+/// Low-level session representation, which knows where to send packets on system level.
+/// Represents direct peer-to-peer connection with other Node (or relay server).
+///
+/// This layer isn't aware of Nodes identities.
 #[derive(Clone)]
-pub struct Session {
+pub struct RawSession {
     pub remote: SocketAddr,
     pub id: SessionId,
     pub created: Instant,
 
     sink: OutStream,
     pub(crate) dispatcher: Dispatcher,
-    pub(crate) drop_handler: Rc<RefCell<Option<DropHandler>>>,
-    pub forward_pause: Actuator,
+    pub(crate) drop_handler: Arc<Mutex<Option<DropHandler>>>,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -47,8 +52,8 @@ pub struct SessionDesc {
     pub created: std::time::Instant,
 }
 
-impl<'a> From<&'a Session> for SessionDesc {
-    fn from(session: &'a Session) -> Self {
+impl<'a> From<&'a RawSession> for SessionDesc {
+    fn from(session: &'a RawSession) -> Self {
         SessionDesc {
             remote: session.remote,
             id: session.id,
@@ -59,8 +64,10 @@ impl<'a> From<&'a Session> for SessionDesc {
     }
 }
 
-impl Session {
+impl RawSession {
     pub fn new(remote_addr: SocketAddr, id: SessionId, sink: OutStream) -> Arc<Self> {
+        log::trace!("Creating new `RawSession` {id} ({remote_addr})");
+
         Arc::new(Self {
             remote: remote_addr,
             id,
@@ -68,7 +75,6 @@ impl Session {
             created: Instant::now(),
             dispatcher: Dispatcher::default(),
             drop_handler: Default::default(),
-            forward_pause: Default::default(),
         })
     }
 
@@ -79,8 +85,8 @@ impl Session {
     pub async fn register_endpoints(
         &self,
         endpoints: Vec<proto::Endpoint>,
-    ) -> anyhow::Result<Vec<proto::Endpoint>> {
-        log::info!("[{}] registering endpoints.", self.id);
+    ) -> Result<Vec<proto::Endpoint>, RequestError> {
+        log::info!("Registering endpoints on {}.", self.remote);
 
         let response = self
             .request::<proto::response::Register>(
@@ -91,16 +97,17 @@ impl Session {
             .await?
             .packet;
 
-        log::info!("[{}] endpoints registration finished.", self.id);
+        log::info!("Endpoints registration finished on {}.", self.remote);
 
         Ok(response.endpoints)
     }
 
     pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<proto::response::Node> {
         log::debug!(
-            "Finding Node info [{}], using session {}.",
+            "Finding Node info [{}], using session {} ({}).",
             node_id,
-            self.id
+            self.id,
+            self.remote
         );
 
         let packet = proto::request::Node {
@@ -133,11 +140,15 @@ impl Session {
         Ok(response)
     }
 
-    pub async fn neighbours(&self, count: u32) -> anyhow::Result<proto::response::Neighbours> {
-        let packet = proto::request::Neighbours {
-            count,
-            public_key: true,
-        };
+    /// Returns closest Nodes to ours according to arbitrary metric implemented
+    /// by relay server.
+    ///
+    pub async fn neighbours(
+        &self,
+        count: u32,
+        public_key: bool,
+    ) -> anyhow::Result<proto::response::Neighbours> {
+        let packet = proto::request::Neighbours { count, public_key };
         let neighbours = self
             .request::<proto::response::Neighbours>(
                 packet.into(),
@@ -162,10 +173,10 @@ impl Session {
         };
 
         self.dispatcher.update_ping(ping);
-        result.map(|_| ())
+        Ok(result.map(|_| ())?)
     }
 
-    pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
+    pub async fn reverse_connection(&self, node_id: NodeId) -> Result<(), RequestError> {
         let packet = proto::request::ReverseConnection {
             node_id: node_id.into_array().to_vec(),
         };
@@ -221,16 +232,6 @@ impl Session {
         self.send(control_packet).await
     }
 
-    #[inline]
-    pub async fn pause_forwarding(&self) {
-        self.forward_pause.enable();
-    }
-
-    #[inline]
-    pub async fn resume_forwarding(&self) {
-        self.forward_pause.disable();
-    }
-
     /// Will send `Disconnect` message to other Node, to close end Session
     /// more gracefully.  
     pub async fn close(&self) -> anyhow::Result<()> {
@@ -240,19 +241,19 @@ impl Session {
     /// Add a function that will be executed on session drop
     pub fn on_drop<F>(&self, f: F)
     where
-        F: FnOnce() + 'static,
+        F: FnOnce() + Send + 'static,
     {
-        self.drop_handler.borrow_mut().replace(Box::new(f));
+        self.drop_handler.lock().unwrap().replace(Box::new(f));
     }
 }
 
-impl Session {
-    pub async fn request<T>(
+impl RawSession {
+    pub(crate) async fn request<T>(
         &self,
         request: proto::Request,
         session_id: Vec<u8>,
         timeout: Duration,
-    ) -> anyhow::Result<Dispatched<T>>
+    ) -> Result<Dispatched<T>, RequestError>
     where
         proto::response::Kind: TryInto<T, Error = ()>,
         T: 'static,
@@ -278,14 +279,14 @@ impl Session {
         // and await for a response for at least one. This is done to
         // tackle UDP packet drops while containing the entire process
         // to the outer timeout.
-        tokio::select! {
+        Ok(tokio::select! {
             err = retry_send => {
                 Err(err)
             },
             response = response_fut => {
                 response
             }
-        }
+        }?)
     }
 
     #[inline(always)]
@@ -308,46 +309,13 @@ impl Session {
     }
 }
 
-impl Drop for Session {
+impl Drop for RawSession {
     fn drop(&mut self) {
-        log::trace!("Dropping Session {} ({}).", self.id, self.remote);
+        log::trace!("Dropping `RawSession` {} ({}).", self.id, self.remote);
 
-        let on_drop = self.drop_handler.borrow_mut().take();
+        let on_drop = self.drop_handler.lock().unwrap().take();
         if let Some(f) = on_drop {
             f()
-        }
-    }
-}
-
-#[derive(thiserror::Error, Clone)]
-pub enum SessionError {
-    Drop(String),
-    Retry(String),
-}
-
-impl From<anyhow::Error> for SessionError {
-    fn from(e: anyhow::Error) -> Self {
-        Self::Retry(e.to_string())
-    }
-}
-
-impl fmt::Debug for SessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Drop(e) => {
-                write!(f, "Drop({:?})", e)
-            }
-            Self::Retry(e) => {
-                write!(f, "Retry({:?})", e)
-            }
-        }
-    }
-}
-
-impl fmt::Display for SessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Drop(e) | Self::Retry(e) => e.fmt(f),
         }
     }
 }

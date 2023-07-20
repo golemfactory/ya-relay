@@ -23,7 +23,7 @@ use crate::public_endpoints::EndpointsChecker;
 use crate::state::NodesState;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, CHALLENGE_DIFFICULTY};
-use ya_relay_core::session::{LastSeen, NodeInfo, NodeSession, RequestHistory, SessionId};
+use ya_relay_core::server_session::{LastSeen, NodeInfo, NodeSession, RequestHistory, SessionId};
 use ya_relay_core::udp_stream::{udp_bind, InStream, OutStream};
 use ya_relay_core::utils::{to_udp_url, ResultExt};
 use ya_relay_proto::codec::PacketKind;
@@ -171,7 +171,7 @@ impl Server {
                     Some(proto::packet::Kind::Response(_)) => {
                         log::warn!(
                             "Server shouldn't get Response packet. Sender: {from}, node {}",
-                            node.info.node_id(),
+                            node.info.default_node_id(),
                         );
                     }
                     Some(proto::packet::Kind::Control(packet)) => {
@@ -251,7 +251,7 @@ impl Server {
 
                     log::trace!(
                         "Sent Disconnected [slot={slot}] message to Node: {}.",
-                        src_node.info.node_id()
+                        src_node.info.default_node_id()
                     );
 
                     return Err(e.into());
@@ -302,8 +302,8 @@ impl Server {
 
         log::trace!(
             "Sending forward packet from [{}] to [{}] ({} B)",
-            src_node.info.node_id(),
-            dest_node.info.node_id(),
+            src_node.info.default_node_id(),
+            dest_node.info.default_node_id(),
             packet.payload.len(),
         );
 
@@ -337,7 +337,7 @@ impl Server {
                     Some(node) => {
                         log::info!(
                             "Received Disconnected message from Node [{}]({}).",
-                            node.info.node_id(),
+                            node.info.default_node_id(),
                             from
                         );
                         server.nodes.remove_session(node.info.slot)
@@ -370,7 +370,7 @@ impl Server {
         // TODO: Note that we ignore endpoints sent by Node and only try
         //       to verify address, from which we received messages.
 
-        let node_id = session.info.node_id();
+        let node_id = session.info.default_node_id();
         let endpoints = self
             .inner
             .ip_checker
@@ -538,7 +538,7 @@ impl Server {
         let message_to_send = proto::Packet::control(
             target_session.session.to_vec(),
             proto::control::ReverseConnection {
-                node_id: source_node_info.node_id().into_array().to_vec(),
+                node_id: source_node_info.default_node_id().into_array().to_vec(),
                 endpoints: source_node_info
                     .endpoints
                     .into_iter()
@@ -605,7 +605,7 @@ impl Server {
         node_info: NodeSession,
         public_key: bool,
     ) -> ServerResult<()> {
-        let node_id = node_info.info.node_id();
+        let node_id = node_info.info.default_node_id();
         let node = to_node_response(node_info, public_key);
 
         self.send_to(
@@ -699,7 +699,7 @@ impl Server {
     ) -> ServerResult<()> {
         const REQ_DEDUPLICATE_BUF_SIZE: usize = 16;
 
-        let (packet, raw_challenge) = challenge::prepare_challenge_response();
+        let (packet, raw_challenge) = challenge::prepare_challenge_response(CHALLENGE_DIFFICULTY);
         let challenge =
             proto::Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, packet);
 
@@ -731,7 +731,7 @@ impl Server {
                     identities,
                     slot: u32::MAX,
                     endpoints: vec![],
-                    supported_encryptions: vec![],
+                    supported_encryption: vec![],
                 };
 
                 let node = NodeSession {
@@ -781,7 +781,7 @@ impl Server {
                     log::trace!("Got register from Node: [{with}] (request {request_id})");
                     counter!("ya-relay.session.establish.register", 1);
 
-                    let node_id = node.info.node_id();
+                    let node_id = node.info.default_node_id();
                     let node = self
                         .register_endpoints(request_id, session_id, with, registration, node)
                         .await?;
@@ -1059,7 +1059,15 @@ pub fn dispatch_response(packet: PacketKind) -> Result<proto::response::Kind, St
 pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::response::Node {
     let identities = match public_key {
         true => node_info.info.identities.iter().map(Into::into).collect(),
-        false => vec![],
+        false => node_info
+            .info
+            .identities
+            .iter()
+            .map(|ident| proto::Identity {
+                public_key: vec![],
+                node_id: ident.node_id.into_array().to_vec(),
+            })
+            .collect(),
     };
 
     proto::response::Node {
@@ -1072,7 +1080,7 @@ pub fn to_node_response(node_info: NodeSession, public_key: bool) -> proto::resp
             .collect(),
         seen_ts: node_info.last_seen.time().timestamp() as u32,
         slot: node_info.info.slot,
-        supported_encryptions: node_info.info.supported_encryptions,
+        supported_encryptions: node_info.info.supported_encryption,
     }
 }
 

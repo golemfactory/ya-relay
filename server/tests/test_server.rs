@@ -1,6 +1,6 @@
 use std::net::UdpSocket;
 use ya_relay_client::testing::forwarding_utils::{check_broadcast, spawn_receive_for_client};
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_server::testing::server::init_test_server;
 
 /// Server should not shutdown when receives junks (single, garbage bytes).
@@ -15,11 +15,11 @@ async fn test_server_junks_received() -> anyhow::Result<()> {
         .unwrap();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
 

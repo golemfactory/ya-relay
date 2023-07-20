@@ -14,31 +14,44 @@ ya-relay-core = "0.4.0"
 ya-packet-trace = "0.1.0"
 
 anyhow = "1.0"
+async-trait = "0.1"
 chrono = "0.4"
 derive_more = "0.99"
+educe = "0.4"
 env_logger = { version = "0.8", default-features = false }
 futures = "0.3"
 humantime = "2.1"
 log = "0.4"
+metrics = "0.21"
+num_cpus = "1.15"
+strum = "0.25"
+strum_macros = "0.25"
 thiserror = "1.0"
 tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt"] }
 tokio-stream = "0.1.8"
 url = "2.1"
 
+# Necessary for testing purposes
+ya-relay-server = { path="../server", optional = true }
+
 [dev-dependencies]
+actix-rt = "2.7"
 bytesize = "1.1"
 dotenv = "0.15"
 csv = "1"
 hex = "0.4.3"
 humantime = "2.1"
+lazy_static = "1.4"
 prettytable-rs = "0.8"
 rand = "0.8.5"
 serde = "1.0"
 serde_json = "1.0"
+serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = ["actix-rt2"]}
 simple-logging = "2.0"
 structopt = "0.3"
 tokio = { version = "1", features = ["fs", "io-util", "signal"] }
 
 [features]
-packet-trace-enable = ["ya-packet-trace/enable"]
 default = []
+packet-trace-enable = ["ya-packet-trace/enable"]
+mock = ['ya-relay-server']

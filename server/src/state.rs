@@ -3,12 +3,12 @@ use itertools::Itertools;
 use metrics::counter;
 use std::collections::HashMap;
 use std::ops::Sub;
-use ya_relay_client::proto::RequestId;
 
 use crate::error::{InternalError, ServerResult, Unauthorized};
 
-use ya_relay_core::session::{NodeSession, SessionId};
+use ya_relay_core::server_session::{NodeSession, SessionId};
 use ya_relay_core::NodeId;
+use ya_relay_proto::proto::RequestId;
 
 #[derive(Clone)]
 pub enum Slot<T: Clone> {
@@ -37,7 +37,7 @@ impl NodesState {
 
     pub fn register(&mut self, mut node: NodeSession) {
         // We don't want to store the same Node multiple times.
-        if let Some(node) = self.get_by_node_id(node.info.node_id()) {
+        if let Some(node) = self.get_by_node_id(node.info.default_node_id()) {
             self.remove_session(node.info.slot);
         }
 
@@ -48,7 +48,7 @@ impl NodesState {
         }
 
         self.sessions.insert(node.session, slot);
-        self.nodes.insert(node.info.node_id(), slot);
+        self.nodes.insert(node.info.default_node_id(), slot);
         for ident in node.info.identities.iter() {
             self.nodes.insert(ident.node_id, slot);
         }
@@ -70,7 +70,7 @@ impl NodesState {
             .clone()
             .ok_or(InternalError::GettingSessionInfo(id))?
             .info
-            .node_id();
+            .default_node_id();
 
         // Sort all nodes by hamming distance between node ids (number of differing bits).
         // Neighbourhood of each node should differ as much as possible, because
@@ -82,7 +82,7 @@ impl NodesState {
             .enumerate()
             .filter_map(|(idx, entry)| match entry {
                 Slot::Free => None,
-                Slot::Some(entry) => Some((idx, entry.info.node_id())),
+                Slot::Some(entry) => Some((idx, entry.info.default_node_id())),
                 Slot::Purgatory(_) => None,
             })
             .sorted_by(|(_, id1), (_, id2)| {
@@ -116,7 +116,7 @@ impl NodesState {
                     }
                     log::debug!(
                         "Session timeout. node_id: {}, session_id: {}",
-                        ns.info.node_id(),
+                        ns.info.default_node_id(),
                         ns.session
                     );
                     Some(ns.info.slot)
@@ -134,7 +134,7 @@ impl NodesState {
                 if session.last_seen.time() < deadline {
                     log::debug!(
                         "Purging not active session with node_id: {}, session_id: {}",
-                        session.info.node_id(),
+                        session.info.default_node_id(),
                         session.session
                     );
 
@@ -147,7 +147,7 @@ impl NodesState {
     pub fn remove_session(&mut self, slot: u32) {
         if let Slot::Some(session) = &self.slots[slot as usize] {
             self.sessions.remove(&session.session);
-            self.nodes.remove(&session.info.node_id());
+            self.nodes.remove(&session.info.default_node_id());
             for ident in session.info.identities.iter() {
                 self.nodes.remove(&ident.node_id);
             }

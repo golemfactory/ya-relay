@@ -7,9 +7,11 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::config::Config;
-use ya_relay_client::{dispatch, Dispatcher, Handler, Session};
+
+use ya_relay_core::dispatch::{dispatch, Dispatcher, Handler};
 use ya_relay_core::error::ServerResult;
-use ya_relay_core::session::{Endpoint, SessionId};
+use ya_relay_core::server_session::{Endpoint, SessionId};
+use ya_relay_core::session::Session;
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
 use ya_relay_proto::proto;
 

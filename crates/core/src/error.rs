@@ -1,4 +1,4 @@
-use crate::session::SessionId;
+use crate::server_session::SessionId;
 
 use ya_client_model::NodeId;
 

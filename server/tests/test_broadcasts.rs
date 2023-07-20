@@ -1,4 +1,3 @@
-use std::convert::TryInto;
 use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
@@ -10,7 +9,7 @@ use itertools::Itertools;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::{client::Forwarded, Client, ClientBuilder};
+use ya_relay_client::{Client, ClientBuilder, FailFast, Forwarded};
 use ya_relay_core::NodeId;
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
@@ -19,7 +18,7 @@ async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     for _ in 0..count {
         clients.push(
             ClientBuilder::from_url(wrapper.server.inner.url.clone())
-                .connect()
+                .connect(FailFast::Yes)
                 .build()
                 .await
                 .unwrap(),
@@ -34,16 +33,9 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
     let clients = start_clients(&wrapper, 13).await;
 
     let node_id = clients[0].node_id();
-    let session = clients[0].sessions.server_session().await?;
+    let session = clients[0].clone();
 
-    let ids: Vec<NodeId> = session
-        .neighbours(5)
-        .await
-        .unwrap()
-        .nodes
-        .into_iter()
-        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
-        .collect();
+    let ids: Vec<NodeId> = session.neighbours(5).await.unwrap().into_iter().collect();
 
     // Node itself isn't returned in it's neighbourhood.
     assert!(!ids.contains(&node_id));
@@ -53,26 +45,12 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
     assert_eq!(ids.len(), ids.clone().into_iter().unique().count());
 
     // If no new nodes appeared or disappeared, server should return the same neighbourhood.
-    let ids2: Vec<NodeId> = session
-        .neighbours(5)
-        .await
-        .unwrap()
-        .nodes
-        .into_iter()
-        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
-        .collect();
+    let ids2: Vec<NodeId> = session.neighbours(5).await.unwrap().into_iter().collect();
 
     assert_eq!(ids, ids2);
 
     // When we take bigger neighbourhood it should contain smaller neighbouthood.
-    let ids3: Vec<NodeId> = session
-        .neighbours(8)
-        .await
-        .unwrap()
-        .nodes
-        .into_iter()
-        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
-        .collect();
+    let ids3: Vec<NodeId> = session.neighbours(8).await.unwrap().into_iter().collect();
 
     assert!(ids2.iter().all(|item| ids3.contains(item)));
     Ok(())
@@ -84,16 +62,9 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
     let clients = start_clients(&wrapper, 3).await;
 
     let node_id = clients[0].node_id();
-    let session = clients[0].sessions.server_session().await?;
+    let session = clients[0].clone();
 
-    let ids: Vec<NodeId> = session
-        .neighbours(5)
-        .await
-        .unwrap()
-        .nodes
-        .into_iter()
-        .map(|node| (&node.identities[0].node_id).try_into().unwrap())
-        .collect();
+    let ids: Vec<NodeId> = session.neighbours(5).await.unwrap().into_iter().collect();
 
     // Node itself isn't returned in it's neighbourhood.
     assert!(!ids.contains(&node_id));
