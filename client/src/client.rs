@@ -298,7 +298,8 @@ impl Client {
         self.transport.forward_unreliable(node_id).await
     }
 
-    pub(crate) async fn ping_sessions(&self) {
+    /// TODO: Remove this.
+    pub async fn ping_sessions(&self) {
         let sessions = self.transport.session_layer.sessions().await;
         let ping_futures = sessions
             .iter()

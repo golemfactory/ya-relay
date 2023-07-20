@@ -59,4 +59,4 @@ pub(crate) fn metric_session_established(node_id: NodeId, method: ConnectionMeth
 }
 
 #[doc(inline)]
-pub use ya_relay_stack::{ChannelMetrics, Ewma, Metrics};
+pub use ya_relay_stack::{ChannelMetrics, Ewma, Metrics, TimeWindow};
