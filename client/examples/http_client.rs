@@ -35,7 +35,7 @@ struct Cli {
     password: Option<Protected>,
 }
 
-type Pings = Arc<Mutex<HashMap<u32, oneshot::Sender<Duration>>>>;
+type Pings = Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<Duration>)>>>;
 
 #[derive(Debug)]
 enum Command {
@@ -117,8 +117,8 @@ async fn receiver_task(mut receiver: ForwardReceiver, pings: Pings) -> Result<()
                         todo!()
                     }
                     "Pong" => {
-                        if let Some(sender) = pings.lock().unwrap().remove(1) {
-                            sender.send()
+                        if let Some((ts, sender)) = pings.lock().unwrap().remove(&1) {
+                            sender.send(ts.elapsed()).unwrap();
                         }
                     }
                     _ => {}
@@ -155,7 +155,7 @@ async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pin
                         if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
                             log::error!("Send failed: {e}");
                         } else {
-                            pings.lock().unwrap().insert(1, response);
+                            pings.lock().unwrap().insert(1, (Instant::now(), response));
                         }
                     }
                     Err(e) => log::error!("Forward reliable failed: {e}"),
