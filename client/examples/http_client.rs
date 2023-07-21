@@ -105,7 +105,9 @@ async fn ping(
     ))
 }
 
-async fn receiver_task(mut receiver: ForwardReceiver, pings: Pings) -> Result<()> {
+async fn receiver_task(client: Client, pings: Pings) -> Result<()> {
+    let mut receiver = client.forward_receiver().await.unwrap();
+
     while let Some(fwd) = receiver.recv().await {
         log::info!("Handler got: {fwd:?}");
 
@@ -113,9 +115,15 @@ async fn receiver_task(mut receiver: ForwardReceiver, pings: Pings) -> Result<()
             ya_relay_client::TransportType::Reliable => {
                 let msg = String::from_utf8(fwd.payload.into_vec()).unwrap();
                 match msg.as_str() {
-                    "Ping" => {
-                        todo!()
-                    }
+                    "Ping" => match client.forward_reliable(fwd.node_id).await {
+                        Ok(mut sender) => {
+                            let msg = "Pong";
+                            if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
+                                log::error!("Pong send failed: {e}");
+                            }
+                        }
+                        Err(e) => log::error!("Forward reliable failed: {e}"),
+                    },
                     "Pong" => {
                         if let Some((ts, sender)) = pings.lock().unwrap().remove(&1) {
                             sender.send(ts.elapsed()).unwrap();
@@ -179,14 +187,13 @@ async fn run() -> Result<()> {
 
     let (tx, rx) = mpsc::channel::<Command>(16);
     let client = build_client(cli.relay_addr, &cli.key_file, cli.password).await?;
-
-    let receiver = client.forward_receiver().await.unwrap();
+    let client_cloned = client.clone();
 
     let pings = Pings::default();
     let pings_cloned = pings.clone();
 
     tokio::task::spawn_local(async move {
-        receiver_task(receiver, pings_cloned).await.unwrap();
+        receiver_task(client_cloned, pings_cloned).await.unwrap();
     });
 
     tokio::task::spawn_local(async move {
