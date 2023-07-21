@@ -1,4 +1,4 @@
-use ya_relay_client::{Client, ClientBuilder, FailFast, ForwardReceiver, GenericSender};
+use ya_relay_client::{Client, ClientBuilder, FailFast, GenericSender};
 use ya_relay_core::{
     crypto::FallbackCryptoProvider,
     key::{load_or_generate, Protected},
@@ -8,7 +8,7 @@ use ya_relay_core::{
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use actix_web::{
@@ -35,7 +35,7 @@ struct Cli {
     password: Option<Protected>,
 }
 
-type Pings = Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<Duration>)>>>;
+type Pings = Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<String>)>>>;
 
 #[derive(Debug)]
 enum Command {
@@ -46,13 +46,13 @@ enum Command {
 #[derive(Debug)]
 struct FindNode {
     node_id: NodeId,
-    response: oneshot::Sender<Duration>,
+    response: oneshot::Sender<String>,
 }
 
 #[derive(Debug)]
 struct Ping {
     node_id: NodeId,
-    response: oneshot::Sender<Duration>,
+    response: oneshot::Sender<String>,
 }
 
 #[get("/find-node/{node_id}")]
@@ -62,22 +62,19 @@ async fn find_node(
 ) -> impl Responder {
     let node_id = node_id.parse::<NodeId>().unwrap();
 
-    let (rx, tx) = oneshot::channel::<Duration>();
+    let (tx, rx) = oneshot::channel::<String>();
 
     client_sender
         .send(Command::FindNode(FindNode {
             node_id,
-            response: rx,
+            response: tx,
         }))
         .await
         .unwrap();
 
-    let duration = tx.await.unwrap();
+    let msg = rx.await.unwrap();
 
-    HttpResponse::Ok().body(format!(
-        "Node id: {node_id} found in {} ms\n",
-        duration.as_millis()
-    ))
+    HttpResponse::Ok().body(msg)
 }
 
 #[get("/ping/{node_id}")]
@@ -87,22 +84,19 @@ async fn ping(
 ) -> impl Responder {
     let node_id = node_id.parse::<NodeId>().unwrap();
 
-    let (rx, tx) = oneshot::channel::<Duration>();
+    let (tx, rx) = oneshot::channel::<String>();
 
     client_sender
         .send(Command::Ping(Ping {
             node_id,
-            response: rx,
+            response: tx,
         }))
         .await
         .unwrap();
 
-    let duration = tx.await.unwrap();
+    let msg = rx.await.unwrap();
 
-    HttpResponse::Ok().body(format!(
-        "Node id: {node_id} found in {} ms\n",
-        duration.as_millis()
-    ))
+    HttpResponse::Ok().body(msg)
 }
 
 async fn receiver_task(client: Client, pings: Pings) -> Result<()> {
@@ -126,7 +120,13 @@ async fn receiver_task(client: Client, pings: Pings) -> Result<()> {
                     },
                     "Pong" => {
                         if let Some((ts, sender)) = pings.lock().unwrap().remove(&1) {
-                            sender.send(ts.elapsed()).unwrap();
+                            sender
+                                .send(format!(
+                                    "Ping node {} took {} ms\n",
+                                    fwd.node_id,
+                                    ts.elapsed().as_millis()
+                                ))
+                                .unwrap();
                         }
                     }
                     _ => {}
@@ -148,9 +148,12 @@ async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pin
 
                 match client.find_node(node_id).await {
                     Ok(node) => {
-                        let elapsed = now.elapsed();
-                        log::info!("Found node {node:?} in {} ms", elapsed.as_millis());
-                        response.send(elapsed).unwrap();
+                        response
+                            .send(format!(
+                                "Found node {node:?} in {} ms\n",
+                                now.elapsed().as_millis()
+                            ))
+                            .unwrap();
                     }
                     Err(e) => log::error!("Find node failed: {e}"),
                 }
@@ -160,20 +163,16 @@ async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pin
                 match client.forward_reliable(node_id).await {
                     Ok(mut sender) => {
                         let msg = "Ping";
+
+                        let now = Instant::now();
                         if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
                             log::error!("Send failed: {e}");
                         } else {
-                            pings.lock().unwrap().insert(1, (Instant::now(), response));
+                            pings.lock().unwrap().insert(1, (now, response));
                         }
                     }
                     Err(e) => log::error!("Forward reliable failed: {e}"),
                 }
-
-                //Send ping to other node by forward sender and put response into hashmap
-
-                //forward receiver will
-                // If it got ping: response with pingresponse
-                // If got pingresponse then search in hashmap and send back duration
             }
         }
     }
