@@ -1,0 +1,10 @@
+FROM ubuntu:22.04
+
+EXPOSE 7464/udp
+EXPOSE 7464/tcp
+EXPOSE 7465/tcp
+EXPOSE 7465/udp
+
+COPY ./target/release /app
+CMD /app/ya-relay-server -a tcp://127.0.0.1:7464 --ip-checker-port 7465
+
