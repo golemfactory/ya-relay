@@ -1,3 +1,10 @@
+use ya_relay_client::{Client, ClientBuilder, FailFast};
+use ya_relay_core::{
+    crypto::FallbackCryptoProvider,
+    key::{load_or_generate, Protected},
+    NodeId,
+};
+
 use std::time::{Duration, Instant};
 
 use actix_web::{
@@ -7,16 +14,9 @@ use actix_web::{
 };
 use anyhow::Result;
 use structopt::StructOpt;
-
 use tokio::sync::{
     mpsc::{self, Sender},
     oneshot,
-};
-use ya_relay_client::{Client, ClientBuilder, FailFast};
-use ya_relay_core::{
-    crypto::FallbackCryptoProvider,
-    key::{load_or_generate, Protected},
-    NodeId,
 };
 
 #[derive(StructOpt)]
@@ -41,9 +41,6 @@ struct FindNode {
     node_id: NodeId,
     response: oneshot::Sender<Duration>,
 }
-
-#[derive(Clone)]
-struct AppState {}
 
 #[get("/find-node/{node_id}")]
 async fn find_node(
@@ -70,39 +67,41 @@ async fn find_node(
     ))
 }
 
+async fn client_handler(client: Client, mut rx: mpsc::Receiver<Command>) -> Result<()> {
+    while let Some(cmd) = rx.recv().await {
+        match cmd {
+            Command::FindNode(FindNode { node_id, response }) => {
+                let now = Instant::now();
+
+                match client.find_node(node_id).await {
+                    Ok(node) => {
+                        let elapsed = now.elapsed();
+                        log::info!("Found node {node:?} in {} ms", elapsed.as_millis());
+                        response.send(elapsed).unwrap();
+                    }
+                    Err(e) => log::error!("{e}"),
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run() -> Result<()> {
     env_logger::init();
 
     let cli = Cli::from_args();
 
-    let (rx, mut tx) = mpsc::channel::<Command>(16);
+    let (tx, rx) = mpsc::channel::<Command>(16);
     let client = build_client(cli.relay_addr, &cli.key_file, cli.password).await?;
 
     tokio::task::spawn_local(async move {
-        client.node_id();
-        while let Some(cmd) = tx.recv().await {
-            // log::info!("client got {cmd:?}");
-
-            match cmd {
-                Command::FindNode(FindNode { node_id, response }) => {
-                    let now = Instant::now();
-
-                    match client.find_node(node_id).await {
-                        Ok(node) => {
-                            let elapsed = now.elapsed();
-                            log::info!("Found node {node:?} in {} ms", elapsed.as_millis());
-                            response.send(elapsed).unwrap();
-                        }
-                        Err(e) => log::error!("{e}"),
-                    }
-                }
-            }
-        }
+        client_handler(client, rx).await.unwrap();
     });
 
     HttpServer::new(move || {
         App::new()
-            .app_data(Data::new(rx.clone()))
+            .app_data(Data::new(tx.clone()))
             .service(find_node)
     })
     .workers(4)
