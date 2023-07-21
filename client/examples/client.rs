@@ -73,7 +73,7 @@ async fn run() -> anyhow::Result<()> {
             client.find_node(opts.node_id).await?;
         }
         Commands::Ping(_) => {
-            let _ = client.ping_sessions().await;
+            client.ping_sessions().await;
         }
     };
 
