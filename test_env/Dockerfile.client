@@ -1,5 +1,7 @@
 FROM ubuntu:22.04
 
+ENV RUST_LOG=debug
+
 COPY ./target/release /app
-CMD /app/examples/http_client
+CMD /app/examples/http_client --port 8081 --relay-addr tcp://127.0.0.1:7464  --key-file client.key
 
