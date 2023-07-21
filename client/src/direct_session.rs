@@ -337,22 +337,22 @@ mod tests {
 
         session.register(node.clone(), 4);
 
-        assert_eq!(session.find_slot(&*NODE_ID1).unwrap(), 4);
+        assert_eq!(session.find_slot(&NODE_ID1).unwrap(), 4);
 
         let entry = session.get_by_slot(4).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 1);
         assert_eq!(entry.identities[0], node.identities[0]);
 
-        let entry = session.get_by_id(&*NODE_ID1).unwrap();
+        let entry = session.get_by_id(&NODE_ID1).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 1);
         assert_eq!(entry.identities[0], node.identities[0]);
 
-        session.remove(&*NODE_ID1).unwrap();
+        session.remove(&NODE_ID1).unwrap();
         assert!(session.get_by_slot(4).is_none());
-        assert!(session.get_by_id(&*NODE_ID1).is_none());
-        assert!(session.find_slot(&*NODE_ID1).is_none());
+        assert!(session.get_by_id(&NODE_ID1).is_none());
+        assert!(session.find_slot(&NODE_ID1).is_none());
     }
 
     #[tokio::test]
@@ -363,12 +363,12 @@ mod tests {
             identities: vec![*NODE_ID1],
         };
 
-        session.register(node.clone(), 4);
+        session.register(node, 4);
         session.remove_by_slot(4).unwrap();
 
         assert!(session.get_by_slot(4).is_none());
-        assert!(session.get_by_id(&*NODE_ID1).is_none());
-        assert!(session.find_slot(&*NODE_ID1).is_none());
+        assert!(session.get_by_id(&NODE_ID1).is_none());
+        assert!(session.find_slot(&NODE_ID1).is_none());
     }
 
     #[tokio::test]
@@ -381,8 +381,8 @@ mod tests {
 
         session.register(node.clone(), 4);
 
-        assert_eq!(session.find_slot(&*NODE_ID1).unwrap(), 4);
-        assert_eq!(session.find_slot(&*NODE_ID2).unwrap(), 4);
+        assert_eq!(session.find_slot(&NODE_ID1).unwrap(), 4);
+        assert_eq!(session.find_slot(&NODE_ID2).unwrap(), 4);
 
         let entry = session.get_by_slot(4).unwrap();
         assert_eq!(entry.default_id, node.default_id);
@@ -390,13 +390,13 @@ mod tests {
         assert_eq!(entry.identities[0], node.identities[0]);
         assert_eq!(entry.identities[1], node.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID1).unwrap();
+        let entry = session.get_by_id(&NODE_ID1).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node.identities[0]);
         assert_eq!(entry.identities[1], node.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID2).unwrap();
+        let entry = session.get_by_id(&NODE_ID2).unwrap();
         assert_eq!(entry.default_id, node.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node.identities[0]);
@@ -416,16 +416,16 @@ mod tests {
             identities: vec![*NODE_ID3, *NODE_ID4],
         };
 
-        session.register(node1.clone(), 4);
+        session.register(node1, 4);
         session.register(node2.clone(), 5);
 
-        session.remove(&*NODE_ID1).unwrap();
+        session.remove(&NODE_ID1).unwrap();
 
         assert!(session.get_by_slot(4).is_none());
-        assert!(session.get_by_id(&*NODE_ID1).is_none());
-        assert!(session.get_by_id(&*NODE_ID2).is_none());
-        assert!(session.find_slot(&*NODE_ID1).is_none());
-        assert!(session.find_slot(&*NODE_ID2).is_none());
+        assert!(session.get_by_id(&NODE_ID1).is_none());
+        assert!(session.get_by_id(&NODE_ID2).is_none());
+        assert!(session.find_slot(&NODE_ID1).is_none());
+        assert!(session.find_slot(&NODE_ID2).is_none());
 
         let entry = session.get_by_slot(5).unwrap();
         assert_eq!(entry.default_id, node2.default_id);
@@ -433,13 +433,13 @@ mod tests {
         assert_eq!(entry.identities[0], node2.identities[0]);
         assert_eq!(entry.identities[1], node2.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID4).unwrap();
+        let entry = session.get_by_id(&NODE_ID4).unwrap();
         assert_eq!(entry.default_id, node2.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node2.identities[0]);
         assert_eq!(entry.identities[1], node2.identities[1]);
 
-        let entry = session.get_by_id(&*NODE_ID3).unwrap();
+        let entry = session.get_by_id(&NODE_ID3).unwrap();
         assert_eq!(entry.default_id, node2.default_id);
         assert_eq!(entry.identities.len(), 2);
         assert_eq!(entry.identities[0], node2.identities[0]);

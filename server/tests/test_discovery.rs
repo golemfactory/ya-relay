@@ -57,8 +57,8 @@ async fn test_find_node_by_alias() -> anyhow::Result<()> {
 
     use ya_relay_client::GenericSender;
 
-    let _ = tx1.send(vec![1u8].into()).await?;
-    let _ = tx2.send(vec![2u8].into()).await?;
+    tx1.send(vec![1u8].into()).await?;
+    tx2.send(vec![2u8].into()).await?;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
