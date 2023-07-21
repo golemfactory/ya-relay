@@ -10,7 +10,7 @@ use actix_web::{
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -101,51 +101,62 @@ async fn ping(
     HttpResponse::Ok().body(msg)
 }
 
-async fn receiver_task(client: Client, pings: Pings) -> Result<()> {
+async fn receiver_task(client: Client, pings: Pings) {
     let mut receiver = client.forward_receiver().await.unwrap();
 
     while let Some(fwd) = receiver.recv().await {
-        log::info!("Handler got: {fwd:?}");
-
-        match fwd.transport {
-            ya_relay_client::TransportType::Reliable => {
-                let msg = String::from_utf8(fwd.payload.into_vec()).unwrap();
-
-                let mut s = msg.split(':');
-
-                let command = s.next().unwrap();
-                let request_id = s.next().unwrap().parse::<u32>().unwrap();
-
-                match command {
-                    "Ping" => match client.forward_reliable(fwd.node_id).await {
-                        Ok(mut sender) => {
-                            let msg = format!("Pong:{request_id}");
-                            if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
-                                log::error!("Pong send failed: {e}");
-                            }
-                        }
-                        Err(e) => log::error!("Forward reliable failed: {e}"),
-                    },
-                    "Pong" => {
-                        if let Some((ts, sender)) = pings.lock().unwrap().remove(&request_id) {
-                            sender
-                                .send(format!(
-                                    "Ping node {} took {} ms\n",
-                                    fwd.node_id,
-                                    ts.elapsed().as_millis()
-                                ))
-                                .unwrap();
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            ya_relay_client::TransportType::Unreliable => (),
-            ya_relay_client::TransportType::Transfer => (),
+        if let Err(e) = handle_forward_message(fwd, &client, &pings).await {
+            log::error!("Handle forward message failed: {e}")
         }
     }
+}
 
-    Ok(())
+async fn handle_forward_message(
+    fwd: ya_relay_client::Forwarded,
+    client: &Client,
+    pings: &Pings,
+) -> Result<()> {
+    log::info!("Got forward message: {fwd:?}");
+    match fwd.transport {
+        ya_relay_client::TransportType::Reliable => {
+            let msg = String::from_utf8(fwd.payload.into_vec())?;
+
+            let mut s = msg.split(':');
+            let command = s
+                .next()
+                .ok_or_else(|| anyhow!("No message command found"))?;
+            let request_id = s
+                .next()
+                .ok_or_else(|| anyhow!("No request ID found"))?
+                .parse::<u32>()?;
+
+            match command {
+                "Ping" => {
+                    let mut sender = client.forward_reliable(fwd.node_id).await?;
+                    sender
+                        .send(format!("Pong:{request_id}").as_bytes().to_vec().into())
+                        .await?;
+
+                    Ok(())
+                }
+                "Pong" => {
+                    if let Some((ts, sender)) = pings.lock().unwrap().remove(&request_id) {
+                        sender
+                            .send(format!(
+                                "Ping node {} took {} ms\n",
+                                fwd.node_id,
+                                ts.elapsed().as_millis()
+                            ))
+                            .unwrap();
+                    }
+                    Ok(())
+                }
+                other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
+            }
+        }
+        ya_relay_client::TransportType::Unreliable => Ok(()),
+        ya_relay_client::TransportType::Transfer => Ok(()),
+    }
 }
 
 async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pings) -> Result<()> {
@@ -204,7 +215,7 @@ async fn run() -> Result<()> {
     let pings_cloned = pings.clone();
 
     tokio::task::spawn_local(async move {
-        receiver_task(client_cloned, pings_cloned).await.unwrap();
+        receiver_task(client_cloned, pings_cloned).await;
     });
 
     tokio::task::spawn_local(async move {
