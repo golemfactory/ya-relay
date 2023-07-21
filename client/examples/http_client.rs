@@ -5,18 +5,18 @@ use ya_relay_core::{
     NodeId,
 };
 
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
-
 use actix_web::{
     get,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
 use anyhow::Result;
+use rand::Rng;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 use structopt::StructOpt;
 use tokio::sync::{
     mpsc::{self, Sender},
@@ -52,6 +52,7 @@ struct FindNode {
 #[derive(Debug)]
 struct Ping {
     node_id: NodeId,
+    request_id: u32,
     response: oneshot::Sender<String>,
 }
 
@@ -89,6 +90,7 @@ async fn ping(
     client_sender
         .send(Command::Ping(Ping {
             node_id,
+            request_id: rand::thread_rng().gen(),
             response: tx,
         }))
         .await
@@ -108,10 +110,16 @@ async fn receiver_task(client: Client, pings: Pings) -> Result<()> {
         match fwd.transport {
             ya_relay_client::TransportType::Reliable => {
                 let msg = String::from_utf8(fwd.payload.into_vec()).unwrap();
-                match msg.as_str() {
+
+                let mut s = msg.split(':');
+
+                let command = s.next().unwrap();
+                let request_id = s.next().unwrap().parse::<u32>().unwrap();
+
+                match command {
                     "Ping" => match client.forward_reliable(fwd.node_id).await {
                         Ok(mut sender) => {
-                            let msg = "Pong";
+                            let msg = format!("Pong:{request_id}");
                             if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
                                 log::error!("Pong send failed: {e}");
                             }
@@ -119,7 +127,7 @@ async fn receiver_task(client: Client, pings: Pings) -> Result<()> {
                         Err(e) => log::error!("Forward reliable failed: {e}"),
                     },
                     "Pong" => {
-                        if let Some((ts, sender)) = pings.lock().unwrap().remove(&1) {
+                        if let Some((ts, sender)) = pings.lock().unwrap().remove(&request_id) {
                             sender
                                 .send(format!(
                                     "Ping node {} took {} ms\n",
@@ -158,17 +166,21 @@ async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pin
                     Err(e) => log::error!("Find node failed: {e}"),
                 }
             }
-            Command::Ping(Ping { node_id, response }) => {
+            Command::Ping(Ping {
+                node_id,
+                request_id,
+                response,
+            }) => {
                 //TODO choose which transport type in API
                 match client.forward_reliable(node_id).await {
                     Ok(mut sender) => {
-                        let msg = "Ping";
+                        let msg = format!("Ping:{request_id}");
 
                         let now = Instant::now();
                         if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
                             log::error!("Send failed: {e}");
                         } else {
-                            pings.lock().unwrap().insert(1, (now, response));
+                            pings.lock().unwrap().insert(request_id, (now, response));
                         }
                     }
                     Err(e) => log::error!("Forward reliable failed: {e}"),
