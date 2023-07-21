@@ -1,19 +1,11 @@
-#[cfg(feature = "mock")]
-use ya_relay_client::{ClientBuilder, FailFast};
-
-#[cfg(feature = "mock")]
 use std::time::Duration;
-
-#[cfg(feature = "mock")]
+use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::utils::to_udp_url;
-#[cfg(feature = "mock")]
 use ya_relay_server::testing::server::init_test_server;
 
 /// Client should be able to use the same port after it was shutdown.
 /// If it doesn't, it means that socket wasn't dropped correctly.
-#[cfg(feature = "mock")]
 #[serial_test::serial]
-// #[test]
 async fn test_clean_shutdown() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
