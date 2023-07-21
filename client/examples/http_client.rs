@@ -1,17 +1,11 @@
-use std::{
-    convert::TryFrom,
-    str::FromStr,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use actix_web::{
-    get, post,
+    get,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
 use anyhow::Result;
-use futures::TryFutureExt;
 use structopt::StructOpt;
 
 use tokio::sync::{
@@ -84,7 +78,7 @@ async fn run() -> Result<()> {
     let (rx, mut tx) = mpsc::channel::<Command>(16);
     let client = build_client(cli.relay_addr, &cli.key_file, cli.password).await?;
 
-    let p2p_client = tokio::task::spawn_local(async move {
+    tokio::task::spawn_local(async move {
         client.node_id();
         while let Some(cmd) = tx.recv().await {
             // log::info!("client got {cmd:?}");
@@ -106,7 +100,7 @@ async fn run() -> Result<()> {
         }
     });
 
-    let http_server = HttpServer::new(move || {
+    HttpServer::new(move || {
         App::new()
             .app_data(Data::new(rx.clone()))
             .service(find_node)
