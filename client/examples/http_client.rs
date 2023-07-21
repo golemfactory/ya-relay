@@ -1,9 +1,23 @@
-use std::{convert::TryFrom, str::FromStr};
+use std::{
+    convert::TryFrom,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
-use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{
+    get, post,
+    web::{self, Data},
+    App, HttpResponse, HttpServer, Responder,
+};
 use anyhow::Result;
+use futures::TryFutureExt;
 use structopt::StructOpt;
 
+use tokio::sync::{
+    mpsc::{self, Sender},
+    oneshot,
+};
 use ya_relay_client::{Client, ClientBuilder, FailFast};
 use ya_relay_core::{
     crypto::FallbackCryptoProvider,
@@ -23,32 +37,84 @@ struct Cli {
     password: Option<Protected>,
 }
 
-#[derive(Clone)]
-struct AppState {
-    client: std::sync::Arc<std::sync::Mutex<Client>>,
+#[derive(Debug)]
+enum Command {
+    FindNode(FindNode),
 }
+
+#[derive(Debug)]
+struct FindNode {
+    node_id: NodeId,
+    response: oneshot::Sender<Duration>,
+}
+
+#[derive(Clone)]
+struct AppState {}
 
 #[get("/find-node/{node_id}")]
-async fn find_node(node_id: web::Path<String>) -> impl Responder {
+async fn find_node(
+    node_id: web::Path<String>,
+    client_sender: web::Data<Sender<Command>>,
+) -> impl Responder {
     let node_id = node_id.parse::<NodeId>().unwrap();
 
-    let msg = format!("Node id: {node_id} found in s\n");
+    let (rx, tx) = oneshot::channel::<Duration>();
 
-    HttpResponse::Ok().body(msg)
+    client_sender
+        .send(Command::FindNode(FindNode {
+            node_id,
+            response: rx,
+        }))
+        .await
+        .unwrap();
+
+    let duration = tx.await.unwrap();
+
+    HttpResponse::Ok().body(format!(
+        "Node id: {node_id} found in {} ms\n",
+        duration.as_millis()
+    ))
 }
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+
+async fn run() -> Result<()> {
     env_logger::init();
 
     let cli = Cli::from_args();
 
+    let (rx, mut tx) = mpsc::channel::<Command>(16);
     let client = build_client(cli.relay_addr, &cli.key_file, cli.password).await?;
 
-    let app_data = client;
+    let p2p_client = tokio::task::spawn_local(async move {
+        client.node_id();
+        while let Some(cmd) = tx.recv().await {
+            // log::info!("client got {cmd:?}");
 
-    let server = HttpServer::new(|| App::new().app_data(app_data.clone()).service(find_node));
+            match cmd {
+                Command::FindNode(FindNode { node_id, response }) => {
+                    let now = Instant::now();
 
-    server.bind(("0.0.0.0", cli.port))?.run().await?;
+                    match client.find_node(node_id).await {
+                        Ok(node) => {
+                            let elapsed = now.elapsed();
+                            log::info!("Found node {node:?} in {} ms", elapsed.as_millis());
+                            response.send(elapsed).unwrap();
+                        }
+                        Err(e) => log::error!("{e}"),
+                    }
+                }
+            }
+        }
+    });
+
+    let http_server = HttpServer::new(move || {
+        App::new()
+            .app_data(Data::new(rx.clone()))
+            .service(find_node)
+    })
+    .workers(4)
+    .bind(("0.0.0.0", cli.port))?
+    .run()
+    .await?;
 
     Ok(())
 }
@@ -68,4 +134,10 @@ async fn build_client(
     log::info!("CLIENT PUBLIC ADDR: {:?}", client.public_addr().await);
 
     Ok(client)
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> anyhow::Result<()> {
+    let local_set = tokio::task::LocalSet::new();
+    local_set.run_until(run()).await
 }
