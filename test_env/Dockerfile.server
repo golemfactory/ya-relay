@@ -5,6 +5,8 @@ EXPOSE 7464/tcp
 EXPOSE 7465/tcp
 EXPOSE 7465/udp
 
+ENV RUST_LOG=info
+
 COPY ./target/release /app
 CMD /app/ya-relay-server -a tcp://0.0.0.0:7464 --ip-checker-port 7465
 

@@ -1,7 +1,15 @@
 FROM ubuntu:22.04
 
-ENV RUST_LOG=debug
+EXPOSE 80
+
+ENV RUST_LOG=info
+RUN export SERVER_IP=$(dig +short relay_server -t a); echo $SERVER_IP
+
+RUN apt update && apt install -y iputils-ping dnsutils
 
 COPY ./target/release /app
-CMD /app/examples/http_client --port 8081 --relay-addr tcp://127.0.0.1:7464  --key-file client.key
+# CMD echo $SERVER_IP && ping relay_server
+# CMD ping google.com
+CMD export SERVER_IP=$(dig +short relay_server -t a); echo $SERVER_IP; \
+    /app/examples/http_client --port 8081 --relay-addr tcp://$SERVER_IP:7464  --key-file client.key
 

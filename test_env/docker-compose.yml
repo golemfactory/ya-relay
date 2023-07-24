@@ -1,0 +1,30 @@
+version: "3.8"
+
+services:
+  relay_server:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.server
+    ports:
+      - "7464:7464"
+    networks:
+      - relay-network
+
+  client:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    ports:
+      - "8000-9000:8081"
+#    depends_on:
+#      - relay_server
+#    links:
+#      - relay_server
+    networks:
+      - relay-network
+
+
+networks:
+  relay-network:
+    driver: bridge
+
