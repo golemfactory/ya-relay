@@ -5,12 +5,14 @@ use ya_relay_core::{
     NodeId,
 };
 
+use actix_web::error::ErrorInternalServerError;
 use actix_web::{
     get,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
 use anyhow::{anyhow, Result};
+use futures::{future, FutureExt};
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -30,12 +32,61 @@ struct Cli {
     #[structopt(long, env = "RELAY_ADDR")]
     relay_addr: url::Url,
     #[structopt(long, env = "KEY_FILE")]
-    key_file: String,
+    key_file: Option<String>,
     #[structopt(long, env = "PASSWORD", parse(from_str = Protected::from))]
     password: Option<Protected>,
 }
 
-type Pings = Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<String>)>>>;
+#[derive(Clone, Default)]
+struct Pings {
+    inner: Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>>>,
+}
+
+struct RequestGuard {
+    inner: Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>>>,
+    id: u32,
+    rx: oneshot::Receiver<Result<String, String>>,
+}
+
+impl Pings {
+    pub fn request(&self) -> RequestGuard {
+        let id = rand::thread_rng().gen();
+        let inner = self.inner.clone();
+        let (tx, rx) = oneshot::channel();
+
+        inner.lock().unwrap().insert(id, (Instant::now(), tx));
+
+        RequestGuard { inner, id, rx }
+    }
+
+    pub fn respond(
+        &self,
+        request_id: u32,
+    ) -> Result<(Instant, oneshot::Sender<Result<String, String>>)> {
+        self.inner
+            .lock()
+            .unwrap()
+            .remove(&request_id)
+            .ok_or_else(|| anyhow!("response to invalid request {}", request_id))
+    }
+}
+
+impl RequestGuard {
+    pub fn id(&self) -> u32 {
+        self.id
+    }
+
+    pub async fn result(mut self) -> Result<String, String> {
+        let rx = &mut self.rx;
+        rx.await.map_err(|e| e.to_string())?
+    }
+}
+
+impl Drop for RequestGuard {
+    fn drop(&mut self) {
+        let _ = self.inner.lock().unwrap().remove(&self.id);
+    }
+}
 
 #[derive(Debug)]
 enum Command {
@@ -46,14 +97,13 @@ enum Command {
 #[derive(Debug)]
 struct FindNode {
     node_id: NodeId,
-    response: oneshot::Sender<String>,
+    response: oneshot::Sender<Result<String, String>>,
 }
 
 #[derive(Debug)]
 struct Ping {
     node_id: NodeId,
-    request_id: u32,
-    response: oneshot::Sender<String>,
+    response: oneshot::Sender<Result<String, String>>,
 }
 
 #[get("/find-node/{node_id}")]
@@ -63,7 +113,7 @@ async fn find_node(
 ) -> impl Responder {
     let node_id = node_id.parse::<NodeId>().unwrap();
 
-    let (tx, rx) = oneshot::channel::<String>();
+    let (tx, rx) = oneshot::channel();
 
     client_sender
         .send(Command::FindNode(FindNode {
@@ -71,11 +121,14 @@ async fn find_node(
             response: tx,
         }))
         .await
-        .unwrap();
+        .map_err(ErrorInternalServerError)?;
 
-    let msg = rx.await.unwrap();
+    let msg = rx
+        .await
+        .map_err(ErrorInternalServerError)?
+        .map_err(ErrorInternalServerError)?;
 
-    HttpResponse::Ok().body(msg)
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
 #[get("/ping/{node_id}")]
@@ -85,23 +138,25 @@ async fn ping(
 ) -> impl Responder {
     let node_id = node_id.parse::<NodeId>().unwrap();
 
-    let (tx, rx) = oneshot::channel::<String>();
+    let (tx, rx) = oneshot::channel();
 
     client_sender
         .send(Command::Ping(Ping {
             node_id,
-            request_id: rand::thread_rng().gen(),
             response: tx,
         }))
         .await
-        .unwrap();
+        .map_err(ErrorInternalServerError)?;
 
-    let msg = rx.await.unwrap();
+    let msg = rx
+        .await
+        .map_err(ErrorInternalServerError)?
+        .map_err(ErrorInternalServerError)?;
 
-    HttpResponse::Ok().body(msg)
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
-async fn receiver_task(client: Client, pings: Pings) {
+async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
     let mut receiver = client.forward_receiver().await.unwrap();
 
     while let Some(fwd) = receiver.recv().await {
@@ -109,6 +164,7 @@ async fn receiver_task(client: Client, pings: Pings) {
             log::error!("Handle forward message failed: {e}")
         }
     }
+    Ok(())
 }
 
 async fn handle_forward_message(
@@ -116,9 +172,9 @@ async fn handle_forward_message(
     client: &Client,
     pings: &Pings,
 ) -> Result<()> {
-    log::info!("Got forward message: {fwd:?}");
     match fwd.transport {
         ya_relay_client::TransportType::Reliable => {
+            log::info!("Got forward message: {fwd:?}");
             let msg = String::from_utf8(fwd.payload.into_vec())?;
 
             let mut s = msg.split(':');
@@ -140,15 +196,19 @@ async fn handle_forward_message(
                     Ok(())
                 }
                 "Pong" => {
-                    if let Some((ts, sender)) = pings.lock().unwrap().remove(&request_id) {
-                        sender
-                            .send(format!(
+                    match pings.respond(request_id) {
+                        Ok((ts, sender)) => sender
+                            .send(Ok(format!(
                                 "Ping node {} took {} ms\n",
                                 fwd.node_id,
                                 ts.elapsed().as_millis()
-                            ))
-                            .unwrap();
-                    }
+                            )))
+                            .ok(),
+                        Err(e) => {
+                            log::warn!("ping: {:?}", e);
+                            None
+                        }
+                    };
                     Ok(())
                 }
                 other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
@@ -168,33 +228,35 @@ async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pin
                 match client.find_node(node_id).await {
                     Ok(node) => {
                         response
-                            .send(format!(
+                            .send(Ok(format!(
                                 "Found node {node:?} in {} ms\n",
                                 now.elapsed().as_millis()
-                            ))
+                            )))
                             .unwrap();
                     }
-                    Err(e) => log::error!("Find node failed: {e}"),
+                    Err(e) => {
+                        let _ = response.send(Err(format!("Find node failed: {e}")));
+                        log::error!("Find node failed: {e}")
+                    }
                 }
             }
-            Command::Ping(Ping {
-                node_id,
-                request_id,
-                response,
-            }) => {
-                //TODO choose which transport type in API
+            Command::Ping(Ping { node_id, response }) => {
+                log::info!("try ping: {}", node_id);
                 match client.forward_reliable(node_id).await {
                     Ok(mut sender) => {
-                        let msg = format!("Ping:{request_id}");
-
-                        let now = Instant::now();
-                        if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
+                        let r = pings.request();
+                        let msg = format!("Ping:{}", r.id());
+                        let _ = if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
                             log::error!("Send failed: {e}");
+                            response.send(Err(format!("Send failed: {e}")))
                         } else {
-                            pings.lock().unwrap().insert(request_id, (now, response));
-                        }
+                            response.send(r.result().await)
+                        };
                     }
-                    Err(e) => log::error!("Forward reliable failed: {e}"),
+                    Err(e) => {
+                        log::error!("Forward reliable failed: {e}");
+                        let _ = response.send(Err(format!("Forward reliable failed: {e}")));
+                    }
                 }
             }
         }
@@ -208,52 +270,63 @@ async fn run() -> Result<()> {
     let cli = Cli::from_args();
 
     let (tx, rx) = mpsc::channel::<Command>(16);
-    let client = build_client(cli.relay_addr, &cli.key_file, cli.password).await?;
+    let client = build_client(
+        cli.relay_addr,
+        cli.key_file.as_ref().map(String::as_str),
+        cli.password,
+    )
+    .await?;
     let client_cloned = client.clone();
 
     let pings = Pings::default();
     let pings_cloned = pings.clone();
 
-    let receiver = tokio::task::spawn_local(async move {
-        receiver_task(client_cloned, pings_cloned).await;
-    });
+    let receiver = receiver_task(client_cloned, pings_cloned);
 
-    let client = tokio::task::spawn_local(async move {
-        client_task(client, rx, pings).await.unwrap();
-    });
+    let client = client_task(client, rx, pings);
 
     let port = cli.port.clone();
-    let http_server = tokio::task::spawn_local(async move {
-        HttpServer::new(move || {
-            App::new()
-                .app_data(Data::new(tx.clone()))
-                .service(find_node)
-                .service(ping)
-        })
-        .workers(4)
-        .bind(("0.0.0.0", port))
-        .unwrap()
-        .run()
-        .await
-        .unwrap();
-    });
 
-    tokio::select! {
-        res = receiver => {res?;}
-        res = client => {res?;}
-        res = http_server => {res?;}
-    }
+    let http_server = HttpServer::new(move || {
+        App::new()
+            .app_data(Data::new(tx.clone()))
+            .service(find_node)
+            .service(ping)
+    })
+    .workers(4)
+    .bind(("0.0.0.0", port))
+    .unwrap()
+    .run();
+
+    let handle = http_server.handle();
+
+    future::try_join(
+        http_server.then(|_| future::err::<(), anyhow::Error>(anyhow!("stop"))),
+        async move {
+            let _ = future::try_join(receiver, client).await;
+            log::error!("exit!");
+            handle.stop(true).await;
+            Ok(())
+        },
+    )
+    .await?;
 
     Ok(())
 }
 
 async fn build_client(
     relay_addr: url::Url,
-    key_file: &str,
+    key_file: Option<&str>,
     password: Option<Protected>,
 ) -> Result<Client> {
-    let secret = load_or_generate(&key_file, password);
-    let builder = ClientBuilder::from_url(relay_addr).crypto(FallbackCryptoProvider::new(secret));
+    let secret = key_file.map(|key_file| load_or_generate(key_file, password));
+    let provider = if let Some(secret_key) = secret {
+        FallbackCryptoProvider::new(secret_key)
+    } else {
+        FallbackCryptoProvider::default()
+    };
+
+    let builder = ClientBuilder::from_url(relay_addr).crypto(provider);
 
     let client = builder.connect(FailFast::Yes).build().await?;
 
