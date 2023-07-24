@@ -214,24 +214,35 @@ async fn run() -> Result<()> {
     let pings = Pings::default();
     let pings_cloned = pings.clone();
 
-    tokio::task::spawn_local(async move {
+    let receiver = tokio::task::spawn_local(async move {
         receiver_task(client_cloned, pings_cloned).await;
     });
 
-    tokio::task::spawn_local(async move {
+    let client = tokio::task::spawn_local(async move {
         client_task(client, rx, pings).await.unwrap();
     });
 
-    HttpServer::new(move || {
-        App::new()
-            .app_data(Data::new(tx.clone()))
-            .service(find_node)
-            .service(ping)
-    })
-    .workers(4)
-    .bind(("0.0.0.0", cli.port))?
-    .run()
-    .await?;
+    let port = cli.port.clone();
+    let http_server = tokio::task::spawn_local(async move {
+        HttpServer::new(move || {
+            App::new()
+                .app_data(Data::new(tx.clone()))
+                .service(find_node)
+                .service(ping)
+        })
+        .workers(4)
+        .bind(("0.0.0.0", port))
+        .unwrap()
+        .run()
+        .await
+        .unwrap();
+    });
+
+    tokio::select! {
+        res = receiver => {res?;}
+        res = client => {res?;}
+        res = http_server => {res?;}
+    }
 
     Ok(())
 }
