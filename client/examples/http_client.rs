@@ -27,8 +27,10 @@ use tokio::sync::{
 
 #[derive(StructOpt)]
 struct Cli {
-    #[structopt(long, env = "PORT")]
-    port: u16,
+    #[structopt(long, env = "API_PORT")]
+    api_port: u16,
+    #[structopt(long, env = "P2P_BIND_ADDR")]
+    p2p_bind_addr: url::Url,
     #[structopt(long, env = "RELAY_ADDR")]
     relay_addr: url::Url,
     #[structopt(long, env = "KEY_FILE")]
@@ -275,6 +277,7 @@ async fn run() -> Result<()> {
     let (tx, rx) = mpsc::channel::<Command>(16);
     let client = build_client(
         cli.relay_addr,
+        cli.p2p_bind_addr,
         cli.key_file.as_ref().map(String::as_str),
         cli.password,
     )
@@ -288,7 +291,7 @@ async fn run() -> Result<()> {
 
     let client = client_task(client, rx, pings);
 
-    let port = cli.port.clone();
+    let port = cli.api_port.clone();
 
     let http_server = HttpServer::new(move || {
         App::new()
@@ -317,6 +320,7 @@ async fn run() -> Result<()> {
 
 async fn build_client(
     relay_addr: url::Url,
+    p2p_bind_addr: url::Url,
     key_file: Option<&str>,
     password: Option<Protected>,
 ) -> Result<Client> {
@@ -327,7 +331,9 @@ async fn build_client(
         FallbackCryptoProvider::default()
     };
 
-    let builder = ClientBuilder::from_url(relay_addr).crypto(provider);
+    let builder = ClientBuilder::from_url(relay_addr)
+        .listen(p2p_bind_addr)
+        .crypto(provider);
 
     let client = builder.connect(FailFast::Yes).build().await?;
 
