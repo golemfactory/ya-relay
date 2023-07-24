@@ -5,14 +5,14 @@ use ya_relay_core::{
     NodeId,
 };
 
-use actix_web::error::ErrorInternalServerError;
+use actix_web::error::{ErrorBadRequest, ErrorInternalServerError};
 use actix_web::{
     get,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
 use anyhow::{anyhow, Result};
-use futures::{future, FutureExt};
+use futures::{future, try_join, FutureExt};
 use rand::Rng;
 use std::{
     collections::HashMap,
@@ -111,7 +111,7 @@ async fn find_node(
     node_id: web::Path<String>,
     client_sender: web::Data<Sender<Command>>,
 ) -> impl Responder {
-    let node_id = node_id.parse::<NodeId>().unwrap();
+    let node_id = node_id.parse::<NodeId>().map_err(ErrorBadRequest)?;
 
     let (tx, rx) = oneshot::channel();
 
@@ -136,7 +136,7 @@ async fn ping(
     node_id: web::Path<String>,
     client_sender: web::Data<Sender<Command>>,
 ) -> impl Responder {
-    let node_id = node_id.parse::<NodeId>().unwrap();
+    let node_id = node_id.parse::<NodeId>().map_err(ErrorBadRequest)?;
 
     let (tx, rx) = oneshot::channel();
 
@@ -157,7 +157,10 @@ async fn ping(
 }
 
 async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
-    let mut receiver = client.forward_receiver().await.unwrap();
+    let mut receiver = client
+        .forward_receiver()
+        .await
+        .ok_or(anyhow!("Couldn't get forward receiver"))?;
 
     while let Some(fwd) = receiver.recv().await {
         if let Err(e) = handle_forward_message(fwd, &client, &pings).await {
@@ -232,7 +235,7 @@ async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pin
                                 "Found node {node:?} in {} ms\n",
                                 now.elapsed().as_millis()
                             )))
-                            .unwrap();
+                            .ok();
                     }
                     Err(e) => {
                         let _ = response.send(Err(format!("Find node failed: {e}")));
@@ -294,22 +297,20 @@ async fn run() -> Result<()> {
             .service(ping)
     })
     .workers(4)
-    .bind(("0.0.0.0", port))
-    .unwrap()
+    .bind(("0.0.0.0", port))?
     .run();
 
     let handle = http_server.handle();
 
-    future::try_join(
+    try_join!(
         http_server.then(|_| future::err::<(), anyhow::Error>(anyhow!("stop"))),
         async move {
-            let _ = future::try_join(receiver, client).await;
+            try_join!(receiver, client)?;
             log::error!("exit!");
             handle.stop(true).await;
             Ok(())
         },
-    )
-    .await?;
+    )?;
 
     Ok(())
 }
