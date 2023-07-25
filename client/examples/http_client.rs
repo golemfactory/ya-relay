@@ -43,13 +43,15 @@ struct Cli {
     password: Option<Protected>,
 }
 
+type RequestIdToPingResponseMap = HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>;
+
 #[derive(Clone, Default)]
 struct Pings {
-    inner: Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>>>,
+    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
 }
 
 struct RequestGuard {
-    inner: Arc<Mutex<HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>>>,
+    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
     id: u32,
     rx: oneshot::Receiver<Result<String, String>>,
 }
@@ -187,12 +189,11 @@ async fn find_node(
     let msg = rx
         .await
         .map(|rx| match rx {
-            Ok((node, time)) =>
-                format!(
-                    "Found {} \nin {} ms",
-                    DisplayableNode(node),
-                    time.as_millis()
-                ),
+            Ok((node, time)) => format!(
+                "Found {} \nin {} ms",
+                DisplayableNode(node),
+                time.as_millis()
+            ),
             Err(err) => err.to_string(),
         })
         .map_err(ErrorInternalServerError)?;
@@ -342,7 +343,7 @@ async fn run() -> Result<()> {
     let client = build_client(
         cli.relay_addr,
         cli.p2p_bind_addr,
-        cli.key_file.as_ref().map(String::as_str),
+        cli.key_file.as_deref(),
         cli.password,
     )
     .await?;
@@ -355,7 +356,7 @@ async fn run() -> Result<()> {
 
     let client = client_task(client, rx, pings);
 
-    let port = cli.api_port.clone();
+    let port = cli.api_port;
 
     let http_server = HttpServer::new(move || {
         App::new()
