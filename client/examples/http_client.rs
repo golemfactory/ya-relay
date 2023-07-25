@@ -187,18 +187,17 @@ async fn find_node(
     let msg = rx
         .await
         .map(|rx| match rx {
-            Ok((node, time)) => {
-                let message = format!(
+            Ok((node, time)) =>
+                format!(
                     "Found {} \nin {} ms",
                     DisplayableNode(node),
                     time.as_millis()
-                );
-                println!("{}", message);
-                message
-            }
+                ),
             Err(err) => err.to_string(),
         })
         .map_err(ErrorInternalServerError)?;
+
+    println!("{}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
