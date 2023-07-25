@@ -214,8 +214,9 @@ impl TcpLayer {
             &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
         });
 
-        // TODO: We need to change this function since, we distinguished between outgoing
-        //       and incoming connections. We have to change incoming connection state to Established.
+        // TODO: Since we distinguish between outgoing and incoming connections
+        //       We should change incoming connection state to Established. Current code doesn't handle
+        //       this correctly.
         if self.registry.resolve_node(node).await.is_err() {
             log::debug!("[VirtualTcp] Incoming message from new Node [{node}]. Adding connection.");
             self.registry.add_virt_node(node).await;

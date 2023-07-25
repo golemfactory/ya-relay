@@ -80,8 +80,6 @@ impl NetworkView {
     pub async fn update_entry(&self, info: NodeInfo) -> anyhow::Result<()> {
         log::trace!("Updating `NodeView` for [{}]", info.default_node_id());
 
-        // TODO: For now we use the simplest implementation possible.
-        //       Apply considerations from comment later.
         let addrs = info
             .endpoints
             .iter()
@@ -371,7 +369,7 @@ impl NodeView {
         state.node = info.identities;
         // TODO: We should distinguish between public IPs and addresses assigned temporarily
         //       by routers. `NetworkView` contains addresses from which we received packets.
-        //       Here we assign only public, but earlier (`guard_initialization`) we added mapped addresses
+        //       Here we assign only public, but earlier (`NetworkView::guard`) we added mapped addresses
         state.addresses = info.endpoints.into_iter().map(|e| e.address).collect();
         Ok(())
     }
