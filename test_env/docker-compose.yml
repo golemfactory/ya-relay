@@ -6,7 +6,10 @@ services:
       context: ../
       dockerfile: test_env/Dockerfile.server
     ports:
-      - "7464:7464"
+      - "7464:7464/tcp"
+      - "7464:7464/udp"
+      - "7465:7465/tcp"
+      - "7465:7465/udp"
     networks:
       - relay-network
 
