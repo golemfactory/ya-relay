@@ -17,10 +17,6 @@ services:
     ports:
       - "8000-8999:8081"
       - "9000-9999:9081"
-#    depends_on:
-#      - relay_server
-#    links:
-#      - relay_server
     networks:
       - relay-network
 
