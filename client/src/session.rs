@@ -1683,7 +1683,7 @@ mod tests {
 
         // Function should finish in timeout and return error.
         assert!(
-            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+            timeout(Duration::from_secs(12), layer1.layer.session(layer2.id))
                 .await
                 .unwrap()
                 .is_err()

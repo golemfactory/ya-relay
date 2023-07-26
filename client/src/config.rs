@@ -45,6 +45,34 @@ pub struct ClientConfig {
     pub registry_config: NetworkViewConfig,
 }
 
+/// The `ClientBuilder` struct provides a builder pattern for constructing a `Client` object.
+///
+/// # Examples
+///
+/// ## Creating a client configuration using the builder
+///
+/// ```rust
+/// use anyhow::Context;
+/// use url::Url;
+/// use ya_relay_client::{ClientBuilder, FailFast, crypto::FallbackCryptoProvider};
+///
+/// let _ = async {
+///     let srv_url = Url::parse("udp://127.0.0.1:8080").unwrap();
+///     let builder = ClientBuilder::from_url(srv_url)
+///       .crypto(FallbackCryptoProvider::default())
+///       .connect(FailFast::Yes)
+///       .listen(Url::parse("udp://0.0.0.0:0").unwrap())
+///       .expire_session_after(std::time::Duration::from_secs(300))
+///       .tcp_max_recv_buffer_size(4*1024*1024)?
+///       .tcp_max_send_buffer_size(4*1024*1024)?
+///       .udp_max_recv_buffer_size(4*1024*1024)?
+///       .udp_max_send_buffer_size(4*1024*1024)?;
+///
+///     let client = builder.build().await.context("Failed to build client configuration")?;
+///     Ok::<_, anyhow::Error>(client)
+/// };
+/// ```
+///
 pub struct ClientBuilder {
     bind_url: Option<Url>,
     srv_url: Url,
@@ -113,7 +141,7 @@ impl ClientBuilder {
         Ok(self)
     }
 
-    pub async fn build_config(mut self) -> anyhow::Result<ClientConfig> {
+    pub(crate) async fn build_config(mut self) -> anyhow::Result<ClientConfig> {
         let bind_url = self
             .bind_url
             .unwrap_or_else(|| Url::parse("udp://0.0.0.0:0").unwrap());

@@ -1,6 +1,7 @@
+use std::time::Duration;
 use structopt::{clap, StructOpt};
 
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
 use ya_relay_core::NodeId;
@@ -61,16 +62,21 @@ async fn run() -> anyhow::Result<()> {
         ClientBuilder::from_url(address)
     };
 
-    let client = builder.build().await?;
+    let client = builder.connect(FailFast::No).build().await?;
 
-    log::info!("Sending to server listening on: {}", args.address);
+    log::info!(
+        "Sending to server listening on: {}, node_id={}",
+        args.address,
+        client.node_id()
+    );
 
     match args.commands {
         Commands::Init(Init {}) => {
-            todo!()
+            tokio::time::sleep(Duration::from_secs(500000)).await;
         }
         Commands::FindNode(opts) => {
-            client.find_node(opts.node_id).await?;
+            let node_info = client.find_node(opts.node_id).await?;
+            log::info!("found  node: {:?}", node_info);
         }
         Commands::Ping(_) => {
             client.ping_sessions().await;

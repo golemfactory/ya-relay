@@ -1,5 +1,6 @@
 use std::time::Duration;
 use ya_relay_client::{ClientBuilder, FailFast};
+use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::utils::to_udp_url;
 use ya_relay_server::testing::server::init_test_server;
 
@@ -9,7 +10,10 @@ use ya_relay_server::testing::server::init_test_server;
 async fn test_clean_shutdown() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
+    let crypto = FallbackCryptoProvider::default();
+
     let mut client = ClientBuilder::from_url(wrapper.url())
+        .crypto(crypto.clone())
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
@@ -18,7 +22,6 @@ async fn test_clean_shutdown() -> anyhow::Result<()> {
     println!("Shutting down Client");
 
     let addr2 = client.bind_addr().await?;
-    let crypto = client.config.crypto.clone();
 
     client.shutdown().await.unwrap();
 
