@@ -14,8 +14,10 @@ use actix_web::{
 use anyhow::{anyhow, Result};
 use futures::{future, try_join, FutureExt};
 use rand::Rng;
+use std::time::Duration;
 use std::{
     collections::HashMap,
+    fmt,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -24,6 +26,8 @@ use tokio::sync::{
     mpsc::{self, Sender},
     oneshot,
 };
+use ya_relay_proto::proto::response::Node;
+use ya_relay_proto::proto::Protocol;
 
 #[derive(StructOpt)]
 struct Cli {
@@ -39,15 +43,15 @@ struct Cli {
     password: Option<Protected>,
 }
 
-type ReplySender = oneshot::Sender<Result<String, String>>;
+type RequestIdToPingResponseMap = HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>;
 
 #[derive(Clone, Default)]
 struct Pings {
-    inner: Arc<Mutex<HashMap<u32, (Instant, ReplySender)>>>,
+    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
 }
 
 struct RequestGuard {
-    inner: Arc<Mutex<HashMap<u32, (Instant, ReplySender)>>>,
+    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
     id: u32,
     rx: oneshot::Receiver<Result<String, String>>,
 }
@@ -101,13 +105,68 @@ enum Command {
 #[derive(Debug)]
 struct FindNode {
     node_id: NodeId,
-    response: oneshot::Sender<Result<String, String>>,
+    response: oneshot::Sender<Result<(Node, Duration), String>>,
 }
 
 #[derive(Debug)]
 struct Ping {
     node_id: NodeId,
     response: oneshot::Sender<Result<String, String>>,
+}
+
+struct DisplayableNode(Node);
+
+impl fmt::Display for DisplayableNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let identities = self
+            .0
+            .identities
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let endpoints = self
+            .0
+            .endpoints
+            .iter()
+            .map(|ep| {
+                format!(
+                    "{p}://{ip}:{port}",
+                    p = if ep.protocol == i32::from(Protocol::Udp) {
+                        "UDP"
+                    } else if ep.protocol == i32::from(Protocol::Tcp) {
+                        "TCP"
+                    } else {
+                        "Unknown"
+                    },
+                    ip = ep.address,
+                    port = ep.port
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let slot = self.0.slot;
+        let encr = self
+            .0
+            .supported_encryptions
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        f.write_str(
+            format!(
+                "Node \
+        \n  with Identities: {identities} \
+        \n  with Endpoints: {endpoints} \
+        \n  with Slot: {slot} \
+        \n  with Supported encryption: {encr} \
+        \n"
+            )
+            .as_str(),
+        )
+    }
 }
 
 #[get("/find-node/{node_id}")]
@@ -129,8 +188,17 @@ async fn find_node(
 
     let msg = rx
         .await
-        .map_err(ErrorInternalServerError)?
+        .map(|rx| match rx {
+            Ok((node, time)) => format!(
+                "Found {} \nin {} ms",
+                DisplayableNode(node),
+                time.as_millis()
+            ),
+            Err(err) => err.to_string(),
+        })
         .map_err(ErrorInternalServerError)?;
+
+    log::debug!("[find-node]: {}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
@@ -156,6 +224,8 @@ async fn ping(
         .await
         .map_err(ErrorInternalServerError)?
         .map_err(ErrorInternalServerError)?;
+
+    log::debug!("[ping]: {}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
@@ -234,15 +304,9 @@ async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pin
             match cmd {
                 Command::FindNode(FindNode { node_id, response }) => {
                     let now = Instant::now();
-
                     match client.find_node(node_id).await {
                         Ok(node) => {
-                            response
-                                .send(Ok(format!(
-                                    "Found node {node:?} in {} ms\n",
-                                    now.elapsed().as_millis()
-                                )))
-                                .ok();
+                            response.send(Ok((node, now.elapsed()))).ok();
                         }
                         Err(e) => {
                             let _ = response.send(Err(format!("Find node failed: {e}")));
