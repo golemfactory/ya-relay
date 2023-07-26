@@ -87,7 +87,7 @@ pub struct SessionLayer {
     pub(crate) registry: NetworkView,
     ingress_channel: Channel<Forwarded>,
 
-    // TODO: Could be per `Session`.
+    // TODO: Could be per `Session`?
     processed_requests: Arc<Mutex<VecDeque<ReqFingerprint>>>,
 }
 
@@ -631,8 +631,6 @@ impl SessionLayer {
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
-        // TODO: How should we react to non-existing session in this place?
-        //       The best solution could be returning Session from `await_for_finish`.
         self.get_node_routing(node_id)
             .await
             .ok_or(SessionError::Internal(format!(
