@@ -11,11 +11,11 @@ pub struct Codec;
 
 impl Codec {
     pub fn stream(output: impl AsyncRead) -> impl Stream<Item = Result<PacketKind, Error>> {
-        FramedRead::with_capacity(output, Self::default(), MAX_PACKET_SIZE as usize)
+        FramedRead::with_capacity(output, Self, MAX_PACKET_SIZE as usize)
     }
 
     pub fn sink(input: impl AsyncWrite) -> impl Sink<PacketKind, Error = Error> {
-        FramedWrite::new(input, Self::default())
+        FramedWrite::new(input, Self)
     }
 }
 
@@ -128,8 +128,8 @@ mod tests {
             .into(),
         ];
 
-        let mut codec_enc = Codec::default();
-        let mut codec_dec = Codec::default();
+        let mut codec_enc = Codec;
+        let mut codec_dec = Codec;
 
         let decoded = packets
             .iter()
@@ -150,7 +150,7 @@ mod tests {
         let packet = Packet::request(SESSION_ID.to_vec(), large_packet());
         let len = packet.encoded_len();
 
-        let mut codec = Codec::default();
+        let mut codec = Codec;
         let mut buf = BytesMut::with_capacity(len + prost::length_delimiter_len(len));
 
         packet
