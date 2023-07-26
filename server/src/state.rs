@@ -19,7 +19,7 @@ pub enum Slot<T: Clone> {
 
 pub struct NodesState {
     /// Constant time access using slot id optimized for forwarding.
-    /// The consequence is, that we must store Option<NodeSession>, because
+    /// The consequence is, that we must store `Option<NodeSession>`, because
     /// we can't move elements after removal.
     slots: Vec<Slot<NodeSession>>,
     sessions: HashMap<SessionId, u32>,

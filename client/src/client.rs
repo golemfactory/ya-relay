@@ -29,6 +29,8 @@ pub use ya_relay_core::server_session::TransportType;
 /// A Hybrid NET client that handles connections, sessions and relay operations.
 /// It provides high-level methods for networking tasks such as forwarding
 /// data, managing session metrics, pinging sessions, and broadcasting data.
+/// Supports unreliable transport using Udp directly or reliable transport using embedded Tcp
+/// protocol on top of Udp.
 #[derive(Clone)]
 pub struct Client {
     config: Arc<ClientConfig>,
