@@ -126,9 +126,11 @@ impl Client {
     ///
     /// # Examples
     ///
-    /// ```
+    /// ```no_run
     /// use ya_relay_client::ClientBuilder;
-    ///  async {
+    ///
+    /// #[actix_rt::main]
+    /// async fn main() {
     ///     let client = ClientBuilder::from_url("udp://52.48.158.112:7477".parse().unwrap()).build().await.unwrap();
     ///     let sessions = client.sessions().await;
     ///     for session in sessions {
