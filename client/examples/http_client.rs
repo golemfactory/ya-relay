@@ -245,12 +245,12 @@ async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
 }
 
 async fn handle_forward_message(
-    fwd: ya_relay_client::Forwarded,
+    fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
     pings: &Pings,
 ) -> Result<()> {
     match fwd.transport {
-        ya_relay_client::TransportType::Reliable => {
+        ya_relay_client::model::TransportType::Reliable => {
             log::info!("Got forward message: {fwd:?}");
             let msg = String::from_utf8(fwd.payload.into_vec())?;
 
@@ -291,8 +291,8 @@ async fn handle_forward_message(
                 other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
             }
         }
-        ya_relay_client::TransportType::Unreliable => Ok(()),
-        ya_relay_client::TransportType::Transfer => Ok(()),
+        ya_relay_client::model::TransportType::Unreliable => Ok(()),
+        ya_relay_client::model::TransportType::Transfer => Ok(()),
     }
 }
 
