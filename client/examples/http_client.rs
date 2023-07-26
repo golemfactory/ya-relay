@@ -198,7 +198,7 @@ async fn find_node(
         })
         .map_err(ErrorInternalServerError)?;
 
-    println!("{}", msg);
+    log::debug!("[find-node]: {}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
