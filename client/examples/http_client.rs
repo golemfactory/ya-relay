@@ -225,6 +225,8 @@ async fn ping(
         .map_err(ErrorInternalServerError)?
         .map_err(ErrorInternalServerError)?;
 
+    log::debug!("[ping]: {}", msg);
+
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
