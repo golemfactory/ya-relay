@@ -5,6 +5,9 @@ use ya_relay_core::{
     NodeId,
 };
 
+//#[path = "http_client/wrap.rs"]
+//mod wrap;
+
 use actix_web::error::ErrorInternalServerError;
 use actix_web::{
     get,
@@ -221,45 +224,49 @@ async fn handle_forward_message(
 
 async fn client_task(client: Client, mut rx: mpsc::Receiver<Command>, pings: Pings) -> Result<()> {
     while let Some(cmd) = rx.recv().await {
-        match cmd {
-            Command::FindNode(FindNode { node_id, response }) => {
-                let now = Instant::now();
+        let client = client.clone();
+        let pings = pings.clone();
+        tokio::task::spawn_local(async move {
+            match cmd {
+                Command::FindNode(FindNode { node_id, response }) => {
+                    let now = Instant::now();
 
-                match client.find_node(node_id).await {
-                    Ok(node) => {
-                        response
-                            .send(Ok(format!(
-                                "Found node {node:?} in {} ms\n",
-                                now.elapsed().as_millis()
-                            )))
-                            .unwrap();
+                    match client.find_node(node_id).await {
+                        Ok(node) => {
+                            response
+                                .send(Ok(format!(
+                                    "Found node {node:?} in {} ms\n",
+                                    now.elapsed().as_millis()
+                                )))
+                                .unwrap();
+                        }
+                        Err(e) => {
+                            let _ = response.send(Err(format!("Find node failed: {e}")));
+                            log::error!("Find node failed: {e}")
+                        }
                     }
-                    Err(e) => {
-                        let _ = response.send(Err(format!("Find node failed: {e}")));
-                        log::error!("Find node failed: {e}")
+                }
+                Command::Ping(Ping { node_id, response }) => {
+                    log::info!("try ping: {}", node_id);
+                    match client.forward_reliable(node_id).await {
+                        Ok(mut sender) => {
+                            let r = pings.request();
+                            let msg = format!("Ping:{}", r.id());
+                            let _ = if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
+                                log::error!("Send failed: {e}");
+                                response.send(Err(format!("Send failed: {e}")))
+                            } else {
+                                response.send(r.result().await)
+                            };
+                        }
+                        Err(e) => {
+                            log::error!("Forward reliable failed: {e}");
+                            let _ = response.send(Err(format!("Forward reliable failed: {e}")));
+                        }
                     }
                 }
             }
-            Command::Ping(Ping { node_id, response }) => {
-                log::info!("try ping: {}", node_id);
-                match client.forward_reliable(node_id).await {
-                    Ok(mut sender) => {
-                        let r = pings.request();
-                        let msg = format!("Ping:{}", r.id());
-                        let _ = if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
-                            log::error!("Send failed: {e}");
-                            response.send(Err(format!("Send failed: {e}")))
-                        } else {
-                            response.send(r.result().await)
-                        };
-                    }
-                    Err(e) => {
-                        log::error!("Forward reliable failed: {e}");
-                        let _ = response.send(Err(format!("Forward reliable failed: {e}")));
-                    }
-                }
-            }
-        }
+        });
     }
     Ok(())
 }
