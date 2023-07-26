@@ -1,0 +1,52 @@
+version: "3.8"
+
+services:
+  relay_server:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.server
+    ports:
+      - "7464:7464/tcp"
+      - "7464:7464/udp"
+      - "7465:7465/tcp"
+      - "7465:7465/udp"
+    networks:
+      - relay-network-1
+      - relay-network-2
+    healthcheck:
+      test: [ "CMD", "nc", "-zv", "localhost", "7464" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 1s
+
+  client-exposed:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    expose:
+      - "8081"
+      - "9081"
+    networks:
+      - relay-network-1
+    depends_on:
+      - relay_server
+
+  client-hidden:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    expose:
+      - "8081"
+#      - "9081"
+    networks:
+      - relay-network-2
+    depends_on:
+      - relay_server
+
+
+networks:
+  relay-network-1:
+    driver: bridge
+  relay-network-2:
+    driver: bridge
