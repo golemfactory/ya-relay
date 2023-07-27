@@ -219,6 +219,24 @@ async fn ping(
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
+#[get("/sessions")]
+async fn sessions(
+    client_sender: web::Data<ClientWrap>
+) -> impl Responder {
+    let msg = client_sender
+        .run_async(move |client: Client| async move {
+            let client_sessions = client.sessions().await;
+            let result = client_sessions.iter().map(|s| format!("{}:{}", s.remote.ip(), s.remote.port())).collect::<Vec<_>>().join("\n");
+            format!("Sessions:\n{}\n", result)
+        })
+        .await
+        .map_err(ErrorInternalServerError)?;
+
+    log::debug!("[sessions]: {}", msg);
+
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+}
+
 async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
     let mut receiver = client
         .forward_receiver()
@@ -314,6 +332,7 @@ async fn run() -> Result<()> {
             .app_data(web_ping.clone())
             .service(find_node)
             .service(ping)
+            .service(sessions)
     })
     .workers(4)
     .bind(("0.0.0.0", port))?
