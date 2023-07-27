@@ -12,7 +12,7 @@ use crate::testing::accessors::SessionLayerPrivate;
 
 use crate::testing::mocks::MockHandler;
 use ya_relay_core::NodeId;
-#[cfg(feature = "mock")]
+#[cfg(any(test, feature = "mock"))]
 use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 pub async fn test_default_config(server: Url) -> anyhow::Result<ClientConfig> {

@@ -57,6 +57,7 @@ impl<C: Crypto + ?Sized> Crypto for Rc<C> {
     }
 }
 
+#[derive(Clone)]
 pub struct FallbackCryptoProvider {
     default_id: NodeId,
     inner: HashMap<NodeId, FallbackCrypto>,

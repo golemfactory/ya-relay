@@ -13,5 +13,5 @@ pub async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
     state.nodes.register(info);
 
     drop(state);
-    client.transport.session_layer.set_public_addr(None).await;
+    client.set_public_addr(None).await;
 }
