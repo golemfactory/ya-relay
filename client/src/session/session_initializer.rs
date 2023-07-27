@@ -311,8 +311,8 @@ impl SessionInitializer {
         let remote_id = permit.registry.id;
         let (sender, receiver) = mpsc::channel(1);
 
-        // TODO: We don't need abortability on this level, because we have this functionality
-        //       on external layers.
+        // TODO: We don't need abort-ability on this level, because we have this functionality
+        //       on external layers. Remove abort handling from here
         let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
         {

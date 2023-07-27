@@ -371,7 +371,7 @@ impl NodeView {
         state.node = info.identities;
         // TODO: We should distinguish between public IPs and addresses assigned temporarily
         //       by routers. `NetworkView` contains addresses from which we received packets.
-        //       Here we assign only public, but earlier (`guard_initialization`) we added mapped addresses
+        //       Here we assign only public, but earlier (`NetworkView::guard`) we added mapped addresses
         state.addresses = info.endpoints.into_iter().map(|e| e.address).collect();
         Ok(())
     }
