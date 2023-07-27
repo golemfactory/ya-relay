@@ -38,15 +38,13 @@ services:
       dockerfile: test_env/Dockerfile.client
     expose:
       - "8081"
-#      - "9081"
+      - "9081"
     networks:
-      - relay-network-2
+      - relay-network-1
     depends_on:
       - relay_server
 
 
 networks:
   relay-network-1:
-    driver: bridge
-  relay-network-2:
     driver: bridge
