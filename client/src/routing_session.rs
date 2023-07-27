@@ -84,8 +84,8 @@ impl NodeRouting {
 /// Underlying sessions can be closed and reopened, routing can change, but this struct should
 /// give stable interface for other layers to communicate between 2 Nodes.
 ///
-/// Struct has direct access to `NodeRouting` to avoid acquiring to many locks.
-/// `NodeRouting`, `DirectSession` and `Session` are mostly read-only structs and will be replaced
+/// Struct has direct access to [`NodeRouting`] to avoid acquiring to many locks.
+/// [`NodeRouting`], [`DirectSession`] and [`RawSession`] are mostly read-only structs and will be replaced
 /// in case connection will change.
 #[derive(Clone)]
 pub struct RoutingSender {
