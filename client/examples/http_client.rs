@@ -17,6 +17,7 @@ use rand::Rng;
 use std::{
     collections::HashMap,
     fmt,
+    path::PathBuf,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -210,6 +211,25 @@ async fn ping(
                 }
             }
         })
+        .await
+        .map_err(ErrorInternalServerError)?
+        .map_err(ErrorInternalServerError)?;
+
+    log::debug!("[ping]: {}", msg);
+
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+}
+
+#[get("/transfer-file/{node_id}/{filename}")]
+async fn transfer_file(
+    path: web::Path<(NodeId, PathBuf)>,
+    client_sender: web::Data<ClientWrap>,
+) -> impl Responder {
+    let node_id = path.0;
+    let filename = path.1.clone();
+
+    let msg = client_sender
+        .run_async(move |client: Client| async move {})
         .await
         .map_err(ErrorInternalServerError)?
         .map_err(ErrorInternalServerError)?;
