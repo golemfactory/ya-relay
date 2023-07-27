@@ -76,18 +76,18 @@ impl<T: 'static> SendWrap<T> {
     where
         F::Output: Send,
     {
-        let (rx, tx) = oneshot::channel();
+        let (tx, rx) = oneshot::channel();
         let _ = self
             .tx
             .send(Box::new(Call {
                 inner: f,
-                reply: rx,
+                reply: tx,
                 _marker: PhantomData,
             }))
             .await
             .map_err(|_e| Error::SendFailed {});
 
-        tx.await.map_err(|e| Error::RecvFailed(e))
+        rx.await.map_err(|e| Error::RecvFailed(e))
     }
 }
 
