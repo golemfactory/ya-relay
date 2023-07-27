@@ -22,7 +22,7 @@ use std::{
     time::Instant,
 };
 use structopt::StructOpt;
-use tokio::sync::oneshot;
+use tokio::{io::AsyncReadExt, sync::oneshot};
 use ya_relay_proto::proto::response::Node;
 use ya_relay_proto::proto::Protocol;
 
@@ -229,7 +229,35 @@ async fn transfer_file(
     let filename = path.1.clone();
 
     let msg = client_sender
-        .run_async(move |client: Client| async move {})
+        .run_async(move |client: Client| async move {
+            match tokio::fs::File::open(filename).await {
+                Ok(mut file) => {
+                    let mut data = vec![];
+                    file.read_to_end(&mut data).await.unwrap();
+                    let mb: u64 = data.len() as u64 / (1024 * 1024);
+                    let now = Instant::now();
+                    match client.forward_reliable(node_id).await {
+                        Ok(mut sender) => {
+                            let _ = sender.send(data.into());
+                            let result_msg = format!(
+                                "Transfer of {mb} MB took {} ms to node: {node_id}",
+                                now.elapsed().as_millis()
+                            );
+
+                            Ok(result_msg)
+                        }
+                        Err(e) => {
+                            log::error!("Transfer file failed: {e}");
+                            Err(format!("Transfer file failed: {e}"))
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::error!("Transfer file failed: {e}");
+                    Err(format!("Transfer file failed: {e}"))
+                }
+            }
+        })
         .await
         .map_err(ErrorInternalServerError)?
         .map_err(ErrorInternalServerError)?;
