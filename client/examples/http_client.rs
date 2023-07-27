@@ -224,6 +224,7 @@ async fn ping(
 async fn transfer_file(
     path: web::Path<(NodeId, PathBuf)>,
     client_sender: web::Data<ClientWrap>,
+    pings: web::Data<Pings>,
 ) -> impl Responder {
     let node_id = path.0;
     let filename = path.1.clone();
@@ -234,17 +235,21 @@ async fn transfer_file(
                 Ok(mut file) => {
                     let mut data = vec![];
                     file.read_to_end(&mut data).await.unwrap();
-                    let mb: u64 = data.len() as u64 / (1024 * 1024);
-                    let now = Instant::now();
+                    let r = pings.request();
+                    let msg = format!("Transfer:{}:{}", r.id(), data.len());
                     match client.forward_reliable(node_id).await {
                         Ok(mut sender) => {
-                            let _ = sender.send(data.into());
-                            let result_msg = format!(
-                                "Transfer of {mb} MB took {} ms to node: {node_id}",
-                                now.elapsed().as_millis()
-                            );
-
-                            Ok(result_msg)
+                            if let Err(e) = sender.send(data.into()).await {
+                                log::error!("Send failed: {e}");
+                                Err(format!("Send failed: {e}"))
+                            } else {
+                                if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
+                                    log::error!("Send failed: {e}");
+                                    Err(format!("Send failed: {e}"))
+                                } else {
+                                    r.result().await
+                                }
+                            }
                         }
                         Err(e) => {
                             log::error!("Transfer file failed: {e}");
@@ -325,6 +330,50 @@ async fn handle_forward_message(
                     };
                     Ok(())
                 }
+                "Transfer" => {
+                    let mut sender = client.forward_reliable(fwd.node_id).await?;
+                    let bytes_transferred = s
+                        .next()
+                        .ok_or_else(|| anyhow!("No data found"))?
+                        .parse::<usize>()?;
+
+                    sender
+                        .send(
+                            format!("TransferResponse:{request_id}:{bytes_transferred}")
+                                .as_bytes()
+                                .to_vec()
+                                .into(),
+                        )
+                        .await?;
+
+                    Ok(())
+                }
+                "TransferResponse" => {
+                    match pings.respond(request_id) {
+                        Ok((ts, sender)) => {
+                            let bytes_transferred = s
+                                .next()
+                                .ok_or_else(|| anyhow!("No bytes_transferred found"))?
+                                .parse::<usize>()?;
+
+                            sender
+                                .send(Ok(format!(
+                                    "Transfer of {} MB to node {} took {} ms which is {} MB/s\n",
+                                    bytes_transferred / (1024 * 1024),
+                                    fwd.node_id,
+                                    ts.elapsed().as_millis(),
+                                    (bytes_transferred / (1024 * 1024)) as f32
+                                        / ts.elapsed().as_secs_f32()
+                                )))
+                                .ok()
+                        }
+                        Err(e) => {
+                            log::warn!("ping: {:?}", e);
+                            None
+                        }
+                    };
+                    Ok(())
+                }
                 other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
             }
         }
@@ -362,6 +411,7 @@ async fn run() -> Result<()> {
             .app_data(web_ping.clone())
             .service(find_node)
             .service(ping)
+            .service(transfer_file)
     })
     .workers(4)
     .bind(("0.0.0.0", port))?
