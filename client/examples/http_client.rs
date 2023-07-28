@@ -220,13 +220,15 @@ async fn ping(
 }
 
 #[get("/sessions")]
-async fn sessions(
-    client_sender: web::Data<ClientWrap>
-) -> impl Responder {
+async fn sessions(client_sender: web::Data<ClientWrap>) -> impl Responder {
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let client_sessions = client.sessions().await;
-            let result = client_sessions.iter().map(|s| format!("{}:{}", s.remote.ip(), s.remote.port())).collect::<Vec<_>>().join("\n");
+            let result = client_sessions
+                .iter()
+                .map(|s| format!("{}:{}", s.remote.ip(), s.remote.port()))
+                .collect::<Vec<_>>()
+                .join("\n");
             format!("Sessions:\n{}\n", result)
         })
         .await

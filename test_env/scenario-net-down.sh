@@ -1,5 +1,8 @@
 #!/bin/bash
 
+cargo build --release
+cargo build --example http_client --release
+
 # Start the network
 docker compose -f test_env/docker-compose-2nets.yml up \
     --detach \
@@ -33,6 +36,8 @@ curl -X GET http://$HIDDEN_CLIENT_IP:8081/ping/$EXPOSED_NODE_ID
 if [[ $(curl -s -X GET http://$EXPOSED_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]] || [[ $(curl -s -X GET http://$HIDDEN_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]];
 then
   echo "Error: Initial sessions not found"
+else
+  echo "Initial sessions OK"
 fi
 
 curl -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
@@ -48,16 +53,19 @@ curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 docker network connect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
 
 # echo -e "${Blue}Ping hidden client from exposed client\n"
-curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
+curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/find-node/$HIDDEN_NODE_ID
 
-if [[ $(curl -s -X GET http://$HIDDEN_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]];
-then
-  echo "Error: Find sessions not found for hidden client"
-fi
+# sleep 5
 
-if [[ $(curl -s -X GET http://$EXPOSED_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]];
+# check if session with server exists
+curl -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
+curl -X GET http://$HIDDEN_CLIENT_IP:8081/sessions
+
+if [ $(curl -s -X GET http://$HIDDEN_CLIENT_IP:8081/sessions | grep 7464) ];
 then
-  echo "Error: Find sessions not found for exposed client"
+  echo "Hidden node restored session with server"
+else
+  echo "Error: Hidden node didn't restore session with server"
 fi
 
 # Stop the network
