@@ -168,7 +168,7 @@ async fn find_node(
         })
         .await
         .map_err(|e| {
-            log::error!("Find node failed {e}");
+            log::error!("Run async failed {e}");
             ErrorInternalServerError(e)
         })?
         .map_err(|e| {
@@ -206,7 +206,7 @@ async fn ping(
         })
         .await
         .map_err(|e| {
-            log::error!("Ping failed {e}");
+            log::error!("Run async failed {e}");
             ErrorInternalServerError(e)
         })?
         .map_err(|e| {
@@ -244,7 +244,7 @@ async fn transfer_file(
         })
         .await
         .map_err(|e| {
-            log::error!("Transfer file failed {e}");
+            log::error!("Run async failed {e}");
             ErrorInternalServerError(e)
         })?
         .map_err(|e| {
