@@ -242,13 +242,12 @@ async fn transfer_file(
                             if let Err(e) = sender.send(data.into()).await {
                                 log::error!("Send failed: {e}");
                                 Err(format!("Send failed: {e}"))
+                            } else if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await
+                            {
+                                log::error!("Send failed: {e}");
+                                Err(format!("Send failed: {e}"))
                             } else {
-                                if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
-                                    log::error!("Send failed: {e}");
-                                    Err(format!("Send failed: {e}"))
-                                } else {
-                                    r.result().await
-                                }
+                                r.result().await
                             }
                         }
                         Err(e) => {
