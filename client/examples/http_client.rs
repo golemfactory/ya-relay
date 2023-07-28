@@ -5,9 +5,9 @@ use ya_relay_core::{
     NodeId,
 };
 
-use actix_web::error::{ErrorBadRequest, ErrorInternalServerError};
 use actix_web::{
-    get,
+    error::{ErrorBadRequest, ErrorInternalServerError},
+    get, post,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
@@ -17,12 +17,11 @@ use rand::Rng;
 use std::{
     collections::HashMap,
     fmt,
-    path::PathBuf,
     sync::{Arc, Mutex},
     time::Instant,
 };
 use structopt::StructOpt;
-use tokio::{io::AsyncReadExt, sync::oneshot};
+use tokio::sync::oneshot;
 use ya_relay_proto::proto::response::Node;
 use ya_relay_proto::proto::Protocol;
 
@@ -219,17 +218,18 @@ async fn ping(
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
-#[get("/transfer-file/{node_id}/{filename}")]
+#[post("/transfer-file/{node_id}")]
 async fn transfer_file(
-    path: web::Path<(NodeId, PathBuf)>,
+    node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
+    body: web::Bytes,
 ) -> impl Responder {
-    let (node_id, filename) = path.into_inner();
+    let node_id = node_id.into_inner();
 
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            let data = read_file(filename).await?;
+            let data: Vec<u8> = body.into();
 
             let r = messages.request();
             let end_message = format!("Transfer:{}:{}", r.id(), data.len());
@@ -254,15 +254,6 @@ async fn transfer_file(
     log::debug!("[transfer-file]: {}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
-}
-
-async fn read_file(path: PathBuf) -> Result<Vec<u8>> {
-    let mut file = tokio::fs::File::open(path).await?;
-
-    let mut data = vec![];
-    file.read_to_end(&mut data).await?;
-
-    Ok(data)
 }
 
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
@@ -402,6 +393,7 @@ async fn run() -> Result<()> {
         App::new()
             .app_data(client.clone())
             .app_data(web_messages.clone())
+            .app_data(web::PayloadConfig::new(1024 * 1024 * 1024 * 4))
             .service(find_node)
             .service(ping)
             .service(transfer_file)
