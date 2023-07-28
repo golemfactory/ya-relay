@@ -252,7 +252,7 @@ async fn transfer_file(
             ErrorInternalServerError(e)
         })?;
 
-    log::debug!("[ping]: {}", msg);
+    log::debug!("[transfer-file]: {}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
