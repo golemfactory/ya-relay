@@ -87,7 +87,7 @@ impl<T: 'static> SendWrap<T> {
             .await
             .map_err(|_e| Error::SendFailed {});
 
-        rx.await.map_err(|e| Error::RecvFailed(e))
+        rx.await.map_err(Error::RecvFailed)
     }
 }
 

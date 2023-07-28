@@ -5,9 +5,9 @@ use ya_relay_core::{
     NodeId,
 };
 
-use actix_web::error::{ErrorBadRequest, ErrorInternalServerError};
 use actix_web::{
-    get,
+    error::{ErrorBadRequest, ErrorInternalServerError},
+    get, post,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
@@ -44,20 +44,20 @@ struct Cli {
 
 type ClientWrap = self::wrap::SendWrap<Client>;
 
-type RequestIdToPingResponseMap = HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>;
+type RequestIdToMessageResponse = HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>;
 
 #[derive(Clone, Default)]
-struct Pings {
-    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
+struct Messages {
+    inner: Arc<Mutex<RequestIdToMessageResponse>>,
 }
 
 struct RequestGuard {
-    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
+    inner: Arc<Mutex<RequestIdToMessageResponse>>,
     id: u32,
     rx: oneshot::Receiver<Result<String, String>>,
 }
 
-impl Pings {
+impl Messages {
     pub fn request(&self) -> RequestGuard {
         let id = rand::thread_rng().gen();
         let inner = self.inner.clone();
@@ -161,17 +161,19 @@ async fn find_node(
     let (node, time) = client_sender
         .run_async(move |client: Client| async move {
             let now = Instant::now();
-            match client.find_node(node_id).await {
-                Ok(node) => Ok((node, now.elapsed())),
-                Err(e) => {
-                    log::error!("Find node failed: {e}");
-                    Err(format!("Find node failed: {e}"))
-                }
-            }
+            let node = client.find_node(node_id).await?;
+
+            Ok::<_, anyhow::Error>((node, now.elapsed()))
         })
         .await
-        .map_err(ErrorInternalServerError)?
-        .map_err(ErrorInternalServerError)?;
+        .map_err(|e| {
+            log::error!("Run async failed {e}");
+            ErrorInternalServerError(e)
+        })?
+        .map_err(|e| {
+            log::error!("Find node failed {e}");
+            ErrorInternalServerError(e)
+        })?;
 
     let msg = format!(
         "Found {} \nin {} ms",
@@ -188,31 +190,28 @@ async fn find_node(
 async fn ping(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
-    pings: web::Data<Pings>,
+    messages: web::Data<Messages>,
 ) -> impl Responder {
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            match client.forward_reliable(node_id).await {
-                Ok(mut sender) => {
-                    let r = pings.request();
-                    let msg = format!("Ping:{}", r.id());
-                    if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
-                        log::error!("Send failed: {e}");
-                        Err(format!("Send failed: {e}"))
-                    } else {
-                        r.result().await
-                    }
-                }
-                Err(e) => {
-                    log::error!("Forward reliable failed: {e}");
-                    Err(format!("Forward reliable failed: {e}"))
-                }
-            }
+            let mut sender = client.forward_reliable(node_id).await?;
+            let r = messages.request();
+            let msg = format!("Ping:{}", r.id());
+
+            sender.send(msg.as_bytes().to_vec().into()).await?;
+
+            r.result().await.map_err(|e| anyhow!("{e}"))
         })
         .await
-        .map_err(ErrorInternalServerError)?
-        .map_err(ErrorInternalServerError)?;
+        .map_err(|e| {
+            log::error!("Run async failed {e}");
+            ErrorInternalServerError(e)
+        })?
+        .map_err(|e| {
+            log::error!("Ping failed {e}");
+            ErrorInternalServerError(e)
+        })?;
 
     log::debug!("[ping]: {}", msg);
 
@@ -235,19 +234,56 @@ async fn sessions(client_sender: web::Data<ClientWrap>) -> impl Responder {
         .map_err(ErrorInternalServerError)?;
 
     log::debug!("[sessions]: {}", msg);
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+}
+
+#[post("/transfer-file/{node_id}")]
+async fn transfer_file(
+    node_id: web::Path<NodeId>,
+    client_sender: web::Data<ClientWrap>,
+    messages: web::Data<Messages>,
+    body: web::Bytes,
+) -> impl Responder {
+    let node_id = node_id.into_inner();
+
+    let msg = client_sender
+        .run_async(move |client: Client| async move {
+            let data: Vec<u8> = body.into();
+
+            let r = messages.request();
+            let end_message = format!("Transfer:{}:{}", r.id(), data.len());
+
+            let mut sender = client.forward_reliable(node_id).await?;
+
+            sender.send(data.into()).await?;
+            sender.send(end_message.as_bytes().to_vec().into()).await?;
+
+            r.result().await.map_err(|e| anyhow!("{e}"))
+        })
+        .await
+        .map_err(|e| {
+            log::error!("Run async failed {e}");
+            ErrorInternalServerError(e)
+        })?
+        .map_err(|e| {
+            log::error!("Transfer file failed {e}");
+            ErrorInternalServerError(e)
+        })?;
+
+    log::debug!("[transfer-file]: {}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
-async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
+async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
     let mut receiver = client
         .forward_receiver()
         .await
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
 
     while let Some(fwd) = receiver.recv().await {
-        if let Err(e) = handle_forward_message(fwd, &client, &pings).await {
-            log::error!("Handle forward message failed: {e}")
+        if let Err(e) = handle_forward_message(fwd, &client, &messages).await {
+            log::warn!("Handle forward message failed: {e}")
         }
     }
     Ok(())
@@ -256,7 +292,7 @@ async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
 async fn handle_forward_message(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
-    pings: &Pings,
+    messages: &Messages,
 ) -> Result<()> {
     match fwd.transport {
         ya_relay_client::model::TransportType::Reliable => {
@@ -282,7 +318,7 @@ async fn handle_forward_message(
                     Ok(())
                 }
                 "Pong" => {
-                    match pings.respond(request_id) {
+                    match messages.respond(request_id) {
                         Ok((ts, sender)) => sender
                             .send(Ok(format!(
                                 "Ping node {} took {} ms\n",
@@ -290,6 +326,50 @@ async fn handle_forward_message(
                                 ts.elapsed().as_millis()
                             )))
                             .ok(),
+                        Err(e) => {
+                            log::warn!("ping: {:?}", e);
+                            None
+                        }
+                    };
+                    Ok(())
+                }
+                "Transfer" => {
+                    let mut sender = client.forward_reliable(fwd.node_id).await?;
+                    let bytes_transferred = s
+                        .next()
+                        .ok_or_else(|| anyhow!("No data found"))?
+                        .parse::<usize>()?;
+
+                    sender
+                        .send(
+                            format!("TransferResponse:{request_id}:{bytes_transferred}")
+                                .as_bytes()
+                                .to_vec()
+                                .into(),
+                        )
+                        .await?;
+
+                    Ok(())
+                }
+                "TransferResponse" => {
+                    match messages.respond(request_id) {
+                        Ok((ts, sender)) => {
+                            let bytes_transferred = s
+                                .next()
+                                .ok_or_else(|| anyhow!("No bytes_transferred found"))?
+                                .parse::<usize>()?;
+                            let megabytes_transferred = bytes_transferred / (1024 * 1024);
+
+                            sender
+                                .send(Ok(format!(
+                                    "Transfer of {} MB to node {} took {} ms which is {} MB/s\n",
+                                    megabytes_transferred,
+                                    fwd.node_id,
+                                    ts.elapsed().as_millis(),
+                                    megabytes_transferred as f32 / ts.elapsed().as_secs_f32()
+                                )))
+                                .ok()
+                        }
                         Err(e) => {
                             log::warn!("ping: {:?}", e);
                             None
@@ -318,23 +398,26 @@ async fn run() -> Result<()> {
     .await?;
     let client_cloned = client.clone();
 
-    let pings = Pings::default();
-    let pings_cloned = pings.clone();
+    let messages = Messages::default();
+    let messages_cloned = messages.clone();
 
-    let receiver = receiver_task(client_cloned, pings_cloned);
+    let receiver = receiver_task(client_cloned, messages_cloned);
 
     let client = Data::new(wrap::wrap(client));
-    let web_ping = Data::new(pings);
+    let web_messages = Data::new(messages);
 
     let port = cli.api_port;
 
     let http_server = HttpServer::new(move || {
         App::new()
             .app_data(client.clone())
-            .app_data(web_ping.clone())
+            .app_data(web_messages.clone())
+            .app_data(web::PayloadConfig::new(1024 * 1024 * 1024 * 4))
             .service(find_node)
             .service(ping)
             .service(sessions)
+            .service(transfer_file)
+
     })
     .workers(4)
     .bind(("0.0.0.0", port))?
