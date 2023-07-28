@@ -231,36 +231,17 @@ async fn transfer_file(
 
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            match tokio::fs::File::open(filename).await {
-                Ok(mut file) => {
-                    let mut data = vec![];
-                    file.read_to_end(&mut data).await.unwrap();
-                    let r = messages.request();
-                    let msg = format!("Transfer:{}:{}", r.id(), data.len());
-                    match client.forward_reliable(node_id).await {
-                        Ok(mut sender) => {
-                            if let Err(e) = sender.send(data.into()).await {
-                                log::error!("Send failed: {e}");
-                                Err(format!("Send failed: {e}"))
-                            } else if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await
-                            {
-                                log::error!("Send failed: {e}");
-                                Err(format!("Send failed: {e}"))
-                            } else {
-                                r.result().await
-                            }
-                        }
-                        Err(e) => {
-                            log::error!("Transfer file failed: {e}");
-                            Err(format!("Transfer file failed: {e}"))
-                        }
-                    }
-                }
-                Err(e) => {
-                    log::error!("Transfer file failed: {e}");
-                    Err(format!("Transfer file failed: {e}"))
-                }
-            }
+            let data = read_file(filename).await?;
+
+            let r = messages.request();
+            let end_message = format!("Transfer:{}:{}", r.id(), data.len());
+
+            let mut sender = client.forward_reliable(node_id).await?;
+
+            sender.send(data.into()).await?;
+            sender.send(end_message.as_bytes().to_vec().into()).await?;
+
+            r.result().await.map_err(|e| anyhow!("{e}"))
         })
         .await
         .map_err(ErrorInternalServerError)?
@@ -269,6 +250,15 @@ async fn transfer_file(
     log::debug!("[ping]: {}", msg);
 
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+}
+
+async fn read_file(path: PathBuf) -> Result<Vec<u8>> {
+    let mut file = tokio::fs::File::open(path).await?;
+
+    let mut data = vec![];
+    file.read_to_end(&mut data).await?;
+
+    Ok(data)
 }
 
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
