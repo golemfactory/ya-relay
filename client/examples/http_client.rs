@@ -225,8 +225,7 @@ async fn transfer_file(
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
 ) -> impl Responder {
-    let node_id = path.0;
-    let filename = path.1.clone();
+    let (node_id, filename) = path.into_inner();
 
     let msg = client_sender
         .run_async(move |client: Client| async move {
