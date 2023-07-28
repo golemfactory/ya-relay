@@ -220,14 +220,15 @@ async fn ping(
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
-#[get("/transfer-file/{node_id}/{filename}")]
+#[get("/transfer-file/{node_id}/{chunk_size_kb}/{filename}")]
 async fn transfer_file(
-    path: web::Path<(NodeId, PathBuf)>,
+    path: web::Path<(NodeId, usize, PathBuf)>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
 ) -> impl Responder {
     let node_id = path.0;
-    let filename = path.1.clone();
+    let chunk_size_bytes = path.1 * 1024;
+    let filename = path.2.clone();
 
     let msg = client_sender
         .run_async(move |client: Client| async move {
@@ -235,20 +236,27 @@ async fn transfer_file(
                 Ok(mut file) => {
                     let mut data = vec![];
                     file.read_to_end(&mut data).await.unwrap();
+
                     let r = messages.request();
-                    let msg = format!("Transfer:{}:{}", r.id(), data.len());
+                    let chunks_quantity = data.chunks(chunk_size_bytes).count();
+                    let start_msg = format!("Transfer:{}:{}", r.id(), chunks_quantity);
                     match client.forward_reliable(node_id).await {
                         Ok(mut sender) => {
-                            if let Err(e) = sender.send(data.into()).await {
-                                log::error!("Send failed: {e}");
-                                Err(format!("Send failed: {e}"))
-                            } else if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await
-                            {
-                                log::error!("Send failed: {e}");
-                                Err(format!("Send failed: {e}"))
-                            } else {
-                                r.result().await
+                            sender
+                                .send(start_msg.as_bytes().to_vec().into())
+                                .await
+                                .map_err(|e| format!("Send failed: {e}"))?;
+
+                            for chunk in data.chunks(chunk_size_bytes) {
+                                let msg =
+                                    format!("T:{}:{}", r.id(), std::str::from_utf8(chunk).unwrap());
+                                log::info!("Sending: {msg}");
+                                sender
+                                    .send(msg.as_bytes().to_vec().into())
+                                    .await
+                                    .map_err(|e| format!("Send failed: {e}"))?;
                             }
+                            r.result().await
                         }
                         Err(e) => {
                             log::error!("Transfer file failed: {e}");
@@ -278,7 +286,8 @@ async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()>
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
 
     while let Some(fwd) = receiver.recv().await {
-        if let Err(e) = handle_forward_message(fwd, &client, &messages).await {
+        let mut transfers: HashMap<u32, (usize, usize)> = HashMap::default();
+        if let Err(e) = handle_forward_message(fwd, &client, &messages, &mut transfers).await {
             log::error!("Handle forward message failed: {e}")
         }
     }
@@ -289,6 +298,7 @@ async fn handle_forward_message(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
     messages: &Messages,
+    transfers: &mut HashMap<u32, (usize, usize)>,
 ) -> Result<()> {
     match fwd.transport {
         ya_relay_client::model::TransportType::Reliable => {
@@ -330,20 +340,34 @@ async fn handle_forward_message(
                     Ok(())
                 }
                 "Transfer" => {
-                    let mut sender = client.forward_reliable(fwd.node_id).await?;
-                    let bytes_transferred = s
+                    let chunks_quantity = s
                         .next()
-                        .ok_or_else(|| anyhow!("No data found"))?
+                        .ok_or_else(|| anyhow!("No chunks quantity found"))?
                         .parse::<usize>()?;
 
-                    sender
-                        .send(
-                            format!("TransferResponse:{request_id}:{bytes_transferred}")
-                                .as_bytes()
-                                .to_vec()
-                                .into(),
-                        )
-                        .await?;
+                    transfers.insert(request_id, (chunks_quantity, 0));
+
+                    Ok(())
+                }
+                "T" => {
+                    log::info!("GOT T");
+                    if let Some((chunks_quantity, counter)) = transfers.get_mut(&request_id) {
+                        *counter += 1;
+
+                        if counter == chunks_quantity {
+                            let mut sender = client.forward_reliable(fwd.node_id).await?;
+                            sender
+                                .send(
+                                    format!("TransferResponse:{request_id}:{chunks_quantity}")
+                                        .as_bytes()
+                                        .to_vec()
+                                        .into(),
+                                )
+                                .await?;
+
+                            transfers.remove(&request_id);
+                        }
+                    }
 
                     Ok(())
                 }
