@@ -349,15 +349,15 @@ async fn handle_forward_message(
                                 .next()
                                 .ok_or_else(|| anyhow!("No bytes_transferred found"))?
                                 .parse::<usize>()?;
+                            let megabytes_transferred = bytes_transferred / (1024 * 1024);
 
                             sender
                                 .send(Ok(format!(
                                     "Transfer of {} MB to node {} took {} ms which is {} MB/s\n",
-                                    bytes_transferred / (1024 * 1024),
+                                    megabytes_transferred,
                                     fwd.node_id,
                                     ts.elapsed().as_millis(),
-                                    (bytes_transferred / (1024 * 1024)) as f32
-                                        / ts.elapsed().as_secs_f32()
+                                    megabytes_transferred as f32 / ts.elapsed().as_secs_f32()
                                 )))
                                 .ok()
                         }
