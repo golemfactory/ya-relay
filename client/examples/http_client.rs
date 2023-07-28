@@ -417,7 +417,6 @@ async fn run() -> Result<()> {
             .service(ping)
             .service(sessions)
             .service(transfer_file)
-
     })
     .workers(4)
     .bind(("0.0.0.0", port))?
