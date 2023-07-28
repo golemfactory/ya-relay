@@ -45,20 +45,20 @@ struct Cli {
 
 type ClientWrap = self::wrap::SendWrap<Client>;
 
-type RequestIdToPingResponseMap = HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>;
+type RequestIdToMessageResponse = HashMap<u32, (Instant, oneshot::Sender<Result<String, String>>)>;
 
 #[derive(Clone, Default)]
-struct Pings {
-    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
+struct Messages {
+    inner: Arc<Mutex<RequestIdToMessageResponse>>,
 }
 
 struct RequestGuard {
-    inner: Arc<Mutex<RequestIdToPingResponseMap>>,
+    inner: Arc<Mutex<RequestIdToMessageResponse>>,
     id: u32,
     rx: oneshot::Receiver<Result<String, String>>,
 }
 
-impl Pings {
+impl Messages {
     pub fn request(&self) -> RequestGuard {
         let id = rand::thread_rng().gen();
         let inner = self.inner.clone();
@@ -189,14 +189,14 @@ async fn find_node(
 async fn ping(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
-    pings: web::Data<Pings>,
+    messages: web::Data<Messages>,
 ) -> impl Responder {
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
             match client.forward_reliable(node_id).await {
                 Ok(mut sender) => {
-                    let r = pings.request();
+                    let r = messages.request();
                     let msg = format!("Ping:{}", r.id());
                     if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
                         log::error!("Send failed: {e}");
@@ -224,7 +224,7 @@ async fn ping(
 async fn transfer_file(
     path: web::Path<(NodeId, PathBuf)>,
     client_sender: web::Data<ClientWrap>,
-    pings: web::Data<Pings>,
+    messages: web::Data<Messages>,
 ) -> impl Responder {
     let node_id = path.0;
     let filename = path.1.clone();
@@ -235,7 +235,7 @@ async fn transfer_file(
                 Ok(mut file) => {
                     let mut data = vec![];
                     file.read_to_end(&mut data).await.unwrap();
-                    let r = pings.request();
+                    let r = messages.request();
                     let msg = format!("Transfer:{}:{}", r.id(), data.len());
                     match client.forward_reliable(node_id).await {
                         Ok(mut sender) => {
@@ -272,14 +272,14 @@ async fn transfer_file(
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
-async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
+async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
     let mut receiver = client
         .forward_receiver()
         .await
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
 
     while let Some(fwd) = receiver.recv().await {
-        if let Err(e) = handle_forward_message(fwd, &client, &pings).await {
+        if let Err(e) = handle_forward_message(fwd, &client, &messages).await {
             log::error!("Handle forward message failed: {e}")
         }
     }
@@ -289,7 +289,7 @@ async fn receiver_task(client: Client, pings: Pings) -> anyhow::Result<()> {
 async fn handle_forward_message(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
-    pings: &Pings,
+    messages: &Messages,
 ) -> Result<()> {
     match fwd.transport {
         ya_relay_client::model::TransportType::Reliable => {
@@ -315,7 +315,7 @@ async fn handle_forward_message(
                     Ok(())
                 }
                 "Pong" => {
-                    match pings.respond(request_id) {
+                    match messages.respond(request_id) {
                         Ok((ts, sender)) => sender
                             .send(Ok(format!(
                                 "Ping node {} took {} ms\n",
@@ -349,7 +349,7 @@ async fn handle_forward_message(
                     Ok(())
                 }
                 "TransferResponse" => {
-                    match pings.respond(request_id) {
+                    match messages.respond(request_id) {
                         Ok((ts, sender)) => {
                             let bytes_transferred = s
                                 .next()
@@ -395,20 +395,20 @@ async fn run() -> Result<()> {
     .await?;
     let client_cloned = client.clone();
 
-    let pings = Pings::default();
-    let pings_cloned = pings.clone();
+    let messages = Messages::default();
+    let messages_cloned = messages.clone();
 
-    let receiver = receiver_task(client_cloned, pings_cloned);
+    let receiver = receiver_task(client_cloned, messages_cloned);
 
     let client = Data::new(wrap::wrap(client));
-    let web_ping = Data::new(pings);
+    let web_messages = Data::new(messages);
 
     let port = cli.api_port;
 
     let http_server = HttpServer::new(move || {
         App::new()
             .app_data(client.clone())
-            .app_data(web_ping.clone())
+            .app_data(web_messages.clone())
             .service(find_node)
             .service(ping)
             .service(transfer_file)
