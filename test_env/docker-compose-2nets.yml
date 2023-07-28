@@ -48,5 +48,3 @@ services:
 networks:
   relay-network-1:
     driver: bridge
-#  relay-network-2:
-#    driver: bridge

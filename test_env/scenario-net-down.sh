@@ -27,10 +27,10 @@ export HIDDEN_NODE_ID=$(docker logs $HIDDEN_CONTAINER_ID 2>&1 | grep "NODE ID" |
 
 export NETWORK_OF_HIDDEN_CLIENT=$(docker container inspect -f '{{range $net,$v := .NetworkSettings.Networks}}{{printf "%s" $net}}{{end}}' $HIDDEN_CONTAINER_ID); echo $NETWORK_OF_HIDDEN_CLIENT
 
-# echo "Ping hidden client from exposed client"
+# Ping hidden client from exposed client
 curl -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 
-# echo "Ping exposed client from hidden client"
+# Ping exposed client from hidden client
 curl -X GET http://$HIDDEN_CLIENT_IP:8081/ping/$EXPOSED_NODE_ID
 
 if [[ $(curl -s -X GET http://$EXPOSED_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]] || [[ $(curl -s -X GET http://$HIDDEN_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]];
@@ -43,19 +43,20 @@ fi
 curl -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
 curl -X GET http://$HIDDEN_CLIENT_IP:8081/sessions
 
-# echo -e "${Blue}Disconnect hidden client from network\n"
+# Disconnect hidden client from network
 docker network disconnect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
 
-# echo -e "${Blue}Ping hidden client from exposed client\n"
+# Ping hidden client from exposed client
 curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 
-# echo -e "${Blue}Connect hidden client to network\n"
+# Connect hidden client to network
 docker network connect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
 
-# echo -e "${Blue}Ping hidden client from exposed client\n"
+# Ping hidden client from exposed client
 curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/find-node/$HIDDEN_NODE_ID
 
-# sleep 5
+# Give hidden node some time to restore session with server
+sleep 5
 
 # check if session with server exists
 curl -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
