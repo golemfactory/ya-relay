@@ -12,6 +12,23 @@ enum Node {
     WithoutAlias,
 }
 
+fn tuples_vec_to_map<NODE: Eq + PartialEq + Hash + Clone>(
+    v: Vec<(NODE, Option<NODE>)>,
+) -> HashMap<NODE, HashSet<NODE>> {
+    v.into_iter().fold(
+        HashMap::new(),
+        |mut acc: HashMap<NODE, HashSet<NODE>>, (a, b): (NODE, Option<NODE>)| {
+            if !acc.contains_key(&a) {
+                acc.insert(a.clone(), HashSet::new());
+            }
+            if let Some(b) = b {
+                acc.get_mut(&a).unwrap().insert(b);
+            }
+            acc
+        },
+    )
+}
+
 #[test_case(Node::WithAlias ; "shutdowning node with alias")]
 #[test_case(Node::WithoutAlias; "shutdowning node without alias")]
 #[serial_test::serial]
@@ -73,21 +90,4 @@ async fn test_closed_session(node_to_shutdown: Node) -> anyhow::Result<()> {
     let expected_nodes = HashMap::new();
     assert_eq!(nodes, expected_nodes, "2 does not see 1's default id");
     Ok(())
-}
-
-fn tuples_vec_to_map<NODE: Eq + PartialEq + Hash + Clone>(
-    v: Vec<(NODE, Option<NODE>)>,
-) -> HashMap<NODE, HashSet<NODE>> {
-    v.into_iter().fold(
-        HashMap::new(),
-        |mut acc: HashMap<NODE, HashSet<NODE>>, (a, b): (NODE, Option<NODE>)| {
-            if !acc.contains_key(&a) {
-                acc.insert(a.clone(), HashSet::new());
-            }
-            if let Some(b) = b {
-                acc.get_mut(&a).unwrap().insert(b);
-            }
-            acc
-        },
-    )
 }
