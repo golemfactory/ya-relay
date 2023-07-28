@@ -12,7 +12,6 @@ services:
       - "7465:7465/udp"
     networks:
       - relay-network-1
-#      - relay-network-2
     healthcheck:
       test: [ "CMD", "nc", "-zv", "localhost", "7464" ]
       interval: 1s
