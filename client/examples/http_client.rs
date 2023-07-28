@@ -162,17 +162,19 @@ async fn find_node(
     let (node, time) = client_sender
         .run_async(move |client: Client| async move {
             let now = Instant::now();
-            match client.find_node(node_id).await {
-                Ok(node) => Ok((node, now.elapsed())),
-                Err(e) => {
-                    log::error!("Find node failed: {e}");
-                    Err(format!("Find node failed: {e}"))
-                }
-            }
+            let node = client.find_node(node_id).await?;
+
+            Ok::<_, anyhow::Error>((node, now.elapsed()))
         })
         .await
-        .map_err(ErrorInternalServerError)?
-        .map_err(ErrorInternalServerError)?;
+        .map_err(|e| {
+            log::error!("Find node failed {e}");
+            ErrorInternalServerError(e)
+        })?
+        .map_err(|e| {
+            log::error!("Find node failed {e}");
+            ErrorInternalServerError(e)
+        })?;
 
     let msg = format!(
         "Found {} \nin {} ms",
@@ -194,26 +196,23 @@ async fn ping(
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            match client.forward_reliable(node_id).await {
-                Ok(mut sender) => {
-                    let r = messages.request();
-                    let msg = format!("Ping:{}", r.id());
-                    if let Err(e) = sender.send(msg.as_bytes().to_vec().into()).await {
-                        log::error!("Send failed: {e}");
-                        Err(format!("Send failed: {e}"))
-                    } else {
-                        r.result().await
-                    }
-                }
-                Err(e) => {
-                    log::error!("Forward reliable failed: {e}");
-                    Err(format!("Forward reliable failed: {e}"))
-                }
-            }
+            let mut sender = client.forward_reliable(node_id).await?;
+            let r = messages.request();
+            let msg = format!("Ping:{}", r.id());
+
+            sender.send(msg.as_bytes().to_vec().into()).await?;
+
+            r.result().await.map_err(|e| anyhow!("{e}"))
         })
         .await
-        .map_err(ErrorInternalServerError)?
-        .map_err(ErrorInternalServerError)?;
+        .map_err(|e| {
+            log::error!("Ping failed {e}");
+            ErrorInternalServerError(e)
+        })?
+        .map_err(|e| {
+            log::error!("Ping failed {e}");
+            ErrorInternalServerError(e)
+        })?;
 
     log::debug!("[ping]: {}", msg);
 
@@ -244,8 +243,14 @@ async fn transfer_file(
             r.result().await.map_err(|e| anyhow!("{e}"))
         })
         .await
-        .map_err(ErrorInternalServerError)?
-        .map_err(ErrorInternalServerError)?;
+        .map_err(|e| {
+            log::error!("Transfer file failed {e}");
+            ErrorInternalServerError(e)
+        })?
+        .map_err(|e| {
+            log::error!("Transfer file failed {e}");
+            ErrorInternalServerError(e)
+        })?;
 
     log::debug!("[ping]: {}", msg);
 
