@@ -274,7 +274,7 @@ async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()>
 
     while let Some(fwd) = receiver.recv().await {
         if let Err(e) = handle_forward_message(fwd, &client, &messages).await {
-            log::error!("Handle forward message failed: {e}")
+            log::warn!("Handle forward message failed: {e}")
         }
     }
     Ok(())
