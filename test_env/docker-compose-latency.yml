@@ -7,6 +7,8 @@ services:
       dockerfile: test_env/Dockerfile.server
     cap_add:
     - NET_ADMIN
+    environment:
+      - LATENCY=100ms
     ports:
       - "7464:7464/tcp"
       - "7464:7464/udp"
@@ -21,6 +23,8 @@ services:
       dockerfile: test_env/Dockerfile.client
     cap_add:
     - NET_ADMIN
+    environment:
+      - LATENCY=100ms
     ports:
       - "8000-8999:8081"
       - "9000-9999:9081"

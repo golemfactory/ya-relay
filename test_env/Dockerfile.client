@@ -1,13 +1,19 @@
 FROM ubuntu:22.04
 
-ENV RUST_LOG=info
+ARG LATENCY=0ms
+ARG RUST_LOG=info
 
-RUN apt update && apt install -y iputils-ping dnsutils
+ENV LATENCY=$LATENCY
+ENV RUST_LOG=$RUST_LOG
+
+RUN apt update \
+    && apt install -y iputils-ping dnsutils iproute2 iputils-ping
 
 COPY ./target/release /app
-CMD export SERVER_IP=$(dig +short relay_server -t a); echo $SERVER_IP; \
-    /app/examples/http_client \
-        --api-port 8081 \
-        --relay-addr tcp://$SERVER_IP:7464 \
-        --p2p-bind-addr tcp://0.0.0.0:9081
-
+CMD export SERVER_IP=$(dig +short relay_server -t a) \
+    && echo $SERVER_IP \
+    && tc qdisc add dev eth0 root netem delay $LATENCY \
+    && /app/examples/http_client \
+    --api-port 8081 \
+    --relay-addr tcp://$SERVER_IP:7464 \
+    --p2p-bind-addr tcp://0.0.0.0:9081
