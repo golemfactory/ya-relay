@@ -1,9 +1,7 @@
 FROM ubuntu:22.04
 
-ARG LATENCY=0ms
 ARG RUST_LOG=info
 
-ENV LATENCY=$LATENCY
 ENV RUST_LOG=$RUST_LOG
 
 EXPOSE 7464/udp
@@ -15,7 +13,6 @@ RUN apt update \
     && apt install -y iproute2 iputils-ping
 
 COPY ./target/release /app
-CMD tc qdisc add dev eth0 root netem delay $LATENCY \
-    && /app/ya-relay-server \
+CMD /app/ya-relay-server \
     -a tcp://0.0.0.0:7464 \
     --ip-checker-port 7465

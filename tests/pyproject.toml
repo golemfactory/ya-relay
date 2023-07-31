@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "ya-relay-tests"
+version = "0.1.0"
+description = "ya-relay integration tests"
+authors = ["Przemyslaw Walski <pwalski@users.noreply.github.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+pytest = "^7.4.0"
+python-on-whales = "^0.64.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+# pyproject.toml
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-ra -q"
+testpaths = [
+    "."
+]
