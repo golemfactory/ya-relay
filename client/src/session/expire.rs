@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use tokio::time::Instant;
+use ya_relay_core::NodeId;
 
 use crate::direct_session::DirectSession;
 use crate::session::session_traits::SessionDeregistration;
@@ -32,9 +33,16 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
         let expired_idx = last_seen
             .iter()
             .enumerate()
-            .filter_map(|(i, timestamp)| match *timestamp + expiration < now {
-                true => Some(i),
-                false => None,
+            .filter_map(|(i, timestamp)| {
+                // server session is never expired
+                if sessions[i].owner.default_id == NodeId::default() {
+                    None
+                } else {
+                    match *timestamp + expiration < now {
+                        true => Some(i),
+                        false => None,
+                    }
+                }
             })
             .collect::<Vec<_>>();
 
