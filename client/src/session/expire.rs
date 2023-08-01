@@ -1,10 +1,53 @@
+use std::cmp::min;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::time::Instant;
 use ya_relay_core::NodeId;
+use crate::client::SessionError;
 
 use crate::direct_session::DirectSession;
+use crate::session::network_view::NodeView;
+use crate::session::session_state::SessionState;
 use crate::session::session_traits::SessionDeregistration;
 use crate::session::SessionLayer;
+
+pub async fn keep_alive_server_session(layer: SessionLayer) {
+    let mut time_to_reconnect = std::time::Duration::from_secs(1);
+    let time_to_check = std::time::Duration::from_secs(5);
+
+    tokio::time::sleep(std::time::Duration::from_secs(time_to_check.as_secs())).await;
+
+    loop {
+        match layer.server_session().await {
+            Ok(_) => {
+                // Connection was successful so reset time to reconnect after failure to default value
+                time_to_reconnect = std::time::Duration::from_secs(1);
+                tokio::time::sleep(std::time::Duration::from_secs(time_to_check.as_secs())).await;
+
+                async {
+                    let server_node_id = NodeId::default();
+
+                    let entry = layer
+                        .registry
+                        .get_entry(server_node_id)
+                        .await;
+
+                    if let Some(entry) = entry {
+                        entry.awaiting_notifier().await_for_closed_or_failed().await;
+                    }
+                }.await;
+
+                log::debug!("Server session keep alive");
+            }
+            Err(_) => {
+                log::error!("Server session error. Reconnecting in {}s ...", time_to_reconnect.as_secs());
+                tokio::time::sleep(std::time::Duration::from_secs(time_to_reconnect.as_secs())).await;
+                // If we're not able to reconnect then next time wait longer
+                time_to_reconnect = min(time_to_reconnect *2, layer.config.server_session_reconnect_max_interval);
+            }
+        }
+    }
+}
 
 pub async fn track_sessions_expiration(layer: SessionLayer) {
     let expiration = layer.config.session_expiration;
@@ -34,14 +77,9 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
             .iter()
             .enumerate()
             .filter_map(|(i, timestamp)| {
-                // server session is never expired
-                if sessions[i].owner.default_id == NodeId::default() {
-                    None
-                } else {
-                    match *timestamp + expiration < now {
-                        true => Some(i),
-                        false => None,
-                    }
+                match *timestamp + expiration < now {
+                    true => Some(i),
+                    false => None,
                 }
             })
             .collect::<Vec<_>>();
@@ -72,6 +110,6 @@ async fn close_sessions(
             session.raw.remote
         );
 
-        layer.unregister_session(session.clone()).await;
+        layer.close_session(session.clone()).await;
     }
 }

@@ -729,6 +729,27 @@ impl NodeAwaiting {
         }
     }
 
+    pub async fn await_for_closed_or_failed(&mut self) -> Result<Arc<DirectSession>, SessionError> {
+        // If we query `NodeAwaiting` after session is already established, we won't get
+        // any notification, so we must check state before entering loop.
+        let mut state = self.registry.state().await;
+        let node_id = self.registry.id;
+
+        loop {
+            match state {
+                SessionState::Closed => {
+                    return Err(SessionError::Unexpected("Connection closed.".to_string()))
+                }
+                SessionState::FailedEstablish(e) => return Err(e),
+                _ => {
+                    log::trace!("Waiting for established session with [{node_id}]: state: {state}")
+                }
+            };
+
+            state = self.next().await?;
+        }
+    }
+
     /// When state reaches `ChallengeHandshake`, we've got first response from other Node
     /// so we know that it is responsive.
     ///

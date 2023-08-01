@@ -4,6 +4,7 @@ pub mod session_initializer;
 pub mod session_state;
 pub mod session_traits;
 
+use std::cmp::{max, min};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use derive_more::Display;
@@ -14,6 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use self::expire::track_sessions_expiration;
@@ -42,6 +44,7 @@ use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
 use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
+use crate::session::expire::keep_alive_server_session;
 
 type ReqFingerprint = (Vec<u8>, u64);
 
@@ -362,6 +365,7 @@ impl SessionLayer {
 
         let abort_dispatcher = spawn_local_abortable(dispatch(handler, stream));
         let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
+        let keep_alive_server_session = spawn_local_abortable(keep_alive_server_session(self.clone()));
 
         {
             let mut state = self.state.write().await;
@@ -369,6 +373,8 @@ impl SessionLayer {
             state.bind_addr.replace(bind_addr);
             state.handles.push(abort_dispatcher);
             state.handles.push(abort_expiration);
+            state.handles.push(keep_alive_server_session);
+
             state.init_protocol = Some(SessionInitializer::new(
                 self.config.clone(),
                 self.clone(),

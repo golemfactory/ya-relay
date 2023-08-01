@@ -456,7 +456,7 @@ async fn build_client(
         builder = builder.listen(bind);
     }
 
-    let client = builder.connect(FailFast::Yes).build().await?;
+    let client = builder.connect(FailFast::No).build().await?;
 
     log::info!("CLIENT NODE ID: {}", client.node_id());
     log::info!("CLIENT BIND ADDR: {:?}", client.bind_addr().await);

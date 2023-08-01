@@ -8,6 +8,7 @@ use std::iter::zip;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
@@ -25,6 +26,7 @@ pub use crate::transport::{ForwardReceiver, TransportLayer};
 
 use crate::metrics::ChannelMetrics;
 pub use ya_relay_core::server_session::TransportType;
+use crate::direct_session::DirectSession;
 
 /// A Hybrid NET client that handles connections, sessions and relay operations.
 /// It provides high-level methods for networking tasks such as forwarding
