@@ -168,7 +168,7 @@ impl ClientBuilder {
             session_expiration: self
                 .session_expiration
                 .unwrap_or_else(|| Duration::from_secs(25)),
-            server_session_reconnect_max_interval: Duration::from_secs(10),
+            server_session_reconnect_max_interval: Duration::from_secs(300),
             stack_config: self.stack_config,
             ping_measure_interval: Duration::from_secs(300),
             session_request_timeout: Duration::from_millis(3000),

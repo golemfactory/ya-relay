@@ -24,9 +24,9 @@ pub use crate::model::{SessionDesc, SocketDesc, SocketState};
 pub use crate::transport::transport_sender::{ForwardSender, GenericSender};
 pub use crate::transport::{ForwardReceiver, TransportLayer};
 
+use crate::direct_session::DirectSession;
 use crate::metrics::ChannelMetrics;
 pub use ya_relay_core::server_session::TransportType;
-use crate::direct_session::DirectSession;
 
 /// A Hybrid NET client that handles connections, sessions and relay operations.
 /// It provides high-level methods for networking tasks such as forwarding

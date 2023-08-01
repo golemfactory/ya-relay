@@ -1,9 +1,9 @@
+use crate::client::SessionError;
 use std::cmp::min;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::time::Instant;
 use ya_relay_core::NodeId;
-use crate::client::SessionError;
 
 use crate::direct_session::DirectSession;
 use crate::session::network_view::NodeView;
@@ -27,23 +27,28 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
                 async {
                     let server_node_id = NodeId::default();
 
-                    let entry = layer
-                        .registry
-                        .get_entry(server_node_id)
-                        .await;
+                    let entry = layer.registry.get_entry(server_node_id).await;
 
                     if let Some(entry) = entry {
                         entry.awaiting_notifier().await_for_closed_or_failed().await;
                     }
-                }.await;
+                }
+                .await;
 
                 log::debug!("Server session keep alive");
             }
             Err(_) => {
-                log::error!("Server session error. Reconnecting in {}s ...", time_to_reconnect.as_secs());
-                tokio::time::sleep(std::time::Duration::from_secs(time_to_reconnect.as_secs())).await;
+                log::error!(
+                    "Server session error. Reconnecting in {}s ...",
+                    time_to_reconnect.as_secs()
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(time_to_reconnect.as_secs()))
+                    .await;
                 // If we're not able to reconnect then next time wait longer
-                time_to_reconnect = min(time_to_reconnect *2, layer.config.server_session_reconnect_max_interval);
+                time_to_reconnect = min(
+                    time_to_reconnect * 2,
+                    layer.config.server_session_reconnect_max_interval,
+                );
             }
         }
     }
@@ -76,11 +81,9 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
         let expired_idx = last_seen
             .iter()
             .enumerate()
-            .filter_map(|(i, timestamp)| {
-                match *timestamp + expiration < now {
-                    true => Some(i),
-                    false => None,
-                }
+            .filter_map(|(i, timestamp)| match *timestamp + expiration < now {
+                true => Some(i),
+                false => None,
             })
             .collect::<Vec<_>>();
 
