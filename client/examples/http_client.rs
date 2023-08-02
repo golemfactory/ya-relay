@@ -1,4 +1,5 @@
-use ya_relay_client::{Client, ClientBuilder, FailFast, GenericSender};
+use response::SessionsResponse;
+use ya_relay_client::{model::SessionDesc, Client, ClientBuilder, FailFast, GenericSender};
 use ya_relay_core::{
     crypto::FallbackCryptoProvider,
     key::{load_or_generate, Protected},
@@ -7,16 +8,21 @@ use ya_relay_core::{
 
 use actix_web::{
     error::{ErrorBadRequest, ErrorInternalServerError},
-    get, post,
+    get,
+    guard::{self, GuardContext},
+    http::header,
+    post,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
 };
 use anyhow::{anyhow, Result};
-use futures::{future, try_join, FutureExt};
+use futures::{future, try_join, FutureExt, TryFutureExt};
 use rand::Rng;
+use serde::Serialize;
 use std::{
     collections::HashMap,
     fmt,
+    path::Display,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -25,6 +31,10 @@ use tokio::sync::oneshot;
 use ya_relay_proto::proto::response::Node;
 use ya_relay_proto::proto::Protocol;
 
+use crate::response::{PongResponse, TransferResponse};
+
+#[path = "http_client/response.rs"]
+mod response;
 #[path = "http_client/wrap.rs"]
 mod wrap;
 
@@ -161,7 +171,7 @@ async fn find_node(
     let (node, time) = client_sender
         .run_async(move |client: Client| async move {
             let now = Instant::now();
-            let node = client.find_node(node_id).await?;
+            let node: Node = client.find_node(node_id).await?;
 
             Ok::<_, anyhow::Error>((node, now.elapsed()))
         })
@@ -186,12 +196,11 @@ async fn find_node(
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
 }
 
-#[get("/ping/{node_id}")]
 async fn ping(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
-) -> impl Responder {
+) -> actix_web::Result<String> {
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
@@ -214,36 +223,58 @@ async fn ping(
         })?;
 
     log::debug!("[ping]: {}", msg);
-
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+    Ok(msg)
 }
 
-#[get("/sessions")]
-async fn sessions(client_sender: web::Data<ClientWrap>) -> impl Responder {
+#[get("/ping/{node_id}", guard = "accepts_json")]
+async fn ping_json(
+    node_id: web::Path<NodeId>,
+    client_sender: web::Data<ClientWrap>,
+    messages: web::Data<Messages>,
+) -> impl Responder {
+    let msg = ping(node_id, client_sender, messages).await?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+}
+
+#[get("/ping/{node_id}", guard = "not_accepts_json")]
+async fn ping_txt(
+    node_id: web::Path<NodeId>,
+    client_sender: web::Data<ClientWrap>,
+    messages: web::Data<Messages>,
+) -> impl Responder {
+    let msg = ping(node_id, client_sender, messages).await?;
+    let msg: PongResponse = serde_json::from_str(&msg)?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
+}
+
+async fn sessions(client_sender: web::Data<ClientWrap>) -> actix_web::Result<SessionsResponse> {
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            let client_sessions = client.sessions().await;
-            let result = client_sessions
-                .iter()
-                .map(|s| format!("{}:{}", s.remote.ip(), s.remote.port()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("Sessions:\n{}\n", result)
+            client.sessions().map(SessionsResponse::from).await
         })
         .await
         .map_err(ErrorInternalServerError)?;
-
-    log::debug!("[sessions]: {}", msg);
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+    Ok(msg)
 }
 
-#[post("/transfer-file/{node_id}")]
+#[get("/sessions", guard = "accepts_json")]
+async fn sessions_json(client_sender: web::Data<ClientWrap>) -> impl Responder {
+    let msg: SessionsResponse = sessions(client_sender).await?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+}
+
+#[get("/sessions", guard = "not_accepts_json")]
+async fn sessions_txt(client_sender: web::Data<ClientWrap>) -> impl Responder {
+    let msg = sessions(client_sender).await?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
+}
+
 async fn transfer_file(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
     body: web::Bytes,
-) -> impl Responder {
+) -> actix_web::Result<String> {
     let node_id = node_id.into_inner();
 
     let msg = client_sender
@@ -272,7 +303,41 @@ async fn transfer_file(
 
     log::debug!("[transfer-file]: {}", msg);
 
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+    Ok(msg)
+}
+
+#[post("/transfer-file/{node_id}", guard = "accepts_json")]
+async fn transfer_file_json(
+    node_id: web::Path<NodeId>,
+    client_sender: web::Data<ClientWrap>,
+    messages: web::Data<Messages>,
+    body: web::Bytes,
+) -> impl Responder {
+    let msg = transfer_file(node_id, client_sender, messages, body).await?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+}
+
+#[post("/transfer-file/{node_id}", guard = "not_accepts_json")]
+async fn transfer_file_txt(
+    node_id: web::Path<NodeId>,
+    client_sender: web::Data<ClientWrap>,
+    messages: web::Data<Messages>,
+    body: web::Bytes,
+) -> impl Responder {
+    let msg = transfer_file(node_id, client_sender, messages, body).await?;
+    let msg: TransferResponse = serde_json::from_str(&msg)?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
+}
+
+fn accepts_json(ctx: &GuardContext) -> bool {
+    match ctx.header::<header::Accept>() {
+        Some(hdr) => hdr.preference() == "application/json",
+        None => false,
+    }
+}
+
+fn not_accepts_json(ctx: &GuardContext) -> bool {
+    !accepts_json(ctx)
 }
 
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
@@ -320,11 +385,10 @@ async fn handle_forward_message(
                 "Pong" => {
                     match messages.respond(request_id) {
                         Ok((ts, sender)) => sender
-                            .send(Ok(format!(
-                                "Ping node {} took {} ms\n",
-                                fwd.node_id,
-                                ts.elapsed().as_millis()
-                            )))
+                            .send(Ok(serde_json::to_string(&PongResponse {
+                                node_id: fwd.node_id.to_string(),
+                                duration: ts.elapsed(),
+                            })?))
                             .ok(),
                         Err(e) => {
                             log::warn!("ping: {:?}", e);
@@ -358,16 +422,15 @@ async fn handle_forward_message(
                                 .next()
                                 .ok_or_else(|| anyhow!("No bytes_transferred found"))?
                                 .parse::<usize>()?;
-                            let megabytes_transferred = bytes_transferred / (1024 * 1024);
+                            let mb_transfered = bytes_transferred / (1024 * 1024);
 
                             sender
-                                .send(Ok(format!(
-                                    "Transfer of {} MB to node {} took {} ms which is {} MB/s\n",
-                                    megabytes_transferred,
-                                    fwd.node_id,
-                                    ts.elapsed().as_millis(),
-                                    megabytes_transferred as f32 / ts.elapsed().as_secs_f32()
-                                )))
+                                .send(Ok(serde_json::to_string(&TransferResponse {
+                                    mb_transfered,
+                                    node_id: fwd.node_id.to_string(),
+                                    duration: ts.elapsed(),
+                                    speed: mb_transfered as f32 / ts.elapsed().as_secs_f32(),
+                                })?))
                                 .ok()
                         }
                         Err(e) => {
@@ -414,9 +477,12 @@ async fn run() -> Result<()> {
             .app_data(web_messages.clone())
             .app_data(web::PayloadConfig::new(1024 * 1024 * 1024 * 4))
             .service(find_node)
-            .service(ping)
-            .service(sessions)
-            .service(transfer_file)
+            .service(ping_json)
+            .service(ping_txt)
+            .service(sessions_json)
+            .service(sessions_txt)
+            .service(transfer_file_json)
+            .service(transfer_file_txt)
     })
     .workers(4)
     .bind(("0.0.0.0", port))?
