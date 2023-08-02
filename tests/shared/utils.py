@@ -1,18 +1,13 @@
 from python_on_whales import docker
 
-def add_latency(
-        containers,
-        latency=100,
-        duration="10s",
-        detach=False
+def set_netem(
+        container,
+        latency="0ms"
         ):
-    command = ['netem', '--duration', duration, 'delay', '--time', latency, 'containers', containers]
-    container = docker.run(
-        image="gaiaadm/pumba",
-        volumes=[("/var/run/docker.sock","/var/run/docker.sock")],
-        detach=detach,
-        remove=True,
+    print("Set netem for '{}', latency {}".format(container, latency))
+    command = ['tc', 'qdisc', 'replace', 'dev', 'eth0', 'root', 'netem', 'delay', latency]
+    docker.execute(
+        container=container,
         command=command,
-    )
-
-    return container
+        privileged=True,
+        )
