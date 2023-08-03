@@ -150,9 +150,9 @@ impl<'a> Stack<'a> {
         let endpoint = endpoint.into();
         log::trace!("Unbinding {protocol:?} {endpoint:?}");
         let mut iface = self.iface.borrow_mut();
-        let mut sockets = iface.sockets_mut();
 
-        let handle = sockets
+        let handle = iface
+            .sockets_mut()
             .find(|(_, s)| s.local_endpoint() == endpoint)
             .and_then(|(h, _)| match protocol {
                 Protocol::Tcp | Protocol::Udp | Protocol::Icmp | Protocol::Ipv6Icmp => Some(h),
@@ -165,7 +165,6 @@ impl<'a> Stack<'a> {
             ports.free(protocol, e.port);
         });
 
-        drop(sockets);
         iface.remove_socket(handle);
         Ok(handle)
     }
