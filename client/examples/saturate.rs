@@ -346,7 +346,7 @@ fn print_table(headers: &[&str], values: Vec<Vec<String>>, table_format: TableFo
         }
     }
 
-    let _ = table.printstd();
+    table.printstd();
 }
 
 async fn run() -> anyhow::Result<()> {

@@ -43,14 +43,12 @@ async fn test_closed_session(node_to_shutdown: Node) -> anyhow::Result<()> {
     let node_2 = client_w_alias.node_id();
 
     let nodes = tuples_vec_to_map(client.connected_nodes().await);
-    let expected_nodes = HashMap::from([
-        (node_2.clone(), HashSet::new()),
-        (alias.clone(), HashSet::from([node_2.clone()])),
-    ]);
+    let expected_nodes =
+        HashMap::from([(node_2, HashSet::new()), (alias, HashSet::from([node_2]))]);
     assert_eq!(nodes, expected_nodes, "1 sees 2's default id and alias");
 
     let nodes = tuples_vec_to_map(client_w_alias.connected_nodes().await);
-    let expected_nodes = HashMap::from([(node_1.clone(), HashSet::new())]);
+    let expected_nodes = HashMap::from([(node_1, HashSet::new())]);
     assert_eq!(nodes, expected_nodes, "2 sees only 1's default id");
 
     // Closing session
