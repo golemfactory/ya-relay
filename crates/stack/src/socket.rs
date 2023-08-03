@@ -407,7 +407,7 @@ impl SocketMemory {
 }
 
 /// Buffer size bounds used in auto tuning.
-/// Currently, only `max` is used; other values are reserved for future use
+/// Currently, only `default` is used; other values are reserved for future use
 #[derive(Clone, Copy, Debug)]
 pub struct Memory {
     min: usize,
@@ -489,24 +489,34 @@ impl Memory {
 }
 
 pub fn tcp_socket<'a>(rx_mem: Memory, tx_mem: Memory) -> TcpSocket<'a> {
-    let rx_buf = TcpSocketBuffer::new(vec![0; rx_mem.max]);
-    let tx_buf = TcpSocketBuffer::new(vec![0; tx_mem.max]);
+    let rx_buf = TcpSocketBuffer::new(vec![0; rx_mem.default]);
+    let tx_buf = TcpSocketBuffer::new(vec![0; tx_mem.default]);
     let mut socket = TcpSocket::new(rx_buf, tx_buf);
     socket.set_defaults();
     socket
 }
 
 pub fn udp_socket<'a>(rx_mem: Memory, tx_mem: Memory) -> UdpSocket<'a> {
-    let rx_buf = UdpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(rx_mem.max));
-    let tx_buf = UdpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(tx_mem.max));
+    let rx_buf = UdpSocketBuffer::new(
+        meta_storage(META_STORAGE_SIZE),
+        payload_storage(rx_mem.default),
+    );
+    let tx_buf = UdpSocketBuffer::new(
+        meta_storage(META_STORAGE_SIZE),
+        payload_storage(tx_mem.default),
+    );
     UdpSocket::new(rx_buf, tx_buf)
 }
 
 pub fn icmp_socket<'a>(rx_mem: Memory, tx_mem: Memory) -> IcmpSocket<'a> {
-    let rx_buf =
-        IcmpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(rx_mem.max));
-    let tx_buf =
-        IcmpSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(tx_mem.max));
+    let rx_buf = IcmpSocketBuffer::new(
+        meta_storage(META_STORAGE_SIZE),
+        payload_storage(rx_mem.default),
+    );
+    let tx_buf = IcmpSocketBuffer::new(
+        meta_storage(META_STORAGE_SIZE),
+        payload_storage(tx_mem.default),
+    );
     IcmpSocket::new(rx_buf, tx_buf)
 }
 
@@ -516,8 +526,14 @@ pub fn raw_socket<'a>(
     rx_mem: Memory,
     tx_mem: Memory,
 ) -> RawSocket<'a> {
-    let rx_buf = RawSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(rx_mem.max));
-    let tx_buf = RawSocketBuffer::new(meta_storage(META_STORAGE_SIZE), payload_storage(tx_mem.max));
+    let rx_buf = RawSocketBuffer::new(
+        meta_storage(META_STORAGE_SIZE),
+        payload_storage(rx_mem.default),
+    );
+    let tx_buf = RawSocketBuffer::new(
+        meta_storage(META_STORAGE_SIZE),
+        payload_storage(tx_mem.default),
+    );
     RawSocket::new(ip_version, ip_protocol, rx_buf, tx_buf)
 }
 
