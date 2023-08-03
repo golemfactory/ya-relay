@@ -1,8 +1,11 @@
 from python_on_whales import docker, DockerClient, Container
-from dataclasses import dataclass
 from datetime import datetime, timedelta
+import json
 from typing import TypeVar
 import re
+import requests
+
+http_client_headers = { "Accept": "application/json" }
 
 def set_netem(
         container,
@@ -25,6 +28,15 @@ def read_node_id(container: Container) -> str:
             break
     assert re.match(r'0x[0-9a-fA-F]{40}', node_id), f"Invalid client Node Id {self.node_id} of container: {vars(container)}" 
     return node_id
+
+
+def read_json_response(response: requests.Response):
+    if response.status_code == 200:
+        j = json.loads(response.content)
+        print(f"Response: {j}")
+        return j
+    else:
+        raise Exception(response.content)
 
 class Node:
     container: Container
@@ -54,13 +66,22 @@ class Client(Node):
         Node.__init__(self, container=container)
         self.node_id = read_node_id(container=container)
 
-    def ping(self, node: str|TClient) -> str:
-        if isinstance(node, TClient):
-            node = node.node_id
-        docker.execute(
-            container=self.container,
-            command=['curl', '-s', '-H' ,'Accept: application/json', f"localhost:8081/ping/{node}"],
+    def ping(self, node_id: str, port: int = 8081):
+        port = self.ports[f"{port}/tcp"]
+        response: requests.Response = requests.get(
+            f"http://localhost:{port}/ping/{node_id}", 
+            headers=http_client_headers
             )
+        return read_json_response(response)
+    
+    def sessions(self, port: int = 8081):
+        port = self.ports[f"{port}/tcp"]
+        response: requests.Response = requests.get(
+            f"http://localhost:{port}/sessions", 
+            headers=http_client_headers
+            )
+        return read_json_response(response)
+
 
 class Cluster:
     docker_client: DockerClient

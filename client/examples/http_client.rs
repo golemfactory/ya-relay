@@ -1,4 +1,3 @@
-use response::SessionsResponse;
 use ya_relay_client::{model::SessionDesc, Client, ClientBuilder, FailFast, GenericSender};
 use ya_relay_core::{
     crypto::FallbackCryptoProvider,
@@ -18,11 +17,10 @@ use actix_web::{
 use anyhow::{anyhow, Result};
 use futures::{future, try_join, FutureExt, TryFutureExt};
 use rand::Rng;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fmt,
-    path::Display,
+    fmt::{self, Display},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -31,7 +29,7 @@ use tokio::sync::oneshot;
 use ya_relay_proto::proto::response::Node;
 use ya_relay_proto::proto::Protocol;
 
-use crate::response::{PongResponse, TransferResponse};
+use crate::response::{Pong, Transfer};
 
 #[path = "http_client/response.rs"]
 mod response;
@@ -231,9 +229,9 @@ async fn ping_json(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
-) -> impl Responder {
+) -> actix_web::Result<HttpResponse> {
     let msg = ping(node_id, client_sender, messages).await?;
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+    response::json::<Pong>(&msg)
 }
 
 #[get("/ping/{node_id}", guard = "not_accepts_json")]
@@ -241,16 +239,15 @@ async fn ping_txt(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
-) -> impl Responder {
+) -> actix_web::Result<HttpResponse> {
     let msg = ping(node_id, client_sender, messages).await?;
-    let msg: PongResponse = serde_json::from_str(&msg)?;
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
+    response::txt::<response::Pong>(&msg)
 }
 
-async fn sessions(client_sender: web::Data<ClientWrap>) -> actix_web::Result<SessionsResponse> {
+async fn sessions(client_sender: web::Data<ClientWrap>) -> actix_web::Result<response::Sessions> {
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            client.sessions().map(SessionsResponse::from).await
+            client.sessions().map(response::Sessions::from).await
         })
         .await
         .map_err(ErrorInternalServerError)?;
@@ -259,7 +256,7 @@ async fn sessions(client_sender: web::Data<ClientWrap>) -> actix_web::Result<Ses
 
 #[get("/sessions", guard = "accepts_json")]
 async fn sessions_json(client_sender: web::Data<ClientWrap>) -> impl Responder {
-    let msg: SessionsResponse = sessions(client_sender).await?;
+    let msg: response::Sessions = sessions(client_sender).await?;
     Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
@@ -312,9 +309,9 @@ async fn transfer_file_json(
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
     body: web::Bytes,
-) -> impl Responder {
+) -> actix_web::Result<HttpResponse> {
     let msg = transfer_file(node_id, client_sender, messages, body).await?;
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+    response::json::<response::Transfer>(&msg)
 }
 
 #[post("/transfer-file/{node_id}", guard = "not_accepts_json")]
@@ -323,10 +320,9 @@ async fn transfer_file_txt(
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
     body: web::Bytes,
-) -> impl Responder {
+) -> actix_web::Result<HttpResponse> {
     let msg = transfer_file(node_id, client_sender, messages, body).await?;
-    let msg: TransferResponse = serde_json::from_str(&msg)?;
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
+    response::txt::<response::Transfer>(&msg)
 }
 
 fn accepts_json(ctx: &GuardContext) -> bool {
@@ -385,7 +381,7 @@ async fn handle_forward_message(
                 "Pong" => {
                     match messages.respond(request_id) {
                         Ok((ts, sender)) => sender
-                            .send(Ok(serde_json::to_string(&PongResponse {
+                            .send(Ok(serde_json::to_string(&Pong {
                                 node_id: fwd.node_id.to_string(),
                                 duration: ts.elapsed(),
                             })?))
@@ -425,7 +421,7 @@ async fn handle_forward_message(
                             let mb_transfered = bytes_transferred / (1024 * 1024);
 
                             sender
-                                .send(Ok(serde_json::to_string(&TransferResponse {
+                                .send(Ok(serde_json::to_string(&Transfer {
                                     mb_transfered,
                                     node_id: fwd.node_id.to_string(),
                                     duration: ts.elapsed(),

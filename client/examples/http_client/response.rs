@@ -1,50 +1,64 @@
-use std::{fmt, time::Duration};
-
+use actix_web::HttpResponse;
 use serde::{Deserialize, Serialize};
+use std::{
+    fmt::{self, Display},
+    time::Duration,
+};
 use ya_relay_client::model::SessionDesc;
 
-use crate::DisplayableNode;
-
-#[derive(Serialize, Debug)]
-pub(crate) struct SessionsResponse {
-    sessions: Vec<SessionPayload>,
+pub(crate) fn json<'a, RESPONSE>(msg: &'a str) -> actix_web::Result<HttpResponse>
+where
+    RESPONSE: Deserialize<'a> + Serialize + Display,
+{
+    let msg: RESPONSE = serde_json::from_str(&msg)?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
-impl fmt::Display for SessionsResponse {
+pub(crate) fn txt<'a, RESPONSE>(msg: &'a str) -> actix_web::Result<HttpResponse>
+where
+    RESPONSE: Deserialize<'a> + Serialize + Display,
+{
+    let msg: RESPONSE = serde_json::from_str(&msg)?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
+}
+
+#[derive(Serialize, Debug)]
+pub(crate) struct Sessions {
+    sessions: Vec<Session>,
+}
+
+impl fmt::Display for Sessions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let result = self
             .sessions
             .iter()
-            .map(SessionPayload::to_string)
+            .map(Session::to_string)
             .collect::<Vec<String>>()
             .join("\n");
         f.write_fmt(format_args!("Sessions:\n{result}\n"))
     }
 }
 
-impl From<Vec<SessionDesc>> for SessionsResponse {
+impl From<Vec<SessionDesc>> for Sessions {
     fn from(session_descs: Vec<SessionDesc>) -> Self {
-        let sessions = session_descs
-            .into_iter()
-            .map(SessionPayload::from)
-            .collect();
+        let sessions = session_descs.into_iter().map(Session::from).collect();
         Self { sessions }
     }
 }
 
 #[derive(Serialize, Debug)]
-pub(crate) struct SessionPayload {
+pub(crate) struct Session {
     address: std::net::IpAddr,
     port: u16,
 }
 
-impl fmt::Display for SessionPayload {
+impl fmt::Display for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!("{}:{}", self.address, self.port))
     }
 }
 
-impl From<SessionDesc> for SessionPayload {
+impl From<SessionDesc> for Session {
     fn from(session: SessionDesc) -> Self {
         let address = session.remote.ip();
         let port = session.remote.port();
@@ -53,12 +67,12 @@ impl From<SessionDesc> for SessionPayload {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct PongResponse {
+pub(crate) struct Pong {
     pub node_id: String,
     pub duration: Duration,
 }
 
-impl fmt::Display for PongResponse {
+impl fmt::Display for Pong {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!(
             "Ping node {} took {} ms",
@@ -69,14 +83,14 @@ impl fmt::Display for PongResponse {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-pub(crate) struct TransferResponse {
+pub(crate) struct Transfer {
     pub mb_transfered: usize,
     pub node_id: String,
     pub duration: Duration,
     pub speed: f32,
 }
 
-impl fmt::Display for TransferResponse {
+impl fmt::Display for Transfer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!(
             "Transfer of {} MB to node {} took {} ms which is {} MB/s",
