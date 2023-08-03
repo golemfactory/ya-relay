@@ -10,7 +10,7 @@ pub(crate) fn json<'a, RESPONSE>(msg: &'a str) -> actix_web::Result<HttpResponse
 where
     RESPONSE: Deserialize<'a> + Serialize + Display,
 {
-    let msg: RESPONSE = serde_json::from_str(&msg)?;
+    let msg: RESPONSE = serde_json::from_str(msg)?;
     Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
@@ -18,7 +18,7 @@ pub(crate) fn txt<'a, RESPONSE>(msg: &'a str) -> actix_web::Result<HttpResponse>
 where
     RESPONSE: Deserialize<'a> + Serialize + Display,
 {
-    let msg: RESPONSE = serde_json::from_str(&msg)?;
+    let msg: RESPONSE = serde_json::from_str(msg)?;
     Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
 }
 
