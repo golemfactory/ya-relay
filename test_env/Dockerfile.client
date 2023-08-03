@@ -7,7 +7,7 @@ ENV LATENCY=$LATENCY
 ENV RUST_LOG=$RUST_LOG
 
 RUN apt update \
-    && apt install -y curl iputils-ping dnsutils iproute2 iputils-ping
+    && apt install -y iputils-ping dnsutils iproute2 iputils-ping
 
 COPY ./target/release /app
 CMD export SERVER_IP=$(dig +short relay_server -t a) \

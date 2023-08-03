@@ -4,4 +4,6 @@ from utils import set_netem, Cluster
 def test_ping(compose_up):
     cluster: Cluster = compose_up(2)
     for client in cluster.clients:
+        print(f"Ports: {client.ports}")
         set_netem(client.container, latency="100ms")
+        
