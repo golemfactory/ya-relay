@@ -1,5 +1,5 @@
 # ya-relay
 
-## Dev environment setup
+## Environment setup
 
-[WSL2 setup](docs/wsl_setup.md) with latency tests support.
+[Functional tests](tests/README.md) setup guide (including setup for WSL2)

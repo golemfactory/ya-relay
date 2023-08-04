@@ -1,6 +1,48 @@
-# WSL2 setup
+# Functional Tests
 
-`ya-relay` latency tests require enabling _Network emulator_ (NETEM) feature.
+## Environment setup
+
+Requirements:
+
+- Docker
+- _Linux Traffic Control_ (tc) with _Network Emulation_ (netem)
+
+Python setup
+
+```bash
+# Tests use Python 3.10
+# It can be installed using `virtualenv`
+# Install it if missing
+sudo apt-get install virtualenv
+
+# Initialize virtualenv
+virtualenv .venv --python=python3.10
+```
+
+Build and run
+
+```bash
+# Switch to Python 3.10
+source .venv/bin/activate
+# Install poetry
+pip install poetry
+# Install dependencies
+poetry install
+# Run tests
+poetry run pytest
+```
+
+Test development checks
+
+```bash
+source .venv/bin/activate
+# Assuming build and run was alredy performed
+poetry run poe checks
+```
+
+### WSL2 Troubleshoot
+
+`ya-relay` latency tests require enabling _Network Emulation_ (NETEM) feature.
 
 To enable it necessary is to build boot image.
 
