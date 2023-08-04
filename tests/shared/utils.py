@@ -44,7 +44,7 @@ class Node:
             for key, value in ports.items()
         }
 
-    def address(self, net_name_part="relay-network") -> str | None:  # type: ignore
+    def address(self, net_name_part="relay-network") -> str | None:
         # print(f"Looking for {net_name_part}")
         # print(f"Net settings: {self.container.network_settings}")
         networks = self.container.network_settings.networks
