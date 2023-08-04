@@ -84,6 +84,14 @@ jobs:
 
       - uses: Gr1N/setup-poetry@v8
 
+      - name: Install dependencies
+        run: poetry install
+        working-directory: tests
+
+      - name: Initialize the test suite
+        run: poetry run poe checks
+        working-directory: tests
+
       - name: Install Rust ${{ env.rust_stable }}
         uses: actions-rs/toolchain@v1
         with:
@@ -102,15 +110,6 @@ jobs:
           command: build
           args: --example http_client --release
 
-      - name: Install dependencies
-        run: |
-          poetry install
-        working-directory: tests
-
-      - name: Initialize the test suite
-        run: poetry run poe tests_integration_init
-        working-directory: tests
-
       - name: Run test suite
-        run: poetry run poe tests_integration
+        run: poetry run pytest
         working-directory: tests

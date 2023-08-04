@@ -12,9 +12,6 @@ files = [
     {file = "annotated_types-0.5.0.tar.gz", hash = "sha256:47cdc3490d9ac1506ce92c7aaa76c579dc3509ff11e098fc867e5130ab7be802"},
 ]
 
-[package.dependencies]
-typing-extensions = {version = ">=4.0.0", markers = "python_version < \"3.9\""}
-
 [[package]]
 name = "black"
 version = "23.7.0"
@@ -54,7 +51,6 @@ packaging = ">=22.0"
 pathspec = ">=0.9.0"
 platformdirs = ">=2"
 tomli = {version = ">=1.1.0", markers = "python_version < \"3.11\""}
-typing-extensions = {version = ">=3.10.0.0", markers = "python_version < \"3.10\""}
 
 [package.extras]
 colorama = ["colorama (>=0.4.3)"]
@@ -716,5 +712,5 @@ zstd = ["zstandard (>=0.18.0)"]
 
 [metadata]
 lock-version = "2.0"
-python-versions = "^3.8"
-content-hash = "cb6376011cd5889c7b35f5ccc5d3e5665267aeda9933772e050817ed5102654d"
+python-versions = "^3.10"
+content-hash = "cce9aa802f07256d64a05e76c3bf9c394b2677d1b044625fea46ab9e7acbff7a"

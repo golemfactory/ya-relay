@@ -5,7 +5,7 @@ description = "ya-relay integration tests"
 authors = ["Przemyslaw Walski <pwalski@users.noreply.github.com>"]
 
 [tool.poetry.dependencies]
-python = "^3.8"
+python = "^3.10"
 python-on-whales = "^0.64"
 
 [tool.poetry.group.dev.dependencies]
@@ -28,14 +28,10 @@ checks_license = {sequence = ["_checks_license_export", "_checks_license_verify"
 _checks_license_export = "poetry export -f requirements.txt -o .requirements.txt"
 _checks_license_verify = "liccheck -r .requirements.txt"
 
-tests_integration_init = { sequence = ["_venv"], help="Initialize the integration test environment"}
-tests_integration = { cmd = ".venv/bin/python -m pytest -s", help = "Run the integration tests"}
-_venv = "python -m venv .venv"
-
 # pyproject.toml
 [tool.pytest.ini_options]
 minversion = "6.0"
-addopts = "-ra -q"
+addopts = "-s"
 testpaths = [
     "."
 ]
