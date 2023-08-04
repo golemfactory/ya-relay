@@ -15,7 +15,11 @@ Cargo.lock
 **/*.key.json
 
 .env
+
 .venv
 /tests/.pytest_cache
 /tests/__pycache__
 /tests/shared/__pycache__
+/tests/.mypy_cache
+/tests/.env
+/tests/.requirements.txt
