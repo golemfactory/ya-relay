@@ -102,6 +102,11 @@ jobs:
           command: build
           args: --example http_client --release
 
+      - name: Install dependencies
+        run: |
+          poetry install
+        working-directory: tests
+
       - name: Initialize the test suite
         run: poetry run poe tests_integration_init
         working-directory: tests
