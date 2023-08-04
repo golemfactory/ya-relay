@@ -104,6 +104,8 @@ jobs:
 
       - name: Initialize the test suite
         run: poetry run poe tests_integration_init
+        working-directory: tests
 
       - name: Run test suite
         run: poetry run poe tests_integration
+        working-directory: tests
