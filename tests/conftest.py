@@ -34,8 +34,8 @@ def compose_up(compose_build):
         scales = {"client": clients_num, "relay_server": servers_num}
         _compose_build.compose.up(detach=True, wait=True, scales=scales)
         cluster = Cluster(_compose_build)
-        assert len(cluster.clients) == clients_num
-        assert len(cluster.servers) == servers_num
+        assert len(cluster.clients()) == clients_num
+        assert len(cluster.servers()) == servers_num
         return cluster
 
     return _compose_up

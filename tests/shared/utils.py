@@ -1,20 +1,11 @@
 from python_on_whales import docker, DockerClient, Container
 from datetime import datetime, timedelta
+from typing import Dict, List, TypeVar
 import json
-from typing import TypeVar
 import re
 import requests
 
 http_client_headers = {"Accept": "application/json"}
-
-
-def set_netem(container, latency="0ms"):
-    print(f"Set netem for '{container.name}', latency {latency}")
-    docker.execute(
-        container=container,
-        command=["tc", "qdisc", "replace", "dev", "eth0", "root", "netem", "delay", latency],
-        privileged=True,
-    )
 
 
 def read_node_id(container: Container) -> str:
@@ -40,19 +31,29 @@ def read_json_response(response: requests.Response):
 
 class Node:
     container: Container
-    ports: dict[str, int]
-    ip_address: str | None
 
     def __init__(self, container: Container):
         self.container = container
-        if container.network_settings.ports is not None:
-            self.ports = {
-                key: int(next(item["HostPort"] for item in value if item["HostIp"] == "0.0.0.0"))
-                for key, value in self.container.network_settings.ports.items()  # type: ignore
-            }
-        else:
-            self.ports = {}
-        self.ip_address = self.container.network_settings.ip_address
+
+    def ports(self) -> Dict[str, int]:
+        ports = self.container.network_settings.ports
+        if ports is None:
+            return {}
+        return {
+            key: int(next(item["HostPort"] for item in value if item["HostIp"] == "0.0.0.0"))
+            for key, value in ports.items()
+        }
+
+    def address(self, net_name_part="relay-network") -> str | None:  # type: ignore
+        # print(f"Looking for {net_name_part}")
+        # print(f"Net settings: {self.container.network_settings}")
+        networks = self.container.network_settings.networks
+        if networks is None:
+            return None
+        for name in networks:
+            if net_name_part in name:
+                return networks[name].ip_address
+        return None
 
 
 class Server(Node):
@@ -71,30 +72,44 @@ class Client(Node):
         self.node_id = read_node_id(container=container)
 
     def ping(self, node_id: str, port: int = 8081):
-        port = self.ports[f"{port}/tcp"]
+        port = self.ports()[f"{port}/tcp"]
         response: requests.Response = requests.get(
             f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers
         )
         return read_json_response(response)
 
     def sessions(self, port: int = 8081):
-        port = self.ports[f"{port}/tcp"]
+        port = self.ports()[f"{port}/tcp"]
         response: requests.Response = requests.get(f"http://localhost:{port}/sessions", headers=http_client_headers)
         return read_json_response(response)
 
 
 class Cluster:
     docker_client: DockerClient
-    clients: list[Client]
-    servers: list[Server]
 
     def __init__(self, compose_client: DockerClient):
-        self.clients = []
-        self.servers = []
-        for container in compose_client.container.list():
-            if "client" in container.name:
-                client = Client(container=container)
-                self.clients.append(client)
-            elif "relay_server" in container.name:
-                server = Server(container=container)
-                self.servers.append(server)
+        self.docker_client = compose_client
+
+    def __find_container(self, name_part: str) -> List[Container]:
+        containers = []
+        for container in self.docker_client.container.list():
+            if name_part in container.name:
+                containers.append(container)
+        return containers
+
+    def clients(self, name_part: str = "client") -> List[Client]:
+        containers = self.__find_container(name_part)
+        return [Client(container) for container in containers]
+
+    def servers(self, name_part: str = "relay_server") -> List[Server]:
+        containers = self.__find_container(name_part)
+        return [Server(container) for container in containers]
+
+
+def set_netem(node: Node, latency="0ms"):
+    print(f"Set netem for '{node.container.name}', latency {latency}")
+    docker.execute(
+        container=node.container,
+        command=["tc", "qdisc", "replace", "dev", "eth0", "root", "netem", "delay", latency],
+        privileged=True,
+    )
