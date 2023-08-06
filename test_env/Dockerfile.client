@@ -9,11 +9,15 @@ ENV RUST_LOG=$RUST_LOG
 RUN apt update \
     && apt install -y iputils-ping dnsutils iproute2
 
-COPY ./target/release /app
+# Copy debug or release (prefered) build
+COPY ./target/debu[g]/example[s]/http_clien[t] /app/
+COPY ./target/releas[e]/example[s]/http_clien[t] /app/
+RUN test -f /app/http_client || err "Failed to find http_client bin"
+
 CMD export SERVER_IP=$(dig +short relay_server -t a) \
     && echo $SERVER_IP \
     && tc qdisc add dev eth0 root netem delay $LATENCY \
-    && /app/examples/http_client \
+    && /app/http_client \
     --api-port 8081 \
     --relay-addr tcp://$SERVER_IP:7464 \
     --p2p-bind-addr tcp://0.0.0.0:9081
