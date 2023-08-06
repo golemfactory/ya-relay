@@ -1,10 +1,12 @@
 use actix_web::HttpResponse;
-use serde::{Deserialize, Serialize};
+use serde::{ser::SerializeStruct, Deserialize, Serialize, Serializer};
 use std::{
     fmt::{self, Display},
     time::Duration,
 };
 use ya_relay_client::model::SessionDesc;
+use ya_relay_core::NodeId;
+use ya_relay_proto::proto;
 
 pub(crate) fn json<'a, RESPONSE>(msg: &'a str) -> actix_web::Result<HttpResponse>
 where
@@ -99,5 +101,118 @@ impl fmt::Display for Transfer {
             self.duration.as_millis(),
             self.speed
         ))
+    }
+}
+
+#[derive(Serialize)]
+pub(crate) struct FindNode {
+    pub node: Node,
+    pub duration: Duration,
+}
+
+impl Display for FindNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!(
+            "Found {} \nin {} ms",
+            self.node,
+            self.duration.as_millis()
+        ))
+    }
+}
+
+pub(crate) struct Node(pub proto::response::Node);
+
+impl fmt::Display for Node {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let identities = self
+            .0
+            .identities
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let endpoints = self
+            .0
+            .endpoints
+            .iter()
+            .map(|ep| {
+                format!(
+                    "{p}://{ip}:{port}",
+                    p = if ep.protocol == i32::from(proto::Protocol::Udp) {
+                        "UDP"
+                    } else if ep.protocol == i32::from(proto::Protocol::Tcp) {
+                        "TCP"
+                    } else {
+                        "Unknown"
+                    },
+                    ip = ep.address,
+                    port = ep.port
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        let slot = self.0.slot;
+        let encr = self
+            .0
+            .supported_encryptions
+            .iter()
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        f.write_str(
+            format!(
+                "Node \
+        \n  with Identities: {identities} \
+        \n  with Endpoints: {endpoints} \
+        \n  with Slot: {slot} \
+        \n  with Supported encryption: {encr} \
+        \n"
+            )
+            .as_str(),
+        )
+    }
+}
+
+impl Serialize for Node {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("Node", 5)?;
+        let identities: Vec<NodeId> = self
+            .0
+            .identities
+            .iter()
+            .map(|id| NodeId::from(id.node_id.as_slice()))
+            .collect();
+        state.serialize_field("identities", &identities)?;
+        let endpoints: Vec<Endpoint> = self
+            .0
+            .endpoints
+            .iter()
+            .map(|ep| Endpoint(ep.clone()))
+            .collect();
+        state.serialize_field("endpoints", &endpoints)?;
+        state.serialize_field("seen_ts", &self.0.seen_ts)?;
+        state.serialize_field("slot", &self.0.slot)?;
+        state.serialize_field("supported_encryptions", &self.0.supported_encryptions)?;
+        state.end()
+    }
+}
+
+struct Endpoint(proto::Endpoint);
+
+impl Serialize for Endpoint {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut state = serializer.serialize_struct("Endpoint", 5)?;
+        state.serialize_field("protocol", &self.0.protocol)?;
+        state.serialize_field("address", &self.0.address)?;
+        state.serialize_field("port", &self.0.port)?;
+        state.end()
     }
 }

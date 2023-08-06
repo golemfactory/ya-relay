@@ -83,6 +83,13 @@ class Client(Node):
         response: requests.Response = requests.get(f"http://localhost:{port}/sessions", headers=http_client_headers)
         return read_json_response(response)
 
+    def find(self, node_id: str, port: int = 8081):
+        port = self.ports()[f"{port}/tcp"]
+        response: requests.Response = requests.get(
+            f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers
+        )
+        return read_json_response(response)
+
 
 class Cluster:
     docker_client: DockerClient

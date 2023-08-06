@@ -29,10 +29,14 @@ def test_client(compose_up):
     print(f"Sessions client 2: {sessions_2}")
     assert {server.address(), client_1.address()} == {session["address"] for session in sessions_2["sessions"]}
 
+    find_response = client_2.find(client_1.node_id)
+    print(f"Find client 1: {find_response}")
+    assert client_1.node_id in find_response["node"]["identities"]
+
     # defined in `shared/utils.py`
     set_netem(client_2, latency="100ms")
 
     ping_response = client_1.ping(client_2.node_id)
-    print(f"Ping client 1: {ping_response}")
+    print(f"Ping client 2: {ping_response}")
     nanos = ping_response["duration"]["nanos"]
     assert nanos > 100e6 and nanos < 200e7

@@ -12,7 +12,6 @@ use futures::{future, try_join, FutureExt};
 use rand::Rng;
 use std::{
     collections::HashMap,
-    fmt::{self},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -24,8 +23,6 @@ use ya_relay_core::{
     key::{load_or_generate, Protected},
     NodeId,
 };
-use ya_relay_proto::proto::response::Node;
-use ya_relay_proto::proto::Protocol;
 
 use crate::response::{Pong, Transfer};
 
@@ -103,71 +100,15 @@ impl Drop for RequestGuard {
     }
 }
 
-struct DisplayableNode(Node);
-
-impl fmt::Display for DisplayableNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let identities = self
-            .0
-            .identities
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let endpoints = self
-            .0
-            .endpoints
-            .iter()
-            .map(|ep| {
-                format!(
-                    "{p}://{ip}:{port}",
-                    p = if ep.protocol == i32::from(Protocol::Udp) {
-                        "UDP"
-                    } else if ep.protocol == i32::from(Protocol::Tcp) {
-                        "TCP"
-                    } else {
-                        "Unknown"
-                    },
-                    ip = ep.address,
-                    port = ep.port
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let slot = self.0.slot;
-        let encr = self
-            .0
-            .supported_encryptions
-            .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        f.write_str(
-            format!(
-                "Node \
-        \n  with Identities: {identities} \
-        \n  with Endpoints: {endpoints} \
-        \n  with Slot: {slot} \
-        \n  with Supported encryption: {encr} \
-        \n"
-            )
-            .as_str(),
-        )
-    }
-}
-
-#[get("/find-node/{node_id}")]
 async fn find_node(
     node_id: web::Path<String>,
     client_sender: web::Data<ClientWrap>,
-) -> impl Responder {
+) -> actix_web::Result<response::FindNode> {
     let node_id = node_id.parse::<NodeId>().map_err(ErrorBadRequest)?;
-    let (node, time) = client_sender
+    let (node, duration) = client_sender
         .run_async(move |client: Client| async move {
             let now = Instant::now();
-            let node: Node = client.find_node(node_id).await?;
+            let node = client.find_node(node_id).await?;
 
             Ok::<_, anyhow::Error>((node, now.elapsed()))
         })
@@ -181,15 +122,29 @@ async fn find_node(
             ErrorInternalServerError(e)
         })?;
 
-    let msg = format!(
-        "Found {} \nin {} ms",
-        DisplayableNode(node),
-        time.as_millis()
-    );
+    let node = response::Node(node);
+    let response = response::FindNode { node, duration };
 
-    log::debug!("[find-node]: {}", msg);
+    log::debug!("[find-node]: {}", response);
+    Ok(response)
+}
 
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+#[get("/find-node/{node_id}", guard = "accepts_json")]
+async fn find_node_json(
+    node_id: web::Path<String>,
+    client_sender: web::Data<ClientWrap>,
+) -> actix_web::Result<HttpResponse> {
+    let msg = find_node(node_id, client_sender).await?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+}
+
+#[get("/find-node/{node_id}", guard = "not_accepts_json")]
+async fn find_node_txt(
+    node_id: web::Path<String>,
+    client_sender: web::Data<ClientWrap>,
+) -> actix_web::Result<HttpResponse> {
+    let msg = find_node(node_id, client_sender).await?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
 }
 
 async fn ping(
@@ -470,7 +425,8 @@ async fn run() -> Result<()> {
             .app_data(client.clone())
             .app_data(web_messages.clone())
             .app_data(web::PayloadConfig::new(1024 * 1024 * 1024 * 4))
-            .service(find_node)
+            .service(find_node_json)
+            .service(find_node_txt)
             .service(ping_json)
             .service(ping_txt)
             .service(sessions_json)
