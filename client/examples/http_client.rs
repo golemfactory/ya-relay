@@ -153,7 +153,7 @@ async fn ping(
             ErrorInternalServerError(e)
         })?;
     log::debug!("[ping]: {}", msg);
-    response::json::<Pong>(&msg)
+    response::ok_json::<Pong>(&msg)
 }
 
 #[get("/sessions")]
@@ -199,7 +199,7 @@ async fn transfer_file(
             ErrorInternalServerError(e)
         })?;
     log::debug!("[transfer-file]: {}", msg);
-    response::json::<response::Transfer>(&msg)
+    response::ok_json::<response::Transfer>(&msg)
 }
 
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {

@@ -8,7 +8,7 @@ use ya_relay_client::model::SessionDesc;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 
-pub(crate) fn json<'a, RESPONSE>(msg: &'a str) -> actix_web::Result<HttpResponse>
+pub(crate) fn ok_json<'a, RESPONSE>(msg: &'a str) -> actix_web::Result<HttpResponse>
 where
     RESPONSE: Deserialize<'a> + Serialize + Display,
 {
