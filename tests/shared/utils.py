@@ -1,9 +1,12 @@
 from python_on_whales import docker, DockerClient, Container
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, TypeVar
 import json
 import re
 import requests
+import threading
+import sys
 
 http_client_headers = {"Accept": "application/json"}
 
@@ -26,7 +29,8 @@ def read_json_response(response: requests.Response):
         print(f"Response: {j}")
         return j
     else:
-        raise Exception(response.content)
+        print(f"Fail: {response}")
+        raise Exception((response.status_code, response.content))
 
 
 class Node:
@@ -76,9 +80,11 @@ class Client(Node):
 
     def ping(self, node_id: str, port: int = 8081):
         port = self.__external_port(port)
+        print(f"Pinging")
         response: requests.Response = requests.get(
-            f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers
+            f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers, timeout=5
         )
+        print(f"Read response {response}")
         return read_json_response(response)
 
     def sessions(self, port: int = 8081):
@@ -101,11 +107,50 @@ class Client(Node):
         return read_json_response(response)
 
 
+class LoggerJob(threading.Thread):
+    compose_client: DockerClient
+
+    def __init__(self, compose_client: DockerClient):
+        super(LoggerJob, self).__init__()
+        # self._stop = threading.Event()
+        self.compose_client = compose_client
+
+    def run(self, *args, **kwargs):
+        try:
+            for src, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
+                line = line.decode("utf-8")
+                file = sys.stdout if src == "stdout" else sys.stderr
+                print(f"> {line}", end="", file=file)
+
+        except BaseException as error:
+            print(f"Logger failed: {error}")
+        print(f"Logger stopped")
+
+    # def stop(self):
+    #     pass
+    #     self._stop.set()
+
+
 class Cluster:
     docker_client: DockerClient
+    logger_job: LoggerJob
 
     def __init__(self, compose_client: DockerClient):
         self.docker_client = compose_client
+        self.logger_job = LoggerJob(compose_client)
+
+    def __del__(self):
+        pass
+        ## TODO
+        # self.logger_job.stop()
+
+    def start(self, clients: int, servers: int):
+        print(f"Docker Compose Up (clients: {clients}, servers: {servers})")
+        scales = {"client": clients, "relay_server": servers}
+        self.docker_client.compose.up(detach=True, wait=True, scales=scales)
+        self.logger_job.start()
+        assert len(self.clients()) == scales["client"]
+        assert len(self.servers()) == scales["relay_server"]
 
     def __find_container(self, name_part: str) -> List[Container]:
         containers = []
