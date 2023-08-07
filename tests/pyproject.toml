@@ -11,9 +11,9 @@ python-on-whales = "^0.64"
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4"
 black = "^23.1"
-liccheck = "^0.4"
+liccheck = "^0.9"
 mypy = "^1.4"
-poethepoet = "^0.21.1"
+poethepoet = "^0.21"
 
 [build-system]
 requires = ["poetry-core"]
@@ -37,6 +37,10 @@ testpaths = [
 ]
 pythonpath = [
   "shared"
+]
+filterwarnings = [
+    "ignore:Support for class-based `config` is deprecated:DeprecationWarning:pydantic*",
+    "ignore: Valid config keys have changed in V2:UserWarning:pydantic*"
 ]
 
 [tool.black]

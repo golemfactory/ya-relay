@@ -92,7 +92,7 @@ class Client(Node):
             f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers
         )
         return read_json_response(response)
-    
+
     def transfer(self, node_id: str, data: bytes, port: int = 8081):
         port = self.__external_port(port)
         response: requests.Response = requests.post(
