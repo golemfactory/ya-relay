@@ -7,7 +7,7 @@ mod config;
 mod direct_session;
 mod dispatch;
 mod encryption;
-mod error;
+pub mod error;
 pub mod metrics;
 mod raw_session;
 mod routing_session;

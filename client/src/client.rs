@@ -35,7 +35,7 @@ pub use ya_relay_core::server_session::TransportType;
 pub struct Client {
     config: Arc<ClientConfig>,
     state: Arc<RwLock<ClientState>>,
-    pub(crate) transport: TransportLayer,
+    pub transport: TransportLayer,
 }
 
 /// The state of a Hybrid NET client, containing the address it is bound to,
@@ -454,7 +454,7 @@ impl Client {
         Ok(nodes)
     }
 
-    pub(crate) async fn invalidate_neighbourhood_cache(&self) {
+    pub async fn invalidate_neighbourhood_cache(&self) {
         self.state.write().await.neighbours = None;
     }
 
