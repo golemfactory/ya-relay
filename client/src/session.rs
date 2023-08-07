@@ -15,6 +15,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
@@ -687,6 +688,30 @@ impl SessionLayer {
             SessionLock::Wait(mut waiter) => waiter.await_for_finish().await,
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
+
+
+        session.raw.dispatcher.handle_error(
+            proto::StatusCode::Unauthorized as i32,
+            true,
+             move |code| {
+                {
+                    async move {
+                        log::debug!("handle_error {code}");
+                    }.boxed()
+                }
+            }
+
+
+            //expected
+            // move || {
+            //     {
+            //         async {
+            //             log::debug!("asas");
+            //             ()
+            //         }
+            //     }.boxed()
+            // }
+        );
 
         // TODO: Make sure this functionality is replaced in new code.
         // session.raw.dispatcher.handle_error(

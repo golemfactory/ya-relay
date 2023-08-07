@@ -171,12 +171,15 @@ impl Client {
     ///
     pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<crate::model::Node> {
         let session = self.transport.session_layer.server_session().await?;
-        let find_node = session.raw.find_node(node_id);
+        session.raw.find_node(node_id).await
 
-        match tokio::time::timeout(Duration::from_secs(5), find_node).await {
-            Ok(result) => Ok(result?),
-            Err(_) => bail!("Node [{}] lookup timed out", node_id),
-        }
+        //find_node has an internal timeout
+        // let find_node = session.raw.find_node(node_id);
+        //
+        // match tokio::time::timeout(Duration::from_secs(5), find_node).await {
+        //     Ok(result) => Ok(result?),
+        //     Err(_) => bail!("Node [{}] lookup timed out", node_id),
+        // }
     }
 
     /// Returns a vector of all currently opened sockets.

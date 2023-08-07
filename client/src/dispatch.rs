@@ -10,12 +10,14 @@ use futures::future::{FutureExt, LocalBoxFuture};
 use futures::stream::{Stream, StreamExt};
 use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
+use ya_relay_core::session::Session;
 
 use crate::direct_session::DirectSession;
 use crate::raw_session::RawSession;
 
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
+use crate::session::SessionLayer;
 
 pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult + Send>;
 pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -153,6 +155,7 @@ impl Default for Dispatcher {
 
 impl Dispatcher {
     pub fn update_seen(&self) {
+        log::trace!("Updating seen time");
         *self.seen.lock().unwrap() = Instant::now();
     }
 
@@ -169,7 +172,7 @@ impl Dispatcher {
     }
 
     /// Registers a response code handler
-    pub fn handle_error<F: Fn() -> ErrorHandlerResult + Sync + Send + 'static>(
+    pub fn handle_error<F: Fn(i32) -> ErrorHandlerResult + Sync + Send + 'static>(
         &self,
         code: i32,
         exclusive: bool,
@@ -191,7 +194,7 @@ impl Dispatcher {
                 }
 
                 latch.store(true, SeqCst);
-                handler_fn().await;
+                handler_fn(code).await;
                 latch.store(false, SeqCst);
             }
             .boxed()

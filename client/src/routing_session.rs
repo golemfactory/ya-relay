@@ -148,7 +148,14 @@ impl RoutingSender {
                 }
             },
         };
-        routing.send(packet, transport).await
+        let send_result = routing.send(packet, transport).await;
+        match send_result {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                log::error!("Sending packet to routing session: {e}");
+                Err(e)
+            }
+        }
     }
 
     /// Establishes connection on demand if it didn't exist.

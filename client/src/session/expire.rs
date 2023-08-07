@@ -2,11 +2,12 @@ use crate::client::SessionError;
 use std::cmp::min;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::time::Instant;
 use ya_relay_core::NodeId;
 
 use crate::direct_session::DirectSession;
-use crate::session::network_view::NodeView;
+use crate::session::network_view::{NodeAwaiting, NodeView};
 use crate::session::session_state::SessionState;
 use crate::session::session_traits::SessionDeregistration;
 use crate::session::SessionLayer;
@@ -15,25 +16,30 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
     let mut time_to_reconnect = std::time::Duration::from_secs(1);
     let time_to_check = std::time::Duration::from_secs(5);
 
-    tokio::time::sleep(std::time::Duration::from_secs(time_to_check.as_secs())).await;
+    tokio::time::sleep(time_to_check).await;
+
+    let server_node_id = NodeId::default();
+
+    let entry = layer.registry.get_entry(server_node_id).await;
+    let mut awaiting_notifier: Option<NodeAwaiting> = match entry {
+        None => None,
+        Some(entry) => Some(entry.awaiting_notifier()),
+    };
 
     loop {
         match layer.server_session().await {
             Ok(_) => {
+                if awaiting_notifier.is_some() {
+                    awaiting_notifier.as_mut()
+                        .unwrap()
+                        .await_for_closed_or_failed()
+                        .await;
+                } else {
+                    tokio::time::sleep(time_to_check).await;
+                }
+
                 // Connection was successful so reset time to reconnect after failure to default value
                 time_to_reconnect = std::time::Duration::from_secs(1);
-                tokio::time::sleep(std::time::Duration::from_secs(time_to_check.as_secs())).await;
-
-                async {
-                    let server_node_id = NodeId::default();
-
-                    let entry = layer.registry.get_entry(server_node_id).await;
-
-                    if let Some(entry) = entry {
-                        entry.awaiting_notifier().await_for_closed_or_failed().await;
-                    }
-                }
-                .await;
 
                 log::debug!("Server session keep alive");
             }
@@ -55,7 +61,7 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
 }
 
 pub async fn track_sessions_expiration(layer: SessionLayer) {
-    let expiration = layer.config.session_expiration;
+    let expiration = Duration::from_secs(5);//layer.config.session_expiration;
 
     loop {
         log::trace!("Checking, if all sessions are alive. Removing not active sessions.");
@@ -87,6 +93,7 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
             })
             .collect::<Vec<_>>();
 
+        log::debug!("Closing {} expired sessions.", expired_idx.len());
         close_sessions(layer.clone(), sessions, expired_idx).await;
 
         let first_to_expiring = last_seen.iter().min().cloned().unwrap_or(now) + expiration;

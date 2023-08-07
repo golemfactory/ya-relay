@@ -161,19 +161,28 @@ impl RawSession {
         Ok(neighbours)
     }
 
-    pub async fn ping(&self) -> anyhow::Result<()> {
+    pub async fn ping(&self) -> anyhow::Result<(), RequestError> {
         let packet = proto::request::Ping {};
         let ping_ts = Instant::now();
 
-        let (ping, result) = match self
+        let r = self
             .request::<proto::response::Pong>(packet.into(), self.id.to_vec(), DEFAULT_PING_TIMEOUT)
-            .await
+            .await;
+
+        let (ping, result) = match r
         {
             result @ Ok(_) => (Instant::now() - ping_ts, result),
-            result @ Err(_) => (Instant::now() - self.dispatcher.last_seen(), result),
+            result @ Err(_) => {
+                if let Some(e) = result.as_ref().err() {
+                    log::error!("Ping error {:?}", e);
+                }
+                (Instant::now() - self.dispatcher.last_seen(), result)
+            },
         };
 
-        self.dispatcher.update_ping(ping);
+        // if !result.is_err() {
+            self.dispatcher.update_ping(ping);
+        // }
         Ok(result.map(|_| ())?)
     }
 
@@ -208,6 +217,7 @@ impl RawSession {
                     tokio::time::sleep(Duration::from_millis(200 * i)).await;
                     self.ping().await
                 }
+
                 .boxed_local()
             }))
             .await
