@@ -310,7 +310,7 @@ async fn handle_forward_message(
 ) -> Result<()> {
     match fwd.transport {
         ya_relay_client::model::TransportType::Reliable => {
-            log::info!("Got forward message: {fwd:?}");
+            log::info!("Got forward message. Node {}. Transport {}", fwd.node_id, fwd.transport);
             let msg = String::from_utf8(fwd.payload.into_vec())?;
 
             let mut s = msg.split(':');

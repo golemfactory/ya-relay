@@ -33,6 +33,12 @@ def test_client(compose_up):
     print(f"Find client 1: {find_response}")
     assert client_1.node_id in find_response["node"]["identities"]
 
+    data = bytearray(10_500_000)
+    transfer_response = client_1.transfer(client_2.node_id, data)
+    print(f"Transfer client 2: {transfer_response}")
+    assert 10 == transfer_response["mb_transfered"]
+    assert client_2.node_id == transfer_response["node_id"]
+
     # defined in `shared/utils.py`
     set_netem(client_2, latency="100ms")
 
