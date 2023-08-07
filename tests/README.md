@@ -35,6 +35,12 @@ poetry install
 poetry run pytest
 ```
 
+Running a one specific test
+
+```bash
+poetry run pytest test_client.py::test_client
+```
+
 Test development checks
 
 ```bash
