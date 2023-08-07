@@ -1,8 +1,6 @@
 use actix_web::{
     error::{ErrorBadRequest, ErrorInternalServerError},
     get,
-    guard::GuardContext,
-    http::header,
     post,
     web::{self, Data},
     App, HttpResponse, HttpServer, Responder,
@@ -100,10 +98,11 @@ impl Drop for RequestGuard {
     }
 }
 
+#[get("/find-node/{node_id}")]
 async fn find_node(
     node_id: web::Path<String>,
     client_sender: web::Data<ClientWrap>,
-) -> actix_web::Result<response::FindNode> {
+) -> actix_web::Result<HttpResponse> {
     let node_id = node_id.parse::<NodeId>().map_err(ErrorBadRequest)?;
     let (node, duration) = client_sender
         .run_async(move |client: Client| async move {
@@ -123,35 +122,17 @@ async fn find_node(
         })?;
 
     let node = response::Node(node);
-    let response = response::FindNode { node, duration };
-
-    log::debug!("[find-node]: {}", response);
-    Ok(response)
-}
-
-#[get("/find-node/{node_id}", guard = "accepts_json")]
-async fn find_node_json(
-    node_id: web::Path<String>,
-    client_sender: web::Data<ClientWrap>,
-) -> actix_web::Result<HttpResponse> {
-    let msg = find_node(node_id, client_sender).await?;
+    let msg = response::FindNode { node, duration };
+    log::debug!("[find-node]: {}", msg);
     Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
-#[get("/find-node/{node_id}", guard = "not_accepts_json")]
-async fn find_node_txt(
-    node_id: web::Path<String>,
-    client_sender: web::Data<ClientWrap>,
-) -> actix_web::Result<HttpResponse> {
-    let msg = find_node(node_id, client_sender).await?;
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
-}
-
+#[get("/ping/{node_id}")]
 async fn ping(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
-) -> actix_web::Result<String> {
+) -> actix_web::Result<HttpResponse> {
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
@@ -172,61 +153,29 @@ async fn ping(
             log::error!("Ping failed {e}");
             ErrorInternalServerError(e)
         })?;
-
     log::debug!("[ping]: {}", msg);
-    Ok(msg)
-}
-
-#[get("/ping/{node_id}", guard = "accepts_json")]
-async fn ping_json(
-    node_id: web::Path<NodeId>,
-    client_sender: web::Data<ClientWrap>,
-    messages: web::Data<Messages>,
-) -> actix_web::Result<HttpResponse> {
-    let msg = ping(node_id, client_sender, messages).await?;
     response::json::<Pong>(&msg)
 }
 
-#[get("/ping/{node_id}", guard = "not_accepts_json")]
-async fn ping_txt(
-    node_id: web::Path<NodeId>,
-    client_sender: web::Data<ClientWrap>,
-    messages: web::Data<Messages>,
-) -> actix_web::Result<HttpResponse> {
-    let msg = ping(node_id, client_sender, messages).await?;
-    response::txt::<response::Pong>(&msg)
-}
-
-async fn sessions(client_sender: web::Data<ClientWrap>) -> actix_web::Result<response::Sessions> {
+#[get("/sessions")]
+async fn sessions(client_sender: web::Data<ClientWrap>) -> impl Responder {
     let msg = client_sender
         .run_async(move |client: Client| async move {
             client.sessions().map(response::Sessions::from).await
         })
         .await
         .map_err(ErrorInternalServerError)?;
-    Ok(msg)
-}
-
-#[get("/sessions", guard = "accepts_json")]
-async fn sessions_json(client_sender: web::Data<ClientWrap>) -> impl Responder {
-    let msg: response::Sessions = sessions(client_sender).await?;
     Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
-#[get("/sessions", guard = "not_accepts_json")]
-async fn sessions_txt(client_sender: web::Data<ClientWrap>) -> impl Responder {
-    let msg = sessions(client_sender).await?;
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg.to_string()))
-}
-
+#[post("/transfer-file/{node_id}")]
 async fn transfer_file(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
     body: web::Bytes,
-) -> actix_web::Result<String> {
+) -> actix_web::Result<HttpResponse> {
     let node_id = node_id.into_inner();
-
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let data: Vec<u8> = body.into();
@@ -250,43 +199,8 @@ async fn transfer_file(
             log::error!("Transfer file failed {e}");
             ErrorInternalServerError(e)
         })?;
-
     log::debug!("[transfer-file]: {}", msg);
-
-    Ok(msg)
-}
-
-#[post("/transfer-file/{node_id}", guard = "accepts_json")]
-async fn transfer_file_json(
-    node_id: web::Path<NodeId>,
-    client_sender: web::Data<ClientWrap>,
-    messages: web::Data<Messages>,
-    body: web::Bytes,
-) -> actix_web::Result<HttpResponse> {
-    let msg = transfer_file(node_id, client_sender, messages, body).await?;
     response::json::<response::Transfer>(&msg)
-}
-
-#[post("/transfer-file/{node_id}", guard = "not_accepts_json")]
-async fn transfer_file_txt(
-    node_id: web::Path<NodeId>,
-    client_sender: web::Data<ClientWrap>,
-    messages: web::Data<Messages>,
-    body: web::Bytes,
-) -> actix_web::Result<HttpResponse> {
-    let msg = transfer_file(node_id, client_sender, messages, body).await?;
-    response::txt::<response::Transfer>(&msg)
-}
-
-fn accepts_json(ctx: &GuardContext) -> bool {
-    match ctx.header::<header::Accept>() {
-        Some(hdr) => hdr.preference() == "application/json",
-        None => false,
-    }
-}
-
-fn not_accepts_json(ctx: &GuardContext) -> bool {
-    !accepts_json(ctx)
 }
 
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
@@ -425,14 +339,10 @@ async fn run() -> Result<()> {
             .app_data(client.clone())
             .app_data(web_messages.clone())
             .app_data(web::PayloadConfig::new(1024 * 1024 * 1024 * 4))
-            .service(find_node_json)
-            .service(find_node_txt)
-            .service(ping_json)
-            .service(ping_txt)
-            .service(sessions_json)
-            .service(sessions_txt)
-            .service(transfer_file_json)
-            .service(transfer_file_txt)
+            .service(find_node)
+            .service(ping)
+            .service(sessions)
+            .service(transfer_file)
     })
     .workers(4)
     .bind(("0.0.0.0", port))?
