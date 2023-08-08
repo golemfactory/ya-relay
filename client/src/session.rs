@@ -1,4 +1,5 @@
 mod expire;
+mod keep_alive;
 pub mod network_view;
 pub mod session_initializer;
 pub mod session_state;
@@ -20,6 +21,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use self::expire::track_sessions_expiration;
+use self::keep_alive::keep_alive_server_session;
 use self::network_view::{NetworkView, SessionLock, SessionPermit, Validity};
 use self::session_state::{RelayedState, ReverseState, SessionState};
 use crate::client::{ClientConfig, Forwarded};
@@ -33,7 +35,6 @@ use crate::routing_session::{NodeRouting, RoutingSender};
 use crate::session::session_initializer::SessionInitializer;
 use crate::transport::ForwardReceiver;
 
-use crate::session::expire::keep_alive_server_session;
 use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
@@ -695,14 +696,15 @@ impl SessionLayer {
         session.raw.dispatcher.handle_error(
             proto::StatusCode::Unauthorized as i32,
             true,
-             move |code| {
+            move |code| {
                 let session2 = session2.clone();
-                 let myself = myself.clone();
+                let myself = myself.clone();
                 async move {
                     myself.close_session(session2).await;
                     log::debug!("handle_error {code}");
-                }.boxed_local()
-            }
+                }
+                .boxed_local()
+            },
         );
 
         // TODO: Make sure this functionality is replaced in new code.

@@ -15,9 +15,9 @@ use ya_relay_core::session::Session;
 use crate::direct_session::DirectSession;
 use crate::raw_session::RawSession;
 
+use crate::session::SessionLayer;
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
-use crate::session::SessionLayer;
 
 pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult>;
 pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()>>>;

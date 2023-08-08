@@ -169,19 +169,18 @@ impl RawSession {
             .request::<proto::response::Pong>(packet.into(), self.id.to_vec(), DEFAULT_PING_TIMEOUT)
             .await;
 
-        let (ping, result) = match r
-        {
+        let (ping, result) = match r {
             result @ Ok(_) => (Instant::now() - ping_ts, result),
             result @ Err(_) => {
                 if let Some(e) = result.as_ref().err() {
                     log::error!("Ping error {:?}", e);
                 }
                 (Instant::now() - self.dispatcher.last_seen(), result)
-            },
+            }
         };
 
         self.dispatcher.update_ping(ping);
-        Ok(result.map(|_| ())?)
+        result.map(|_| ())
     }
 
     pub async fn reverse_connection(&self, node_id: NodeId) -> Result<(), RequestError> {
@@ -215,7 +214,6 @@ impl RawSession {
                     tokio::time::sleep(Duration::from_millis(200 * i)).await;
                     self.ping().await
                 }
-
                 .boxed_local()
             }))
             .await
