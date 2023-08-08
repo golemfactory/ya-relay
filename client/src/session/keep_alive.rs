@@ -45,8 +45,7 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
     };
 
     let establish_server_session = || async {
-        let mut backoff = ExponentialBackoff
-        {
+        let mut backoff = ExponentialBackoff {
             multiplier: 5.0,
             max_interval: core::time::Duration::from_secs(300),
             max_elapsed_time: None,

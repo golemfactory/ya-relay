@@ -817,6 +817,7 @@ impl Default for NetworkViewConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::format;
 
     use lazy_static::lazy_static;
 
@@ -852,16 +853,21 @@ mod tests {
         mut permit: SessionPermit,
     ) -> anyhow::Result<Arc<DirectSession>> {
         let node = permit.registry.clone();
-        node.transition_outgoing(InitState::Initializing).await?;
-        // node.transition_outgoing(InitState::ChallengeHandshake)
-        //     .await?;
-        // node.transition_outgoing(InitState::HandshakeResponse)
-        //     .await?;
-        // node.transition_outgoing(InitState::ChallengeVerified)
-        //     .await?;
-        // node.transition_outgoing(InitState::SessionRegistered)
-        //     .await?;
-        // node.transition_outgoing(InitState::Ready).await?;
+        let transition_result = node
+            .transition_outgoing(InitState::Initializing)
+            .await
+            .map(|_| async {
+                node.transition_outgoing(InitState::ChallengeHandshake)
+                    .await
+            })
+            .map(|_| async { node.transition_outgoing(InitState::HandshakeResponse).await })
+            .map(|_| async { node.transition_outgoing(InitState::ChallengeVerified).await })
+            .map(|_| async { node.transition_outgoing(InitState::SessionRegistered).await })
+            .map(|_| async { node.transition_outgoing(InitState::Ready).await });
+
+        if transition_result.is_err() {
+            bail!("{:?}", transition_result.err());
+        };
 
         let session = permit
             .collect_results(Ok(mock_session(&permit).await))
@@ -870,27 +876,33 @@ mod tests {
         Ok(session)
     }
 
-    // async fn mock_establish_incoming(
-    //     mut permit: SessionPermit,
-    // ) -> anyhow::Result<Arc<DirectSession>> {
-    //     let node = permit.registry.clone();
-    //     node.transition_incoming(InitState::Initializing).await?;
-    //     node.transition_incoming(InitState::ChallengeHandshake)
-    //         .await?;
-    //     node.transition_incoming(InitState::HandshakeResponse)
-    //         .await?;
-    //     node.transition_incoming(InitState::ChallengeVerified)
-    //         .await?;
-    //     node.transition_incoming(InitState::SessionRegistered)
-    //         .await?;
-    //     node.transition_incoming(InitState::Ready).await?;
-    //
-    //     let session = permit
-    //         .collect_results(Ok(mock_session(&permit).await))
-    //         .unwrap();
-    //     drop(permit);
-    //     Ok(session)
-    // }
+    async fn mock_establish_incoming(
+        mut permit: SessionPermit,
+    ) -> anyhow::Result<Arc<DirectSession>> {
+        let node = permit.registry.clone();
+
+        let transition_result = node
+            .transition_incoming(InitState::Initializing)
+            .await
+            .map(|_| async {
+                node.transition_incoming(InitState::ChallengeHandshake)
+                    .await
+            })
+            .map(|_| async { node.transition_incoming(InitState::HandshakeResponse).await })
+            .map(|_| async { node.transition_incoming(InitState::ChallengeVerified).await })
+            .map(|_| async { node.transition_incoming(InitState::SessionRegistered).await })
+            .map(|_| async { node.transition_incoming(InitState::Ready).await });
+
+        if transition_result.is_err() {
+            bail!("{:?}", transition_result.err());
+        };
+
+        let session = permit
+            .collect_results(Ok(mock_session(&permit).await))
+            .unwrap();
+        drop(permit);
+        Ok(session)
+    }
 
     async fn mock_session(permit: &SessionPermit) -> Arc<DirectSession> {
         let node_id = permit.registry.id;
@@ -955,12 +967,12 @@ mod tests {
         // Initialize session related to permit 1
         // Waiters should work independently from each other. Waiting one initialization
         // shouldn't affect second initialization.
-        // tokio::task::spawn_local(async move {
-        //     tokio::time::sleep(Duration::from_millis(200)).await;
-        //     let _session = mock_establish_outgoing(permit1).await.unwrap();
-        //     // Keep session so it won't be dropped and `await_for_finish` won't return error
-        //     tokio::time::sleep(Duration::from_millis(300)).await;
-        // });
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _session = mock_establish_outgoing(permit1).await.unwrap();
+            // Keep session so it won't be dropped and `await_for_finish` won't return error
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        });
 
         timeout(Duration::from_millis(600), waiter1.await_for_finish())
             .await
@@ -995,12 +1007,12 @@ mod tests {
             SessionLock::Wait(waiter) => waiter,
         };
 
-        // tokio::task::spawn_local(async move {
-        //     tokio::time::sleep(Duration::from_millis(200)).await;
-        //     let _session = mock_establish_incoming(permit).await.unwrap();
-        //     // Keep session so it won't be dropped and `await_for_finish` won't return error
-        //     tokio::time::sleep(Duration::from_millis(200)).await;
-        // });
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _session = mock_establish_incoming(permit).await.unwrap();
+            // Keep session so it won't be dropped and `await_for_finish` won't return error
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
 
         timeout(Duration::from_millis(600), waiter.await_for_finish())
             .await
@@ -1030,12 +1042,12 @@ mod tests {
             SessionLock::Wait(waiter) => waiter,
         };
 
-        // tokio::task::spawn_local(async move {
-        //     tokio::time::sleep(Duration::from_millis(200)).await;
-        //     let _session = mock_establish_incoming(permit).await.unwrap();
-        //     // Keep session so it won't be dropped and `await_for_finish` won't return error
-        //     tokio::time::sleep(Duration::from_millis(200)).await;
-        // });
+        tokio::task::spawn_local(async move {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _session = mock_establish_incoming(permit).await.unwrap();
+            // Keep session so it won't be dropped and `await_for_finish` won't return error
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
 
         timeout(Duration::from_millis(600), waiter.await_for_finish())
             .await
@@ -1044,30 +1056,30 @@ mod tests {
     }
 
     // #[actix_rt::test]
-    // async fn test_network_view_already_established() {
-    //     let guards = NetworkView::default();
-    //     let permit = match guards
-    //         .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
-    //         .await
-    //     {
-    //         SessionLock::Permit(permit) => permit,
-    //         SessionLock::Wait(_) => panic!("Expected initialization Permit"),
-    //     };
-    //
-    //     let _session = mock_establish_outgoing(permit).await.unwrap();
-    //
-    //     let mut waiter = match guards
-    //         .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
-    //         .await
-    //     {
-    //         SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
-    //         SessionLock::Wait(waiter) => waiter,
-    //     };
-    //     timeout(Duration::from_millis(100), waiter.await_for_finish())
-    //         .await
-    //         .unwrap()
-    //         .unwrap();
-    // }
+    async fn test_network_view_already_established() {
+        let guards = NetworkView::default();
+        let permit = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
+            SessionLock::Permit(permit) => permit,
+            SessionLock::Wait(_) => panic!("Expected initialization Permit"),
+        };
+
+        let _session = mock_establish_outgoing(permit).await.unwrap();
+
+        let mut waiter = match guards
+            .lock_outgoing(*NODE_ID1, &[*ADDR1], NoOpSessionLayer {})
+            .await
+        {
+            SessionLock::Permit(_) => panic!("Expected Waiter not Permit"),
+            SessionLock::Wait(waiter) => waiter,
+        };
+        timeout(Duration::from_millis(100), waiter.await_for_finish())
+            .await
+            .unwrap()
+            .unwrap();
+    }
 
     /// There are only 2 states from which transition to `ConnectIntent` should give us permit.
     /// Moreover from `ReverseState::Awaiting` we can get reverse `SessionPermit`, when calling
