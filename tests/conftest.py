@@ -3,7 +3,7 @@ from python_on_whales import DockerClient
 from utils import Cluster
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="package")
 def compose_build() -> DockerClient:
     build_args = {"SERVER_LATENCY": "0ms", "CLIENT_LATENCY": "0ms"}
     return __compose_build(build_args)
