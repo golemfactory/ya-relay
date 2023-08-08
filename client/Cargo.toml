@@ -8,9 +8,10 @@ description = "Client for hybrid Net communication protocol"
 repository = "https://github.com/golemfactory/ya-relay"
 
 [dependencies]
-ya-relay-stack = "0.5.0"
-ya-relay-proto = "0.4.2"
-ya-relay-core = "0.4.0"
+ya-relay-stack = { workspace = true }
+ya-relay-proto = { workspace = true }
+ya-relay-core = { workspace = true }
+
 ya-packet-trace = "0.1.0"
 
 anyhow = "1.0"
@@ -54,7 +55,7 @@ structopt = "0.3"
 clap = "4.3.19"
 tokio = { version = "1", features = ["fs", "io-util", "signal"] }
 thiserror = "1.0.44"
-ya-relay-server = { path="../server" }
+ya-relay-server = { path = "../server" }
 env_logger = "0.10.0"
 
 [features]
