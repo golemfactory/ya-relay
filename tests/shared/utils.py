@@ -1,7 +1,7 @@
 from python_on_whales import docker, DockerClient, Container
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, TypeVar
+from typing import Dict, List, TypeVar, Set
 import json
 import re
 import requests
@@ -78,31 +78,33 @@ class Client(Node):
     def __external_port(self, port: int = 8081):
         return self.ports()[f"{port}/tcp"]
 
-    def ping(self, node_id: str, port: int = 8081):
+    def ping(self, node_id: str, port: int = 8081, timeout: int = 5):
         port = self.__external_port(port)
         print(f"Pinging")
         response: requests.Response = requests.get(
-            f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers, timeout=5
+            f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers, timeout=timeout
         )
         print(f"Read response {response}")
         return read_json_response(response)
 
-    def sessions(self, port: int = 8081):
-        port = self.__external_port(port)
-        response: requests.Response = requests.get(f"http://localhost:{port}/sessions", headers=http_client_headers)
-        return read_json_response(response)
-
-    def find(self, node_id: str, port: int = 8081):
+    def sessions(self, port: int = 8081, timeout: int = 5):
         port = self.__external_port(port)
         response: requests.Response = requests.get(
-            f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers
+            f"http://localhost:{port}/sessions", headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
-    def transfer(self, node_id: str, data: bytes, port: int = 8081):
+    def find(self, node_id: str, port: int = 8081, timeout: int = 5):
+        port = self.__external_port(port)
+        response: requests.Response = requests.get(
+            f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers, timeout=timeout
+        )
+        return read_json_response(response)
+
+    def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int = 5):
         port = self.__external_port(port)
         response: requests.Response = requests.post(
-            f"http://localhost:{port}/transfer-file/{node_id}", data, headers=http_client_headers
+            f"http://localhost:{port}/transfer-file/{node_id}", data, headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
@@ -149,8 +151,8 @@ class Cluster:
         scales = {"client": clients, "relay_server": servers}
         self.docker_client.compose.up(detach=True, wait=True, scales=scales)
         self.logger_job.start()
-        assert len(self.clients()) == scales["client"]
-        assert len(self.servers()) == scales["relay_server"]
+        assert len(self.clients()) == clients
+        assert len(self.servers()) == servers
 
     def __find_container(self, name_part: str) -> List[Container]:
         containers = []
@@ -166,6 +168,19 @@ class Cluster:
     def servers(self, name_part: str = "relay_server") -> List[Server]:
         containers = self.__find_container(name_part)
         return [Server(container) for container in containers]
+
+    def disconnect(self, node: Node) -> Set[str]:
+        networks = set()
+        for network in node.container.network_settings.networks:
+            print(f"Disconnecting {node.node_id} from {network}")
+            self.docker_client.network.disconnect(network, node.container)
+            networks.add(network)
+        return networks
+
+    def connect(self, node: Node, networks: Set[str]):
+        for network in networks:
+            print(f"Connecting {node.node_id} to {network}")
+            self.docker_client.network.connect(network, node.container)
 
 
 def set_netem(node: Node, latency="0ms"):
