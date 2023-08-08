@@ -7,14 +7,14 @@ mod config;
 mod direct_session;
 mod dispatch;
 mod encryption;
-pub mod error;
+mod error;
 pub mod metrics;
 mod raw_session;
 mod routing_session;
 mod session;
 mod transport;
 
-pub use client::{Client, ClientBuilder, FailFast, GenericSender};
+pub use client::{Client, ClientBuilder, FailFast, GenericSender, SessionError};
 
 /// This module is a public re-export cryptographic abstractions.
 pub use ya_relay_core::crypto;
