@@ -120,19 +120,11 @@ class LoggerJob(threading.Thread):
         self.compose_client = compose_client
 
     def run(self, *args, **kwargs):
-        try:
-            for src, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
-                line = line.decode("utf-8")
-                file = sys.stdout if src == "stdout" else sys.stderr
-                print(f"> {line}", end="", file=file)
-
-        except BaseException as error:
-            print(f"Logger failed: {error}")
+        for src, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
+            line = line.decode("utf-8")
+            file = sys.stdout if src == "stdout" else sys.stderr
+            print(f"> {line}", end="", file=file)
         print(f"Logger stopped")
-
-    # def stop(self):
-    #     pass
-    #     self._stop.set()
 
 
 class Cluster:
@@ -142,11 +134,6 @@ class Cluster:
     def __init__(self, compose_client: DockerClient):
         self.docker_client = compose_client
         self.logger_job = LoggerJob(compose_client)
-
-    def __del__(self):
-        pass
-        ## TODO
-        # self.logger_job.stop()
 
     def start(self, clients: int, servers: int):
         print(f"Docker Compose Up (clients: {clients}, servers: {servers})")
