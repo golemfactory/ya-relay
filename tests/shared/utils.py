@@ -79,15 +79,15 @@ class Client(Node):
         return self.ports()[f"{port}/tcp"]
 
     def ping(self, node_id: str, port: int = 8081, timeout: int = 5):
+        print(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
-        print(f"Pinging")
         response: requests.Response = requests.get(
             f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers, timeout=timeout
         )
-        print(f"Read response {response}")
         return read_json_response(response)
 
     def sessions(self, port: int = 8081, timeout: int = 5):
+        print(f"GET Sessions ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/sessions", headers=http_client_headers, timeout=timeout
@@ -95,6 +95,7 @@ class Client(Node):
         return read_json_response(response)
 
     def find(self, node_id: str, port: int = 8081, timeout: int = 5):
+        print(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers, timeout=timeout
@@ -102,6 +103,7 @@ class Client(Node):
         return read_json_response(response)
 
     def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int = 5):
+        print(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.post(
             f"http://localhost:{port}/transfer-file/{node_id}", data, headers=http_client_headers, timeout=timeout

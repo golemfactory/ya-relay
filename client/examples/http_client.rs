@@ -132,6 +132,7 @@ async fn ping(
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
 ) -> actix_web::Result<HttpResponse> {
+    log::debug!("[ping]: Pinging {}", node_id);
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
