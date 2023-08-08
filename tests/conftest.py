@@ -2,11 +2,20 @@ import pytest
 from python_on_whales import DockerClient
 from utils import Cluster
 
+default_build_args = {"SERVER_LATENCY": "0ms", "CLIENT_LATENCY": "0ms", "RUST_LOG": "info"}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def base_build():
+    print("Base build")
+    docker = DockerClient()
+    docker.build("../test_env", file="../test_env/Dockerfile.base", tags="tests_base")
+
 
 @pytest.fixture(scope="package")
 def compose_build() -> DockerClient:
-    build_args = {"SERVER_LATENCY": "0ms", "CLIENT_LATENCY": "0ms"}
-    return __compose_build(build_args)
+    print("Package level Compose Build")
+    return __compose_build(default_build_args)
 
 
 def __compose_build(build_args) -> DockerClient:
@@ -28,6 +37,7 @@ def compose_up(compose_build: DockerClient):
     def _compose_up(clients: int, servers: int = 1, build_args=None) -> Cluster:
         _compose_build = compose_build
         if build_args is not None:
+            build_args = default_build_args.copy() | build_args
             _compose_build = __compose_build(build_args)
         cluster = Cluster(_compose_build)
         cluster.start(clients, servers)

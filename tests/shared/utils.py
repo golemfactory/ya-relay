@@ -171,15 +171,16 @@ class Cluster:
 
     def disconnect(self, node: Node) -> Set[str]:
         networks = set()
-        for network in node.container.network_settings.networks:
-            print(f"Disconnecting {node.node_id} from {network}")
-            self.docker_client.network.disconnect(network, node.container)
-            networks.add(network)
+        if isinstance(node.container.network_settings.networks, Dict):
+            for network in node.container.network_settings.networks:
+                print(f"Disconnecting {node} from {network}")
+                self.docker_client.network.disconnect(network, node.container)
+                networks.add(network)
         return networks
 
     def connect(self, node: Node, networks: Set[str]):
         for network in networks:
-            print(f"Connecting {node.node_id} to {network}")
+            print(f"Connecting {node} to {network}")
             self.docker_client.network.connect(network, node.container)
 
 
