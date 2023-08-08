@@ -6,14 +6,14 @@ edition = "2018"
 homepage = "https://github.com/golemfactory/ya-relay/crates/proto"
 repository = "https://github.com/golemfactory/ya-relay"
 license = "LGPL-3.0"
-description= "Golem relay messages"
+description = "Golem relay messages"
 
 [features]
 default = ["codec"]
 codec = ["futures", "tokio", "tokio-util", "bytes", "derive_more", "thiserror"]
 
 [dependencies]
-ya-relay-util = "0.1"
+ya-relay-util = { path = "../crates/util" }
 
 prost = "0.10"
 rand = "0.8"
