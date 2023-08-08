@@ -47,8 +47,11 @@ pub mod model {
     pub use ya_relay_proto::proto::Payload;
 }
 
-/// Re-exports several channel related items from the client module.
+/// Re-exports several channel related items from the client module and proto.
 pub mod channels {
     #[doc(inline)]
     pub use crate::client::{ForwardReceiver, ForwardSender, Forwarded};
+
+    #[doc(inline)]
+    pub use ya_relay_proto::codec::forward::PrefixedStream;
 }
