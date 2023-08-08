@@ -689,28 +689,20 @@ impl SessionLayer {
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
+        let session2 = session.clone();
 
+        let myself = self.clone();
         session.raw.dispatcher.handle_error(
             proto::StatusCode::Unauthorized as i32,
             true,
              move |code| {
-                {
-                    async move {
-                        log::debug!("handle_error {code}");
-                    }.boxed()
-                }
+                let session2 = session2.clone();
+                 let myself = myself.clone();
+                async move {
+                    myself.close_session(session2).await;
+                    log::debug!("handle_error {code}");
+                }.boxed_local()
             }
-
-
-            //expected
-            // move || {
-            //     {
-            //         async {
-            //             log::debug!("asas");
-            //             ()
-            //         }
-            //     }.boxed()
-            // }
         );
 
         // TODO: Make sure this functionality is replaced in new code.

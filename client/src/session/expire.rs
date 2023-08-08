@@ -2,9 +2,12 @@ use crate::client::SessionError;
 use std::cmp::min;
 use std::future::Future;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::Duration;
 use tokio::time::Instant;
 use ya_relay_core::NodeId;
+use backoff::{Error, ExponentialBackoff};
+
 
 use crate::direct_session::DirectSession;
 use crate::session::network_view::{NodeAwaiting, NodeView};
@@ -20,44 +23,110 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
 
     let server_node_id = NodeId::default();
 
-    let entry = layer.registry.get_entry(server_node_id).await;
-    let mut awaiting_notifier: Option<NodeAwaiting> = match entry {
-        None => None,
-        Some(entry) => Some(entry.awaiting_notifier()),
+    let get_awaiting_notifier = || async {
+        let entry = layer.registry.get_entry(server_node_id).await;
+        match entry {
+            None => None,
+            Some(entry) => Some(entry.awaiting_notifier()),
+        }
     };
 
+    let mut awaiting_notifier = get_awaiting_notifier().await;
+
+    let get_server_session = || async {
+        layer.server_session().await
+    };
+
+
     loop {
-        match layer.server_session().await {
-            Ok(_) => {
-                if awaiting_notifier.is_some() {
-                    awaiting_notifier.as_mut()
-                        .unwrap()
-                        .await_for_closed_or_failed()
-                        .await;
-                } else {
-                    tokio::time::sleep(time_to_check).await;
-                }
+        let server_session = get_server_session().await;
 
-                // Connection was successful so reset time to reconnect after failure to default value
-                time_to_reconnect = std::time::Duration::from_secs(1);
+        // let mut op = || async {
+        //     let server_session = get_server_session().await;
+        //     match server_session {
+        //         Ok(_) => {
+        //             if awaiting_notifier.is_some() {
+        //                 awaiting_notifier.as_mut()
+        //                     .unwrap()
+        //                     .await_for_closed_or_failed()
+        //                     .await;
+        //             }
+        //             // Connection was successful so reset time to reconnect after failure to default value
+        //             time_to_reconnect = std::time::Duration::from_secs(1);
+        //
+        //             log::debug!("Server session keep alive");
+        //             Ok(time_to_reconnect)
+        //         }
+        //         Err(_) => {
+        //             time_to_reconnect = min(
+        //                 time_to_reconnect * 2,
+        //                 layer.config.server_session_reconnect_max_interval,
+        //             );
+        //
+        //             log::error!(
+        //                 "Server session error. Reconnect in {:?}",
+        //                 time_to_reconnect
+        //             );
+        //             Err(time_to_reconnect)
+        //         }
+        //     }
+        // };
 
-                log::debug!("Server session keep alive");
-            }
-            Err(_) => {
-                log::error!(
-                    "Server session error. Reconnecting in {}s ...",
-                    time_to_reconnect.as_secs()
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(time_to_reconnect.as_secs()))
-                    .await;
-                // If we're not able to reconnect then next time wait longer
-                time_to_reconnect = min(
-                    time_to_reconnect * 2,
-                    layer.config.server_session_reconnect_max_interval,
-                );
-            }
-        }
-    }
+
+        let mut op = || async {
+            let server_session = get_server_session().await;
+            server_session
+        };
+
+        sleep(Duration::from_secs(1));
+
+        let mut backoff = ExponentialBackoff::default();
+        let retry_result = retry(backoff, op);
+        println!("Retry result: {:?}", retry_result);
+    };
+
+
+    //
+    // loop {
+    //
+    //     let server_session = get_server_session().await;
+    //
+    //     let sleep_time = match server_session {
+    //         Ok(_) => {
+    //             if awaiting_notifier.is_some() {
+    //                 awaiting_notifier.as_mut()
+    //                     .unwrap()
+    //                     .await_for_closed_or_failed()
+    //                     .await;
+    //             } else {
+    //                 awaiting_notifier = get_awaiting_notifier().await;
+    //             }
+    //             // Connection was successful so reset time to reconnect after failure to default value
+    //             time_to_reconnect = std::time::Duration::from_secs(1);
+    //
+    //             log::debug!("Server session keep alive");
+    //             Ok(time_to_reconnect)
+    //         }
+    //         Err(_) => {
+    //             time_to_reconnect = min(
+    //                 time_to_reconnect * 2,
+    //                 layer.config.server_session_reconnect_max_interval,
+    //             );
+    //
+    //             log::error!(
+    //                 "Server session error. Reconnecting in {}s ...",
+    //                 time_to_reconnect.as_secs()
+    //             );
+    //
+    //             Err(time_to_reconnect)
+    //         }
+    //     };
+    //     let t = match sleep_time {
+    //         Ok(t) => t,
+    //         Err(t) => t
+    //     };
+    //     tokio::time::sleep(t).await;
+    // }
 }
 
 pub async fn track_sessions_expiration(layer: SessionLayer) {

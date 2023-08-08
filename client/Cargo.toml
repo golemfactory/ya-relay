@@ -32,6 +32,7 @@ url = "2.1"
 
 # Necessary for testing purposes
 ya-relay-server = { path = "../server", optional = true }
+backoff = "0.4.0"
 
 [dev-dependencies]
 actix-rt = "2.7"

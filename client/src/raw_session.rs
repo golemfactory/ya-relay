@@ -180,9 +180,7 @@ impl RawSession {
             },
         };
 
-        // if !result.is_err() {
-            self.dispatcher.update_ping(ping);
-        // }
+        self.dispatcher.update_ping(ping);
         Ok(result.map(|_| ())?)
     }
 

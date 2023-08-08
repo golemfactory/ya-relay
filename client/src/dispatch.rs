@@ -19,8 +19,8 @@ use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 use crate::session::SessionLayer;
 
-pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult + Send>;
-pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()> + Send>>;
+pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult>;
+pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()>>>;
 type ResponseSender = Sender<Dispatched<proto::response::Kind>>;
 
 /// Signals receipt of a response packet
@@ -172,7 +172,7 @@ impl Dispatcher {
     }
 
     /// Registers a response code handler
-    pub fn handle_error<F: Fn(i32) -> ErrorHandlerResult + Sync + Send + 'static>(
+    pub fn handle_error<F: Fn(i32) -> ErrorHandlerResult + 'static>(
         &self,
         code: i32,
         exclusive: bool,
@@ -197,7 +197,7 @@ impl Dispatcher {
                 handler_fn(code).await;
                 latch.store(false, SeqCst);
             }
-            .boxed()
+            .boxed_local()
         });
 
         let mut handlers = self.error_handlers.lock().unwrap();
