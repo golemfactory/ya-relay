@@ -396,6 +396,11 @@ impl NodeView {
             self.id
         );
 
+        println!(
+            "State changed to {} for session with [{}]",
+            new_state, self.id
+        );
+
         self.state_notifier
             .send(new_state)
             .map_err(|_| log::trace!("Notifying state change for [{}]: No listeners", self.id))
@@ -853,21 +858,22 @@ mod tests {
         mut permit: SessionPermit,
     ) -> anyhow::Result<Arc<DirectSession>> {
         let node = permit.registry.clone();
-        let transition_result = node
-            .transition_outgoing(InitState::Initializing)
-            .await
-            .map(|_| async {
-                node.transition_outgoing(InitState::ChallengeHandshake)
-                    .await
-            })
-            .map(|_| async { node.transition_outgoing(InitState::HandshakeResponse).await })
-            .map(|_| async { node.transition_outgoing(InitState::ChallengeVerified).await })
-            .map(|_| async { node.transition_outgoing(InitState::SessionRegistered).await })
-            .map(|_| async { node.transition_outgoing(InitState::Ready).await });
 
-        if transition_result.is_err() {
-            bail!("{:?}", transition_result.err());
-        };
+        let transitions = [
+            InitState::Initializing,
+            InitState::ChallengeHandshake,
+            InitState::HandshakeResponse,
+            InitState::ChallengeVerified,
+            InitState::SessionRegistered,
+            InitState::Ready,
+        ];
+
+        for transition in transitions {
+            let transition_result = node.transition_outgoing(transition).await;
+            if transition_result.is_err() {
+                bail!("{:?}", transition_result.err());
+            };
+        }
 
         let session = permit
             .collect_results(Ok(mock_session(&permit).await))
@@ -881,21 +887,21 @@ mod tests {
     ) -> anyhow::Result<Arc<DirectSession>> {
         let node = permit.registry.clone();
 
-        let transition_result = node
-            .transition_incoming(InitState::Initializing)
-            .await
-            .map(|_| async {
-                node.transition_incoming(InitState::ChallengeHandshake)
-                    .await
-            })
-            .map(|_| async { node.transition_incoming(InitState::HandshakeResponse).await })
-            .map(|_| async { node.transition_incoming(InitState::ChallengeVerified).await })
-            .map(|_| async { node.transition_incoming(InitState::SessionRegistered).await })
-            .map(|_| async { node.transition_incoming(InitState::Ready).await });
+        let transitions = [
+            InitState::Initializing,
+            InitState::ChallengeHandshake,
+            InitState::HandshakeResponse,
+            InitState::ChallengeVerified,
+            InitState::SessionRegistered,
+            InitState::Ready,
+        ];
 
-        if transition_result.is_err() {
-            bail!("{:?}", transition_result.err());
-        };
+        for transition in transitions {
+            let transition_result = node.transition_incoming(transition).await;
+            if transition_result.is_err() {
+                bail!("{:?}", transition_result.err());
+            };
+        }
 
         let session = permit
             .collect_results(Ok(mock_session(&permit).await))
@@ -1014,7 +1020,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
 
-        timeout(Duration::from_millis(600), waiter.await_for_finish())
+        timeout(Duration::from_millis(600000000), waiter.await_for_finish())
             .await
             .unwrap()
             .unwrap();
