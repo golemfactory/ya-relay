@@ -696,7 +696,6 @@ impl SessionLayer {
             self.clone(),
             Arc::downgrade(&session),
             move |code, layer, session| {
-
                 async move {
                     if let Some(session) = session.upgrade() {
                         layer.close_session(session).await;

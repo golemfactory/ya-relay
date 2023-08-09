@@ -172,7 +172,9 @@ impl Dispatcher {
     }
 
     /// Registers a response code handler
-    pub fn handle_error<F: Fn(i32, SessionLayer, std::sync::Weak<DirectSession>) -> ErrorHandlerResult + 'static>(
+    pub fn handle_error<
+        F: Fn(i32, SessionLayer, std::sync::Weak<DirectSession>) -> ErrorHandlerResult + 'static,
+    >(
         &self,
         code: i32,
         exclusive: bool,
