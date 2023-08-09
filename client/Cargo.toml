@@ -36,6 +36,8 @@ url = "2.1"
 
 
 [dev-dependencies]
+ya-relay-server = { workspace = true }
+
 actix-rt = "2.7"
 actix-web = "4.3"
 bytesize = "1.1"
