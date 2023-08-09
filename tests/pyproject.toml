@@ -1,0 +1,80 @@
+[tool.poetry]
+name = "ya-relay-tests"
+version = "0.1.0"
+description = "ya-relay integration tests"
+authors = ["Przemyslaw Walski <pwalski@users.noreply.github.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+python-on-whales = "^0.64"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4"
+black = "^23.1"
+liccheck = "^0.9"
+mypy = "^1.4"
+poethepoet = "^0.21"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poe.tasks]
+checks = {sequence = ["checks_codestyle", "checks_typing", "checks_license"], help = "Run all available code checks"}
+checks_codestyle = {sequence = ["_checks_codestyle_black"], help = "Run only code style checks"}
+_checks_codestyle_black = "black --check --diff ."
+checks_typing  = {cmd = "mypy .", help = "Run only code typing checks" }
+checks_license = {sequence = ["_checks_license_export", "_checks_license_verify"], help = "Run only license compatibility checks"}
+_checks_license_export = "poetry export -f requirements.txt -o .requirements.txt"
+_checks_license_verify = "liccheck -r .requirements.txt"
+
+# pyproject.toml
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = "-s"
+testpaths = [
+    "."
+]
+pythonpath = [
+  "shared"
+]
+filterwarnings = [
+    "ignore:Support for class-based `config` is deprecated:DeprecationWarning:pydantic*",
+    "ignore: Valid config keys have changed in V2:UserWarning:pydantic*"
+]
+
+[tool.black]
+line-length = 120
+target-version = ['py310']
+
+[tool.mypy]
+install_types = true
+non_interactive = true
+ignore_missing_imports = true
+check_untyped_defs = true
+show_error_codes = true
+warn_unused_ignores = true
+
+[tool.liccheck]
+authorized_licenses = [
+  "bsd",
+  "new bsd",
+  "bsd license",
+  "apache 2",
+  "apache",
+  "Apache Software",
+  "Apache Software License",
+  "MPL-2.0",
+  "Mozilla Public License 2.0 (MPL 2.0)",
+  "MIT",
+  "LGPL",
+  "LGPL-3.0-or-later",
+  "GNU Lesser General Public License v3 or later (LGPLv3+)",
+  "GNU Lesser General Public License v3 (LGPLv3)",
+  "Python Software Foundation",
+  "ISC",
+  "ISC License (ISCL)",
+]
+unauthorized_licenses = [
+  "gpl v3"
+]

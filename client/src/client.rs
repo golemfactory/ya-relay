@@ -343,6 +343,20 @@ impl Client {
         }
     }
 
+    /// Disconnects from provided Node and all secondary identities.
+    /// If we had p2p session with Node, it will be closed.
+    pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
+        self.transport.session_layer.disconnect(node_id).await
+    }
+
+    pub async fn is_p2p(&self, node_id: NodeId) -> bool {
+        self.transport.session_layer.is_p2p(node_id).await
+    }
+
+    pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
+        self.transport.session_layer.default_id(node_id).await
+    }
+
     /// Broadcasts a byte array to a certain number of neighbours in the network.
     /// This method sends the same byte array to the specified number of neighbour nodes.
     ///
@@ -459,7 +473,7 @@ impl Client {
         Ok(nodes)
     }
 
-    pub(crate) async fn invalidate_neighbourhood_cache(&self) {
+    pub async fn invalidate_neighbourhood_cache(&self) {
         self.state.write().await.neighbours = None;
     }
 

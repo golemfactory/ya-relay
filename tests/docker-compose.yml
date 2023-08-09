@@ -7,6 +7,8 @@ services:
       dockerfile: test_env/Dockerfile.server
     cap_add:
     - NET_ADMIN
+    environment:
+      - LATENCY=${SERVER_LATENCY}
     ports:
       - "7464:7464/tcp"
       - "7464:7464/udp"
@@ -14,12 +16,6 @@ services:
       - "7465:7465/udp"
     networks:
       - relay-network
-    healthcheck:
-      test: [ "CMD", "nc", "-zv", "localhost", "7464" ]
-      interval: 1s
-      timeout: 10s
-      retries: 3
-      start_period: 1s
 
   client:
     build:
@@ -27,13 +23,13 @@ services:
       dockerfile: test_env/Dockerfile.client
     cap_add:
     - NET_ADMIN
+    environment:
+      - LATENCY=${CLIENT_LATENCY}
     ports:
       - "8000-8999:8081"
       - "9000-9999:9081"
     networks:
       - relay-network
-    depends_on:
-      - relay_server
 
 networks:
   relay-network:

@@ -1,10 +1,3 @@
-use ya_relay_client::{Client, ClientBuilder, FailFast, GenericSender};
-use ya_relay_core::{
-    crypto::FallbackCryptoProvider,
-    key::{load_or_generate, Protected},
-    NodeId,
-};
-
 use actix_web::{
     error::{ErrorBadRequest, ErrorInternalServerError},
     get, post,
@@ -16,15 +9,22 @@ use futures::{future, try_join, FutureExt};
 use rand::Rng;
 use std::{
     collections::HashMap,
-    fmt,
     sync::{Arc, Mutex},
     time::Instant,
 };
 use structopt::StructOpt;
 use tokio::sync::oneshot;
-use ya_relay_proto::proto::response::Node;
-use ya_relay_proto::proto::Protocol;
+use ya_relay_client::{Client, ClientBuilder, FailFast, GenericSender};
+use ya_relay_core::{
+    crypto::FallbackCryptoProvider,
+    key::{load_or_generate, Protected},
+    NodeId,
+};
 
+use crate::response::{Pong, Transfer};
+
+#[path = "http_client/response.rs"]
+mod response;
 #[path = "http_client/wrap.rs"]
 mod wrap;
 
@@ -97,68 +97,13 @@ impl Drop for RequestGuard {
     }
 }
 
-struct DisplayableNode(Node);
-
-impl fmt::Display for DisplayableNode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let identities = self
-            .0
-            .identities
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let endpoints = self
-            .0
-            .endpoints
-            .iter()
-            .map(|ep| {
-                format!(
-                    "{p}://{ip}:{port}",
-                    p = if ep.protocol == i32::from(Protocol::Udp) {
-                        "UDP"
-                    } else if ep.protocol == i32::from(Protocol::Tcp) {
-                        "TCP"
-                    } else {
-                        "Unknown"
-                    },
-                    ip = ep.address,
-                    port = ep.port
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        let slot = self.0.slot;
-        let encr = self
-            .0
-            .supported_encryptions
-            .iter()
-            .map(|e| e.to_string())
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        f.write_str(
-            format!(
-                "Node \
-        \n  with Identities: {identities} \
-        \n  with Endpoints: {endpoints} \
-        \n  with Slot: {slot} \
-        \n  with Supported encryption: {encr} \
-        \n"
-            )
-            .as_str(),
-        )
-    }
-}
-
 #[get("/find-node/{node_id}")]
 async fn find_node(
     node_id: web::Path<String>,
     client_sender: web::Data<ClientWrap>,
-) -> impl Responder {
+) -> actix_web::Result<HttpResponse> {
     let node_id = node_id.parse::<NodeId>().map_err(ErrorBadRequest)?;
-    let (node, time) = client_sender
+    let (node, duration) = client_sender
         .run_async(move |client: Client| async move {
             let now = Instant::now();
             let node = client.find_node(node_id).await?;
@@ -175,15 +120,10 @@ async fn find_node(
             ErrorInternalServerError(e)
         })?;
 
-    let msg = format!(
-        "Found {} \nin {} ms",
-        DisplayableNode(node),
-        time.as_millis()
-    );
-
+    let node = response::Node(node);
+    let msg = response::FindNode { node, duration };
     log::debug!("[find-node]: {}", msg);
-
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
 #[get("/ping/{node_id}")]
@@ -191,7 +131,7 @@ async fn ping(
     node_id: web::Path<NodeId>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
-) -> impl Responder {
+) -> actix_web::Result<HttpResponse> {
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
@@ -212,29 +152,19 @@ async fn ping(
             log::error!("Ping failed {e}");
             ErrorInternalServerError(e)
         })?;
-
     log::debug!("[ping]: {}", msg);
-
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+    response::ok_json::<Pong>(&msg)
 }
 
 #[get("/sessions")]
 async fn sessions(client_sender: web::Data<ClientWrap>) -> impl Responder {
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            let client_sessions = client.sessions().await;
-            let result = client_sessions
-                .iter()
-                .map(|s| format!("{}:{}", s.remote.ip(), s.remote.port()))
-                .collect::<Vec<_>>()
-                .join("\n");
-            format!("Sessions:\n{}\n", result)
+            client.sessions().map(response::Sessions::from).await
         })
         .await
         .map_err(ErrorInternalServerError)?;
-
-    log::debug!("[sessions]: {}", msg);
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
 #[post("/transfer-file/{node_id}")]
@@ -243,9 +173,8 @@ async fn transfer_file(
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
     body: web::Bytes,
-) -> impl Responder {
+) -> actix_web::Result<HttpResponse> {
     let node_id = node_id.into_inner();
-
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let data: Vec<u8> = body.into();
@@ -269,10 +198,8 @@ async fn transfer_file(
             log::error!("Transfer file failed {e}");
             ErrorInternalServerError(e)
         })?;
-
     log::debug!("[transfer-file]: {}", msg);
-
-    Ok::<_, actix_web::Error>(HttpResponse::Ok().body(msg))
+    response::ok_json::<response::Transfer>(&msg)
 }
 
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
@@ -296,7 +223,11 @@ async fn handle_forward_message(
 ) -> Result<()> {
     match fwd.transport {
         ya_relay_client::model::TransportType::Reliable => {
-            log::info!("Got forward message: {fwd:?}");
+            log::info!(
+                "Got forward message. Node {}. Transport {}",
+                fwd.node_id,
+                fwd.transport
+            );
             let msg = String::from_utf8(fwd.payload.into_vec())?;
 
             let mut s = msg.split(':');
@@ -320,11 +251,10 @@ async fn handle_forward_message(
                 "Pong" => {
                     match messages.respond(request_id) {
                         Ok((ts, sender)) => sender
-                            .send(Ok(format!(
-                                "Ping node {} took {} ms\n",
-                                fwd.node_id,
-                                ts.elapsed().as_millis()
-                            )))
+                            .send(Ok(serde_json::to_string(&Pong {
+                                node_id: fwd.node_id.to_string(),
+                                duration: ts.elapsed(),
+                            })?))
                             .ok(),
                         Err(e) => {
                             log::warn!("ping: {:?}", e);
@@ -358,16 +288,15 @@ async fn handle_forward_message(
                                 .next()
                                 .ok_or_else(|| anyhow!("No bytes_transferred found"))?
                                 .parse::<usize>()?;
-                            let megabytes_transferred = bytes_transferred / (1024 * 1024);
+                            let mb_transfered = bytes_transferred / (1024 * 1024);
 
                             sender
-                                .send(Ok(format!(
-                                    "Transfer of {} MB to node {} took {} ms which is {} MB/s\n",
-                                    megabytes_transferred,
-                                    fwd.node_id,
-                                    ts.elapsed().as_millis(),
-                                    megabytes_transferred as f32 / ts.elapsed().as_secs_f32()
-                                )))
+                                .send(Ok(serde_json::to_string(&Transfer {
+                                    mb_transfered,
+                                    node_id: fwd.node_id.to_string(),
+                                    duration: ts.elapsed(),
+                                    speed: mb_transfered as f32 / ts.elapsed().as_secs_f32(),
+                                })?))
                                 .ok()
                         }
                         Err(e) => {
