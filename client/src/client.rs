@@ -10,7 +10,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
-use ya_relay_stack::ya_smoltcp::socket::Socket;
 
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
