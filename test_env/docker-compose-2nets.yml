@@ -5,6 +5,8 @@ services:
     build:
       context: ../
       dockerfile: test_env/Dockerfile.server
+    cap_add:
+    - NET_ADMIN
     ports:
       - "7464:7464/tcp"
       - "7464:7464/udp"
@@ -23,6 +25,8 @@ services:
     build:
       context: ../
       dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
     expose:
       - "8081"
       - "9081"
@@ -35,6 +39,8 @@ services:
     build:
       context: ../
       dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
     expose:
       - "8081"
       - "9081"

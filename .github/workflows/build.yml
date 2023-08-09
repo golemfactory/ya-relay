@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+      - release/*
+
+env:
+  rust_stable: 1.68.2
+  # `-D warnings` means any warnings emitted will cause build to fail
+  RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
+  X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.rust_stable }}
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+      - name: Clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+
+  tests:
+    name: Tests
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.rust_stable }}
+          components: rustfmt, clippy
+
+      #      - name: Install openssl ( Windows only )
+      #        if: runner.os == 'Windows'
+      #        run: |
+      #          vcpkg install openssl:x64-windows openssl:x64-windows-static
+      #          vcpkg list
+      #          vcpkg integrate install
+
+      - name: Unit tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --workspace
+
+  integration_tests:
+    name: Integration Tests
+    needs: 
+    - checks
+    - tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - uses: Gr1N/setup-poetry@v8
+
+      - name: Install dependencies
+        run: poetry install
+        working-directory: tests
+
+      - name: Initialize the test suite
+        run: poetry run poe checks
+        working-directory: tests
+
+      - name: Install Rust ${{ env.rust_stable }}
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{ env.rust_stable }}
+          components: rustfmt, clippy
+
+      - name: Build relay server
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: -p ya-relay-server --release
+
+      - name: Build http client
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --example http_client --release
+
+      - name: Run test suite
+        run: poetry run pytest
+        working-directory: tests
