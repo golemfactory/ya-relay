@@ -12,6 +12,9 @@ ya-relay-stack = { workspace = true }
 ya-relay-proto = { workspace = true }
 ya-relay-core = { workspace = true }
 
+# Necessary for testing purposes
+ya-relay-server = { workspace = true, optional = true }
+
 ya-packet-trace = "0.1.0"
 
 anyhow = "1.0"
@@ -31,8 +34,6 @@ tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt"] }
 tokio-stream = "0.1.8"
 url = "2.1"
 
-# Necessary for testing purposes
-ya-relay-server = { workspace = true, optional = true }
 
 [dev-dependencies]
 actix-rt = "2.7"
