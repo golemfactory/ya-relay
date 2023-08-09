@@ -348,10 +348,6 @@ impl Client {
         self.transport.session_layer.is_p2p(node_id).await
     }
 
-    pub async fn remode_id(&self, addr: &SocketAddr) -> Option<NodeId> {
-        self.transport.session_layer.remote_id(addr).await
-    }
-
     pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
         self.transport.session_layer.default_id(node_id).await
     }
