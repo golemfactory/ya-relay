@@ -3,6 +3,7 @@ use std::convert::TryInto;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::rc::Weak;
 use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot::{self, Sender};
@@ -155,7 +156,6 @@ impl Default for Dispatcher {
 
 impl Dispatcher {
     pub fn update_seen(&self) {
-        log::trace!("Updating seen time");
         *self.seen.lock().unwrap() = Instant::now();
     }
 
@@ -172,10 +172,12 @@ impl Dispatcher {
     }
 
     /// Registers a response code handler
-    pub fn handle_error<F: Fn(i32) -> ErrorHandlerResult + 'static>(
+    pub fn handle_error<F: Fn(i32, SessionLayer, std::sync::Weak<DirectSession>) -> ErrorHandlerResult + 'static>(
         &self,
         code: i32,
         exclusive: bool,
+        layer: SessionLayer,
+        session: std::sync::Weak<DirectSession>,
         handler: F,
     ) {
         use std::sync::atomic::AtomicBool;
@@ -187,6 +189,8 @@ impl Dispatcher {
         let handler = Box::new(move || {
             let handler_fn = handler_fn.clone();
             let latch = latch.clone();
+            let layer = layer.clone();
+            let session = session.clone();
 
             async move {
                 if exclusive && latch.load(SeqCst) {
@@ -194,7 +198,7 @@ impl Dispatcher {
                 }
 
                 latch.store(true, SeqCst);
-                handler_fn(code).await;
+                handler_fn(code, layer, session).await;
                 latch.store(false, SeqCst);
             }
             .boxed_local()

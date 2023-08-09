@@ -690,17 +690,17 @@ impl SessionLayer {
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
-        let session2 = session.clone();
-
-        let myself = self.clone();
         session.raw.dispatcher.handle_error(
             proto::StatusCode::Unauthorized as i32,
             true,
-            move |code| {
-                let session2 = session2.clone();
-                let myself = myself.clone();
+            self.clone(),
+            Arc::downgrade(&session),
+            move |code, layer, session| {
+
                 async move {
-                    myself.close_session(session2).await;
+                    if let Some(session) = session.upgrade() {
+                        layer.close_session(session).await;
+                    }
                     log::debug!("handle_error {code}");
                 }
                 .boxed_local()

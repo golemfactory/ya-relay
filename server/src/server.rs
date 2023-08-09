@@ -836,9 +836,10 @@ impl Server {
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
         server.nodes.check_timeouts(
-            chrono::Duration::seconds(10),
-            chrono::Duration::seconds(100), // self.config.session_timeout,
-                                            //self.config.session_purge_timeout,
+            // chrono::Duration::seconds(10),
+            // chrono::Duration::seconds(100),
+            self.config.session_timeout,
+            self.config.session_purge_timeout,
         );
     }
 
