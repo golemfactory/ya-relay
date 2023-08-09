@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use ya_relay_stack::ya_smoltcp::socket::Socket;
 
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
@@ -35,7 +36,7 @@ pub use ya_relay_core::server_session::TransportType;
 pub struct Client {
     config: Arc<ClientConfig>,
     state: Arc<RwLock<ClientState>>,
-    pub transport: TransportLayer,
+    transport: TransportLayer,
 }
 
 /// The state of a Hybrid NET client, containing the address it is bound to,
@@ -336,6 +337,24 @@ impl Client {
             log::info!("Reconnecting to Hybrid NET relay server");
             let _ = self.transport.session_layer.server_session().await;
         }
+    }
+
+    /// Disconnects from provided Node and all secondary identities.
+    /// If we had p2p session with Node, it will be closed.
+    pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
+        self.transport.session_layer.disconnect(node_id).await
+    }
+
+    pub async fn is_p2p(&self, node_id: NodeId) -> bool {
+        self.transport.session_layer.is_p2p(node_id).await
+    }
+
+    pub async fn remode_id(&self, addr: &SocketAddr) -> Option<NodeId> {
+        self.transport.session_layer.remote_id(addr).await
+    }
+
+    pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
+        self.transport.session_layer.default_id(node_id).await
     }
 
     /// Broadcasts a byte array to a certain number of neighbours in the network.
