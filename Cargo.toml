@@ -10,6 +10,8 @@ opt-level = 3
 lto = "thin"
 
 [workspace.dependencies]
+ya-relay-client = { path = "client", version = "0.6.0" }
+ya-relay-server = { path = "server", version = "0.2.2" }
 ya-relay-stack = { path = "crates/stack", version = "0.5.0" }
 ya-relay-proto = { path = "crates/proto", version = "0.4.2" }
 ya-relay-core = { path = "crates/core", version = "0.4.0" }

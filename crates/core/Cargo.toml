@@ -12,8 +12,8 @@ description = "Golem relay base functionality"
 [dependencies]
 ya-relay-stack = { workspace = true }
 ya-relay-proto = { workspace = true }
-ya-client-model = "0.5"
 
+ya-client-model = "0.5"
 
 anyhow = "1.0.56"
 chrono = "0.4"
