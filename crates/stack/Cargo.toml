@@ -9,7 +9,7 @@ license = "LGPL-3.0"
 description = "Embeddable networking stack"
 
 [dependencies]
-ya-relay-util = { path = "../util" }
+ya-relay-util = { path = "../util", version = "0.1" }
 ya-smoltcp = { version = "0.1" }
 
 derive_more = "0.99"
