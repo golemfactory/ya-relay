@@ -220,7 +220,6 @@ impl SessionState {
         };
 
         if !allowed {
-            println!("Invalid transition from {:?} to {:?}", self, new_state);
             Err(TransitionError::InvalidTransition(self.clone(), new_state))
         } else {
             *self = new_state;

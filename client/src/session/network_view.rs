@@ -396,11 +396,6 @@ impl NodeView {
             self.id
         );
 
-        println!(
-            "State changed to {} for session with [{}]",
-            new_state, self.id
-        );
-
         self.state_notifier
             .send(new_state)
             .map_err(|_| log::trace!("Notifying state change for [{}]: No listeners", self.id))
