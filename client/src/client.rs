@@ -36,7 +36,7 @@ pub use ya_relay_core::server_session::TransportType;
 pub struct Client {
     config: Arc<ClientConfig>,
     state: Arc<RwLock<ClientState>>,
-    transport: TransportLayer,
+    pub(crate) transport: TransportLayer,
 }
 
 /// The state of a Hybrid NET client, containing the address it is bound to,
