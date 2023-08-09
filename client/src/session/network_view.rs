@@ -1020,7 +1020,7 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
         });
 
-        timeout(Duration::from_millis(600000000), waiter.await_for_finish())
+        timeout(Duration::from_millis(600), waiter.await_for_finish())
             .await
             .unwrap()
             .unwrap();
@@ -1061,7 +1061,7 @@ mod tests {
             .unwrap();
     }
 
-    // #[actix_rt::test]
+    #[actix_rt::test]
     async fn test_network_view_already_established() {
         let guards = NetworkView::default();
         let permit = match guards
