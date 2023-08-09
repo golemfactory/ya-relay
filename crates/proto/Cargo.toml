@@ -13,7 +13,7 @@ default = ["codec"]
 codec = ["futures", "tokio", "tokio-util", "bytes", "derive_more", "thiserror"]
 
 [dependencies]
-ya-relay-util = { path = "../util", version = "0.1" }
+ya-relay-util = { workspace = true }
 
 prost = "0.10"
 rand = "0.8"
