@@ -6,12 +6,13 @@ edition = "2018"
 homepage = "https://github.com/golemfactory/ya-relay/crates/core"
 repository = "https://github.com/golemfactory/ya-relay"
 license = "LGPL-3.0"
-description= "Golem relay base functionality"
+description = "Golem relay base functionality"
 
 
 [dependencies]
-ya-relay-stack = "0.5.0"
-ya-relay-proto = "0.4.2"
+ya-relay-stack = { workspace = true }
+ya-relay-proto = { workspace = true }
+
 ya-client-model = "0.5"
 
 anyhow = "1.0.56"
