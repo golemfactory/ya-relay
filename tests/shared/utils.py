@@ -1,9 +1,12 @@
 from python_on_whales import docker, DockerClient, Container
+from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, TypeVar
+from typing import Dict, List, TypeVar, Set
 import json
 import re
 import requests
+import threading
+import sys
 
 http_client_headers = {"Accept": "application/json"}
 
@@ -21,12 +24,14 @@ def read_node_id(container: Container) -> str:
 
 
 def read_json_response(response: requests.Response):
-    if response.status_code == 200:
+    # Ok if 20x. Exception otherwise.
+    if response.status_code in range(200, 299):
         j = json.loads(response.content)
         print(f"Response: {j}")
         return j
     else:
-        raise Exception(response.content)
+        print(f"Fail: {response}")
+        raise Exception(response.status_code)
 
 
 class Node:
@@ -74,38 +79,69 @@ class Client(Node):
     def __external_port(self, port: int = 8081):
         return self.ports()[f"{port}/tcp"]
 
-    def ping(self, node_id: str, port: int = 8081):
+    def ping(self, node_id: str, port: int = 8081, timeout: int = 5):
+        print(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
-            f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers
+            f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
-    def sessions(self, port: int = 8081):
-        port = self.__external_port(port)
-        response: requests.Response = requests.get(f"http://localhost:{port}/sessions", headers=http_client_headers)
-        return read_json_response(response)
-
-    def find(self, node_id: str, port: int = 8081):
+    def sessions(self, port: int = 8081, timeout: int = 5):
+        print(f"GET Sessions ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
-            f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers
+            f"http://localhost:{port}/sessions", headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
-    def transfer(self, node_id: str, data: bytes, port: int = 8081):
+    def find(self, node_id: str, port: int = 8081, timeout: int = 5):
+        print(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
+        port = self.__external_port(port)
+        response: requests.Response = requests.get(
+            f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers, timeout=timeout
+        )
+        return read_json_response(response)
+
+    def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int = 5):
+        print(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.post(
-            f"http://localhost:{port}/transfer-file/{node_id}", data, headers=http_client_headers
+            f"http://localhost:{port}/transfer-file/{node_id}", data, headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
+
+
+class LoggerJob(threading.Thread):
+    compose_client: DockerClient
+
+    def __init__(self, compose_client: DockerClient):
+        super(LoggerJob, self).__init__()
+        self.compose_client = compose_client
+
+    def run(self, *args, **kwargs):
+        for src, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
+            line = line.decode("utf-8")
+            file = sys.stdout if src == "stdout" else sys.stderr
+            print(f"> {line}", end="", file=file)
+        print(f"Logger stopped")
 
 
 class Cluster:
     docker_client: DockerClient
+    logger_job: LoggerJob
 
     def __init__(self, compose_client: DockerClient):
         self.docker_client = compose_client
+        self.logger_job = LoggerJob(compose_client)
+
+    def start(self, clients: int, servers: int):
+        print(f"Docker Compose Up (clients: {clients}, servers: {servers})")
+        scales = {"client": clients, "relay_server": servers}
+        self.docker_client.compose.up(detach=True, wait=True, scales=scales)
+        self.logger_job.start()
+        assert len(self.clients()) == clients
+        assert len(self.servers()) == servers
 
     def __find_container(self, name_part: str) -> List[Container]:
         containers = []
@@ -121,6 +157,20 @@ class Cluster:
     def servers(self, name_part: str = "relay_server") -> List[Server]:
         containers = self.__find_container(name_part)
         return [Server(container) for container in containers]
+
+    def disconnect(self, node: Node) -> Set[str]:
+        networks = set()
+        if isinstance(node.container.network_settings.networks, Dict):
+            for network in node.container.network_settings.networks:
+                print(f"Disconnecting {node} from {network}")
+                self.docker_client.network.disconnect(network, node.container)
+                networks.add(network)
+        return networks
+
+    def connect(self, node: Node, networks: Set[str]):
+        for network in networks:
+            print(f"Connecting {node} to {network}")
+            self.docker_client.network.connect(network, node.container)
 
 
 def set_netem(node: Node, latency="0ms"):

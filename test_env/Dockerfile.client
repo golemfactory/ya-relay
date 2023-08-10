@@ -1,13 +1,10 @@
-FROM ubuntu:22.04
+FROM tests_base:latest
 
 ARG LATENCY=0ms
 ARG RUST_LOG=info
 
 ENV LATENCY=$LATENCY
 ENV RUST_LOG=$RUST_LOG
-
-RUN apt update \
-    && apt install -y iputils-ping dnsutils iproute2
 
 # Copy debug or release (prefered) build
 COPY ./target/debu[g]/example[s]/http_clien[t] /app/

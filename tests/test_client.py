@@ -3,7 +3,7 @@ from utils import set_netem, Cluster, Client, Server
 
 
 # Always use test_ prefix. Otherwise `pytest` will not notice test method.
-# `compose_up` prefix is an fixture defined in `conftest.py`.
+# `compose_up` is an fixture defined in `conftest.py`.
 def test_client(compose_up):
     # Factory fixture produces function `compose_up`
     cluster: Cluster = compose_up(2)
@@ -44,5 +44,4 @@ def test_client(compose_up):
 
     ping_response = client_1.ping(client_2.node_id)
     print(f"Ping client 2: {ping_response}")
-    nanos = ping_response["duration"]["nanos"]
-    assert nanos > 100e6 and nanos < 200e7
+    assert ping_response["duration"] in range(100, 200)
