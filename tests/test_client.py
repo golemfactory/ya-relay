@@ -44,5 +44,4 @@ def test_client(compose_up):
 
     ping_response = client_1.ping(client_2.node_id)
     print(f"Ping client 2: {ping_response}")
-    ms = ping_response["duration"]
-    assert  ms > 100 and ms < 200
+    assert ping_response["duration"] in range(100, 200)
