@@ -60,9 +60,11 @@ impl From<SessionDesc> for Session {
     }
 }
 
+#[serde_with::serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct Pong {
     pub node_id: String,
+    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     pub duration: Duration,
 }
 
@@ -76,10 +78,12 @@ impl fmt::Display for Pong {
     }
 }
 
+#[serde_with::serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct Transfer {
     pub mb_transfered: usize,
     pub node_id: String,
+    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     pub duration: Duration,
     pub speed: f32,
 }
@@ -96,9 +100,11 @@ impl fmt::Display for Transfer {
     }
 }
 
+#[serde_with::serde_as]
 #[derive(Serialize)]
 pub(crate) struct FindNode {
     pub node: Node,
+    #[serde_as(as = "serde_with::DurationMilliSeconds<u64>")]
     pub duration: Duration,
 }
 

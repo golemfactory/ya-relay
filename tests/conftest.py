@@ -32,6 +32,8 @@ def __write_dot_env(properties):
             f.write("%s=%s\n" % (key, value))
 
 
+# Factory fixture (returns function)
+# Requires `compose_build` fixture
 @pytest.fixture(scope="function")
 def compose_up(compose_build: DockerClient):
     def _compose_up(clients: int, servers: int = 1, build_args=None) -> Cluster:
