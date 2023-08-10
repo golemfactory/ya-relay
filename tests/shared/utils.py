@@ -117,7 +117,6 @@ class LoggerJob(threading.Thread):
 
     def __init__(self, compose_client: DockerClient):
         super(LoggerJob, self).__init__()
-        # self._stop = threading.Event()
         self.compose_client = compose_client
 
     def run(self, *args, **kwargs):
