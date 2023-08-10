@@ -24,13 +24,14 @@ def read_node_id(container: Container) -> str:
 
 
 def read_json_response(response: requests.Response):
-    if response.status_code == 200:
+    # Ok if 200x. Exception otherwise.
+    if response.status_code in range(200,299):
         j = json.loads(response.content)
         print(f"Response: {j}")
         return j
     else:
         print(f"Fail: {response}")
-        raise Exception((response.status_code, response.content))
+        raise Exception(response.status_code)
 
 
 class Node:
