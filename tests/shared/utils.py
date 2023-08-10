@@ -25,7 +25,7 @@ def read_node_id(container: Container) -> str:
 
 def read_json_response(response: requests.Response):
     # Ok if 20x. Exception otherwise.
-    if response.status_code in range(200,299):
+    if response.status_code in range(200, 299):
         j = json.loads(response.content)
         print(f"Response: {j}")
         return j
