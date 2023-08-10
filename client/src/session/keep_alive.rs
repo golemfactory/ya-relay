@@ -20,7 +20,7 @@ impl ServerSessionAnchor {
         ServerSessionAnchor {
             backoff_strategy: ExponentialBackoff {
                 multiplier: 2.0,
-                max_interval: max_interval,
+                max_interval,
                 max_elapsed_time: None,
                 randomization_factor: 0.99,
                 ..Default::default()
