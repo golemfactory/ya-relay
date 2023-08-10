@@ -3,6 +3,7 @@
 cargo build --release
 cargo build --example http_client --release
 
+docker build -f Dockerfile.base -t tests_base test_env/.
 # Start the network
 docker compose -f test_env/docker-compose-2nets.yml up \
     --detach \

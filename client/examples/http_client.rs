@@ -132,6 +132,7 @@ async fn ping(
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
 ) -> actix_web::Result<HttpResponse> {
+    log::trace!("[ping]: Pinging {}", node_id);
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
@@ -140,7 +141,7 @@ async fn ping(
             let msg = format!("Ping:{}", r.id());
 
             sender.send(msg.as_bytes().to_vec().into()).await?;
-
+            log::trace!("[ping]: Ping sent {}. Waiting.", node_id);
             r.result().await.map_err(|e| anyhow!("{e}"))
         })
         .await
@@ -221,13 +222,13 @@ async fn handle_forward_message(
     client: &Client,
     messages: &Messages,
 ) -> Result<()> {
+    log::info!(
+        "Got forward message. Node {}. Transport {}",
+        fwd.node_id,
+        fwd.transport
+    );
     match fwd.transport {
         ya_relay_client::model::TransportType::Reliable => {
-            log::info!(
-                "Got forward message. Node {}. Transport {}",
-                fwd.node_id,
-                fwd.transport
-            );
             let msg = String::from_utf8(fwd.payload.into_vec())?;
 
             let mut s = msg.split(':');
@@ -387,6 +388,7 @@ async fn build_client(
 
     let client = builder.connect(FailFast::No).build().await?;
 
+    // This log messages are used by integration tests.
     log::info!("CLIENT NODE ID: {}", client.node_id());
     log::info!("CLIENT BIND ADDR: {:?}", client.bind_addr().await);
     log::info!("CLIENT PUBLIC ADDR: {:?}", client.public_addr().await);

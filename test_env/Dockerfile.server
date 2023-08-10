@@ -1,4 +1,4 @@
-FROM ubuntu:22.04
+FROM tests_base:latest
 
 ARG LATENCY=0ms
 ARG RUST_LOG=info
@@ -10,9 +10,6 @@ EXPOSE 7464/udp
 EXPOSE 7464/tcp
 EXPOSE 7465/tcp
 EXPOSE 7465/udp
-
-RUN apt update \
-    && apt install -y iproute2 iputils-ping
 
 # Copy debug or release (prefered) build
 COPY ./target/debu[g]/ya-relay-serve[r] /app/

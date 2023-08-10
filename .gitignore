@@ -23,3 +23,4 @@ Cargo.lock
 /tests/.mypy_cache
 /tests/.env
 /tests/.requirements.txt
+**/*.log
