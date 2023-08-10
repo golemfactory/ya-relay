@@ -1,4 +1,3 @@
-use std::time::Duration;
 use crate::direct_session::DirectSession;
 use crate::session::network_view::{NodeAwaiting, NodeView};
 use crate::session::session_state::SessionState;
@@ -8,6 +7,7 @@ use backoff::backoff::Backoff;
 use backoff::Error::Transient;
 use backoff::{Error, ExponentialBackoff};
 use futures::future::err;
+use std::time::Duration;
 use ya_relay_core::NodeId;
 
 #[derive(Clone)]
