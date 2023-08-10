@@ -1733,10 +1733,20 @@ mod tests {
 
         // Function should finish in timeout and return error.
         assert!(
-            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+            timeout(os_specific_timeout(), layer1.layer.session(layer2.id))
                 .await
                 .unwrap()
                 .is_err()
         );
+    }
+
+    #[cfg(not(target_family = "windows"))]
+    fn os_specific_timeout() -> Duration {
+        Duration::from_millis(4500)
+    }
+
+    #[cfg(target_family = "windows")]
+    fn os_specific_timeout() -> Duration {
+        Duration::from_millis(6000)
     }
 }
