@@ -49,7 +49,7 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
             })
             .collect::<Vec<_>>();
 
-        log::debug!("Closing {} expired sessions.", expired_idx.len());
+        log::trace!("Closing {} expired sessions.", expired_idx.len());
         close_sessions(layer.clone(), sessions, expired_idx).await;
 
         let first_to_expiring = last_seen.iter().min().cloned().unwrap_or(now) + expiration;

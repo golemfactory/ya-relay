@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 use futures::channel::oneshot::{self, Sender};
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::stream::{Stream, StreamExt};
+use log::log;
 use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
 use ya_relay_core::session::Session;
@@ -207,7 +208,11 @@ impl Dispatcher {
         });
 
         let mut handlers = self.error_handlers.lock().unwrap();
-        handlers.insert(code, handler);
+        let old_handler = handlers.insert(code, handler);
+        if let Some(old_handler) = old_handler {
+            log::debug!("Replacing error handler for code: {}", code);
+            drop(old_handler);
+        }
     }
 
     /// Creates a future to await a `T` (response) packet on

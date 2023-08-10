@@ -707,19 +707,6 @@ impl SessionLayer {
         );
 
         // TODO: Make sure this functionality is replaced in new code.
-        // session.raw.dispatcher.handle_error(
-        //     proto::StatusCode::Unauthorized as i32,
-        //     true,
-        //     move || {
-        //         let manager = manager.clone();
-        //         async move {
-        //             manager.drop_server_session().await;
-        //             let _ = manager.server_session().await;
-        //         }
-        //         .boxed_local()
-        //     },
-        // );
-        //
         // let fast_lane = self.virtual_tcp_fast_lane.clone();
         // session.raw.on_drop(move || {
         //     fast_lane.borrow_mut().clear();

@@ -1,4 +1,5 @@
 #!/bin/bash
+# example usage: ./basic-setup.sh -c 2
 
 export CLIENTS=2
 

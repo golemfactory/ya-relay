@@ -165,18 +165,12 @@ impl RawSession {
         let packet = proto::request::Ping {};
         let ping_ts = Instant::now();
 
-        let r = self
+        let (ping, result) = match self
             .request::<proto::response::Pong>(packet.into(), self.id.to_vec(), DEFAULT_PING_TIMEOUT)
-            .await;
-
-        let (ping, result) = match r {
+            .await
+        {
             result @ Ok(_) => (Instant::now() - ping_ts, result),
-            result @ Err(_) => {
-                if let Some(e) = result.as_ref().err() {
-                    log::error!("Ping error {:?}", e);
-                }
-                (Instant::now() - self.dispatcher.last_seen(), result)
-            }
+            result @ Err(_) => (Instant::now() - self.dispatcher.last_seen(), result),
         };
 
         self.dispatcher.update_ping(ping);

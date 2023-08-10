@@ -146,7 +146,7 @@ impl NodesState {
 
     pub fn remove_session(&mut self, slot: u32) {
         if let Slot::Some(session) = &self.slots[slot as usize] {
-            log::info!("Removing session from slot: {}", session.info.slot);
+            log::trace!("Removing session from slot: {}", session.info.slot);
             self.sessions.remove(&session.session);
             self.nodes.remove(&session.info.default_node_id());
             for ident in session.info.identities.iter() {
