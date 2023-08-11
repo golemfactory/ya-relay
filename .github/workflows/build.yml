@@ -74,7 +74,9 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --workspace
+          args: --workspace -- --nocapture
+        env:
+          RUST_LOG: debug
 
   integration_tests:
     name: Integration Tests
