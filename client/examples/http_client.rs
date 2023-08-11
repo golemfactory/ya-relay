@@ -135,8 +135,8 @@ async fn ping(
     let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
-            let mut sender = client.forward_reliable(node_id).await?;
             let r = messages.request();
+            let mut sender = client.forward_reliable(node_id).await?;
             let msg = format!("Ping:{}", r.id());
 
             sender.send(msg.as_bytes().to_vec().into()).await?;
@@ -253,7 +253,7 @@ async fn handle_forward_message(
                         Ok((ts, sender)) => sender
                             .send(Ok(serde_json::to_string(&Pong {
                                 node_id: fwd.node_id.to_string(),
-                                duration: ts.elapsed(),
+                                duration: ts.elapsed().as_millis(),
                             })?))
                             .ok(),
                         Err(e) => {

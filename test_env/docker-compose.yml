@@ -13,20 +13,38 @@ services:
       - "7465:7465/tcp"
       - "7465:7465/udp"
     networks:
-      - relay-network
+      - relay-network-1
+      - relay-network-2
 
-  client:
+  client-1:
+    environment:
+      - RUST_LOG=debug
     build:
       context: ../
       dockerfile: test_env/Dockerfile.client
     cap_add:
     - NET_ADMIN
     ports:
-      - "8000-8999:8081"
-      - "9000-9999:9081"
+      - "1998:8081"
+      - "2998:9081"
     networks:
-      - relay-network
+      - relay-network-1
+
+  client-2:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
+    ports:
+      - "1999:8081"
+      - "2999:9081"
+    networks:
+      - relay-network-2
 
 networks:
-  relay-network:
+  relay-network-1:
     driver: bridge
+  relay-network-2:
+    driver: bridge
+

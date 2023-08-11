@@ -63,15 +63,14 @@ impl From<SessionDesc> for Session {
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct Pong {
     pub node_id: String,
-    pub duration: Duration,
+    pub duration: u128,
 }
 
 impl fmt::Display for Pong {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_fmt(format_args!(
             "Ping node {} took {} ms",
-            self.node_id,
-            self.duration.as_millis()
+            self.node_id, self.duration
         ))
     }
 }
