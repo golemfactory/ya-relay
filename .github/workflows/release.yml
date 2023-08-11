@@ -82,7 +82,6 @@ jobs:
       #     toolchain: stable
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
           target: x86_64-unknown-linux-musl
           override: true
       # - name: Build macos
