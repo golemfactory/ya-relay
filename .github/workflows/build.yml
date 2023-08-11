@@ -28,7 +28,7 @@ jobs:
 
       - name: Cmake
         run: |
-          sudo apt-get install cmake
+          sudo apt-get install -y cmake
           cmake --version
 
       - name: Check formatting
@@ -62,7 +62,7 @@ jobs:
       - name: Cmake
         if: matrix.os == 'ubuntu-22.04'
         run: |
-          sudo apt-get install cmake
+          sudo apt-get install -y cmake
           cmake --version
 
       #      - name: Install openssl ( Windows only )
