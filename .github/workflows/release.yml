@@ -4,11 +4,13 @@ on:
     tags:
       - v*
       - pre-rel-*
+env:
+  ubuntu: ubuntu-22.04
 
 jobs:
   create-release:
     name: "Create Release"
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.ubuntu }}
     steps:
       - name: Create Release
         uses: actions/github-script@v3.0
@@ -50,14 +52,14 @@ jobs:
       fail-fast: true
       matrix:
         os:
-          - ubuntu
+          - ${{ env.ubuntu }}
 
     env:
       OPENSSL_STATIC: 1
     steps:
       - uses: actions/checkout@v1
       - name: Musl
-        if: matrix.os == 'ubuntu'
+        if: matrix.os == "${{ env.ubuntu }}"
         run: |
           sudo apt-get install musl musl-tools
 
@@ -84,7 +86,7 @@ jobs:
       #   with:
       #     toolchain: stable
       - uses: actions-rs/toolchain@v1
-        if: matrix.os == 'ubuntu'
+        if: matrix.os == "${{ env.ubuntu }}"
         with:
           toolchain: stable
           target: x86_64-unknown-linux-musl
@@ -110,7 +112,7 @@ jobs:
       #     cargo build --bin exe-unit -p ya-exe-unit --release
 
       - name: Build linux
-        if: matrix.os == 'ubuntu'
+        if: matrix.os == "${{ env.ubuntu }}"
         run: |
           cargo build --release --target x86_64-unknown-linux-musl
       # - name: Pack
@@ -143,7 +145,7 @@ jobs:
       #     asset_content_type: ${{ steps.pack.outputs.providerMedia }}
   build-deb:
     needs: create-release
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.ubuntu }}
     steps:
       - name: Get upload url
         id: release_upload_url

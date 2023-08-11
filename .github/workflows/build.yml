@@ -8,6 +8,7 @@ on:
 
 env:
   rust_stable: 1.68.2
+  ubuntu: ubuntu-22.04
   # `-D warnings` means any warnings emitted will cause build to fail
   RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
@@ -15,7 +16,7 @@ env:
 jobs:
   checks:
     name: Checks
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.ubuntu }}
     steps:
       - name: Checkout
         uses: actions/checkout@v1
@@ -42,7 +43,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        os: [macos-latest, windows-latest, "${{ env.ubuntu }}"]
 
     steps:
       - name: Checkout
@@ -72,7 +73,7 @@ jobs:
     needs: 
     - checks
     - tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ env.ubuntu }}
 
     steps:
       - name: Checkout
