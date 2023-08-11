@@ -103,9 +103,9 @@ jobs:
         run: poetry run poe checks
         working-directory: tests
 
-      - name: Cmake
+      - name: Install tools
         run: |
-          sudo apt-get install cmake
+          sudo apt-get install -y cmake docker-buildx-plugin
           cmake --version
 
       - name: Install Rust

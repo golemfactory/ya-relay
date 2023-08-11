@@ -4,7 +4,7 @@
 
 Requirements:
 
-- Docker
+- Docker (with buildx plugin: `sudo apt install docker-buildx-plugin`)
 - _Linux Traffic Control_ (tc) with _Network Emulation_ (netem)
 
 Python setup
