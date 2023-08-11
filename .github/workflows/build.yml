@@ -60,7 +60,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cmake
-        if: matrix.os == "ubuntu-22.04"
+        if: matrix.os == 'ubuntu-22.04'
         run: |
           sudo apt-get install cmake
           cmake --version
@@ -104,7 +104,6 @@ jobs:
         working-directory: tests
 
       - name: Cmake
-        if: matrix.os == "ubuntu-22.04"
         run: |
           sudo apt-get install cmake
           cmake --version
