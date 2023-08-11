@@ -59,9 +59,10 @@ jobs:
       - name: Musl
         if: matrix.os == "ubuntu-22.04"
         run: |
-          sudo apt-get install musl musl-tools
+          sudo apt-get install musl musl-tools cmake
 
           musl-gcc -v
+          cmake --version
 
       - name: Get upload url
         id: release_upload_url

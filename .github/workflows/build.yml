@@ -26,6 +26,11 @@ jobs:
           toolchain: ${{ env.rust_stable }}
           components: rustfmt, clippy
 
+      - name: Cmake
+        run: |
+          sudo apt-get install cmake
+          cmake --version
+
       - name: Check formatting
         uses: actions-rs/cargo@v1
         with:
@@ -53,6 +58,12 @@ jobs:
         with:
           toolchain: ${{ env.rust_stable }}
           components: rustfmt, clippy
+
+      - name: Cmake
+        if: matrix.os == "ubuntu-22.04"
+        run: |
+          sudo apt-get install cmake
+          cmake --version
 
       #      - name: Install openssl ( Windows only )
       #        if: runner.os == 'Windows'
@@ -91,6 +102,12 @@ jobs:
       - name: Initialize the test suite
         run: poetry run poe checks
         working-directory: tests
+
+      - name: Cmake
+        if: matrix.os == "ubuntu-22.04"
+        run: |
+          sudo apt-get install cmake
+          cmake --version
 
       - name: Install Rust ${{ env.rust_stable }}
         uses: actions-rs/toolchain@v1
