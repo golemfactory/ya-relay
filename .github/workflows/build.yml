@@ -74,16 +74,14 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --workspace -- --nocapture
-        env:
-          RUST_LOG: debug
+          args: --workspace
 
   integration_tests:
     name: Integration Tests
     needs: 
     - checks
     - tests
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
