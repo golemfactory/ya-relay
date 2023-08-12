@@ -75,6 +75,8 @@ jobs:
         with:
           command: test
           args: --workspace
+        env:
+          RUST_BACKTRACE: 1
 
   integration_tests:
     name: Integration Tests
