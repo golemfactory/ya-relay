@@ -105,7 +105,7 @@ jobs:
 
       - name: Install tools
         run: |
-          sudo apt-get install -y cmake docker-buildx-plugin
+          sudo apt-get install -y cmake
           cmake --version
 
       - name: Install Rust
