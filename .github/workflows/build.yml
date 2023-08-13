@@ -117,13 +117,13 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: -p ya-relay-server --release
+          args: -p ya-relay-server
 
       - name: Build http client
         uses: actions-rs/cargo@v1
         with:
           command: build
-          args: --example http_client --release
+          args: --example http_client
 
       - name: Run test suite
         run: poetry run pytest
