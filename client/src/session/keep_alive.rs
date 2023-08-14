@@ -28,7 +28,7 @@ impl ServerSessionAnchor {
         }
     }
 
-    async fn establish_server_session(&self, layer: SessionLayer) {
+    async fn establish_server_session(&self, layer: &SessionLayer) {
         let mut backoff_strategy = self.backoff_strategy.clone();
         backoff_strategy.reset();
 
@@ -44,30 +44,38 @@ impl ServerSessionAnchor {
         backoff::future::retry_notify(backoff_strategy, establish_server_session_once, notify)
             .await;
     }
+
+    async fn get_awaiting_notifier(&self, layer: &SessionLayer) -> Option<NodeAwaiting> {
+        let server_node_id = NodeId::default();
+        let entry = layer.registry.get_entry(server_node_id).await;
+        loop {
+            if entry.is_some() {
+                return entry.as_ref().map(|entry| entry.awaiting_notifier());
+            }
+            //Wait for server session entry to be created
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
 }
 
 pub async fn keep_alive_server_session(layer: SessionLayer) {
-    let get_awaiting_notifier = || async {
-        let server_node_id = NodeId::default();
-        let entry = layer.registry.get_entry(server_node_id).await;
-        entry.map(|entry| entry.awaiting_notifier())
-    };
-
     let mut awaiting_notifier: Option<NodeAwaiting> = None;
     let mut anchor = ServerSessionAnchor::new(layer.config.server_session_reconnect_max_interval);
 
     loop {
-        //Establish server session using retry policy with exponential backoff.
-        let server_session = anchor.establish_server_session(layer.clone()).await;
+        // Get awaiting notifier for server session, this will poll with sleep if needed
+        if awaiting_notifier.is_none() {
+            awaiting_notifier = anchor.get_awaiting_notifier(&layer).await;
+        }
 
         //Once server session is established, then wait until it is closed or failed.
-        if awaiting_notifier.is_none() {
-            awaiting_notifier = get_awaiting_notifier().await;
-        }
         awaiting_notifier
             .as_mut()
             .unwrap()
             .await_for_closed_or_failed()
             .await;
+
+        //Re-establish server session using retry policy with exponential backoff.
+        let server_session = anchor.establish_server_session(&layer).await;
     }
 }
