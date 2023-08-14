@@ -6,6 +6,7 @@ import logging
 
 LOGGER = logging.getLogger(__name__)
 
+
 def linreg(X, Y):
     """
     return a,b in solution to y = ax + b such that root mean square distance between trend line and original points is minimized
@@ -15,22 +16,19 @@ def linreg(X, Y):
     for x, y in zip(X, Y):
         Sx = Sx + x
         Sy = Sy + y
-        Sxx = Sxx + x*x
-        Syy = Syy + y*y
-        Sxy = Sxy + x*y
+        Sxx = Sxx + x * x
+        Syy = Syy + y * y
+        Sxy = Sxy + x * y
     det = Sxx * N - Sx * Sx
-    return (Sxy * N - Sy * Sx)/det, (Sxx * Sy - Sx * Sxy)/det
+    return (Sxy * N - Sy * Sx) / det, (Sxx * Sy - Sx * Sxy) / det
 
 
 def test_many_pings(compose_up):
-
     cluster: Cluster = compose_up(10)
 
     server: Server = cluster.servers()[0]
     client0 = cluster.clients()[0]
     clients = cluster.clients()[1:]
-
-
 
     for client in clients:
         LOGGER.info(f"Find client {client.node_id}")
@@ -57,11 +55,9 @@ def test_many_pings(compose_up):
     LOGGER.info(f"Max ping time: {max(ping_times)}ms")
     LOGGER.info(f"Variance: {variance}ms")
 
-    a,b = linreg(range(len(ping_times)),ping_times)  # your x,y are switched from standard notation
+    a, b = linreg(range(len(ping_times)), ping_times)  # your x,y are switched from standard notation
     LOGGER.info(f"Linear regression: a={a}, b={b}")
 
-    assert a > -0.1 and a < 0.1 # TODO still assuming ping times might be increasing with time
-
+    assert a > -0.1 and a < 0.1  # TODO still assuming ping times might be increasing with time
 
     LOGGER.info(f"Done")
-
