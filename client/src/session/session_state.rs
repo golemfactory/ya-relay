@@ -149,9 +149,6 @@ impl SessionState {
     }
 
     pub fn transition(&mut self, new_state: SessionState) -> Result<SessionState, TransitionError> {
-
-        println!("Transitioning from {} to {}", self, new_state);
-
         let allowed = match (&self, &new_state) {
             // Initialization can fail in any state.
             (SessionState::Relayed(_), SessionState::FailedEstablish(_)) => true,
