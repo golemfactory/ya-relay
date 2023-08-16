@@ -8,6 +8,7 @@ from sklearn.linear_model import LinearRegression
 
 LOGGER = logging.getLogger(__name__)
 
+
 def ping_nodes(client0, clients):
     ping_times = []
     for client in clients:
@@ -15,6 +16,7 @@ def ping_nodes(client0, clients):
         LOGGER.info(f"Ping duration {ping_response['duration']}ms")
         ping_times.append(ping_response["duration"])
     return ping_times
+
 
 def calc(ping_times):
     n = len(ping_times)
@@ -26,7 +28,7 @@ def calc(ping_times):
 
     x = np.array(range(len(ping_times)))
     y = np.array(ping_times)
-    x = x.reshape(-1,1)
+    x = x.reshape(-1, 1)
     regression_model = LinearRegression()
 
     regression_model.fit(x, y)
@@ -35,13 +37,13 @@ def calc(ping_times):
     b = regression_model.intercept_
     return (a, b, min_ping, max_ping, mean, variance)
 
+
 def test_many_pings(compose_up):
     cluster: Cluster = compose_up(10)
 
     server: Server = cluster.servers()[0]
     client0 = cluster.clients()[0]
     clients = cluster.clients()[1:]
-
 
     ping_times_init = ping_nodes(client0, clients)
 
