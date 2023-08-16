@@ -8,7 +8,6 @@ authors = ["Przemyslaw Walski <pwalski@users.noreply.github.com>"]
 python = "^3.10"
 python-on-whales = "^0.64"
 numpy = "^1.25.2"
-sklearn = "^0.0.post7"
 scikit-learn = "^1.3.0"
 
 [tool.poetry.group.dev.dependencies]
