@@ -16,7 +16,6 @@ COPY ./target/debu[g]/ya-relay-serve[r] /app/
 COPY ./target/releas[e]/ya-relay-serve[r] /app/
 RUN test -f /app/ya-relay-server || err "Failed to find ya-relay-server bin"
 
-CMD tc qdisc add dev eth0 root netem delay $LATENCY \
-    && /app/ya-relay-server \
+CMD  /app/ya-relay-server \
     -a tcp://0.0.0.0:7464 \
     --ip-checker-port 7465

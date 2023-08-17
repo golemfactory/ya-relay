@@ -1,0 +1,13 @@
+FROM tests_base:latest
+
+ARG LATENCY=0ms
+ARG RUST_LOG=info
+
+ENV LATENCY=$LATENCY
+ENV RUST_LOG=$RUST_LOG
+
+COPY ./target/release/yagna /app/
+RUN test -f /app/yagna || err "Failed to find http_client bin"
+
+CMD tc qdisc add dev eth0 root netem delay $LATENCY \
+    && /app/yagna service run

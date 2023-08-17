@@ -7,26 +7,84 @@ services:
       dockerfile: test_env/Dockerfile.server
     cap_add:
     - NET_ADMIN
-    ports:
-      - "7464:7464/tcp"
-      - "7464:7464/udp"
-      - "7465:7465/tcp"
-      - "7465:7465/udp"
-    networks:
-      - relay-network
+    # ports:
+    #   - "7464:7464/tcp"
+    #   - "7464:7464/udp"
+    #   - "7465:7465/tcp"
+    #   - "7465:7465/udp"
+    network_mode: host  
+    # networks:
+    #   - relay-network
 
-  client:
+  client-1:
+    environment:
+      - RUST_LOG=debug
+      # - SERVER_IP=18.184.73.24
+      - SERVER_IP=172.17.0.1
     build:
       context: ../
       dockerfile: test_env/Dockerfile.client
     cap_add:
     - NET_ADMIN
     ports:
-      - "8000-8999:8081"
-      - "9000-9999:9081"
+      - "1998:8081"
+      - "2998:9081"
     networks:
-      - relay-network
+      - client-network-1
+    depends_on:
+      - relay_server
+
+  client-2:
+    environment:
+      - RUST_LOG=info
+      # - SERVER_IP=18.184.73.24
+      - SERVER_IP=172.17.0.1
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
+    ports:
+      - "1999:8081"
+      - "2999:9081"
+    networks:
+      - client-network-2
+    depends_on:
+      - relay_server
+      
+  # yagna-1:
+  #   environment:
+  #     - RUST_LOG=debug
+  #     - YA_NET_RELAY_HOST=18.184.73.24:7477
+  #     - YAGNA_API_URL=http://0.0.0.0:17910
+  #     - GSB_URL=tcp://127.0.0.1:17911
+  #   build:
+  #     context: ../
+  #     dockerfile: test_env/Dockerfile.yagna.client
+  #   cap_add:
+  #   - NET_ADMIN
+  #   networks:
+  #     - relay-network-1
+
+  # yagna-2:
+  #   environment:
+  #     - RUST_LOG=debug
+  #     - YA_NET_RELAY_HOST=18.184.73.24:7477
+  #     - YAGNA_API_URL=http://0.0.0.0:17910
+  #     - GSB_URL=tcp://127.0.0.1:17911
+  #   build:
+  #     context: ../
+  #     dockerfile: test_env/Dockerfile.yagna.client
+  #   cap_add:
+  #   - NET_ADMIN
+  #   networks:
+  #     - relay-network-2
 
 networks:
-  relay-network:
+  client-network-1:
     driver: bridge
+  client-network-2:
+    driver: bridge
+  # relay-network:
+  #   driver: host
+
