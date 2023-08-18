@@ -7,8 +7,11 @@ import re
 import requests
 import threading
 import sys
+import logging
 
 http_client_headers = {"Accept": "application/json"}
+
+LOGGER = logging.getLogger(__name__)
 
 
 def read_node_id(container: Container) -> str:
@@ -20,6 +23,7 @@ def read_node_id(container: Container) -> str:
             node_id = log.split(node_id_log)[1].strip().decode("utf-8")
             break
     assert re.match(r"0x[0-9a-fA-F]{40}", node_id), f"Invalid client Node Id {node_id} of container: {vars(container)}"
+
     return node_id
 
 
@@ -27,10 +31,10 @@ def read_json_response(response: requests.Response):
     # Ok if 20x. Exception otherwise.
     if response.status_code in range(200, 299):
         j = json.loads(response.content)
-        print(f"Response: {j}")
+        LOGGER.debug(f"Response: {j}")
         return j
     else:
-        print(f"Fail: {response}")
+        LOGGER.info(f"Fail: {response}")
         raise Exception(response.status_code)
 
 
@@ -49,16 +53,25 @@ class Node:
             for key, value in ports.items()
         }
 
-    def address(self, net_name_part="relay-network") -> str | None:
-        # print(f"Looking for {net_name_part}")
-        # print(f"Net settings: {self.container.network_settings}")
+    def address(self, name_part: str | None = None) -> str | None:
+        LOGGER.debug(f"Looking for {name_part}")
+        LOGGER.debug(f"Net settings: {self.container.network_settings}")
         networks = self.container.network_settings.networks
         if networks is None:
             return None
+        if name_part == None and len(networks) == 1:
+            return list(networks.values())[0].ip_address
+        ips = []
         for name in networks:
-            if net_name_part in name:
-                return networks[name].ip_address
-        return None
+            if name_part in name:  # type: ignore
+                ips.append(networks[name].ip_address)
+        if len(ips) == 0:
+            return None
+        if len(ips) > 1:
+            raise Exception(
+                "Test error. Multiple ips [{ips}] for network name part: {name_part}",
+            )
+        return ips[0]
 
 
 class Server(Node):
@@ -79,32 +92,33 @@ class Client(Node):
     def __external_port(self, port: int = 8081):
         return self.ports()[f"{port}/tcp"]
 
-    def ping(self, node_id: str, port: int = 8081, timeout: int = 5):
-        print(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
+    def ping(self, node_id: str, port: int = 8081, timeout: int | None = 5):
+        LOGGER.debug(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers, timeout=timeout
         )
-        return read_json_response(response)
+        response = read_json_response(response)
+        return response
 
-    def sessions(self, port: int = 8081, timeout: int = 5):
-        print(f"GET Sessions ({self.container.name} - {self.node_id})")
+    def sessions(self, port: int = 8081, timeout: int | None = 5):
+        LOGGER.debug(f"GET Sessions ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/sessions", headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
-    def find(self, node_id: str, port: int = 8081, timeout: int = 5):
-        print(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
+    def find(self, node_id: str, port: int = 8081, timeout: int | None = 5):
+        LOGGER.debug(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
-    def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int = 5):
-        print(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
+    def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int | None = None):
+        LOGGER.debug(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.post(
             f"http://localhost:{port}/transfer-file/{node_id}", data, headers=http_client_headers, timeout=timeout
@@ -120,11 +134,19 @@ class LoggerJob(threading.Thread):
         self.compose_client = compose_client
 
     def run(self, *args, **kwargs):
-        for src, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
+        for _, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
             line = line.decode("utf-8")
-            file = sys.stdout if src == "stdout" else sys.stderr
-            print(f"> {line}", end="", file=file)
-        print(f"Logger stopped")
+            line = line.strip()
+            LOGGER.debug(line)
+        LOGGER.info(f"Logger stopped")
+
+
+@dataclass
+class Scales:
+    relay_server: int
+    public_client: int
+    alice_client: int
+    bob_client: int
 
 
 class Cluster:
@@ -135,22 +157,24 @@ class Cluster:
         self.docker_client = compose_client
         self.logger_job = LoggerJob(compose_client)
 
-    def start(self, clients: int, servers: int):
-        print(f"Docker Compose Up (clients: {clients}, servers: {servers})")
-        scales = {"client": clients, "relay_server": servers}
-        self.docker_client.compose.up(detach=True, wait=True, scales=scales)
+    def start(self, scales: Scales | Dict):
+        LOGGER.info(f"Docker Compose Up ({scales})")
+        self.docker_client.compose.up(detach=True, wait=True, scales=vars(scales))
         self.logger_job.start()
-        assert len(self.clients()) == clients
-        assert len(self.servers()) == servers
+        if isinstance(scales, Scales):
+            assert len(self.clients()) == scales.public_client + scales.alice_client + scales.bob_client
+            assert len(self.servers()) == scales.relay_server
+        LOGGER.info(f"Successfully started")
 
     def __find_container(self, name_part: str) -> List[Container]:
         containers = []
         for container in self.docker_client.container.list():
+            # LOGGER.info(f"[find-container]: Container: {container.name}")
             if name_part in container.name:
                 containers.append(container)
         return containers
 
-    def clients(self, name_part: str = "client") -> List[Client]:
+    def clients(self, name_part: str = "_client") -> List[Client]:
         containers = self.__find_container(name_part)
         return [Client(container) for container in containers]
 
@@ -162,19 +186,19 @@ class Cluster:
         networks = set()
         if isinstance(node.container.network_settings.networks, Dict):
             for network in node.container.network_settings.networks:
-                print(f"Disconnecting {node} from {network}")
+                LOGGER.info(f"Disconnecting {node} from {network}")
                 self.docker_client.network.disconnect(network, node.container)
                 networks.add(network)
         return networks
 
     def connect(self, node: Node, networks: Set[str]):
         for network in networks:
-            print(f"Connecting {node} to {network}")
+            LOGGER.info(f"Connecting {node} to {network}")
             self.docker_client.network.connect(network, node.container)
 
 
 def set_netem(node: Node, latency="0ms"):
-    print(f"Set netem for '{node.container.name}', latency {latency}")
+    LOGGER.info(f"Set netem for '{node.container.name}', latency {latency}")
     docker.execute(
         container=node.container,
         command=["tc", "qdisc", "replace", "dev", "eth0", "root", "netem", "delay", latency],
