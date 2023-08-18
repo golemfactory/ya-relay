@@ -16,23 +16,85 @@ services:
       - "7465:7465/tcp"
       - "7465:7465/udp"
     networks:
-      - relay-network
+      - public_network
+    hostname: relay_server
 
-  client:
+  public_client:
     build:
       context: ../
       dockerfile: test_env/Dockerfile.client
     cap_add:
     - NET_ADMIN
     environment:
+      ## Without BIND_IP_PATTERN and BIND_IP it will bind to 0.0.0.0
+      # - BIND_IP_PATTERN=^172\.22\.0\.
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
     ports:
-      - "8000-8999:8081"
-      - "9000-9999:9081"
+      - "51000-51999:8081"
+      - "52000-52999:9081"
     networks:
-      - relay-network
+      - public_network
+    depends_on:
+      - relay_server
+
+  alice_client:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
+    environment:
+      ## Empty BIND_IP makes Dockerfile to not export P2P_BIND_ADDR
+      - BIND_IP=
+      ## P2P_BIND_ADDR set to address from private net breakes session init
+      # - BIND_IP_PATTERN=^172\.23\.0\.
+      - LATENCY=${CLIENT_LATENCY}
+      - RUST_LOG=${RUST_LOG}
+    ports:
+      - "53000-53999:8081"
+      - "54000-54999:9081"
+    networks:
+      - alice_network
+      - public_network
+    depends_on:
+      - relay_server
+
+  bob_client:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
+    environment:
+      ## Empty BIND_IP makes Dockerfile to not export P2P_BIND_ADDR
+      - BIND_IP=
+      ## P2P_BIND_ADDR set to address from private net breakes session init
+      # - BIND_IP_PATTERN=^172\.24\.0\.
+      - LATENCY=${CLIENT_LATENCY}
+      - RUST_LOG=${RUST_LOG}
+    ports:
+      - "55000-55999:8081"
+      - "56000-56999:9081"
+    networks:
+      - bob_network
+      - public_network
+    depends_on:
+      - relay_server
 
 networks:
-  relay-network:
+  public_network:
     driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+  alice_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.23.0.0/16
+  bob_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.24.0.0/16

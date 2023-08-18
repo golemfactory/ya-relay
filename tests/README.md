@@ -35,7 +35,7 @@ poetry install
 poetry run pytest
 ```
 
-Running a one specific test
+Running one specific test
 
 ```bash
 poetry run pytest test_client.py::test_client
@@ -47,6 +47,12 @@ Test development checks
 source .venv/bin/activate
 # Assuming build and run was alredy performed
 poetry run poe checks
+```
+
+Enabling debug logs (printing Docker containers output)
+
+```bash
+poetry run pytest --log-cli-level=debug
 ```
 
 ### WSL2 Troubleshoot
