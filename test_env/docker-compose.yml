@@ -14,6 +14,12 @@ services:
       - "7465:7465/udp"
     networks:
       - relay-network
+    healthcheck:
+      test: [ "CMD", "nc", "-zv", "localhost", "7464" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 1s
 
   client:
     build:
@@ -26,6 +32,8 @@ services:
       - "9000-9999:9081"
     networks:
       - relay-network
+    depends_on:
+      - relay_server
 
 networks:
   relay-network:

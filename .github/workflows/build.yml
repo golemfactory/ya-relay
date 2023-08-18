@@ -7,24 +7,29 @@ on:
       - release/*
 
 env:
-  rust_stable: 1.71.1
   # `-D warnings` means any warnings emitted will cause build to fail
   RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
+  rust_stable: 1.71.1
 
 jobs:
   checks:
     name: Checks
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Checkout
         uses: actions/checkout@v1
 
-      - name: Install Rust ${{ env.rust_stable }}
+      - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.rust_stable }}
           components: rustfmt, clippy
+
+      - name: Cmake
+        run: |
+          sudo apt-get install -y cmake
+          cmake --version
 
       - name: Check formatting
         uses: actions-rs/cargo@v1
@@ -42,17 +47,22 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        os: [macos-latest, windows-latest, ubuntu-22.04]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v1
 
-      - name: Install Rust ${{ env.rust_stable }}
+      - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.rust_stable }}
-          components: rustfmt, clippy
+
+      - name: Cmake
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get install -y cmake
+          cmake --version
 
       #      - name: Install openssl ( Windows only )
       #        if: runner.os == 'Windows'
@@ -66,6 +76,8 @@ jobs:
         with:
           command: test
           args: --workspace
+        env:
+          RUST_BACKTRACE: 1
 
   integration_tests:
     name: Integration Tests
@@ -92,11 +104,15 @@ jobs:
         run: poetry run poe checks
         working-directory: tests
 
-      - name: Install Rust ${{ env.rust_stable }}
+      - name: Install tools
+        run: |
+          sudo apt-get install -y cmake
+          cmake --version
+
+      - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.rust_stable }}
-          components: rustfmt, clippy
 
       - name: Build relay server
         uses: actions-rs/cargo@v1
