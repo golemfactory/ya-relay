@@ -365,18 +365,24 @@ impl SessionLayer {
             *self.sink.lock().unwrap() = Some(sink.clone());
         }
 
-        let abort_dispatcher = spawn_local_abortable(dispatch(handler, stream));
-        let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
-        let keep_alive_server_session =
-            spawn_local_abortable(keep_alive_server_session(self.clone()));
+        let mut handles: Vec<AbortHandle> = Vec::from([
+            spawn_local_abortable(dispatch(handler, stream)),
+            spawn_local_abortable(track_sessions_expiration(self.clone())),
+        ]);
+
+        if self.config.auto_connect_fail_fast || !self.config.auto_connect {
+            handles.push(spawn_local_abortable(keep_alive_server_session(
+                self.clone(),
+            )));
+        };
 
         {
             let mut state = self.state.write().await;
 
             state.bind_addr.replace(bind_addr);
-            state.handles.push(abort_dispatcher);
-            state.handles.push(abort_expiration);
-            state.handles.push(keep_alive_server_session);
+            for h in handles {
+                state.handles.push(h);
+            }
 
             state.init_protocol = Some(SessionInitializer::new(
                 self.config.clone(),
@@ -1733,20 +1739,10 @@ mod tests {
 
         // Function should finish in timeout and return error.
         assert!(
-            timeout(os_specific_timeout(), layer1.layer.session(layer2.id))
+            timeout(Duration::from_millis(6000), layer1.layer.session(layer2.id))
                 .await
                 .unwrap()
                 .is_err()
         );
-    }
-
-    #[cfg(not(target_family = "windows"))]
-    fn os_specific_timeout() -> Duration {
-        Duration::from_millis(4500)
-    }
-
-    #[cfg(target_family = "windows")]
-    fn os_specific_timeout() -> Duration {
-        Duration::from_millis(6000)
     }
 }
