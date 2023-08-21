@@ -1,10 +1,13 @@
 use anyhow::bail;
 use chrono::Utc;
 use futures::future::{AbortHandle, Abortable};
+use spmc::{Receiver, Sender};
 use std::collections::HashMap;
+use std::convert::{Infallible, TryInto};
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::ops::DerefMut;
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
 
@@ -42,6 +45,8 @@ pub struct NetworkView {
 struct NetworkViewState {
     by_node_id: HashMap<NodeId, NodeView>,
     by_addr: HashMap<SocketAddr, NodeView>,
+    state_sender:Arc<Mutex<Option<Sender<NodeId>>>>,
+    state_receiver:Arc<Mutex<Option<Receiver<NodeId>>>>,
 }
 
 impl NetworkView {
@@ -63,11 +68,7 @@ impl NetworkView {
         }
 
         let target = NodeView::new(node_id, addrs.to_vec(), self.config.clone());
-
-        state.by_node_id.insert(target.id, target.clone());
-        for addr in addrs.iter() {
-            state.by_addr.insert(*addr, target.clone());
-        }
+        state.add(&target, &[target.id], addrs);
 
         target
     }
@@ -79,6 +80,7 @@ impl NetworkView {
     /// This is the reason we don't have update function on single `NodeView`.
     pub async fn update_entry(&self, info: NodeInfo) -> anyhow::Result<()> {
         log::trace!("Updating `NodeView` for [{}]", info.default_node_id());
+        log::trace!("Updating `NodeView` for [{}] in {:p}", info.default_node_id(), self);
 
         // TODO: For now we use the simplest implementation possible.
         //       Apply considerations from comment later.
@@ -112,13 +114,13 @@ impl NetworkView {
             NodeView::new(info.default_node_id(), addrs.clone(), self.config.clone())
         };
 
-        for id in &info.identities {
-            state.by_node_id.insert(id.node_id, entry.clone());
-        }
+        let node_ids = info
+            .identities
+            .iter()
+            .map(|ident| ident.node_id)
+            .collect::<Vec<_>>();
 
-        for addr in addrs {
-            state.by_addr.insert(addr, entry.clone());
-        }
+        state.add(&entry, &node_ids, &addrs);
 
         entry.update_info(info.clone()).await.ok();
         Ok(())
@@ -127,6 +129,29 @@ impl NetworkView {
     pub async fn get_entry(&self, node_id: NodeId) -> Option<NodeView> {
         let state = self.state.read().await;
         state.find(node_id, &[])
+    }
+
+    pub async fn wait_entry(&self, node_id: NodeId) -> Option<NodeView> {
+        log::trace!("[NetworkView {:p}]: Wait_entry start for {}", self, node_id);
+        let mut state = self.state.write().await;
+        let mut result = state.find(node_id, &[]);
+
+        if result.is_none() {
+            log::trace!("[NetworkView]: Wait_entry subscribing for {}", node_id);
+            if let Ok(rx) = state.subscribe() {
+                log::trace!("subscribed");
+                while let Ok(new_node_id) = rx.recv() {
+                    log::trace!("received {new_node_id}");
+                    if new_node_id == node_id {
+                        break;
+                    }
+                }
+                result = state.find(node_id, &[]);
+                log::trace!("Find {node_id}: {:?}", result.is_some());
+            }
+        }
+        log::trace!("[NetworkView]: Wait_entry finish with result isSome: {}", result.is_some());
+        result
     }
 
     pub async fn get_entry_by_addr(&self, remote: &SocketAddr) -> Option<NodeView> {
@@ -197,6 +222,13 @@ impl NetworkView {
 }
 
 impl NetworkViewState {
+    fn init(&mut self) {
+        log::trace!("Init for {:p}", self);
+        let (mut tx, rx): (Sender<NodeId>, Receiver<NodeId>) = spmc::channel::<NodeId>();
+        self.state_sender = Arc::new(Mutex::new(Some(tx)));
+        self.state_receiver = Arc::new(Mutex::new(Some(rx)));
+    }
+
     fn find(&self, node_id: NodeId, addrs: &[SocketAddr]) -> Option<NodeView> {
         self.by_node_id
             .get(&node_id)
@@ -206,6 +238,75 @@ impl NetworkViewState {
 
     fn find_by_addr(&self, addr: &SocketAddr) -> Option<NodeView> {
         self.by_addr.get(addr).cloned()
+    }
+
+    pub fn add(&mut self, target: &NodeView, node_ids: &[NodeId], addrs: &[SocketAddr]) {
+        log::trace!("add {:?} to {:p}", node_ids, self);
+        for node_id in node_ids.iter() {
+            self.by_node_id.insert(*node_id, target.clone());
+            self.broadcast_new_node_id(*node_id);
+        }
+        for addr in addrs.iter() {
+            self.by_addr.insert(*addr, target.clone());
+        }
+    }
+
+    fn is_initialized_sender(sender: Arc<Mutex<Option<Sender<NodeId>>>>) -> bool {
+        if let Ok(mut m) = sender.lock() {
+            if m.is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn is_initialized_receiver(sender: Arc<Mutex<Option<Receiver<NodeId>>>>) -> bool {
+        if let Ok(mut m) = sender.lock() {
+            if m.is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn broadcast_new_node_id(&mut self, node_id: NodeId) {
+        log::trace!("Broadcast");
+        if NetworkViewState::is_initialized_sender(self.state_sender.clone()) {
+            log::trace!("Already initialized");
+        }
+        else {
+            self.init();
+        }
+
+        let mut sender = &mut self.state_sender;
+        if let Ok(mut m) = sender.lock() {
+            let tx = m.as_mut();
+
+            if tx.is_some() {
+                tx.unwrap().send(node_id);
+            }
+        }
+    }
+
+    fn subscribe(&mut self) -> anyhow::Result<Receiver<NodeId>> {
+        log::trace!("subscribe");
+
+        if NetworkViewState::is_initialized_receiver(self.state_receiver.clone()) {
+            log::trace!("Already initialized");
+        }
+        else {
+            self.init();
+        }
+
+        let mut m = self.state_receiver.lock();
+        let mut rx = m.as_mut().unwrap().as_mut();
+
+        if rx.is_some() {
+            log::trace!("subscribe: rx isSome");
+            return Ok(rx.unwrap().clone());
+        }
+        log::trace!("subscribe: rx isNone for {:p}", self);
+        bail!("Channel was already dropped. Can't subscribe to events.");
     }
 }
 

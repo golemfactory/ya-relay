@@ -640,6 +640,7 @@ mod tests {
 
         let mut permit = match layer1
             .guards
+            .read().await
             .lock_outgoing(layer2.id, &[layer2.addr], layer1.layer.clone())
             .await
         {
@@ -662,6 +663,7 @@ mod tests {
 
         let mut waiter2 = match layer2
             .guards
+            .read().await
             .lock_incoming(layer1.id, &[layer1.addr], layer2.layer.clone())
             .await
         {

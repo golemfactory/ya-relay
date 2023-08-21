@@ -24,9 +24,9 @@ def read_node_id(container: Container) -> str:
             break
     assert re.match(r"0x[0-9a-fA-F]{40}", node_id), f"Invalid client Node Id {node_id} of container: {vars(container)}"
 
-    LOGGER.info(
-        f"NodeId for ip: {vars(container)['_inspect_result'].network_settings.networks['tests_relay-network'].ip_address} = {node_id}"
-    )
+    # LOGGER.info(
+    #     f"NodeId for ip: {vars(container)['_inspect_result'].network_settings.networks['tests_relay-network'].ip_address} = {node_id}"
+    # )
 
     return node_id
 

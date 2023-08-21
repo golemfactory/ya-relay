@@ -2,13 +2,13 @@ import pytest
 from python_on_whales import DockerClient
 from utils import Cluster
 
-default_build_args = {"SERVER_LATENCY": "0ms", "CLIENT_LATENCY": "10ms", "RUST_LOG": "info"}
+default_build_args = {"SERVER_LATENCY": "20ms", "CLIENT_LATENCY": "5ms", "RUST_LOG": "info"}
 
 
 @pytest.fixture(scope="session", autouse=True)
 def base_build():
     print("Base build")
-    docker = DockerClient()
+    docker = DockerClient(log_level="error")
     docker.build("../test_env", file="../test_env/Dockerfile.base", tags="tests_base")
 
 

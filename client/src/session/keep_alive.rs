@@ -46,27 +46,31 @@ impl ServerSessionAnchor {
     }
 
     async fn get_awaiting_notifier(&self, layer: &SessionLayer) -> Option<NodeAwaiting> {
+        log::trace!("get_awaiting_notifier: start");
         let server_node_id = NodeId::default();
-        let entry = layer.registry.get_entry(server_node_id).await;
-        loop {
-            if entry.is_some() {
-                return entry.as_ref().map(|entry| entry.awaiting_notifier());
+
+            if let Some(entry) = layer.registry.read().await.wait_entry(server_node_id).await {
+                log::trace!("get_awaiting_notifier: received entry isSome");
+                return Some(entry.awaiting_notifier());
             }
-            //Wait for server session entry to be created
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        log::trace!("get_awaiting_notifier: received entry isNone");
+        None
     }
 }
 
 pub async fn keep_alive_server_session(layer: SessionLayer) {
+    log::trace!("keep_alive_server_session: start for layer: {:p}", &layer);
     let mut awaiting_notifier: Option<NodeAwaiting> = None;
     let mut anchor = ServerSessionAnchor::new(layer.config.server_session_reconnect_max_interval);
 
     loop {
+        log::trace!("keep_alive_server_session: loop");
         // Get awaiting notifier for server session, this will poll with sleep if needed
         if awaiting_notifier.is_none() {
             awaiting_notifier = anchor.get_awaiting_notifier(&layer).await;
         }
+
+        log::trace!("keep_alive_server_session: notifier isSome: {:?}", awaiting_notifier.is_some());
 
         //Once server session is established, then wait until it is closed or failed.
         awaiting_notifier

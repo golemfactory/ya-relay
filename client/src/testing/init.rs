@@ -1,7 +1,8 @@
 use anyhow::bail;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use url::Url;
+use tokio::sync::RwLock;
 
 use crate::client::Client;
 use crate::config::{ClientBuilder, ClientConfig, FailFast};
@@ -34,7 +35,7 @@ pub struct SessionLayerWrapper {
     pub layer: SessionLayer,
     pub capturer: MockHandler,
     pub protocol: SessionInitializer,
-    pub guards: NetworkView,
+    pub guards: Arc<RwLock<NetworkView>>,
 }
 
 impl MockSessionNetwork {
@@ -47,6 +48,7 @@ impl MockSessionNetwork {
     }
 
     pub async fn new_layer(&mut self) -> anyhow::Result<SessionLayerWrapper> {
+        log::trace!("new_layer: start");
         let layer = spawn_session_layer(&self.server).await?;
         self.layers.push(layer.clone());
         Ok(layer)
@@ -93,6 +95,7 @@ impl MockSessionNetwork {
 }
 
 pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<SessionLayerWrapper> {
+    log::trace!("spawn_session_layer: start");
     let config = Arc::new(test_default_config(wrapper.server.inner.url.clone()).await?);
     let mut layer = SessionLayer::new(config);
     let capturer = MockHandler::new(layer.clone());
@@ -118,6 +121,7 @@ impl SessionLayerWrapper {
     pub async fn start_session(&self, with: &SessionLayerWrapper) -> anyhow::Result<SessionPermit> {
         match self
             .guards
+            .read().await
             .lock_outgoing(with.id, &[with.addr], self.layer.clone())
             .await
         {
