@@ -732,7 +732,8 @@ impl SessionLayer {
                 // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
                     log::warn!("Failed to establish direct p2p session with [{node_id}]. {e}");
-                    return Err(e);
+                    permit.registry.restart_initialization().await?;
+                    // return Err(e);
                 }
             }
         } else {
@@ -757,7 +758,8 @@ impl SessionLayer {
                     log::warn!(
                         "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
                     );
-                    return Err(e);
+                    permit.registry.restart_initialization().await?;
+                    // return Err(e);
                 }
             }
         } else {
