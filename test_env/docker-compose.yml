@@ -7,45 +7,34 @@ services:
       dockerfile: test_env/Dockerfile.server
     cap_add:
     - NET_ADMIN
+    ports:
+      - "7464:7464/tcp"
+      - "7464:7464/udp"
+      - "7465:7465/tcp"
+      - "7465:7465/udp"
     networks:
-      - client-network-1
-      - client-network-2
+      - relay-network
+    healthcheck:
+      test: [ "CMD", "nc", "-zv", "localhost", "7464" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 1s
 
-  client-1:
-    environment:
-      - RUST_LOG=trace
+  client:
     build:
       context: ../
       dockerfile: test_env/Dockerfile.client
     cap_add:
     - NET_ADMIN
     ports:
-      - "1998:8081"
-      - "2998:9081"
+      - "8000-8999:8081"
+      - "9000-9999:9081"
     networks:
-      - client-network-1
+      - relay-network
     depends_on:
       - relay_server
 
-  client-2:
-    environment:
-      - RUST_LOG=trace
-    build:
-      context: ../
-      dockerfile: test_env/Dockerfile.client
-    cap_add:
-    - NET_ADMIN
-    ports:
-      - "1999:8081"
-      - "2999:9081"
-    networks:
-      - client-network-2
-    depends_on:
-      - relay_server
-      
 networks:
-  client-network-1:
+  relay-network:
     driver: bridge
-  client-network-2:
-    driver: bridge
-
