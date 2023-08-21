@@ -208,10 +208,8 @@ impl Dispatcher {
         });
 
         let mut handlers = self.error_handlers.lock().unwrap();
-        let old_handler = handlers.insert(code, handler);
-        if let Some(old_handler) = old_handler {
+        if let Some(old_handler) = handlers.insert(code, handler) {
             log::debug!("Replacing error handler for code: {}", code);
-            drop(old_handler);
         }
     }
 
