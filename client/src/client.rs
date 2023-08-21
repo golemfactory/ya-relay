@@ -8,6 +8,7 @@ use std::iter::zip;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
@@ -23,6 +24,7 @@ pub use crate::model::{SessionDesc, SocketDesc, SocketState};
 pub use crate::transport::transport_sender::{ForwardSender, GenericSender};
 pub use crate::transport::{ForwardReceiver, TransportLayer};
 
+use crate::direct_session::DirectSession;
 use crate::metrics::ChannelMetrics;
 pub use ya_relay_core::server_session::TransportType;
 
@@ -169,12 +171,7 @@ impl Client {
     ///
     pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<crate::model::Node> {
         let session = self.transport.session_layer.server_session().await?;
-        let find_node = session.raw.find_node(node_id);
-
-        match tokio::time::timeout(Duration::from_secs(5), find_node).await {
-            Ok(result) => Ok(result?),
-            Err(_) => bail!("Node [{}] lookup timed out", node_id),
-        }
+        session.raw.find_node(node_id).await
     }
 
     /// Returns a vector of all currently opened sockets.

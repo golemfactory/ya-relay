@@ -729,6 +729,27 @@ impl NodeAwaiting {
         }
     }
 
+    pub async fn await_for_closed_or_failed(&mut self) -> Result<(), SessionError> {
+        // If we query `NodeAwaiting` after session is already established, we won't get
+        // any notification, so we must check state before entering loop.
+        let mut state = self.registry.state().await;
+        let node_id = self.registry.id;
+
+        loop {
+            match state {
+                SessionState::Closed => {
+                    return Err(SessionError::Unexpected("Connection closed.".to_string()))
+                }
+                SessionState::FailedEstablish(e) => return Err(e),
+                _ => {
+                    log::trace!("Waiting for Closed or FailedEstablished session with [{node_id}]. Current state: {state}")
+                }
+            };
+
+            state = self.next().await?;
+        }
+    }
+
     /// When state reaches `ChallengeHandshake`, we've got first response from other Node
     /// so we know that it is responsive.
     ///
@@ -796,6 +817,7 @@ impl Default for NetworkViewConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::format;
 
     use lazy_static::lazy_static;
 
@@ -831,16 +853,22 @@ mod tests {
         mut permit: SessionPermit,
     ) -> anyhow::Result<Arc<DirectSession>> {
         let node = permit.registry.clone();
-        node.transition_outgoing(InitState::Initializing).await?;
-        node.transition_outgoing(InitState::ChallengeHandshake)
-            .await?;
-        node.transition_outgoing(InitState::HandshakeResponse)
-            .await?;
-        node.transition_outgoing(InitState::ChallengeVerified)
-            .await?;
-        node.transition_outgoing(InitState::SessionRegistered)
-            .await?;
-        node.transition_outgoing(InitState::Ready).await?;
+
+        let transitions = [
+            InitState::Initializing,
+            InitState::ChallengeHandshake,
+            InitState::HandshakeResponse,
+            InitState::ChallengeVerified,
+            InitState::SessionRegistered,
+            InitState::Ready,
+        ];
+
+        for transition in transitions {
+            let transition_result = node.transition_outgoing(transition).await;
+            if transition_result.is_err() {
+                bail!("{:?}", transition_result.err());
+            };
+        }
 
         let session = permit
             .collect_results(Ok(mock_session(&permit).await))
@@ -853,16 +881,22 @@ mod tests {
         mut permit: SessionPermit,
     ) -> anyhow::Result<Arc<DirectSession>> {
         let node = permit.registry.clone();
-        node.transition_incoming(InitState::Initializing).await?;
-        node.transition_incoming(InitState::ChallengeHandshake)
-            .await?;
-        node.transition_incoming(InitState::HandshakeResponse)
-            .await?;
-        node.transition_incoming(InitState::ChallengeVerified)
-            .await?;
-        node.transition_incoming(InitState::SessionRegistered)
-            .await?;
-        node.transition_incoming(InitState::Ready).await?;
+
+        let transitions = [
+            InitState::Initializing,
+            InitState::ChallengeHandshake,
+            InitState::HandshakeResponse,
+            InitState::ChallengeVerified,
+            InitState::SessionRegistered,
+            InitState::Ready,
+        ];
+
+        for transition in transitions {
+            let transition_result = node.transition_incoming(transition).await;
+            if transition_result.is_err() {
+                bail!("{:?}", transition_result.err());
+            };
+        }
 
         let session = permit
             .collect_results(Ok(mock_session(&permit).await))

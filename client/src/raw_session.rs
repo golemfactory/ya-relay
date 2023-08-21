@@ -3,6 +3,7 @@ use futures::future::LocalBoxFuture;
 use futures::{FutureExt, SinkExt};
 use std::convert::TryInto;
 use std::net::SocketAddr;
+use std::process::id;
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
 
@@ -160,7 +161,7 @@ impl RawSession {
         Ok(neighbours)
     }
 
-    pub async fn ping(&self) -> anyhow::Result<()> {
+    pub async fn ping(&self) -> anyhow::Result<(), RequestError> {
         let packet = proto::request::Ping {};
         let ping_ts = Instant::now();
 
@@ -173,7 +174,7 @@ impl RawSession {
         };
 
         self.dispatcher.update_ping(ping);
-        Ok(result.map(|_| ())?)
+        result.map(|_| ())
     }
 
     pub async fn reverse_connection(&self, node_id: NodeId) -> Result<(), RequestError> {

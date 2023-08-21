@@ -3,22 +3,26 @@ use std::convert::TryInto;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
+use std::rc::Weak;
 use std::sync::{Arc, Mutex};
 
 use futures::channel::oneshot::{self, Sender};
 use futures::future::{FutureExt, LocalBoxFuture};
 use futures::stream::{Stream, StreamExt};
+use log::log;
 use tokio::task::spawn_local;
 use tokio::time::{Duration, Instant};
+use ya_relay_core::session::Session;
 
 use crate::direct_session::DirectSession;
 use crate::raw_session::RawSession;
 
+use crate::session::SessionLayer;
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 
-pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult + Send>;
-pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()> + Send>>;
+pub type ErrorHandler = Box<dyn Fn() -> ErrorHandlerResult>;
+pub type ErrorHandlerResult = Pin<Box<dyn Future<Output = ()>>>;
 type ResponseSender = Sender<Dispatched<proto::response::Kind>>;
 
 /// Signals receipt of a response packet
@@ -169,10 +173,14 @@ impl Dispatcher {
     }
 
     /// Registers a response code handler
-    pub fn handle_error<F: Fn() -> ErrorHandlerResult + Sync + Send + 'static>(
+    pub fn handle_error<
+        F: Fn(i32, SessionLayer, std::sync::Weak<DirectSession>) -> ErrorHandlerResult + 'static,
+    >(
         &self,
         code: i32,
         exclusive: bool,
+        layer: SessionLayer,
+        session: std::sync::Weak<DirectSession>,
         handler: F,
     ) {
         use std::sync::atomic::AtomicBool;
@@ -184,6 +192,8 @@ impl Dispatcher {
         let handler = Box::new(move || {
             let handler_fn = handler_fn.clone();
             let latch = latch.clone();
+            let layer = layer.clone();
+            let session = session.clone();
 
             async move {
                 if exclusive && latch.load(SeqCst) {
@@ -191,14 +201,16 @@ impl Dispatcher {
                 }
 
                 latch.store(true, SeqCst);
-                handler_fn().await;
+                handler_fn(code, layer, session).await;
                 latch.store(false, SeqCst);
             }
-            .boxed()
+            .boxed_local()
         });
 
         let mut handlers = self.error_handlers.lock().unwrap();
-        handlers.insert(code, handler);
+        if let Some(old_handler) = handlers.insert(code, handler) {
+            log::debug!("Replacing error handler for code: {}", code);
+        }
     }
 
     /// Creates a future to await a `T` (response) packet on
