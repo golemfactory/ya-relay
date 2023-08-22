@@ -4,7 +4,6 @@ from utils import Cluster, Scales
 
 default_build_args = {"SERVER_LATENCY": "20ms", "CLIENT_LATENCY": "5ms", "RUST_LOG": "info"}
 
-
 @pytest.fixture(scope="session", autouse=True)
 def base_build():
     print("Base build")
