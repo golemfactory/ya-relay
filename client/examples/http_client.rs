@@ -21,7 +21,7 @@ use ya_relay_core::{
     NodeId,
 };
 
-use crate::response::{Pong, Transfer};
+use crate::response::{Info, Pong, Transfer};
 
 #[path = "http_client/response.rs"]
 mod response;
@@ -162,6 +162,25 @@ async fn sessions(client_sender: web::Data<ClientWrap>) -> impl Responder {
     let msg = client_sender
         .run_async(move |client: Client| async move {
             client.sessions().map(response::Sessions::from).await
+        })
+        .await
+        .map_err(ErrorInternalServerError)?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+}
+
+#[get("/info")]
+async fn info(client_sender: web::Data<ClientWrap>) -> impl Responder {
+    let msg = client_sender
+        .run_async(move |client: Client| async move {
+            let node_id = client.node_id();
+            let bind_addr = client.bind_addr().await;
+            let public_addr = client.public_addr().await;
+            Info
+            {
+                node_id,
+                bind_address: format!("{:?}", bind_addr),
+                pub_address: format!("{:?}", public_addr),
+            }
         })
         .await
         .map_err(ErrorInternalServerError)?;
@@ -346,6 +365,7 @@ async fn run() -> Result<()> {
             .service(find_node)
             .service(ping)
             .service(sessions)
+            .service(info)
             .service(transfer_file)
     })
     .workers(4)
