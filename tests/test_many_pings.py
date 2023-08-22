@@ -12,6 +12,7 @@ LOGGER = logging.getLogger(__name__)
 
 file_num = 0
 
+
 def ping_nodes(client0, clients):
     ping_times = []
     for client in clients:
@@ -19,6 +20,7 @@ def ping_nodes(client0, clients):
         # LOGGER.info(f"Ping duration {ping_response['duration']}ms")
         ping_times.append(ping_response["duration"])
     return ping_times
+
 
 def calc(ping_times, plot=False):
     n = len(ping_times)
@@ -30,7 +32,7 @@ def calc(ping_times, plot=False):
 
     x = np.array(range(len(ping_times)))
     y = np.array(ping_times)
-    x = x.reshape(-1,1)
+    x = x.reshape(-1, 1)
     regression_model = LinearRegression()
 
     regression_model.fit(x, y)
@@ -42,12 +44,13 @@ def calc(ping_times, plot=False):
     if plot:
         global file_num
         plt.clf()
-        plt.plot(x, y, 'o')
-        plt.plot(x, y_pred, color='red')
+        plt.plot(x, y, "o")
+        plt.plot(x, y_pred, color="red")
         plt.savefig(f"plot-{file_num}.png")
         file_num += 1
 
     return (a, b, min_ping, max_ping, mean, variance)
+
 
 # @pytest.mark.skip(reason="Takes too much time to run in CI")
 def test_many_pings(compose_up):
@@ -56,7 +59,6 @@ def test_many_pings(compose_up):
     server: Server = cluster.servers()[0]
     client0 = cluster.clients()[0]
     clients = cluster.clients()[1:]
-
 
     LOGGER.info(f"Start initial pings")
     ping_times_init = ping_nodes(client0, clients)
