@@ -175,8 +175,7 @@ async fn info(client_sender: web::Data<ClientWrap>) -> impl Responder {
             let node_id = client.node_id();
             let bind_addr = client.bind_addr().await;
             let public_addr = client.public_addr().await;
-            Info
-            {
+            Info {
                 node_id,
                 bind_address: format!("{:?}", bind_addr),
                 pub_address: format!("{:?}", public_addr),

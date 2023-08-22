@@ -69,7 +69,10 @@ pub(crate) struct Info {
 
 impl fmt::Display for Info {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("{} {:?} {:?} ", self.node_id, self.bind_address, self.pub_address))
+        f.write_fmt(format_args!(
+            "{} {:?} {:?} ",
+            self.node_id, self.bind_address, self.pub_address
+        ))
     }
 }
 
