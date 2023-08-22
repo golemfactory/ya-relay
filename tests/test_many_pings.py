@@ -11,27 +11,15 @@ import matplotlib.pyplot as plt
 LOGGER = logging.getLogger(__name__)
 
 file_num = 0
-<<<<<<< HEAD
-
-=======
->>>>>>> 5900533 (the combination of config values did not work correctly)
 
 def ping_nodes(client0, clients):
     ping_times = []
     for client in clients:
         ping_response = client0.ping(client.node_id)
-<<<<<<< HEAD
         LOGGER.debug(f"Ping duration {ping_response['duration']}ms")
         ping_times.append(ping_response["duration"])
     return ping_times
 
-
-=======
-        # LOGGER.info(f"Ping duration {ping_response['duration']}ms")
-        ping_times.append(ping_response["duration"])
-    return ping_times
-
->>>>>>> 5900533 (the combination of config values did not work correctly)
 def calc(ping_times, plot=False):
     n = len(ping_times)
     mean = sum(ping_times) / n
@@ -42,7 +30,7 @@ def calc(ping_times, plot=False):
 
     x = np.array(range(len(ping_times)))
     y = np.array(ping_times)
-    x = x.reshape(-1,1)
+    x = x.reshape(-1, 1)
     regression_model = LinearRegression()
 
     regression_model.fit(x, y)
