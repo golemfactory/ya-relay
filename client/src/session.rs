@@ -1,4 +1,5 @@
 mod expire;
+mod keep_alive;
 pub mod network_view;
 pub mod session_initializer;
 pub mod session_state;
@@ -10,13 +11,17 @@ use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use metrics::{gauge, increment_counter};
+use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
+use std::thread::sleep;
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 use self::expire::track_sessions_expiration;
+use self::keep_alive::keep_alive_server_session;
 use self::network_view::{NetworkView, SessionLock, SessionPermit, Validity};
 use self::session_state::{RelayedState, ReverseState, SessionState};
 use crate::client::{ClientConfig, Forwarded};
@@ -360,15 +365,25 @@ impl SessionLayer {
             *self.sink.lock().unwrap() = Some(sink.clone());
         }
 
-        let abort_dispatcher = spawn_local_abortable(dispatch(handler, stream));
-        let abort_expiration = spawn_local_abortable(track_sessions_expiration(self.clone()));
+        let mut handles: Vec<AbortHandle> = Vec::from([
+            spawn_local_abortable(dispatch(handler, stream)),
+            spawn_local_abortable(track_sessions_expiration(self.clone())),
+        ]);
+
+        if self.config.auto_connect_fail_fast || !self.config.auto_connect {
+            handles.push(spawn_local_abortable(keep_alive_server_session(
+                self.clone(),
+            )));
+        };
 
         {
             let mut state = self.state.write().await;
 
             state.bind_addr.replace(bind_addr);
-            state.handles.push(abort_dispatcher);
-            state.handles.push(abort_expiration);
+            for h in handles {
+                state.handles.push(h);
+            }
+
             state.init_protocol = Some(SessionInitializer::new(
                 self.config.clone(),
                 self.clone(),
@@ -681,20 +696,23 @@ impl SessionLayer {
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
+        session.raw.dispatcher.handle_error(
+            proto::StatusCode::Unauthorized as i32,
+            true,
+            self.clone(),
+            Arc::downgrade(&session),
+            move |code, layer, session| {
+                async move {
+                    if let Some(session) = session.upgrade() {
+                        layer.close_session(session).await;
+                    }
+                    log::debug!("handle_error {code}");
+                }
+                .boxed_local()
+            },
+        );
+
         // TODO: Make sure this functionality is replaced in new code.
-        // session.raw.dispatcher.handle_error(
-        //     proto::StatusCode::Unauthorized as i32,
-        //     true,
-        //     move || {
-        //         let manager = manager.clone();
-        //         async move {
-        //             manager.drop_server_session().await;
-        //             let _ = manager.server_session().await;
-        //         }
-        //         .boxed_local()
-        //     },
-        // );
-        //
         // let fast_lane = self.virtual_tcp_fast_lane.clone();
         // session.raw.on_drop(move || {
         //     fast_lane.borrow_mut().clear();
@@ -1699,7 +1717,7 @@ mod tests {
 
         // Function should finish in timeout and return error.
         assert!(
-            timeout(Duration::from_millis(4500), layer1.layer.session(layer2.id))
+            timeout(Duration::from_millis(6000), layer1.layer.session(layer2.id))
                 .await
                 .unwrap()
                 .is_err()

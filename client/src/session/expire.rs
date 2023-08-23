@@ -1,7 +1,18 @@
+use crate::client::SessionError;
+use backoff::future::retry;
+use backoff::Error::Transient;
+use backoff::{Error, ExponentialBackoff};
+use std::cmp::min;
+use std::future::Future;
 use std::sync::Arc;
+use std::thread::sleep;
+use std::time::Duration;
 use tokio::time::Instant;
+use ya_relay_core::{server_session, NodeId};
 
 use crate::direct_session::DirectSession;
+use crate::session::network_view::{NodeAwaiting, NodeView};
+use crate::session::session_state::SessionState;
 use crate::session::session_traits::SessionDeregistration;
 use crate::session::SessionLayer;
 
@@ -38,6 +49,7 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
             })
             .collect::<Vec<_>>();
 
+        log::trace!("Closing {} expired sessions.", expired_idx.len());
         close_sessions(layer.clone(), sessions, expired_idx).await;
 
         let first_to_expiring = last_seen.iter().min().cloned().unwrap_or(now) + expiration;
@@ -64,6 +76,6 @@ async fn close_sessions(
             session.raw.remote
         );
 
-        layer.unregister_session(session.clone()).await;
+        layer.close_session(session.clone()).await;
     }
 }

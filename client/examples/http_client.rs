@@ -386,7 +386,7 @@ async fn build_client(
         builder = builder.listen(bind);
     }
 
-    let client = builder.connect(FailFast::Yes).build().await?;
+    let client = builder.connect(FailFast::No).build().await?;
 
     // This log messages are used by integration tests.
     log::info!("CLIENT NODE ID: {}", client.node_id());

@@ -47,6 +47,9 @@ curl -X GET http://$HIDDEN_CLIENT_IP:8081/sessions
 # Disconnect hidden client from network
 docker network disconnect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
 
+# Give hidden node some time to close session with server
+sleep 30
+
 # Ping hidden client from exposed client
 curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 
@@ -54,7 +57,7 @@ curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 docker network connect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
 
 # Ping hidden client from exposed client
-curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/find-node/$HIDDEN_NODE_ID
+curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 
 # Give hidden node some time to restore session with server
 sleep 5
