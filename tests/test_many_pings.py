@@ -17,7 +17,7 @@ def ping_nodes(client0, clients):
     ping_times = []
     for client in clients:
         ping_response = client0.ping(client.node_id)
-        # LOGGER.info(f"Ping duration {ping_response['duration']}ms")
+        LOGGER.debug(f"Ping duration {ping_response['duration']}ms")
         ping_times.append(ping_response["duration"])
     return ping_times
 
