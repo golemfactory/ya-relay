@@ -1,0 +1,58 @@
+version: "3.8"
+
+services:
+  relay_server:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.server
+    cap_add:
+    - NET_ADMIN
+    environment:
+      - LATENCY=${SERVER_LATENCY}
+      - RUST_LOG=${RUST_LOG}
+    ports:
+      - "7464:7464/tcp"
+      - "7464:7464/udp"
+      - "7465:7465/tcp"
+      - "7465:7465/udp"
+    networks:
+      - client-network-1
+      - client-network-2
+
+  client-1:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
+    environment:
+      - LATENCY=${CLIENT_LATENCY}
+      - RUST_LOG=${RUST_LOG}
+    ports:
+      - "1998:8081"
+      - "2998:9081"
+    networks:
+      - client-network-1
+
+  client-2:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+    cap_add:
+    - NET_ADMIN
+    environment:
+      - LATENCY=${CLIENT_LATENCY}
+      - RUST_LOG=${RUST_LOG}
+    ports:
+      - "1999:8081"
+      - "2999:9081"
+    networks:
+      - client-network-2
+      
+networks:
+  client-network-1:
+    driver: bridge
+  client-network-2:
+    driver: bridge
+
+

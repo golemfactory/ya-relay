@@ -742,15 +742,9 @@ impl SessionLayer {
                     metric_session_established(node_id, ConnectionMethod::Direct);
                     return Ok(session);
                 }
-                // We can still try other methods.
-                Err(SessionError::NotApplicable(e)) => {
-                    log::debug!("Can't establish direct p2p session with [{node_id}]. {e}");
-                    permit.registry.restart_initialization().await?;
-                }
-                // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
                     log::warn!("Failed to establish direct p2p session with [{node_id}]. {e}");
-                    return Err(e);
+                    permit.registry.restart_initialization().await?;
                 }
             }
         } else {
@@ -765,17 +759,11 @@ impl SessionLayer {
                     metric_session_established(node_id, ConnectionMethod::Reverse);
                     return Ok(session);
                 }
-                // We can still try other methods.
-                Err(SessionError::NotApplicable(e)) => {
-                    log::debug!("Can't establish reverse p2p session with [{node_id}]. {e}");
-                    permit.registry.restart_initialization().await?;
-                }
-                // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
                     log::warn!(
                         "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
                     );
-                    return Err(e);
+                    permit.registry.restart_initialization().await?;
                 }
             }
         } else {
@@ -855,21 +843,11 @@ impl SessionLayer {
         for addr in addrs {
             match protocol.init_p2p_session(addr, permit).await {
                 Ok(session) => return Ok(session),
-                // We can probably recover from these errors.
-                Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => match e {
-                    SessionError::Internal(_)
-                    | SessionError::Network(_)
-                    | SessionError::Timeout(_)
-                    | SessionError::Unexpected(_) => {
-                        log::debug!(
-                            "Failed to establish p2p session with node [{node_id}], using address: {addr}. Error: {e}"
-                        )
-                    }
-                    // Rest errors means that there is no reason to try again.
-                    // TODO: `SessionError::Protocol` error sometimes can be recovered from and sometimes
-                    //       shouldn't. We should organize errors better.
-                    e => return Err(e),
-                },
+                Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => {
+                    log::debug!(
+                        "Failed to establish p2p session with node [{node_id}], using address: {addr}. Error: {e}"
+                    );
+                }
             }
         }
 
@@ -1701,48 +1679,5 @@ mod tests {
         assert_eq!(session2.target(), layer1.id);
         assert_eq!(session2.route(), layer1.id);
         assert_eq!(session2.session_type(), SessionType::P2P);
-    }
-
-    #[actix_rt::test]
-    async fn test_session_layer_reverse_connection_timeout_handshake() {
-        let mut network = MockSessionNetwork::new().await.unwrap();
-        let layer1 = network.new_layer().await.unwrap();
-        let layer2 = network.new_layer().await.unwrap();
-
-        // Node-2 should be registered on relay
-        layer2.layer.server_session().await.unwrap();
-        network.hack_make_layer_ip_private(&layer2).await;
-
-        layer2.capturer.captures.reverse_connection.drop_all();
-
-        // Function should finish in timeout and return error.
-        assert!(
-            timeout(Duration::from_secs(12), layer1.layer.session(layer2.id))
-                .await
-                .unwrap()
-                .is_err()
-        );
-    }
-
-    /// Establishing session with node should fail if we got timeout waiting for first
-    /// handshake message. In this case making relayed connection doesn't make sense, because
-    /// Node seems inaccessible.
-    #[actix_rt::test]
-    async fn test_session_layer_p2p_timeout_handshake() {
-        let mut network = MockSessionNetwork::new().await.unwrap();
-        let layer1 = network.new_layer().await.unwrap();
-        let layer2 = network.new_layer().await.unwrap();
-
-        // Node-2 should be registered on relay
-        layer2.layer.server_session().await.unwrap();
-        layer2.capturer.captures.session_request.drop_all();
-
-        // Function should finish in timeout and return error.
-        assert!(
-            timeout(Duration::from_millis(6000), layer1.layer.session(layer2.id))
-                .await
-                .unwrap()
-                .is_err()
-        );
     }
 }
