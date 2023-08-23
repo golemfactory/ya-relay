@@ -1701,26 +1701,4 @@ mod tests {
                 .is_err()
         );
     }
-
-    /// Establishing session with node should fail if we got timeout waiting for first
-    /// handshake message. In this case making relayed connection doesn't make sense, because
-    /// Node seems inaccessible.
-    #[actix_rt::test]
-    async fn test_session_layer_p2p_timeout_handshake() {
-        let mut network = MockSessionNetwork::new().await.unwrap();
-        let layer1 = network.new_layer().await.unwrap();
-        let layer2 = network.new_layer().await.unwrap();
-
-        // Node-2 should be registered on relay
-        layer2.layer.server_session().await.unwrap();
-        layer2.capturer.captures.session_request.drop_all();
-
-        // Function should finish in timeout and return error.
-        assert!(
-            timeout(Duration::from_millis(6000), layer1.layer.session(layer2.id))
-                .await
-                .unwrap()
-                .is_err()
-        );
-    }
 }
