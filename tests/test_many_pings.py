@@ -52,7 +52,7 @@ def calc(ping_times, plot=False):
     return (a, b, min_ping, max_ping, mean, variance)
 
 
-# @pytest.mark.skip(reason="Takes too much time to run in CI")
+@pytest.mark.skip(reason="Takes too much time to run in CI")
 def test_many_pings(compose_up):
     cluster: Cluster = compose_up(250)
 
