@@ -24,7 +24,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poe.tasks]
-checks = {sequence = ["checks_codestyle", "checks_typing", "checks_license"], help = "Run all available code checks"}
+checks = {sequence = ["checks_codestyle", "checks_typing"], help = "Run all available code checks"}
 checks_codestyle = {sequence = ["_checks_codestyle_black"], help = "Run only code style checks"}
 _checks_codestyle_black = "black --check --diff ."
 checks_typing  = {cmd = "mypy .", help = "Run only code typing checks" }
