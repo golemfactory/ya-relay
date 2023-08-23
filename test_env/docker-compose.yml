@@ -5,6 +5,8 @@ services:
     build:
       context: ../
       dockerfile: test_env/Dockerfile.server
+      args:
+        - LATENCY=10
     cap_add:
     - NET_ADMIN
     ports:
@@ -20,20 +22,26 @@ services:
       timeout: 10s
       retries: 3
       start_period: 1s
+    environment:
+      - RUST_LOG=trace
 
   client:
     build:
       context: ../
       dockerfile: test_env/Dockerfile.client
+      args:
+        - LATENCY=10
     cap_add:
     - NET_ADMIN
     ports:
-      - "8000-8999:8081"
-      - "9000-9999:9081"
+      - "8100-8999:8081"
+      - "9100-9999:9081"
     networks:
       - relay-network
     depends_on:
       - relay_server
+    environment:
+      - RUST_LOG=trace
 
 networks:
   relay-network:

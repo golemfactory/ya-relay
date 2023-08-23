@@ -60,6 +60,22 @@ impl From<SessionDesc> for Session {
     }
 }
 
+#[derive(Serialize, Debug)]
+pub(crate) struct Info {
+    pub node_id: NodeId,
+    pub bind_address: String,
+    pub pub_address: String,
+}
+
+impl fmt::Display for Info {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_fmt(format_args!(
+            "{} {:?} {:?} ",
+            self.node_id, self.bind_address, self.pub_address
+        ))
+    }
+}
+
 #[serde_with::serde_as]
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct Pong {

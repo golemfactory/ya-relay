@@ -370,7 +370,7 @@ impl SessionLayer {
             spawn_local_abortable(track_sessions_expiration(self.clone())),
         ]);
 
-        if self.config.auto_connect_fail_fast || !self.config.auto_connect {
+        if self.config.auto_connect && !self.config.auto_connect_fail_fast {
             handles.push(spawn_local_abortable(keep_alive_server_session(
                 self.clone(),
             )));
