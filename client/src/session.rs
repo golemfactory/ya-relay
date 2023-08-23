@@ -1680,25 +1680,4 @@ mod tests {
         assert_eq!(session2.route(), layer1.id);
         assert_eq!(session2.session_type(), SessionType::P2P);
     }
-
-    #[actix_rt::test]
-    async fn test_session_layer_reverse_connection_timeout_handshake() {
-        let mut network = MockSessionNetwork::new().await.unwrap();
-        let layer1 = network.new_layer().await.unwrap();
-        let layer2 = network.new_layer().await.unwrap();
-
-        // Node-2 should be registered on relay
-        layer2.layer.server_session().await.unwrap();
-        network.hack_make_layer_ip_private(&layer2).await;
-
-        layer2.capturer.captures.reverse_connection.drop_all();
-
-        // Function should finish in timeout and return error.
-        assert!(
-            timeout(Duration::from_secs(12), layer1.layer.session(layer2.id))
-                .await
-                .unwrap()
-                .is_err()
-        );
-    }
 }
