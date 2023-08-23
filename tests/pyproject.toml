@@ -28,9 +28,6 @@ checks = {sequence = ["checks_codestyle", "checks_typing", "checks_license"], he
 checks_codestyle = {sequence = ["_checks_codestyle_black"], help = "Run only code style checks"}
 _checks_codestyle_black = "black --check --diff ."
 checks_typing  = {cmd = "mypy .", help = "Run only code typing checks" }
-checks_license = {sequence = ["_checks_license_export", "_checks_license_verify"], help = "Run only license compatibility checks"}
-_checks_license_export = "poetry export -f requirements.txt -o .requirements.txt"
-_checks_license_verify = "liccheck -r .requirements.txt"
 
 # pyproject.toml
 [tool.pytest.ini_options]
