@@ -724,16 +724,9 @@ impl SessionLayer {
                     metric_session_established(node_id, ConnectionMethod::Direct);
                     return Ok(session);
                 }
-                // We can still try other methods.
-                Err(SessionError::NotApplicable(e)) => {
-                    log::debug!("Can't establish direct p2p session with [{node_id}]. {e}");
-                    permit.registry.restart_initialization().await?;
-                }
-                // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
                     log::warn!("Failed to establish direct p2p session with [{node_id}]. {e}");
                     permit.registry.restart_initialization().await?;
-                    // return Err(e);
                 }
             }
         } else {
@@ -748,18 +741,11 @@ impl SessionLayer {
                     metric_session_established(node_id, ConnectionMethod::Reverse);
                     return Ok(session);
                 }
-                // We can still try other methods.
-                Err(SessionError::NotApplicable(e)) => {
-                    log::debug!("Can't establish reverse p2p session with [{node_id}]. {e}");
-                    permit.registry.restart_initialization().await?;
-                }
-                // In case of other errors we probably shouldn't even try something else.
                 Err(e) => {
                     log::warn!(
                         "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
                     );
                     permit.registry.restart_initialization().await?;
-                    // return Err(e);
                 }
             }
         } else {
@@ -839,21 +825,11 @@ impl SessionLayer {
         for addr in addrs {
             match protocol.init_p2p_session(addr, permit).await {
                 Ok(session) => return Ok(session),
-                // We can probably recover from these errors.
-                Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => match e {
-                    SessionError::Internal(_)
-                    | SessionError::Network(_)
-                    | SessionError::Timeout(_)
-                    | SessionError::Unexpected(_) => {
-                        log::debug!(
-                            "Failed to establish p2p session with node [{node_id}], using address: {addr}. Error: {e}"
-                        )
-                    }
-                    // Rest errors means that there is no reason to try again.
-                    // TODO: `SessionError::Protocol` error sometimes can be recovered from and sometimes
-                    //       shouldn't. We should organize errors better.
-                    e => return Err(e),
-                },
+                Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => {
+                    log::debug!(
+                        "Failed to establish p2p session with node [{node_id}], using address: {addr}. Error: {e}"
+                    );
+                }
             }
         }
 
