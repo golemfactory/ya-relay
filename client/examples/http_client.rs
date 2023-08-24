@@ -14,10 +14,11 @@ use std::{
 };
 use structopt::StructOpt;
 use tokio::sync::oneshot;
-use ya_relay_client::{Client, ClientBuilder, FailFast, GenericSender};
+use ya_relay_client::{channels::ForwardSender, Client, ClientBuilder, FailFast, GenericSender};
 use ya_relay_core::{
     crypto::FallbackCryptoProvider,
     key::{load_or_generate, Protected},
+    server_session::TransportType,
     NodeId,
 };
 
@@ -126,22 +127,23 @@ async fn find_node(
     Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
-#[get("/ping/{node_id}")]
+#[get("/ping/{transport}/{node_id}")]
 async fn ping(
-    node_id: web::Path<NodeId>,
+    path: web::Path<(TransportType, NodeId)>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
 ) -> actix_web::Result<HttpResponse> {
+    let node_id = path.1;
+    let transport = path.0;
     log::trace!("[ping]: Pinging {}", node_id);
-    let node_id = node_id.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let r = messages.request();
-            let mut sender = client.forward_reliable(node_id).await?;
-            let msg = format!("Ping:{}", r.id());
+            let mut sender = forward(&client, transport, node_id).await?;
+            let msg = format!("Ping:{}:{}", transport, r.id());
 
             sender.send(msg.as_bytes().to_vec().into()).await?;
-            log::trace!("[ping]: Ping sent {}. Waiting.", node_id);
+            log::trace!("[ping]: Ping {} sent {}. Waiting.", transport, node_id);
             r.result().await.map_err(|e| anyhow!("{e}"))
         })
         .await
@@ -188,12 +190,13 @@ async fn info(client_sender: web::Data<ClientWrap>) -> impl Responder {
 
 #[post("/transfer-file/{node_id}")]
 async fn transfer_file(
-    node_id: web::Path<NodeId>,
+    path: web::Path<(TransportType, NodeId)>,
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
     body: web::Bytes,
 ) -> actix_web::Result<HttpResponse> {
-    let node_id = node_id.into_inner();
+    let node_id = path.1;
+    let transport = path.0;
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let data: Vec<u8> = body.into();
@@ -201,7 +204,7 @@ async fn transfer_file(
             let r = messages.request();
             let end_message = format!("Transfer:{}:{}", r.id(), data.len());
 
-            let mut sender = client.forward_reliable(node_id).await?;
+            let mut sender = forward(&client, transport, node_id).await?;
 
             sender.send(data.into()).await?;
             sender.send(end_message.as_bytes().to_vec().into()).await?;
@@ -235,6 +238,18 @@ async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()>
     Ok(())
 }
 
+async fn forward(
+    client: &Client,
+    transport: TransportType,
+    node_id: NodeId,
+) -> Result<ForwardSender> {
+    match transport {
+        TransportType::Unreliable => client.forward_unreliable(node_id).await,
+        TransportType::Reliable => client.forward_reliable(node_id).await,
+        TransportType::Transfer => client.forward_transfer(node_id).await,
+    }
+}
+
 async fn handle_forward_message(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
@@ -253,6 +268,12 @@ async fn handle_forward_message(
             let command = s
                 .next()
                 .ok_or_else(|| anyhow!("No message command found"))?;
+
+            let transport = s
+                .next()
+                .ok_or_else(|| anyhow!("No transport found"))?
+                .parse::<TransportType>()?;
+
             let request_id = s
                 .next()
                 .ok_or_else(|| anyhow!("No request ID found"))?
@@ -260,9 +281,14 @@ async fn handle_forward_message(
 
             match command {
                 "Ping" => {
-                    let mut sender = client.forward_reliable(fwd.node_id).await?;
+                    let mut sender = forward(&client, transport, fwd.node_id).await?;
                     sender
-                        .send(format!("Pong:{request_id}").as_bytes().to_vec().into())
+                        .send(
+                            format!("Pong:{transport}:{request_id}")
+                                .as_bytes()
+                                .to_vec()
+                                .into(),
+                        )
                         .await?;
 
                     Ok(())
@@ -283,7 +309,7 @@ async fn handle_forward_message(
                     Ok(())
                 }
                 "Transfer" => {
-                    let mut sender = client.forward_reliable(fwd.node_id).await?;
+                    let mut sender = forward(&client, transport, fwd.node_id).await?;
                     let bytes_transferred = s
                         .next()
                         .ok_or_else(|| anyhow!("No data found"))?

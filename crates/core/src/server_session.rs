@@ -4,6 +4,7 @@ use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::RateLimiter;
 use rand::Rng;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::convert::TryFrom;
 use std::fmt;
@@ -15,7 +16,19 @@ use ya_client_model::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{SlotId, SESSION_ID_SIZE};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::Display)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    PartialEq,
+    Eq,
+    Hash,
+    derive_more::Display,
+    strum_macros::EnumString,
+    Serialize,
+    Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum TransportType {
     Unreliable,
     Reliable,
