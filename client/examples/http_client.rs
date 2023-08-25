@@ -157,6 +157,41 @@ async fn ping(
     response::ok_json::<Pong>(&msg)
 }
 
+#[get("/disconnect/{node_id}")]
+async fn disconnect(
+    node_id: web::Path<NodeId>,
+    client_sender: web::Data<ClientWrap>,
+    messages: web::Data<Messages>,
+) -> actix_web::Result<HttpResponse> {
+    log::trace!("[disconnect]: Disconnecting {}", node_id);
+    let node_id = node_id.into_inner();
+
+    let msg = client_sender
+        .run_async(move |client: Client| async move {
+            let r = messages.request();
+            let msg = format!("Close Session:{}", r.id());
+            log::debug!("Sending close session message: {}", msg);
+            let _s = client.sessions().await;
+
+            let result = client.disconnect(node_id).await.map_err(|e| anyhow!("{e}"));
+            match result {
+                Ok(_) => Ok("Disconnected"),
+                Err(e) => Err(e),
+            }
+        })
+        .await
+        .map_err(|e| {
+            log::error!("Run async failed {e}");
+            ErrorInternalServerError(e)
+        })?
+        .map_err(|e| {
+            log::error!("Disconnect failed {e}");
+            ErrorInternalServerError(e)
+        })?;
+    log::debug!("[disconnect]: {}", msg);
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+}
+
 #[get("/sessions")]
 async fn sessions(client_sender: web::Data<ClientWrap>) -> impl Responder {
     let msg = client_sender
@@ -364,6 +399,7 @@ async fn run() -> Result<()> {
             .service(find_node)
             .service(ping)
             .service(sessions)
+            .service(disconnect)
             .service(info)
             .service(transfer_file)
     })

@@ -35,6 +35,7 @@ use crate::routing_session::{NodeRouting, RoutingSender};
 use crate::session::session_initializer::SessionInitializer;
 use crate::transport::ForwardReceiver;
 
+use crate::error::SenderError::Session;
 use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
@@ -370,6 +371,11 @@ impl SessionLayer {
             spawn_local_abortable(track_sessions_expiration(self.clone())),
         ]);
 
+        log::trace!(
+            "Keep alive config: auto_connect={} auto_connect_fail_fast={}",
+            self.config.auto_connect,
+            self.config.auto_connect_fail_fast
+        );
         if self.config.auto_connect && !self.config.auto_connect_fail_fast {
             handles.push(spawn_local_abortable(keep_alive_server_session(
                 self.clone(),
@@ -538,7 +544,7 @@ impl SessionLayer {
         let entry = self.registry.guard(node_id, &[]).await;
         entry.transition(SessionState::Closing).await?;
         self.unregister(node_id).await;
-        entry.transition_closed().await?;
+        entry.transition(SessionState::Closed).await?;
         Ok(())
     }
 
@@ -547,11 +553,22 @@ impl SessionLayer {
         // Makes function abort-safe. Dropping this future won't stop execution
         // of closing function.
         tokio::task::spawn_local(async move {
+            if let Some(current_session) = myself.find_session(session.raw.remote).await {
+                if current_session.raw.id != session.raw.id {
+                    log::warn!(
+                        "Cannot close session [{}] with [{}] ({}) - already closed.",
+                        session.raw.id,
+                        session.owner.default_id,
+                        session.raw.remote
+                    );
+                    return Ok(());
+                }
+            }
             let entry = myself.registry.guard(session.owner.default_id, &[]).await;
 
             entry.transition(SessionState::Closing).await?;
             myself.unregister_session(session).await;
-            entry.transition_closed().await?;
+            entry.transition(SessionState::Closed).await?;
             Ok(())
         })
         .await
@@ -1087,6 +1104,13 @@ impl SessionLayer {
         // SessionId should be valid, otherwise this is some unknown session
         // so we should be cautious, when processing it.
         let session_id = SessionId::try_from(session_id)?;
+
+        if session_id != SessionId::generate() {
+            log::debug!(
+                "Aborting disconnect of session {session_id} with {from} for debug purposes"
+            );
+            return Ok(());
+        }
 
         if let Ok(node) = match by {
             By::Slot(id) => match self.find_session(from).await {

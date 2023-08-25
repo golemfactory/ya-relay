@@ -7,6 +7,7 @@ use backoff::backoff::Backoff;
 use backoff::Error::Transient;
 use backoff::{Error, ExponentialBackoff};
 use futures::future::err;
+use log::trace;
 use std::time::Duration;
 use ya_relay_core::NodeId;
 
@@ -63,11 +64,13 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
     let mut anchor = ServerSessionAnchor::new(layer.config.server_session_reconnect_max_interval);
 
     loop {
+        log::trace!("Getting awaiting_notifier");
         // Get awaiting notifier for server session, this will poll with sleep if needed
         if awaiting_notifier.is_none() {
             awaiting_notifier = anchor.get_awaiting_notifier(&layer).await;
         }
 
+        log::trace!("awaiting_notifier waiting for server session close or fail");
         //Once server session is established, then wait until it is closed or failed.
         awaiting_notifier
             .as_mut()
@@ -75,6 +78,7 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
             .await_for_closed_or_failed()
             .await;
 
+        log::trace!("establishing server session");
         //Re-establish server session using retry policy with exponential backoff.
         let server_session = anchor.establish_server_session(&layer).await;
     }

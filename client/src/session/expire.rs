@@ -76,6 +76,6 @@ async fn close_sessions(
             session.raw.remote
         );
 
-        layer.close_session(session.clone()).await;
+        layer.close_session(session).await;
     }
 }
