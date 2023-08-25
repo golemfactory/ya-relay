@@ -96,7 +96,7 @@ class Client(Node):
         LOGGER.debug(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
-            f"http://localhost:{port}/ping/{node_id}", headers=http_client_headers, timeout=timeout
+            f"http://localhost:{port}/ping/reliable/{node_id}", headers=http_client_headers, timeout=timeout
         )
         response = read_json_response(response)
         return response
@@ -121,7 +121,7 @@ class Client(Node):
         LOGGER.debug(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.post(
-            f"http://localhost:{port}/transfer-file/{node_id}", data, headers=http_client_headers, timeout=timeout
+            f"http://localhost:{port}/transfer-file/reliable/{node_id}", data, headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
