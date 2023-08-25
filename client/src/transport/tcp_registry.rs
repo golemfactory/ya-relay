@@ -218,10 +218,6 @@ impl TcpRegistry {
             .ok();
         };
 
-        log::debug!(
-            "********** Removing node [{node_id}] **********",
-            node_id = node_id
-        );
         let mut state = self.state.write().await;
         if let Some(remote_ip) = state.ips.remove(&node_id) {
             log::debug!("[VirtualTcp] Disconnected from node [{node_id}]");

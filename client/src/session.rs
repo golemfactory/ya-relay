@@ -371,15 +371,12 @@ impl SessionLayer {
             spawn_local_abortable(track_sessions_expiration(self.clone())),
         ]);
 
-        log::trace!(
-            "Keep alive config: auto_connect={} auto_connect_fail_fast={}",
-            self.config.auto_connect,
-            self.config.auto_connect_fail_fast
-        );
         if self.config.auto_connect && !self.config.auto_connect_fail_fast {
             handles.push(spawn_local_abortable(keep_alive_server_session(
                 self.clone(),
             )));
+        } else {
+            log::debug!("Keep alive server session not started");
         };
 
         {
@@ -1104,13 +1101,6 @@ impl SessionLayer {
         // SessionId should be valid, otherwise this is some unknown session
         // so we should be cautious, when processing it.
         let session_id = SessionId::try_from(session_id)?;
-
-        if session_id != SessionId::generate() {
-            log::debug!(
-                "Aborting disconnect of session {session_id} with {from} for debug purposes"
-            );
-            return Ok(());
-        }
 
         if let Ok(node) = match by {
             By::Slot(id) => match self.find_session(from).await {

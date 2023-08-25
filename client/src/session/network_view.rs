@@ -295,22 +295,6 @@ impl NodeView {
         Ok(new_state)
     }
 
-    // pub async fn transition_closed(&self) -> Result<(), TransitionError> {
-    //     // This can happen if multiple tasks will attempt to close session at the same time.
-    //     let target = self.state.read().await;
-    //     if target.state == Closed {
-    //         log::trace!("Ignoring state transition Closed => Closed");
-    //         return Ok(());
-    //     }
-    //     {
-    //         let mut target = self.state.write().await;
-    //         target.state.transition(SessionState::Closed)?;
-    //     }
-    //
-    //     self.notify_change(SessionState::Closed);
-    //     Ok(())
-    // }
-
     pub async fn restart_initialization(&self) -> Result<(), TransitionError> {
         {
             let mut target = self.state.write().await;
