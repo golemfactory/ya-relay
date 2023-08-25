@@ -124,7 +124,7 @@ class Client(Node):
             f"http://localhost:{port}/transfer-file/reliable/{node_id}",
             data,
             headers=http_client_headers,
-            timeout=timeout
+            timeout=timeout,
         )
         return read_json_response(response)
 
