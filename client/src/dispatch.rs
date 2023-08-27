@@ -38,7 +38,10 @@ where
         // can find dispatcher from temporary session that is being initialized at this moment.
         let session = handler.session(from).await;
         if session.is_some() {
-            log::trace!("[dispatch]: Handler session: {} from {from}", session.clone().unwrap().raw.id);
+            log::trace!(
+                "[dispatch]: Handler session: {} from {from}",
+                session.clone().unwrap().raw.id
+            );
         } else {
             log::trace!("[dispatch]: Handler session: None from {from}");
         }
@@ -51,14 +54,21 @@ where
 
         if session.is_some() {
             let s = session.clone().unwrap();
-            log::trace!("[dispatch] session: {}, packet.session_id: {}, from: {from}", s.raw.id, hex::encode(packet.session_id()));
+            log::trace!(
+                "[dispatch] session: {}, packet.session_id: {}, from: {from}",
+                s.raw.id,
+                hex::encode(packet.session_id())
+            );
 
             if s.raw.id.to_vec() != packet.session_id() {
                 log::warn!("[dispatch]: ignoring packet with session id mismatch - current session doesn't match packet session: {} != {}", s.raw.id, hex::encode(packet.session_id()));
                 continue;
             }
         } else {
-            log::trace!("[dispatch] session: None, packet.session.id: {}, from: {from}", hex::encode(packet.session_id()));
+            log::trace!(
+                "[dispatch] session: None, packet.session.id: {}, from: {from}",
+                hex::encode(packet.session_id())
+            );
         }
 
         if let Some(ref dispatcher) = dispatcher {

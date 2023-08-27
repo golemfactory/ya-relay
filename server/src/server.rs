@@ -60,11 +60,10 @@ impl Server {
 
         let session_id = PacketKind::session_id(&packet);
         if !session_id.is_empty() {
-            let id = SessionId::try_from(session_id.clone())
-                .map_err(|_| {
-                    log::trace!("Invalid session id: {:?}", session_id);
-                    Unauthorized::InvalidSessionId(session_id.clone())
-                })?;
+            let id = SessionId::try_from(session_id.clone()).map_err(|_| {
+                log::trace!("Invalid session id: {:?}", session_id);
+                Unauthorized::InvalidSessionId(session_id.clone())
+            })?;
             let server = self.state.read().await;
             let _ = server.nodes.update_seen(id);
 
@@ -77,7 +76,11 @@ impl Server {
                     return Ok(());
                 }
                 if server.starting_session.contains_key(&id) {
-                    log::trace!("[dispatch]: Session is starting: {:?}, starting sessions count {}", hex::encode(&session_id), server.starting_session.len());
+                    log::trace!(
+                        "[dispatch]: Session is starting: {:?}, starting sessions count {}",
+                        hex::encode(&session_id),
+                        server.starting_session.len()
+                    );
                     // return Ok(());
                 }
             }
@@ -100,11 +103,10 @@ impl Server {
                     };
                 }
 
-                let id = SessionId::try_from(session_id.clone())
-                    .map_err(|_| {
-                        log::trace!("Invalid session id: {:?}", session_id);
-                        Unauthorized::InvalidSessionId(session_id)
-                    })?;
+                let id = SessionId::try_from(session_id.clone()).map_err(|_| {
+                    log::trace!("Invalid session id: {:?}", session_id);
+                    Unauthorized::InvalidSessionId(session_id)
+                })?;
 
                 log::debug!("[dispatch] id = {:?}", id);
 
@@ -231,7 +233,7 @@ impl Server {
                 .nodes
                 .get_by_session(session_id)
                 .ok_or(Unauthorized::SessionNotFound(session_id))
-                .map_err(|e|{
+                .map_err(|e| {
                     log::trace!("SessionNotFound: {:?}", session_id);
                     e
                 })?;
@@ -341,7 +343,11 @@ impl Server {
         if packet.kind.is_none() {
             log::debug!("Control packet from: {}. Packet kind: None", from);
         } else {
-            log::debug!("Control packet from: {}. Packet: {:?}", from, packet.kind.clone().unwrap());
+            log::debug!(
+                "Control packet from: {}. Packet: {:?}",
+                from,
+                packet.kind.clone().unwrap()
+            );
         }
 
         if let proto::Control {
@@ -352,19 +358,28 @@ impl Server {
             match by {
                 By::SessionId(_id) => match server.nodes.get_by_session(session_id) {
                     None => {
-                        log::trace!("[control: Disconnected by SessionId]: Session not found: {:?}", session_id);
+                        log::trace!(
+                            "[control: Disconnected by SessionId]: Session not found: {:?}",
+                            session_id
+                        );
                         return Err(Unauthorized::SessionNotFound(session_id).into());
-                    },
+                    }
                     Some(node) => {
-                        log::trace!("[control: Disconnected by SessionId]: {:?}", hex::encode(session_id.to_vec()));
-                        log::trace!("[control: Disconnected by SessionId]: node session: {}", node.session);
-                        if let Ok(session_id) = SessionId::try_from(_id) {
-                            if session_id != session_id {
+                        log::trace!(
+                            "[control: Disconnected by SessionId]: {:?}",
+                            hex::encode(session_id.to_vec())
+                        );
+                        log::trace!(
+                            "[control: Disconnected by SessionId]: node session: {}",
+                            node.session
+                        );
+                        if let Ok(_id) = SessionId::try_from(_id) {
+                            if _id != session_id {
                                 log::warn!(
                                     "Received Disconnected message with invalid SessionId. \
                                      Expected: {}, received: {}",
                                     session_id,
-                                    session_id
+                                    _id
                                 );
                             }
                         }
@@ -550,7 +565,7 @@ impl Server {
             None => {
                 log::trace!("[reverse_request]: Session not found: {:?}", session_id);
                 return Err(Unauthorized::SessionNotFound(session_id).into());
-            },
+            }
             Some(node_id) => node_id.info,
         };
         if source_node_info.endpoints.is_empty() {
@@ -717,7 +732,7 @@ impl Server {
                 None => {
                     log::trace!("[establish_session]: Session not found: {:?}", id);
                     return Err(Unauthorized::SessionNotFound(id).into());
-                },
+                }
             }
         };
 
