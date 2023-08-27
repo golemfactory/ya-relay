@@ -563,8 +563,11 @@ impl SessionLayer {
             }
             let entry = myself.registry.guard(session.owner.default_id, &[]).await;
 
+            log::trace!("[Closing 1/3]: Transitioning session to `Closing` state.");
             entry.transition(SessionState::Closing).await?;
+            log::trace!("[Closing 2/3]: Unregistering session.");
             myself.unregister_session(session).await;
+            log::trace!("[Closing 3/3]: Transitioning session to `Closed` state.");
             entry.transition(SessionState::Closed).await?;
             Ok(())
         })
@@ -758,7 +761,7 @@ impl SessionLayer {
                 }
                 Err(e) => {
                     log::warn!("Failed to establish direct p2p session with [{node_id}]. {e}");
-                    permit.registry.restart_initialization().await?;
+                    permit.registry.transition(SessionState::RestartConnect).await?;
                 }
             }
         } else {
@@ -777,7 +780,7 @@ impl SessionLayer {
                     log::warn!(
                         "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
                     );
-                    permit.registry.restart_initialization().await?;
+                    permit.registry.transition(SessionState::RestartConnect).await?;
                 }
             }
         } else {

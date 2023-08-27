@@ -43,11 +43,13 @@ where
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Request(request) => {
+                    log::debug!("on request response: {:?}", request);
                     handler
                         .on_request(session_id, request, from)
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Response(response) => {
+                    log::debug!("Dispatch response: {:?}", response);
                     match response.kind {
                         Some(kind) => match dispatcher {
                             Some(dispatcher) => dispatcher.dispatch_response(
@@ -169,6 +171,8 @@ impl Dispatcher {
                     return;
                 }
 
+                log::trace!("Running error handler for code: {}", code);
+
                 latch.store(true, SeqCst);
                 handler_fn().await;
                 latch.store(false, SeqCst);
@@ -193,6 +197,7 @@ impl Dispatcher {
         let (tx, rx) = oneshot::channel();
 
         let request_id_ = request_id;
+        log::trace!("Insert response for: {:?}", request_id_);
         if self.responses.borrow_mut().insert(request_id, tx).is_some() {
             log::warn!("Duplicate dispatch request id: {}", request_id);
         }
@@ -219,6 +224,7 @@ impl Dispatcher {
             })
         }
         .then(move |result| async move {
+            log::trace!("Removing response for: {:?}", request_id_);
             this.responses.borrow_mut().remove(&request_id_);
             result
         })
@@ -234,6 +240,7 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
+        log::debug!("Trying to remove response for {request_id}");
         match { self.responses.borrow_mut().remove(&request_id) } {
             Some(sender) => {
                 if sender
