@@ -123,7 +123,6 @@ impl<'a> Stack<'a> {
                         SocketEndpoint::Ip(ep) => match ep.addr {
                             IpAddress::Ipv4(_) => IpVersion::Ipv4,
                             IpAddress::Ipv6(_) => IpVersion::Ipv6,
-                            _ => return Err(Error::Other(format!("Invalid address: {}", ep.addr))),
                         },
                         _ => return Err(Error::Other("Expected an IP endpoint".to_string())),
                     }

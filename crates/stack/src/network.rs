@@ -323,8 +323,8 @@ impl Network {
         self.stack.remove(meta, handle);
         self.handles.borrow_mut().remove(&handle);
         self.sender.remove(&handle);
-        
-        let ip_endpoint = ya_smoltcp::wire::IpListenEndpoint::from(meta.remote.clone());
+
+        let ip_endpoint = ya_smoltcp::wire::IpListenEndpoint::from(meta.remote);
         if !ip_endpoint.is_specified() {
             return;
         }
@@ -361,9 +361,9 @@ impl Network {
     /// Polls the inner network stack
     pub fn poll(&self) {
         loop {
-            let finished =  match (self.stack.poll(), self.is_tun) {
+            let finished = match (self.stack.poll(), self.is_tun) {
                 (true, _) | (_, false) => self.process_ingress() && self.process_egress(),
-                (false, _) => true
+                (false, _) => true,
             };
             if finished {
                 break;
@@ -763,7 +763,6 @@ mod tests {
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
             IpAddress::Ipv6(ipv6) => Route::new_ipv6_gateway(ipv6),
-            _ => panic!("unspecified address"),
         };
 
         let mut iface = match medium {

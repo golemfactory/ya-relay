@@ -1,5 +1,4 @@
 use derive_more::Display;
-use ya_smoltcp::socket::icmp::Endpoint;
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::future::Future;
@@ -7,15 +6,14 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
-
 use ya_smoltcp::iface::SocketHandle;
 use ya_smoltcp::socket::*;
-use ya_smoltcp::wire::{IpEndpoint, Ipv4Address, IpListenEndpoint};
+use ya_smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
 use crate::patch_smoltcp::GetSocketSafe;
 use crate::socket::{SocketDesc, SocketEndpoint};
-use crate::{CaptureDevice, Error, Protocol, Result};
+use crate::{Error, Protocol, Result};
 
 use ya_relay_util::Payload;
 
@@ -97,8 +95,14 @@ impl ConnectionMeta {
     pub fn unspecified(protocol: Protocol) -> Self {
         Self {
             protocol,
-            local: IpEndpoint { addr: ya_smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(), port: 0},
-            remote: IpEndpoint { addr: ya_smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(), port: 0},
+            local: IpEndpoint {
+                addr: ya_smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
+                port: 0,
+            },
+            remote: IpEndpoint {
+                addr: ya_smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
+                port: 0,
+            },
         }
     }
 
@@ -271,7 +275,6 @@ impl<'a> Future for Send<'a> {
                             }
                         }
                         Err(ya_smoltcp::socket::tcp::SendError::InvalidState) => Poll::Pending,
-                        Err(err) => Poll::Ready(Err(Error::Other(err.to_string()))),
                     };
                 }
                 Protocol::Udp => {
@@ -280,7 +283,8 @@ impl<'a> Future for Send<'a> {
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(self.data.as_ref(), conn.meta.remote)
+                    socket
+                        .send_slice(self.data.as_ref(), conn.meta.remote)
                         .map_err(|err| err.to_string())
                 }
                 Protocol::Icmp | Protocol::Ipv6Icmp => {
@@ -289,7 +293,8 @@ impl<'a> Future for Send<'a> {
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(self.data.as_ref(), conn.meta.remote.addr)
+                    socket
+                        .send_slice(self.data.as_ref(), conn.meta.remote.addr)
                         .map_err(|err| err.to_string())
                 }
                 _ => {
@@ -298,8 +303,9 @@ impl<'a> Future for Send<'a> {
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(self.data.as_ref())
-                    .map_err(|err| err.to_string())
+                    socket
+                        .send_slice(self.data.as_ref())
+                        .map_err(|err| err.to_string())
                 }
             }
         };

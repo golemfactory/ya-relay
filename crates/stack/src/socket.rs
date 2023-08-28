@@ -132,7 +132,7 @@ impl SocketEndpoint {
     pub fn is_specified(&self) -> bool {
         match self {
             Self::Ip(ip) => {
-                let ip: IpListenEndpoint = IpListenEndpoint::from(ip.clone());
+                let ip: IpListenEndpoint = IpListenEndpoint::from(*ip);
                 ip.is_specified()
             }
             Self::Icmp(icmp) => icmp.is_specified(),
@@ -232,7 +232,7 @@ pub enum RecvError {
     #[error("Dhcpv4 error")]
     Dhcpv4,
     #[error("DNS error")]
-    Dns
+    Dns,
 }
 
 /// Common interface for various socket types
@@ -318,10 +318,7 @@ impl<'a> SocketExt for Socket<'a> {
         }
     }
 
-    fn recv(
-        &mut self,
-    ) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, RecvError>
-    {
+    fn recv(&mut self) -> std::result::Result<Option<(IpEndpoint, Vec<u8>)>, RecvError> {
         let result = match self {
             Self::Tcp(tcp) => tcp
                 .recv(|bytes| (bytes.len(), bytes.to_vec()))
@@ -338,11 +335,13 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Raw(raw) => raw
                 .recv()
                 .map(|bytes| {
-                let addr =
-                    ya_smoltcp::wire::IpAddress::Ipv4(ya_smoltcp::wire::Ipv4Address::UNSPECIFIED);
-                let port = 0; //TODO what value should be used?
-                (Some(IpEndpoint::new(addr, port)), bytes.to_vec())
-                }).map_err(RecvError::from),
+                    let addr = ya_smoltcp::wire::IpAddress::Ipv4(
+                        ya_smoltcp::wire::Ipv4Address::UNSPECIFIED,
+                    );
+                    let port = 0; //TODO what value should be used?
+                    (Some(IpEndpoint::new(addr, port)), bytes.to_vec())
+                })
+                .map_err(RecvError::from),
             Self::Dhcpv4(_) => Err(RecvError::Dhcpv4),
             Self::Dns(_) => Err(RecvError::Dns), //TODO: `socket-(m)dns` disabled. Why?
         };

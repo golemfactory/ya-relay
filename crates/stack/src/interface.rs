@@ -1,17 +1,11 @@
-use std::cell::RefCell;
-use std::collections::BTreeMap;
+use managed::ManagedSlice;
 use std::io::Write;
-use std::rc::Rc;
-
-use managed::{ManagedMap, ManagedSlice};
-use ya_smoltcp::iface::{Config, Interface, Route, Routes, SocketHandle, SocketSet};
-use ya_smoltcp::phy::TunTapInterface;
+use ya_smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
 use ya_smoltcp::socket::AnySocket;
 use ya_smoltcp::time::Instant;
 use ya_smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
 use crate::device::CaptureDevice;
-use crate::patch_smoltcp::{GetSocketError, GetSocketSafe};
 
 pub struct CaptureInterface<'a> {
     iface: Interface,
@@ -44,9 +38,7 @@ impl<'a> CaptureInterface<'a> {
         &mut self.device
     }
 
-    pub fn sockets(
-        &self,
-    ) -> impl Iterator<Item = (SocketHandle, &ya_smoltcp::socket::Socket<'a>)> {
+    pub fn sockets(&self) -> impl Iterator<Item = (SocketHandle, &ya_smoltcp::socket::Socket<'a>)> {
         self.sockets.iter()
     }
 
@@ -101,14 +93,14 @@ pub fn tun_iface<'a>(mtu: usize) -> CaptureInterface<'a> {
 }
 
 /// Creates a pcap TAP (Ethernet) network interface
-pub fn pcap_tap_iface<'a, W>(mac: HardwareAddress, mtu: usize, pcap: W) -> CaptureInterface<'a>
+pub fn pcap_tap_iface<'a, W>(mac: HardwareAddress, mtu: usize, _pcap: W) -> CaptureInterface<'a>
 where
     W: Write + 'static,
 {
     let mut device = CaptureDevice::tap(mtu);
     let config = Config::new(mac);
     let now = Instant::now();
-    let  mut iface = Interface::new(config, &mut device, now);
+    let mut iface = Interface::new(config, &mut device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
     iface.set_hardware_addr(mac);
     CaptureInterface::new(iface, device, sockets)
@@ -122,7 +114,7 @@ where
     let mut device = CaptureDevice::pcap_tun(mtu, pcap);
     let config = Config::new(HardwareAddress::Ip);
     let now = Instant::now();
-    let  mut iface = Interface::new(config, &mut device, now);
+    let iface = Interface::new(config, &mut device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
     CaptureInterface::new(iface, device, sockets)
     // iface_builder(CaptureDevice::pcap_tun(mtu, pcap)).finalize()
@@ -132,7 +124,9 @@ where
 pub fn add_iface_address(iface: &mut CaptureInterface, node_ip: IpCidr) {
     iface.inner_mut().update_ip_addrs(|addrs| {
         if !addrs.iter().any(|ip| *ip == node_ip) {
-            addrs.push(node_ip);
+            if let Err(err) = addrs.push(node_ip) {
+                log::error!("Failed to assign new interface IP address: {err}");
+            }
         }
     });
 }
@@ -142,11 +136,15 @@ pub fn add_iface_route(iface: &mut CaptureInterface, net_ip: IpCidr, route: Rout
     iface.inner_mut().routes_mut().update(|routes| {
         for (i, r) in routes.iter().enumerate() {
             if r.cidr == net_ip {
-                routes.insert(i, route);
+                if let Err(route) = routes.insert(i, route) {
+                    log::error!("Failed to replace route at index {i}. Route: {route:?}");
+                }
                 return;
             }
         }
-        routes.push(route);
+        if let Err(route) = routes.push(route) {
+            log::error!("Failed to add new route: {route:?}");
+        }
     });
 }
 
@@ -168,6 +166,5 @@ pub fn ip_to_mac(ip: IpAddress) -> HardwareAddress {
     match ip {
         IpAddress::Ipv4(ip) => to_mac(ip.as_bytes()),
         IpAddress::Ipv6(ip) => to_mac(ip.as_bytes()),
-        _ => to_mac(&rand::random::<[u8; 6]>()),
     }
 }
