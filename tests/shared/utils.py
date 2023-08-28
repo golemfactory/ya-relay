@@ -117,7 +117,9 @@ class Client(Node):
         )
         return read_json_response(response)
 
-    def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int | None = None, transport: str = "reliable"):
+    def transfer(
+        self, node_id: str, data: bytes, port: int = 8081, timeout: int | None = None, transport: str = "reliable"
+    ):
         LOGGER.debug(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.post(
