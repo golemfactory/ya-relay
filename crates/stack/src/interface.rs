@@ -76,7 +76,7 @@ impl<'a> CaptureInterface<'a> {
 pub fn tap_iface<'a>(mac: HardwareAddress, mtu: usize) -> CaptureInterface<'a> {
     let mut device = CaptureDevice::tap(mtu);
     let config = Config::new(mac);
-    let now = Instant::now(); //TODO or ZERO?
+    let now = Instant::ZERO;
     let iface = Interface::new(config, &mut device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
     CaptureInterface::new(iface, device, sockets)
@@ -86,20 +86,20 @@ pub fn tap_iface<'a>(mac: HardwareAddress, mtu: usize) -> CaptureInterface<'a> {
 pub fn tun_iface<'a>(mtu: usize) -> CaptureInterface<'a> {
     let mut device = CaptureDevice::tun(mtu);
     let config = Config::new(HardwareAddress::Ip);
-    let now = Instant::now(); //TODO or ZERO?
+    let now = Instant::ZERO;
     let iface = Interface::new(config, &mut device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
     CaptureInterface::new(iface, device, sockets)
 }
 
 /// Creates a pcap TAP (Ethernet) network interface
-pub fn pcap_tap_iface<'a, W>(mac: HardwareAddress, mtu: usize, _pcap: W) -> CaptureInterface<'a>
+pub fn pcap_tap_iface<'a, W>(mac: HardwareAddress, mtu: usize, pcap: W) -> CaptureInterface<'a>
 where
     W: Write + 'static,
 {
-    let mut device = CaptureDevice::tap(mtu);
+    let mut device = CaptureDevice::pcap_tap(mtu, pcap);
     let config = Config::new(mac);
-    let now = Instant::now();
+    let now = Instant::ZERO;
     let mut iface = Interface::new(config, &mut device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
     iface.set_hardware_addr(mac);
@@ -113,11 +113,10 @@ where
 {
     let mut device = CaptureDevice::pcap_tun(mtu, pcap);
     let config = Config::new(HardwareAddress::Ip);
-    let now = Instant::now();
+    let now = Instant::ZERO;
     let iface = Interface::new(config, &mut device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
     CaptureInterface::new(iface, device, sockets)
-    // iface_builder(CaptureDevice::pcap_tun(mtu, pcap)).finalize()
 }
 
 /// Assigns a new interface IP address

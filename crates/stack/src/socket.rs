@@ -342,7 +342,7 @@ impl<'a> SocketExt for Socket<'a> {
                 })
                 .map_err(RecvError::from),
             Self::Dhcpv4(_) => Err(RecvError::Dhcpv4),
-            Self::Dns(_) => Err(RecvError::Dns), //TODO: `socket-(m)dns` disabled. Why?
+            Self::Dns(_) => Err(RecvError::Dns),
         };
 
         match result {

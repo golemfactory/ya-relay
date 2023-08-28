@@ -328,14 +328,8 @@ async fn handle_forward_message(
                 other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
             }
         }
-        ya_relay_client::model::TransportType::Unreliable => {
-            log::debug!("Wut? unreliable");
-            Ok(())
-        }
-        ya_relay_client::model::TransportType::Transfer => {
-            log::debug!("Wut? reliable");
-            Ok(())
-        }
+        ya_relay_client::model::TransportType::Unreliable => Ok(()),
+        ya_relay_client::model::TransportType::Transfer => Ok(()),
     }
 }
 
