@@ -187,7 +187,7 @@ async fn info(client_sender: web::Data<ClientWrap>) -> impl Responder {
     Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
-#[post("/transfer-file/{node_id}")]
+#[post("/transfer-file/{transport}/{node_id}")]
 async fn transfer_file(
     path: web::Path<(TransportType, NodeId)>,
     client_sender: web::Data<ClientWrap>,
