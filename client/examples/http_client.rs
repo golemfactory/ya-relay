@@ -133,8 +133,7 @@ async fn ping(
     client_sender: web::Data<ClientWrap>,
     messages: web::Data<Messages>,
 ) -> actix_web::Result<HttpResponse> {
-    let node_id = path.1;
-    let transport = path.0;
+    let (transport, node_id) = path.into_inner();
     log::trace!("[ping]: Pinging {}", node_id);
     let msg = client_sender
         .run_async(move |client: Client| async move {
@@ -195,8 +194,7 @@ async fn transfer_file(
     messages: web::Data<Messages>,
     body: web::Bytes,
 ) -> actix_web::Result<HttpResponse> {
-    let node_id = path.1;
-    let transport = path.0;
+    let (transport, node_id) = path.into_inner();
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let data: Vec<u8> = body.into();
