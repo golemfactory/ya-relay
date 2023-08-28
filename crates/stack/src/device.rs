@@ -4,6 +4,7 @@ use std::rc::Rc;
 
 use ya_smoltcp::phy;
 use ya_smoltcp::time;
+use ya_smoltcp::time::Instant;
 
 use crate::metrics::ChannelMetrics;
 
@@ -100,11 +101,18 @@ impl CaptureDevice {
     }
 }
 
-impl<'a> phy::Device<'a> for CaptureDevice {
-    type RxToken = RxToken<'a>;
-    type TxToken = TxToken<'a>;
+impl phy::Device for CaptureDevice {
+    type RxToken<'a> = RxToken<'a>
+    where
+        Self: 'a;
+    type TxToken<'a> = TxToken<'a>
+    where
+        Self: 'a;
 
-    fn receive(&'a mut self) -> Option<(Self::RxToken, Self::TxToken)> {
+    fn receive(
+        &mut self,
+        timestamp: ya_smoltcp::time::Instant,
+    ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let item = self.rx_queue.pop_front();
         item.map(move |buffer| {
             let rx = RxToken {
@@ -121,7 +129,7 @@ impl<'a> phy::Device<'a> for CaptureDevice {
         })
     }
 
-    fn transmit(&'a mut self) -> Option<Self::TxToken> {
+    fn transmit(&mut self, timestamp: ya_smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
         Some(TxToken {
             queue: &mut self.tx_queue,
             pcap: &self.pcap,
@@ -145,9 +153,9 @@ pub struct RxToken<'a> {
 }
 
 impl<'a> phy::RxToken for RxToken<'a> {
-    fn consume<R, F>(mut self, timestamp: time::Instant, f: F) -> ya_smoltcp::Result<R>
+    fn consume<R, F>(mut self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> ya_smoltcp::Result<R>,
+        F: FnOnce(&mut [u8]) -> R,
     {
         let result = f(self.buffer.as_mut());
 
@@ -157,7 +165,8 @@ impl<'a> phy::RxToken for RxToken<'a> {
         }
 
         if let Some(pcap) = self.pcap {
-            pcap.borrow_mut().packet(timestamp, self.buffer.as_ref());
+            //TODO what timestamp should be used?
+            pcap.borrow_mut().packet(Instant::ZERO, self.buffer.as_ref());
         }
 
         result
@@ -172,9 +181,9 @@ pub struct TxToken<'a> {
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
-    fn consume<R, F>(self, timestamp: time::Instant, len: usize, f: F) -> ya_smoltcp::Result<R>
+    fn consume<R, F>(self, len: usize, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> ya_smoltcp::Result<R>,
+        F: FnOnce(&mut [u8]) -> R,
     {
         let mut buffer = vec![0; len];
         buffer.resize(len, 0);
@@ -186,6 +195,7 @@ impl<'a> phy::TxToken for TxToken<'a> {
         }
 
         if let Some(pcap) = self.pcap {
+            let timestamp = Instant::now();
             pcap.borrow_mut().packet(timestamp, buffer.as_ref());
         }
 

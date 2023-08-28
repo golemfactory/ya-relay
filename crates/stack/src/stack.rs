@@ -39,13 +39,13 @@ impl<'a> Stack<'a> {
     pub fn address(&self) -> Result<IpCidr> {
         {
             let iface = self.iface.borrow();
-            iface.ip_addrs().iter().next().cloned()
+            iface.inner().ip_addrs().iter().next().cloned()
         }
         .ok_or(Error::NetEmpty)
     }
 
     pub fn addresses(&self) -> Vec<IpCidr> {
-        self.iface.borrow().ip_addrs().to_vec()
+        self.iface.borrow().inner().ip_addrs().to_vec()
     }
 
     pub fn add_address(&self, address: IpCidr) {
@@ -182,7 +182,7 @@ impl<'a> Stack<'a> {
         let local: IpEndpoint = (ip, port).into();
 
         match {
-            let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
+            let (socket, ctx) = iface.get_socket_and_context::<tcp::Socket>(handle);
             socket.connect(ctx, remote, local).map(|_| socket)
         } {
             Ok(socket) => socket.set_defaults(),
@@ -206,7 +206,7 @@ impl<'a> Stack<'a> {
 
     pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
         let mut iface = self.iface.borrow_mut();
-        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+        if let Ok(sock) = iface.get_socket_safe::<tcp::Socket>(handle) {
             log::trace!("Disconnecting. Socket handle: {handle}.");
             sock.close();
         }
@@ -215,7 +215,7 @@ impl<'a> Stack<'a> {
 
     pub(crate) fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
-        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+        if let Ok(sock) = iface.get_socket_safe::<tcp::Socket>(handle) {
             log::trace!("Aborting. Socket handle: {handle}.");
             sock.abort();
         }
@@ -255,15 +255,9 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
-    pub fn poll(&self) -> Result<bool> {
-        match {
-            let mut iface = self.iface.borrow_mut();
-            iface.poll(Instant::now())
-        } {
-            Err(ya_smoltcp::Error::Unrecognized) => self.poll(),
-            Err(err) => Err(Error::Other(err.to_string())),
-            Ok(val) => Ok(val),
-        }
+    pub fn poll(&self) -> bool {
+        let mut iface = self.iface.borrow_mut();
+        iface.poll(Instant::now())
     }
 }
 

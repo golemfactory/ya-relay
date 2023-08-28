@@ -1,6 +1,7 @@
 use ya_smoltcp::iface::{Interface, SocketHandle};
-use ya_smoltcp::phy::Device;
 use ya_smoltcp::socket::AnySocket;
+
+use crate::interface::CaptureInterface;
 
 #[derive(thiserror::Error, Clone, Debug)]
 pub enum GetSocketError {
@@ -17,10 +18,7 @@ pub trait GetSocketSafe<'a> {
     ) -> Result<&mut T, GetSocketError>;
 }
 
-impl<'a, DeviceT> GetSocketSafe<'a> for Interface<'a, DeviceT>
-where
-    DeviceT: for<'d> Device<'d>,
-{
+impl<'a> GetSocketSafe<'a> for CaptureInterface<'a> {
     fn get_socket_safe<T: AnySocket<'a>>(
         &mut self,
         ref_handle: SocketHandle,
@@ -30,6 +28,6 @@ where
             .sockets_mut()
             .find(|(handle, _)| handle == &ref_handle)
             .ok_or(GetSocketError::NotFound)?;
-        T::downcast(socket).ok_or(GetSocketError::WrongType)
+        T::downcast_mut(socket).ok_or(GetSocketError::WrongType)
     }
 }

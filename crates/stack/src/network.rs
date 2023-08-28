@@ -323,8 +323,9 @@ impl Network {
         self.stack.remove(meta, handle);
         self.handles.borrow_mut().remove(&handle);
         self.sender.remove(&handle);
-
-        if !meta.remote.is_specified() {
+        
+        let ip_endpoint = ya_smoltcp::wire::IpListenEndpoint::from(meta.remote.clone());
+        if !ip_endpoint.is_specified() {
             return;
         }
         self.connections.borrow_mut().remove(meta);
@@ -360,15 +361,10 @@ impl Network {
     /// Polls the inner network stack
     pub fn poll(&self) {
         loop {
-            let finished = match (self.stack.poll(), self.is_tun) {
-                (Ok(true), _) | (Ok(_), false) => self.process_ingress() && self.process_egress(),
-                (Ok(false), _) => true,
-                (Err(err), _) => {
-                    log::warn!("{}: stack poll error: {}", *self.name, err);
-                    false
-                }
+            let finished =  match (self.stack.poll(), self.is_tun) {
+                (true, _) | (_, false) => self.process_ingress() && self.process_egress(),
+                (false, _) => true
             };
-
             if finished {
                 break;
             }
@@ -661,7 +657,6 @@ impl StackSender {
                 None => self.spawn(conn.handle),
             }
         };
-
         async move { sender.send((data, conn)).map_err(Error::from).await }
     }
 

@@ -1,38 +1,103 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::rc::Rc;
 
 use managed::{ManagedMap, ManagedSlice};
-use ya_smoltcp::iface::{Interface, InterfaceBuilder, NeighborCache, Route, Routes};
+use ya_smoltcp::iface::{Config, Interface, Route, Routes, SocketHandle, SocketSet};
+use ya_smoltcp::phy::TunTapInterface;
+use ya_smoltcp::socket::AnySocket;
+use ya_smoltcp::time::Instant;
 use ya_smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
 use crate::device::CaptureDevice;
+use crate::patch_smoltcp::{GetSocketError, GetSocketSafe};
 
-pub type CaptureInterface<'a> = Interface<'a, CaptureDevice>;
+pub struct CaptureInterface<'a> {
+    iface: Interface,
+    device: CaptureDevice,
+    sockets: SocketSet<'a>,
+}
 
-/// Network interface builder
-pub fn iface_builder<'a>(device: CaptureDevice) -> InterfaceBuilder<'a, CaptureDevice> {
-    let sockets = Vec::new();
-    let routes = Routes::new(BTreeMap::new());
-    let addrs = Vec::new();
+impl<'a> CaptureInterface<'a> {
+    pub fn new(iface: Interface, device: CaptureDevice, sockets: SocketSet<'a>) -> Self {
+        Self {
+            iface,
+            device,
+            sockets,
+        }
+    }
 
-    InterfaceBuilder::new(device, sockets)
-        .ip_addrs(addrs)
-        .routes(routes)
+    pub fn inner(&self) -> &Interface {
+        &self.iface
+    }
+
+    pub fn inner_mut(&mut self) -> &mut Interface {
+        &mut self.iface
+    }
+
+    pub fn device(&self) -> &CaptureDevice {
+        &self.device
+    }
+
+    pub fn device_mut(&mut self) -> &mut CaptureDevice {
+        &mut self.device
+    }
+
+    pub fn sockets(
+        &self,
+    ) -> impl Iterator<Item = (SocketHandle, &ya_smoltcp::socket::Socket<'a>)> {
+        self.sockets.iter()
+    }
+
+    pub fn sockets_mut(
+        &mut self,
+    ) -> impl Iterator<Item = (SocketHandle, &mut ya_smoltcp::socket::Socket<'a>)> {
+        self.sockets.iter_mut()
+    }
+
+    pub fn add_socket<T: AnySocket<'a>>(&mut self, socket: T) -> SocketHandle {
+        self.sockets.add(socket)
+    }
+
+    pub fn get_socket_and_context<T: AnySocket<'a>>(
+        &mut self,
+        handle: SocketHandle,
+    ) -> (&mut T, &mut ya_smoltcp::iface::Context) {
+        let socket = self.sockets.get_mut(handle);
+        let ctx = self.iface.context();
+        (socket, ctx)
+    }
+
+    pub fn remove_socket(&mut self, handle: SocketHandle) -> ya_smoltcp::socket::Socket {
+        self.sockets.remove(handle)
+    }
+
+    pub fn poll(&mut self, timestamp: Instant) -> bool {
+        let sockets = &mut self.sockets;
+        let device = &mut self.device;
+        self.iface.poll(timestamp, device, sockets)
+    }
 }
 
 /// Creates a default TAP (Ethernet) network interface
 pub fn tap_iface<'a>(mac: HardwareAddress, mtu: usize) -> CaptureInterface<'a> {
-    let neighbor_cache = NeighborCache::new(BTreeMap::new());
-
-    iface_builder(CaptureDevice::tap(mtu))
-        .neighbor_cache(neighbor_cache)
-        .hardware_addr(mac)
-        .finalize()
+    let mut device = CaptureDevice::tap(mtu);
+    let config = Config::new(mac);
+    let now = Instant::now(); //TODO or ZERO?
+    let iface = Interface::new(config, &mut device, now);
+    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    CaptureInterface::new(iface, device, sockets)
 }
 
 /// Creates a default TUN (IP) network interface
 pub fn tun_iface<'a>(mtu: usize) -> CaptureInterface<'a> {
-    iface_builder(CaptureDevice::tun(mtu)).finalize()
+    let mut device = CaptureDevice::tun(mtu);
+    let config = Config::new(HardwareAddress::Ip);
+    let now = Instant::now(); //TODO or ZERO?
+    let iface = Interface::new(config, &mut device, now);
+    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    CaptureInterface::new(iface, device, sockets)
 }
 
 /// Creates a pcap TAP (Ethernet) network interface
@@ -40,12 +105,13 @@ pub fn pcap_tap_iface<'a, W>(mac: HardwareAddress, mtu: usize, pcap: W) -> Captu
 where
     W: Write + 'static,
 {
-    let neighbor_cache = NeighborCache::new(BTreeMap::new());
-
-    iface_builder(CaptureDevice::pcap_tap(mtu, pcap))
-        .neighbor_cache(neighbor_cache)
-        .hardware_addr(mac)
-        .finalize()
+    let mut device = CaptureDevice::tap(mtu);
+    let config = Config::new(mac);
+    let now = Instant::now();
+    let  mut iface = Interface::new(config, &mut device, now);
+    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    iface.set_hardware_addr(mac);
+    CaptureInterface::new(iface, device, sockets)
 }
 
 /// Creates a pcap TUN (IP) network interface
@@ -53,38 +119,34 @@ pub fn pcap_tun_iface<'a, W>(mtu: usize, pcap: W) -> CaptureInterface<'a>
 where
     W: Write + 'static,
 {
-    iface_builder(CaptureDevice::pcap_tun(mtu, pcap)).finalize()
+    let mut device = CaptureDevice::pcap_tun(mtu, pcap);
+    let config = Config::new(HardwareAddress::Ip);
+    let now = Instant::now();
+    let  mut iface = Interface::new(config, &mut device, now);
+    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    CaptureInterface::new(iface, device, sockets)
+    // iface_builder(CaptureDevice::pcap_tun(mtu, pcap)).finalize()
 }
 
 /// Assigns a new interface IP address
 pub fn add_iface_address(iface: &mut CaptureInterface, node_ip: IpCidr) {
-    iface.update_ip_addrs(|addrs| match addrs {
-        ManagedSlice::Owned(ref mut vec) => {
-            if !vec.iter().any(|ip| *ip == node_ip) {
-                vec.push(node_ip);
-            }
-        }
-        ManagedSlice::Borrowed(ref slice) => {
-            let mut vec = slice.to_vec();
-            if !vec.iter().any(|ip| *ip == node_ip) {
-                vec.push(node_ip);
-            }
-            *addrs = vec.into();
+    iface.inner_mut().update_ip_addrs(|addrs| {
+        if !addrs.iter().any(|ip| *ip == node_ip) {
+            addrs.push(node_ip);
         }
     });
 }
 
 /// Adds a new IP route
 pub fn add_iface_route(iface: &mut CaptureInterface, net_ip: IpCidr, route: Route) {
-    iface.routes_mut().update(|routes| match routes {
-        ManagedMap::Owned(ref mut map) => {
-            map.insert(net_ip, route);
+    iface.inner_mut().routes_mut().update(|routes| {
+        for (i, r) in routes.iter().enumerate() {
+            if r.cidr == net_ip {
+                routes.insert(i, route);
+                return;
+            }
         }
-        ManagedMap::Borrowed(ref map) => {
-            let mut map: BTreeMap<IpCidr, Route> = map.iter().filter_map(|e| *e).collect();
-            map.insert(net_ip, route);
-            *routes = map.into();
-        }
+        routes.push(route);
     });
 }
 
