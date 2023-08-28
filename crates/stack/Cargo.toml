@@ -22,6 +22,8 @@ smoltcp = { version = "0.10", features = [
     "proto-igmp",
     "proto-dhcpv4",
     "proto-ipv6",
+    "proto-ipv4-fragmentation",
+    "proto-sixlowpan-fragmentation",
     "proto-sixlowpan",
     "socket-raw",
     "socket-icmp",
