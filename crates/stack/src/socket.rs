@@ -335,9 +335,9 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Raw(raw) => raw
                 .recv()
                 .map(|bytes| {
-                    let addr =
-                        smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::UNSPECIFIED);
-                    let port = 0; //TODO what value should be used?
+                    // In 0.8.1 default address was unspecified https://github.com/smoltcp-rs/smoltcp/blob/v0.8.1/src/wire/ip.rs#L246
+                    let addr = smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address();
+                    let port = 0; // In 0.8.1 port 0 was a default https://github.com/smoltcp-rs/smoltcp/blob/v0.8.x/src/wire/ip.rs#L411
                     (Some(IpEndpoint::new(addr, port)), bytes.to_vec())
                 })
                 .map_err(RecvError::from),
