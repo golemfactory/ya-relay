@@ -6,9 +6,9 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
-use ya_smoltcp::iface::SocketHandle;
-use ya_smoltcp::socket::*;
-use ya_smoltcp::wire::IpEndpoint;
+use smoltcp::iface::SocketHandle;
+use smoltcp::socket::*;
+use smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
 use crate::patch_smoltcp::GetSocketSafe;
@@ -96,11 +96,11 @@ impl ConnectionMeta {
         Self {
             protocol,
             local: IpEndpoint {
-                addr: ya_smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
+                addr: smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
                 port: 0,
             },
             remote: IpEndpoint {
-                addr: ya_smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
+                addr: smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
                 port: 0,
             },
         }
@@ -274,7 +274,7 @@ impl<'a> Future for Send<'a> {
                                 Poll::Pending
                             }
                         }
-                        Err(ya_smoltcp::socket::tcp::SendError::InvalidState) => Poll::Pending,
+                        Err(smoltcp::socket::tcp::SendError::InvalidState) => Poll::Pending,
                     };
                 }
                 Protocol::Udp => {

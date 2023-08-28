@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ya_smoltcp::iface::{Route, SocketHandle};
-use ya_smoltcp::socket::*;
-use ya_smoltcp::time::Instant;
-use ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
+use smoltcp::iface::{Route, SocketHandle};
+use smoltcp::socket::*;
+use smoltcp::time::Instant;
+use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::connection::{Connect, Connection, ConnectionMeta, Disconnect, Send};
 use crate::interface::*;

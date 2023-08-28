@@ -1,8 +1,8 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use ya_smoltcp::phy;
-use ya_smoltcp::time::Instant;
+use smoltcp::phy;
+use smoltcp::time::Instant;
 
 use crate::metrics::ChannelMetrics;
 
@@ -109,7 +109,7 @@ impl phy::Device for CaptureDevice {
 
     fn receive(
         &mut self,
-        _timestamp: ya_smoltcp::time::Instant,
+        _timestamp: smoltcp::time::Instant,
     ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let item = self.rx_queue.pop_front();
         item.map(move |buffer| {
@@ -127,7 +127,7 @@ impl phy::Device for CaptureDevice {
         })
     }
 
-    fn transmit(&mut self, _timestamp: ya_smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
+    fn transmit(&mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
         Some(TxToken {
             queue: &mut self.tx_queue,
             pcap: &self.pcap,

@@ -11,8 +11,8 @@ use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::spawn_local;
 use tokio::time::MissedTickBehavior;
-use ya_smoltcp::iface::SocketHandle;
-use ya_smoltcp::wire::IpEndpoint;
+use smoltcp::iface::SocketHandle;
+use smoltcp::wire::IpEndpoint;
 
 use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{
@@ -324,7 +324,7 @@ impl Network {
         self.handles.borrow_mut().remove(&handle);
         self.sender.remove(&handle);
 
-        let ip_endpoint = ya_smoltcp::wire::IpListenEndpoint::from(meta.remote);
+        let ip_endpoint = smoltcp::wire::IpListenEndpoint::from(meta.remote);
         if !ip_endpoint.is_specified() {
             return;
         }
@@ -748,9 +748,9 @@ mod tests {
     use sha3::Digest;
     use tokio::task::spawn_local;
     use tokio_stream::wrappers::UnboundedReceiverStream;
-    use ya_smoltcp::iface::Route;
-    use ya_smoltcp::phy::Medium;
-    use ya_smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
+    use smoltcp::iface::Route;
+    use smoltcp::phy::Medium;
+    use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
     use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};

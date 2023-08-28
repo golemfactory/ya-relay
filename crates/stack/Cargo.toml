@@ -10,7 +10,7 @@ description = "Embeddable networking stack"
 
 [dependencies]
 ya-relay-util = { workspace = true }
-ya-smoltcp = { package = "smoltcp", version = "0.10", features = [
+smoltcp = { version = "0.10", features = [
     "std",
     "log",
     "medium-ethernet",
@@ -45,7 +45,7 @@ tokio-stream = "0.1"
 
 [features]
 test-suite = []
-stack-verbose = ["ya-smoltcp/verbose"]
+stack-verbose = ["smoltcp/verbose"]
 
 [dev-dependencies]
 anyhow = "1.0"

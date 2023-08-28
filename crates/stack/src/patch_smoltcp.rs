@@ -1,5 +1,5 @@
-use ya_smoltcp::iface::SocketHandle;
-use ya_smoltcp::socket::AnySocket;
+use smoltcp::iface::SocketHandle;
+use smoltcp::socket::AnySocket;
 
 use crate::interface::CaptureInterface;
 

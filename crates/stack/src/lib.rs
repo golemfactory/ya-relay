@@ -22,6 +22,6 @@ pub use port::Allocator as PortAllocator;
 pub use protocol::Protocol;
 pub use socket::{SocketDesc, SocketState};
 pub use stack::Stack;
-pub use ya_smoltcp;
+pub use smoltcp;
 
 pub type Result<T> = std::result::Result<T, Error>;

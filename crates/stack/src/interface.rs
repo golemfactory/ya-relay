@@ -1,9 +1,9 @@
 use managed::ManagedSlice;
 use std::io::Write;
-use ya_smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
-use ya_smoltcp::socket::AnySocket;
-use ya_smoltcp::time::Instant;
-use ya_smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
+use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
+use smoltcp::socket::AnySocket;
+use smoltcp::time::Instant;
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
 
 use crate::device::CaptureDevice;
 
@@ -38,13 +38,13 @@ impl<'a> CaptureInterface<'a> {
         &mut self.device
     }
 
-    pub fn sockets(&self) -> impl Iterator<Item = (SocketHandle, &ya_smoltcp::socket::Socket<'a>)> {
+    pub fn sockets(&self) -> impl Iterator<Item = (SocketHandle, &smoltcp::socket::Socket<'a>)> {
         self.sockets.iter()
     }
 
     pub fn sockets_mut(
         &mut self,
-    ) -> impl Iterator<Item = (SocketHandle, &mut ya_smoltcp::socket::Socket<'a>)> {
+    ) -> impl Iterator<Item = (SocketHandle, &mut smoltcp::socket::Socket<'a>)> {
         self.sockets.iter_mut()
     }
 
@@ -55,13 +55,13 @@ impl<'a> CaptureInterface<'a> {
     pub fn get_socket_and_context<T: AnySocket<'a>>(
         &mut self,
         handle: SocketHandle,
-    ) -> (&mut T, &mut ya_smoltcp::iface::Context) {
+    ) -> (&mut T, &mut smoltcp::iface::Context) {
         let socket = self.sockets.get_mut(handle);
         let ctx = self.iface.context();
         (socket, ctx)
     }
 
-    pub fn remove_socket(&mut self, handle: SocketHandle) -> ya_smoltcp::socket::Socket {
+    pub fn remove_socket(&mut self, handle: SocketHandle) -> smoltcp::socket::Socket {
         self.sockets.remove(handle)
     }
 

@@ -2,10 +2,10 @@ use derive_more::Display;
 use std::hash::{Hash, Hasher};
 
 use derive_more::From;
-use ya_smoltcp::socket::*;
-use ya_smoltcp::storage::PacketMetadata;
-use ya_smoltcp::time::Duration;
-use ya_smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpVersion};
+use smoltcp::socket::*;
+use smoltcp::storage::PacketMetadata;
+use smoltcp::time::Duration;
+use smoltcp::wire::{IpAddress, IpEndpoint, IpListenEndpoint, IpProtocol, IpVersion};
 
 use crate::{Error, Protocol};
 
@@ -222,13 +222,13 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum RecvError {
     #[error(transparent)]
-    Tcp(#[from] ya_smoltcp::socket::tcp::RecvError),
+    Tcp(#[from] smoltcp::socket::tcp::RecvError),
     #[error(transparent)]
-    Udp(#[from] ya_smoltcp::socket::udp::RecvError),
+    Udp(#[from] smoltcp::socket::udp::RecvError),
     #[error(transparent)]
-    Raw(#[from] ya_smoltcp::socket::raw::RecvError),
+    Raw(#[from] smoltcp::socket::raw::RecvError),
     #[error(transparent)]
-    Icmp(#[from] ya_smoltcp::socket::icmp::RecvError),
+    Icmp(#[from] smoltcp::socket::icmp::RecvError),
     #[error("Dhcpv4 error")]
     Dhcpv4,
     #[error("DNS error")]
@@ -335,8 +335,8 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Raw(raw) => raw
                 .recv()
                 .map(|bytes| {
-                    let addr = ya_smoltcp::wire::IpAddress::Ipv4(
-                        ya_smoltcp::wire::Ipv4Address::UNSPECIFIED,
+                    let addr = smoltcp::wire::IpAddress::Ipv4(
+                        smoltcp::wire::Ipv4Address::UNSPECIFIED,
                     );
                     let port = 0; //TODO what value should be used?
                     (Some(IpEndpoint::new(addr, port)), bytes.to_vec())
@@ -349,7 +349,7 @@ impl<'a> SocketExt for Socket<'a> {
         match result {
             Ok((Some(endpoint), bytes)) => Ok(Some((endpoint, bytes))),
             Ok((None, _)) => Ok(None),
-            Err(RecvError::Udp(ya_smoltcp::socket::udp::RecvError::Exhausted)) => Ok(None),
+            Err(RecvError::Udp(smoltcp::socket::udp::RecvError::Exhausted)) => Ok(None),
             Err(err) => Err(err),
         }
     }
