@@ -107,31 +107,31 @@ impl phy::Device for CaptureDevice {
     where
         Self: 'a;
 
-    fn receive(
-        &mut self,
-        _timestamp: smoltcp::time::Instant,
-    ) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+    fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let item = self.rx_queue.pop_front();
         item.map(move |buffer| {
             let rx = RxToken {
                 buffer,
                 pcap: &self.pcap,
                 metrics: self.metrics.clone(),
+                timestamp,
             };
             let tx = TxToken {
                 queue: &mut self.tx_queue,
                 pcap: &self.pcap,
                 metrics: self.metrics.clone(),
+                timestamp,
             };
             (rx, tx)
         })
     }
 
-    fn transmit(&mut self, _timestamp: smoltcp::time::Instant) -> Option<Self::TxToken<'_>> {
+    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
         Some(TxToken {
             queue: &mut self.tx_queue,
             pcap: &self.pcap,
             metrics: self.metrics.clone(),
+            timestamp,
         })
     }
 
@@ -148,6 +148,7 @@ pub struct RxToken<'a> {
     buffer: Payload,
     pcap: &'a Option<Pcap>,
     metrics: Rc<RefCell<ChannelMetrics>>,
+    timestamp: Instant,
 }
 
 impl<'a> phy::RxToken for RxToken<'a> {
@@ -163,9 +164,8 @@ impl<'a> phy::RxToken for RxToken<'a> {
         }
 
         if let Some(pcap) = self.pcap {
-            //TODO what timestamp should be used?
             pcap.borrow_mut()
-                .packet(Instant::ZERO, self.buffer.as_ref());
+                .packet(self.timestamp, self.buffer.as_ref());
         }
 
         result
@@ -177,6 +177,7 @@ pub struct TxToken<'a> {
     queue: &'a mut VecDeque<Vec<u8>>,
     pcap: &'a Option<Pcap>,
     metrics: Rc<RefCell<ChannelMetrics>>,
+    timestamp: Instant,
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
@@ -194,8 +195,7 @@ impl<'a> phy::TxToken for TxToken<'a> {
         }
 
         if let Some(pcap) = self.pcap {
-            let timestamp = Instant::now();
-            pcap.borrow_mut().packet(timestamp, buffer.as_ref());
+            pcap.borrow_mut().packet(self.timestamp, buffer.as_ref());
         }
 
         self.queue.push_back(buffer);
