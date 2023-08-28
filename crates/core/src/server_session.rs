@@ -16,18 +16,7 @@ use ya_client_model::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{SlotId, SESSION_ID_SIZE};
 
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    derive_more::Display,
-    strum_macros::EnumString,
-    Serialize,
-    Deserialize,
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::Display, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TransportType {
     Unreliable,
