@@ -8,11 +8,11 @@ use std::time::Duration;
 use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
+use smoltcp::iface::SocketHandle;
+use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::spawn_local;
 use tokio::time::MissedTickBehavior;
-use smoltcp::iface::SocketHandle;
-use smoltcp::wire::IpEndpoint;
 
 use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{
@@ -746,11 +746,11 @@ mod tests {
     use futures::channel::{mpsc, oneshot};
     use futures::{Sink, SinkExt, Stream, StreamExt};
     use sha3::Digest;
-    use tokio::task::spawn_local;
-    use tokio_stream::wrappers::UnboundedReceiverStream;
     use smoltcp::iface::Route;
     use smoltcp::phy::Medium;
     use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
+    use tokio::task::spawn_local;
+    use tokio_stream::wrappers::UnboundedReceiverStream;
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
     use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};

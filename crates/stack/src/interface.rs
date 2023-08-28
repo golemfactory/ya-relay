@@ -1,9 +1,9 @@
 use managed::ManagedSlice;
-use std::io::Write;
 use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
 use smoltcp::socket::AnySocket;
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
+use std::io::Write;
 
 use crate::device::CaptureDevice;
 

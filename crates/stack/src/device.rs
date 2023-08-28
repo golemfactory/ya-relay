@@ -1,8 +1,8 @@
+use smoltcp::phy;
+use smoltcp::time::Instant;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use smoltcp::phy;
-use smoltcp::time::Instant;
 
 use crate::metrics::ChannelMetrics;
 

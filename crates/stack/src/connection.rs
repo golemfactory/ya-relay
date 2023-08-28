@@ -1,4 +1,7 @@
 use derive_more::Display;
+use smoltcp::iface::SocketHandle;
+use smoltcp::socket::*;
+use smoltcp::wire::IpEndpoint;
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::future::Future;
@@ -6,9 +9,6 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
-use smoltcp::iface::SocketHandle;
-use smoltcp::socket::*;
-use smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
 use crate::patch_smoltcp::GetSocketSafe;

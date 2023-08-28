@@ -335,9 +335,8 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Raw(raw) => raw
                 .recv()
                 .map(|bytes| {
-                    let addr = smoltcp::wire::IpAddress::Ipv4(
-                        smoltcp::wire::Ipv4Address::UNSPECIFIED,
-                    );
+                    let addr =
+                        smoltcp::wire::IpAddress::Ipv4(smoltcp::wire::Ipv4Address::UNSPECIFIED);
                     let port = 0; //TODO what value should be used?
                     (Some(IpEndpoint::new(addr, port)), bytes.to_vec())
                 })
