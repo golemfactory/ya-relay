@@ -92,10 +92,9 @@ class Client(Node):
     def __external_port(self, port: int = 8081):
         return self.ports()[f"{port}/tcp"]
 
-    def ping(self, node_id: str, port: int = 8081, timeout: int | None = 5):
+    def ping(self, node_id: str, port: int = 8081, timeout: int | None = 5, transport: str = "reliable"):
         LOGGER.debug(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
-        transport: str = "reliable"
         response: requests.Response = requests.get(
             f"http://localhost:{port}/ping/{transport}/{node_id}", headers=http_client_headers, timeout=timeout
         )
@@ -118,10 +117,9 @@ class Client(Node):
         )
         return read_json_response(response)
 
-    def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int | None = None):
+    def transfer(self, node_id: str, data: bytes, port: int = 8081, timeout: int | None = None, transport: str = "reliable"):
         LOGGER.debug(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
-        transport: str = "reliable"
         response: requests.Response = requests.post(
             f"http://localhost:{port}/transfer-file/{transport}/{node_id}",
             data,
