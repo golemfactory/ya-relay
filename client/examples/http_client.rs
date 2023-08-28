@@ -139,7 +139,7 @@ async fn ping(
         .run_async(move |client: Client| async move {
             let r = messages.request();
             let mut sender = forward(&client, transport, node_id).await?;
-            let msg = format!("Ping:{}:{}", transport, r.id());
+            let msg = format!("Ping:{}", r.id());
 
             sender.send(msg.as_bytes().to_vec().into()).await?;
             log::trace!("[ping]: Ping {} sent {}. Waiting.", transport, node_id);
@@ -258,102 +258,86 @@ async fn handle_forward_message(
         fwd.node_id,
         fwd.transport
     );
-    match fwd.transport {
-        ya_relay_client::model::TransportType::Reliable => {
-            let msg = String::from_utf8(fwd.payload.into_vec())?;
+    let msg = String::from_utf8(fwd.payload.into_vec())?;
 
-            let mut s = msg.split(':');
-            let command = s
-                .next()
-                .ok_or_else(|| anyhow!("No message command found"))?;
+    let mut s = msg.split(':');
+    let command = s
+        .next()
+        .ok_or_else(|| anyhow!("No message command found"))?;
 
-            let transport = s
-                .next()
-                .ok_or_else(|| anyhow!("No transport found"))?
-                .parse::<TransportType>()?;
+    let request_id = s
+        .next()
+        .ok_or_else(|| anyhow!("No request ID found"))?
+        .parse::<u32>()?;
 
-            let request_id = s
-                .next()
-                .ok_or_else(|| anyhow!("No request ID found"))?
-                .parse::<u32>()?;
+    match command {
+        "Ping" => {
+            let mut sender = forward(&client, fwd.transport, fwd.node_id).await?;
+            sender
+                .send(format!("Pong:{request_id}").as_bytes().to_vec().into())
+                .await?;
 
-            match command {
-                "Ping" => {
-                    let mut sender = forward(&client, transport, fwd.node_id).await?;
-                    sender
-                        .send(
-                            format!("Pong:{transport}:{request_id}")
-                                .as_bytes()
-                                .to_vec()
-                                .into(),
-                        )
-                        .await?;
-
-                    Ok(())
+            Ok(())
+        }
+        "Pong" => {
+            match messages.respond(request_id) {
+                Ok((ts, sender)) => sender
+                    .send(Ok(serde_json::to_string(&Pong {
+                        node_id: fwd.node_id.to_string(),
+                        duration: ts.elapsed(),
+                    })?))
+                    .ok(),
+                Err(e) => {
+                    log::warn!("ping: {:?}", e);
+                    None
                 }
-                "Pong" => {
-                    match messages.respond(request_id) {
-                        Ok((ts, sender)) => sender
-                            .send(Ok(serde_json::to_string(&Pong {
-                                node_id: fwd.node_id.to_string(),
-                                duration: ts.elapsed(),
-                            })?))
-                            .ok(),
-                        Err(e) => {
-                            log::warn!("ping: {:?}", e);
-                            None
-                        }
-                    };
-                    Ok(())
-                }
-                "Transfer" => {
-                    let mut sender = forward(&client, transport, fwd.node_id).await?;
+            };
+            Ok(())
+        }
+        "Transfer" => {
+            let mut sender = forward(&client, fwd.transport, fwd.node_id).await?;
+            let bytes_transferred = s
+                .next()
+                .ok_or_else(|| anyhow!("No data found"))?
+                .parse::<usize>()?;
+
+            sender
+                .send(
+                    format!("TransferResponse:{request_id}:{bytes_transferred}")
+                        .as_bytes()
+                        .to_vec()
+                        .into(),
+                )
+                .await?;
+
+            Ok(())
+        }
+        "TransferResponse" => {
+            match messages.respond(request_id) {
+                Ok((ts, sender)) => {
                     let bytes_transferred = s
                         .next()
-                        .ok_or_else(|| anyhow!("No data found"))?
+                        .ok_or_else(|| anyhow!("No bytes_transferred found"))?
                         .parse::<usize>()?;
+                    let mb_transfered = bytes_transferred / (1024 * 1024);
 
                     sender
-                        .send(
-                            format!("TransferResponse:{request_id}:{bytes_transferred}")
-                                .as_bytes()
-                                .to_vec()
-                                .into(),
-                        )
-                        .await?;
-
-                    Ok(())
+                        .send(Ok(serde_json::to_string(&Transfer {
+                            mb_transfered,
+                            node_id: fwd.node_id.to_string(),
+                            duration: ts.elapsed(),
+                            speed: mb_transfered as f32 / ts.elapsed().as_secs_f32(),
+                        })?))
+                        .ok()
                 }
-                "TransferResponse" => {
-                    match messages.respond(request_id) {
-                        Ok((ts, sender)) => {
-                            let bytes_transferred = s
-                                .next()
-                                .ok_or_else(|| anyhow!("No bytes_transferred found"))?
-                                .parse::<usize>()?;
-                            let mb_transfered = bytes_transferred / (1024 * 1024);
-
-                            sender
-                                .send(Ok(serde_json::to_string(&Transfer {
-                                    mb_transfered,
-                                    node_id: fwd.node_id.to_string(),
-                                    duration: ts.elapsed(),
-                                    speed: mb_transfered as f32 / ts.elapsed().as_secs_f32(),
-                                })?))
-                                .ok()
-                        }
-                        Err(e) => {
-                            log::warn!("ping: {:?}", e);
-                            None
-                        }
-                    };
-                    Ok(())
+                Err(e) => {
+                    log::warn!("ping: {:?}", e);
+                    None
                 }
-                other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
-            }
+            };
+            Ok(())
         }
-        ya_relay_client::model::TransportType::Unreliable => Ok(()),
-        ya_relay_client::model::TransportType::Transfer => Ok(()),
+        other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
     }
 }
 
