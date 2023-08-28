@@ -72,23 +72,28 @@ impl<'a> CaptureInterface<'a> {
     }
 }
 
+fn iface_and_sockets<'a>(
+    addr: HardwareAddress,
+    device: &mut CaptureDevice,
+) -> (Interface, SocketSet<'a>) {
+    let config = Config::new(addr);
+    let now = Instant::ZERO;
+    let iface = Interface::new(config, device, now);
+    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    (iface, sockets)
+}
+
 /// Creates a default TAP (Ethernet) network interface
 pub fn tap_iface<'a>(mac: HardwareAddress, mtu: usize) -> CaptureInterface<'a> {
     let mut device = CaptureDevice::tap(mtu);
-    let config = Config::new(mac);
-    let now = Instant::ZERO;
-    let iface = Interface::new(config, &mut device, now);
-    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    let (iface, sockets) = iface_and_sockets(mac, &mut device);
     CaptureInterface::new(iface, device, sockets)
 }
 
 /// Creates a default TUN (IP) network interface
 pub fn tun_iface<'a>(mtu: usize) -> CaptureInterface<'a> {
     let mut device = CaptureDevice::tun(mtu);
-    let config = Config::new(HardwareAddress::Ip);
-    let now = Instant::ZERO;
-    let iface = Interface::new(config, &mut device, now);
-    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    let (iface, sockets) = iface_and_sockets(HardwareAddress::Ip, &mut device);
     CaptureInterface::new(iface, device, sockets)
 }
 
@@ -98,10 +103,7 @@ where
     W: Write + 'static,
 {
     let mut device = CaptureDevice::pcap_tap(mtu, pcap);
-    let config = Config::new(mac);
-    let now = Instant::ZERO;
-    let mut iface = Interface::new(config, &mut device, now);
-    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    let (mut iface, sockets) = iface_and_sockets(mac, &mut device);
     iface.set_hardware_addr(mac);
     CaptureInterface::new(iface, device, sockets)
 }
@@ -112,10 +114,7 @@ where
     W: Write + 'static,
 {
     let mut device = CaptureDevice::pcap_tun(mtu, pcap);
-    let config = Config::new(HardwareAddress::Ip);
-    let now = Instant::ZERO;
-    let iface = Interface::new(config, &mut device, now);
-    let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
+    let (iface, sockets) = iface_and_sockets(HardwareAddress::Ip, &mut device);
     CaptureInterface::new(iface, device, sockets)
 }
 
