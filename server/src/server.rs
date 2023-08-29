@@ -365,14 +365,6 @@ impl Server {
                         return Err(Unauthorized::SessionNotFound(session_id).into());
                     }
                     Some(node) => {
-                        log::trace!(
-                            "[control: Disconnected by SessionId]: {:?}",
-                            hex::encode(session_id.to_vec())
-                        );
-                        log::trace!(
-                            "[control: Disconnected by SessionId]: node session: {}",
-                            node.session
-                        );
                         if let Ok(_id) = SessionId::try_from(_id) {
                             if _id != session_id {
                                 log::warn!(
