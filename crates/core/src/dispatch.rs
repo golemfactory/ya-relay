@@ -43,13 +43,11 @@ where
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Request(request) => {
-                    log::debug!("on request response: {:?}", request);
                     handler
                         .on_request(session_id, request, from)
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Response(response) => {
-                    log::debug!("Dispatch response: {:?}", response);
                     match response.kind {
                         Some(kind) => match dispatcher {
                             Some(dispatcher) => dispatcher.dispatch_response(
@@ -171,7 +169,7 @@ impl Dispatcher {
                     return;
                 }
 
-                log::trace!("Running error handler for code: {}", code);
+                log::trace!("[error handler]: code: {}", code);
 
                 latch.store(true, SeqCst);
                 handler_fn().await;
@@ -197,7 +195,6 @@ impl Dispatcher {
         let (tx, rx) = oneshot::channel();
 
         let request_id_ = request_id;
-        log::trace!("Insert response for: {:?}", request_id_);
         if self.responses.borrow_mut().insert(request_id, tx).is_some() {
             log::warn!("Duplicate dispatch request id: {}", request_id);
         }

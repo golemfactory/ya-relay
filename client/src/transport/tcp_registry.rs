@@ -218,11 +218,11 @@ impl TcpRegistry {
             .ok();
         };
 
-        let mut state = self.state.write().await;
-        if let Some(remote_ip) = state.ips.remove(&node_id) {
-            log::debug!("[VirtualTcp] Disconnected from node [{node_id}]");
-            state.nodes.remove(&remote_ip);
-        }
+        // let mut state = self.state.write().await;
+        // if let Some(remote_ip) = state.ips.remove(&node_id) {
+        //     log::debug!("[VirtualTcp] Disconnected from node [{node_id}]");
+        //     state.nodes.remove(&remote_ip);
+        // }
     }
 
     pub async fn get_by_address(&self, addr: &[u8]) -> Option<VirtNode> {

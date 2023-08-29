@@ -37,14 +37,14 @@ where
         // First look for existing session, but if it doesn't exist, maybe we
         // can find dispatcher from temporary session that is being initialized at this moment.
         let session = handler.session(from).await;
-        if session.is_some() {
-            log::trace!(
-                "[dispatch]: Handler session: {} from {from}",
-                session.clone().unwrap().raw.id
-            );
-        } else {
-            log::trace!("[dispatch]: Handler session: None from {from}");
-        }
+        // if session.is_some() {
+        //     log::trace!(
+        //         "[dispatch]: Handler session: {} from {from}",
+        //         session.clone().unwrap().raw.id
+        //     );
+        // } else {
+        //     log::trace!("[dispatch]: Handler session: None from {from}");
+        // }
         let dispatcher = match session.clone() {
             Some(session) => Some(session.raw.clone()),
             None => handler.dispatcher(from).await,
@@ -54,21 +54,21 @@ where
 
         if session.is_some() {
             let s = session.clone().unwrap();
-            log::trace!(
-                "[dispatch] session: {}, packet.session_id: {}, from: {from}",
-                s.raw.id,
-                hex::encode(packet.session_id())
-            );
+            // log::trace!(
+            //     "[dispatch] session: {}, packet.session_id: {}, from: {from}",
+            //     s.raw.id,
+            //     hex::encode(packet.session_id())
+            // );
 
             if s.raw.id.to_vec() != packet.session_id() {
                 log::warn!("[dispatch]: ignoring packet with session id mismatch - current session doesn't match packet session: {} != {}", s.raw.id, hex::encode(packet.session_id()));
                 continue;
             }
         } else {
-            log::trace!(
-                "[dispatch] session: None, packet.session.id: {}, from: {from}",
-                hex::encode(packet.session_id())
-            );
+            // log::trace!(
+            //     "[dispatch] session: None, packet.session.id: {}, from: {from}",
+            //     hex::encode(packet.session_id())
+            // );
         }
 
         if let Some(ref dispatcher) = dispatcher {
@@ -302,7 +302,7 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
-        log::trace!("[dispatch_response] Trying to remove response for: request id {}, session: {}, code: {}, kind: {:?}", request_id, hex::encode(session_id.clone()), code, kind);
+        // log::trace!("[dispatch_response] Trying to remove response for: request id {}, session: {}, code: {}, kind: {:?}", request_id, hex::encode(session_id.clone()), code, kind);
         match { self.responses.lock().unwrap().remove(&request_id) } {
             Some(sender) => {
                 if sender
