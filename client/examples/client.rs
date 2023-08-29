@@ -47,7 +47,7 @@ async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(
         "RUST_LOG",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,ya_smoltcp=info".to_string()),
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,smoltcp=info".to_string()),
     );
     env_logger::init();
 

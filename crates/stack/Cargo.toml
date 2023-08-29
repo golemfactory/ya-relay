@@ -10,7 +10,28 @@ description = "Embeddable networking stack"
 
 [dependencies]
 ya-relay-util = { workspace = true }
-ya-smoltcp = { version = "0.1" }
+smoltcp = { version = "0.10", features = [
+    "std",
+    "log",
+    "medium-ethernet",
+    "medium-ip",
+    "medium-ieee802154",
+    "phy-raw_socket",
+    "phy-tuntap_interface",
+    "proto-ipv4",
+    "proto-igmp",
+    "proto-dhcpv4",
+    "proto-ipv6",
+    "proto-ipv4-fragmentation",
+    "proto-sixlowpan-fragmentation",
+    "proto-sixlowpan",
+    "socket-raw",
+    "socket-icmp",
+    "socket-udp",
+    "socket-tcp",
+    "socket-dhcpv4",
+    "async"
+] }
 
 derive_more = "0.99"
 futures = "0.3"
@@ -26,7 +47,7 @@ tokio-stream = "0.1"
 
 [features]
 test-suite = []
-stack-verbose = ["ya-smoltcp/verbose"]
+stack-verbose = ["smoltcp/verbose"]
 
 [dev-dependencies]
 anyhow = "1.0"
