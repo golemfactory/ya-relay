@@ -1,9 +1,8 @@
+use smoltcp::phy;
+use smoltcp::time::Instant;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-
-use ya_smoltcp::phy;
-use ya_smoltcp::time;
 
 use crate::metrics::ChannelMetrics;
 
@@ -100,32 +99,39 @@ impl CaptureDevice {
     }
 }
 
-impl<'a> phy::Device<'a> for CaptureDevice {
-    type RxToken = RxToken<'a>;
-    type TxToken = TxToken<'a>;
+impl phy::Device for CaptureDevice {
+    type RxToken<'a> = RxToken<'a>
+    where
+        Self: 'a;
+    type TxToken<'a> = TxToken<'a>
+    where
+        Self: 'a;
 
-    fn receive(&'a mut self) -> Option<(Self::RxToken, Self::TxToken)> {
+    fn receive(&mut self, timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let item = self.rx_queue.pop_front();
         item.map(move |buffer| {
             let rx = RxToken {
                 buffer,
                 pcap: &self.pcap,
                 metrics: self.metrics.clone(),
+                timestamp,
             };
             let tx = TxToken {
                 queue: &mut self.tx_queue,
                 pcap: &self.pcap,
                 metrics: self.metrics.clone(),
+                timestamp,
             };
             (rx, tx)
         })
     }
 
-    fn transmit(&'a mut self) -> Option<Self::TxToken> {
+    fn transmit(&mut self, timestamp: Instant) -> Option<Self::TxToken<'_>> {
         Some(TxToken {
             queue: &mut self.tx_queue,
             pcap: &self.pcap,
             metrics: self.metrics.clone(),
+            timestamp,
         })
     }
 
@@ -142,12 +148,13 @@ pub struct RxToken<'a> {
     buffer: Payload,
     pcap: &'a Option<Pcap>,
     metrics: Rc<RefCell<ChannelMetrics>>,
+    timestamp: Instant,
 }
 
 impl<'a> phy::RxToken for RxToken<'a> {
-    fn consume<R, F>(mut self, timestamp: time::Instant, f: F) -> ya_smoltcp::Result<R>
+    fn consume<R, F>(mut self, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> ya_smoltcp::Result<R>,
+        F: FnOnce(&mut [u8]) -> R,
     {
         let result = f(self.buffer.as_mut());
 
@@ -157,7 +164,8 @@ impl<'a> phy::RxToken for RxToken<'a> {
         }
 
         if let Some(pcap) = self.pcap {
-            pcap.borrow_mut().packet(timestamp, self.buffer.as_ref());
+            pcap.borrow_mut()
+                .packet(self.timestamp, self.buffer.as_ref());
         }
 
         result
@@ -169,12 +177,13 @@ pub struct TxToken<'a> {
     queue: &'a mut VecDeque<Vec<u8>>,
     pcap: &'a Option<Pcap>,
     metrics: Rc<RefCell<ChannelMetrics>>,
+    timestamp: Instant,
 }
 
 impl<'a> phy::TxToken for TxToken<'a> {
-    fn consume<R, F>(self, timestamp: time::Instant, len: usize, f: F) -> ya_smoltcp::Result<R>
+    fn consume<R, F>(self, len: usize, f: F) -> R
     where
-        F: FnOnce(&mut [u8]) -> ya_smoltcp::Result<R>,
+        F: FnOnce(&mut [u8]) -> R,
     {
         let mut buffer = vec![0; len];
         buffer.resize(len, 0);
@@ -186,7 +195,7 @@ impl<'a> phy::TxToken for TxToken<'a> {
         }
 
         if let Some(pcap) = self.pcap {
-            pcap.borrow_mut().packet(timestamp, buffer.as_ref());
+            pcap.borrow_mut().packet(self.timestamp, buffer.as_ref());
         }
 
         self.queue.push_back(buffer);

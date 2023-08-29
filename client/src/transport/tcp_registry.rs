@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, RwLock};
 
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
-use ya_relay_stack::ya_smoltcp::wire::{IpAddress, IpEndpoint};
+use ya_relay_stack::smoltcp::wire::{IpAddress, IpEndpoint};
 use ya_relay_stack::Connection;
 
 use super::virtual_layer::TcpLayer;

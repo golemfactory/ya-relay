@@ -1,4 +1,7 @@
 use derive_more::Display;
+use smoltcp::iface::SocketHandle;
+use smoltcp::socket::*;
+use smoltcp::wire::IpEndpoint;
 use std::cell::RefCell;
 use std::convert::TryFrom;
 use std::future::Future;
@@ -6,10 +9,6 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::rc::Rc;
 use std::task::{Context, Poll};
-
-use ya_smoltcp::iface::SocketHandle;
-use ya_smoltcp::socket::*;
-use ya_smoltcp::wire::IpEndpoint;
 
 use crate::interface::CaptureInterface;
 use crate::patch_smoltcp::GetSocketSafe;
@@ -96,8 +95,14 @@ impl ConnectionMeta {
     pub fn unspecified(protocol: Protocol) -> Self {
         Self {
             protocol,
-            local: IpEndpoint::default(),
-            remote: IpEndpoint::default(),
+            local: IpEndpoint {
+                addr: smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
+                port: 0,
+            },
+            remote: IpEndpoint {
+                addr: smoltcp::wire::Ipv4Address::UNSPECIFIED.into_address(),
+                port: 0,
+            },
         }
     }
 
@@ -162,7 +167,7 @@ impl<'a> Future for Connect<'a> {
         let iface_rfc = self.iface.clone();
         let mut iface = iface_rfc.borrow_mut();
 
-        let socket = match iface.get_socket_safe::<TcpSocket>(self.connection.handle) {
+        let socket = match iface.get_socket_safe::<tcp::Socket>(self.connection.handle) {
             Ok(s) => s,
             Err(_) => return Poll::Ready(Err(Error::SocketClosed)),
         };
@@ -197,7 +202,7 @@ impl<'a> Future for Disconnect<'a> {
         let iface_rfc = self.iface.clone();
         let mut iface = iface_rfc.borrow_mut();
 
-        let socket = match iface.get_socket_safe::<TcpSocket>(self.handle) {
+        let socket = match iface.get_socket_safe::<tcp::Socket>(self.handle) {
             Ok(s) => s,
             Err(_) => return Poll::Ready(Ok(())),
         };
@@ -249,7 +254,7 @@ impl<'a> Future for Send<'a> {
             match conn.meta.protocol {
                 Protocol::Tcp => {
                     let result = {
-                        let socket = match iface.get_socket_safe::<TcpSocket>(conn.handle) {
+                        let socket = match iface.get_socket_safe::<tcp::Socket>(conn.handle) {
                             Ok(socket) => socket,
                             Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                         };
@@ -269,33 +274,38 @@ impl<'a> Future for Send<'a> {
                                 Poll::Pending
                             }
                         }
-                        Err(ya_smoltcp::Error::Exhausted) => Poll::Pending,
-                        Err(err) => Poll::Ready(Err(Error::Other(err.to_string()))),
+                        Err(smoltcp::socket::tcp::SendError::InvalidState) => Poll::Pending,
                     };
                 }
                 Protocol::Udp => {
-                    let socket = match iface.get_socket_safe::<UdpSocket>(conn.handle) {
+                    let socket = match iface.get_socket_safe::<udp::Socket>(conn.handle) {
                         Ok(socket) => socket,
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(self.data.as_ref(), conn.meta.remote)
+                    socket
+                        .send_slice(self.data.as_ref(), conn.meta.remote)
+                        .map_err(|err| err.to_string())
                 }
                 Protocol::Icmp | Protocol::Ipv6Icmp => {
-                    let socket = match iface.get_socket_safe::<IcmpSocket>(conn.handle) {
+                    let socket = match iface.get_socket_safe::<icmp::Socket>(conn.handle) {
                         Ok(socket) => socket,
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(self.data.as_ref(), conn.meta.remote.addr)
+                    socket
+                        .send_slice(self.data.as_ref(), conn.meta.remote.addr)
+                        .map_err(|err| err.to_string())
                 }
                 _ => {
-                    let socket = match iface.get_socket_safe::<RawSocket>(conn.handle) {
+                    let socket = match iface.get_socket_safe::<raw::Socket>(conn.handle) {
                         Ok(socket) => socket,
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
                     };
                     socket.register_send_waker(cx.waker());
-                    socket.send_slice(self.data.as_ref())
+                    socket
+                        .send_slice(self.data.as_ref())
+                        .map_err(|err| err.to_string())
                 }
             }
         };
@@ -304,7 +314,7 @@ impl<'a> Future for Send<'a> {
 
         match result {
             Ok(_) => Poll::Ready(Ok(())),
-            Err(err) => Poll::Ready(Err(Error::Other(err.to_string()))),
+            Err(err) => Poll::Ready(Err(Error::Other(err))),
         }
     }
 }
