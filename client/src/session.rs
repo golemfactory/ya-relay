@@ -570,7 +570,11 @@ impl SessionLayer {
     /// Returns `RoutingSender` which can be used to send packets to desired Node.
     /// Creates session with Node if necessary. Function will choose the most optimal
     /// route to destination.
-    pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
+    pub async fn session(
+        &self,
+        node_id: NodeId,
+        dont_use: Vec<ConnectionMethod>,
+    ) -> Result<RoutingSender, SessionError> {
         log::trace!("Requested session with [{node_id}]");
 
         if let Some(routing) = self.get_node_routing(node_id).await {
@@ -634,7 +638,7 @@ impl SessionLayer {
                     permit
                         .collect_results(
                             permit
-                                .run_abortable(myself.resolve(remote_id, &permit, &[]))
+                                .run_abortable(myself.resolve(remote_id, &permit, &dont_use))
                                 .await,
                         )
                         .on_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
@@ -1434,7 +1438,7 @@ impl Handler for SessionLayer {
                         //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
                         let session = myself
-                            .session(ident.node_id)
+                            .session(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
                             .await.map_err(|e| anyhow!("Failed to resolve node with slot {slot}. {e}"))?;
 
                         session.target()
@@ -1529,14 +1533,14 @@ mod tests {
 
         // Node-2 should be registered on relay
         layer2.layer.server_session().await.unwrap();
-        let session = layer1.layer.session(layer2.id).await.unwrap();
+        let session = layer1.layer.session(layer2.id, vec![]).await.unwrap();
 
         // p2p session - target and route are the same.
         assert_eq!(session.target(), layer2.id);
         assert_eq!(session.route(), layer2.id);
         assert_eq!(session.session_type(), SessionType::P2P);
 
-        let session = layer2.layer.session(layer1.id).await.unwrap();
+        let session = layer2.layer.session(layer1.id, vec![]).await.unwrap();
 
         assert_eq!(session.target(), layer1.id);
         assert_eq!(session.route(), layer1.id);
@@ -1556,7 +1560,7 @@ mod tests {
         layer2.layer.server_session().await.unwrap();
 
         // Send Node-1 -> Node-2
-        let mut session = layer1.layer.session(layer2.id).await.unwrap();
+        let mut session = layer1.layer.session(layer2.id, vec![]).await.unwrap();
 
         let packet = Payload::Vec(vec![4u8]);
         session
@@ -1574,7 +1578,7 @@ mod tests {
         assert_eq!(forwarded.payload, packet);
 
         // Send Node-2 -> Node-1
-        let mut session = layer2.layer.session(layer1.id).await.unwrap();
+        let mut session = layer2.layer.session(layer1.id, vec![]).await.unwrap();
 
         let packet = Payload::Vec(vec![7u8]);
         session
@@ -1600,9 +1604,9 @@ mod tests {
 
         // Node-2 should be registered on relay
         layer2.layer.server_session().await.unwrap();
-        let mut session = layer1.layer.session(layer2.id).await.unwrap();
+        let mut session = layer1.layer.session(layer2.id, vec![]).await.unwrap();
         // Wait until second Node will be ready with session
-        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+        let session2 = layer2.layer.session(layer1.id, vec![]).await.unwrap();
 
         assert_eq!(session.target(), layer2.id);
         assert_eq!(session.route(), layer2.id);
@@ -1634,9 +1638,9 @@ mod tests {
         network.hack_make_layer_ip_private(&layer2).await;
         network.hack_make_layer_ip_private(&layer1).await;
 
-        let mut session = layer1.layer.session(layer2.id).await.unwrap();
+        let mut session = layer1.layer.session(layer2.id, vec![]).await.unwrap();
         // Wait until second Node will be ready with session
-        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+        let session2 = layer2.layer.session(layer1.id, vec![]).await.unwrap();
 
         assert_eq!(session.target(), layer2.id);
         assert_eq!(session.route(), relay_id);
@@ -1668,9 +1672,9 @@ mod tests {
         layer2.layer.server_session().await.unwrap();
         network.hack_make_layer_ip_private(&layer2).await;
 
-        let session = layer1.layer.session(layer2.id).await.unwrap();
+        let session = layer1.layer.session(layer2.id, vec![]).await.unwrap();
         // Wait until second Node will be ready with session
-        let session2 = layer2.layer.session(layer1.id).await.unwrap();
+        let session2 = layer2.layer.session(layer1.id, vec![]).await.unwrap();
 
         assert_eq!(session.target(), layer2.id);
         assert_eq!(session.route(), layer2.id);

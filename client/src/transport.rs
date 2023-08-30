@@ -255,7 +255,7 @@ impl TransportLayer {
             return Ok(tx);
         }
 
-        let routing: ForwardSender = self.session_layer.session(node_id).await?.into();
+        let routing: ForwardSender = self.session_layer.session(node_id, vec![]).await?.into();
 
         let routing = {
             let mut state = self.state.write().await;
