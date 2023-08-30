@@ -139,7 +139,7 @@ async fn ping(
         .run_async(move |client: Client| async move {
             let r = messages.request();
             let mut sender = forward(&client, transport, node_id).await?;
-            let msg = format!("Ping:{}", r.id());
+            let msg = format!("Ping:{};", r.id());
 
             sender.send(msg.as_bytes().to_vec().into()).await?;
             log::trace!("[ping]: Ping {} sent {}. Waiting.", transport, node_id);
@@ -233,7 +233,7 @@ async fn transfer_file(
             let data: Vec<u8> = body.into();
 
             let r = messages.request();
-            let end_message = format!("Transfer:{}:{}", r.id(), data.len());
+            let end_message = format!("Transfer:{}:{};", r.id(), data.len());
 
             let mut sender = forward(&client, transport, node_id).await?;
 
@@ -262,7 +262,7 @@ async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()>
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
 
     while let Some(fwd) = receiver.recv().await {
-        if let Err(e) = handle_forward_message(fwd, &client, &messages).await {
+        if let Err(e) = handle_forward_messages(fwd, &client, &messages).await {
             log::warn!("Handle forward message failed: {e}")
         }
     }
@@ -281,7 +281,7 @@ async fn forward(
     }
 }
 
-async fn handle_forward_message(
+async fn handle_forward_messages(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
     messages: &Messages,
@@ -291,8 +291,21 @@ async fn handle_forward_message(
         fwd.node_id,
         fwd.transport
     );
-    let msg = String::from_utf8(fwd.payload.into_vec())?;
+    let msgs = String::from_utf8(fwd.payload.into_vec())?;
+    let msgs = msgs.split(';');
+    for msg in msgs {
+        handle_forward_message(msg, fwd.transport, fwd.node_id, client, messages).await?
+    }
+    Ok(())
+}
 
+async fn handle_forward_message(
+    msg: &str,
+    transport: TransportType,
+    node_id: NodeId,
+    client: &Client,
+    messages: &Messages,
+) -> Result<()> {
     let mut s = msg.split(':');
     let command = s
         .next()
@@ -305,9 +318,9 @@ async fn handle_forward_message(
 
     match command {
         "Ping" => {
-            let mut sender = forward(client, fwd.transport, fwd.node_id).await?;
+            let mut sender = forward(client, transport, node_id).await?;
             sender
-                .send(format!("Pong:{request_id}").as_bytes().to_vec().into())
+                .send(format!("Pong:{request_id};").as_bytes().to_vec().into())
                 .await?;
 
             Ok(())
@@ -316,7 +329,7 @@ async fn handle_forward_message(
             match messages.respond(request_id) {
                 Ok((ts, sender)) => sender
                     .send(Ok(serde_json::to_string(&Pong {
-                        node_id: fwd.node_id.to_string(),
+                        node_id: node_id.to_string(),
                         duration: ts.elapsed(),
                     })?))
                     .ok(),
@@ -328,7 +341,7 @@ async fn handle_forward_message(
             Ok(())
         }
         "Transfer" => {
-            let mut sender = forward(client, fwd.transport, fwd.node_id).await?;
+            let mut sender = forward(client, transport, node_id).await?;
             let bytes_transferred = s
                 .next()
                 .ok_or_else(|| anyhow!("No data found"))?
@@ -336,7 +349,7 @@ async fn handle_forward_message(
 
             sender
                 .send(
-                    format!("TransferResponse:{request_id}:{bytes_transferred}")
+                    format!("TransferResponse:{request_id}:{bytes_transferred};")
                         .as_bytes()
                         .to_vec()
                         .into(),
@@ -357,7 +370,7 @@ async fn handle_forward_message(
                     sender
                         .send(Ok(serde_json::to_string(&Transfer {
                             mb_transfered,
-                            node_id: fwd.node_id.to_string(),
+                            node_id: node_id.to_string(),
                             duration: ts.elapsed(),
                             speed: mb_transfered as f32 / ts.elapsed().as_secs_f32(),
                         })?))
