@@ -37,38 +37,21 @@ where
         // First look for existing session, but if it doesn't exist, maybe we
         // can find dispatcher from temporary session that is being initialized at this moment.
         let session = handler.session(from).await;
-        // if session.is_some() {
-        //     log::trace!(
-        //         "[dispatch]: Handler session: {} from {from}",
-        //         session.clone().unwrap().raw.id
-        //     );
-        // } else {
-        //     log::trace!("[dispatch]: Handler session: None from {from}");
-        // }
         let dispatcher = match session.clone() {
             Some(session) => Some(session.raw.clone()),
             None => handler.dispatcher(from).await,
         };
 
-        log::trace!("[dispatch]: Dispatch: {}", dispatcher.is_some());
-
-        if session.is_some() {
+        if session.is_some() && packet.is_protocol_packet() {
             let s = session.clone().unwrap();
-            // log::trace!(
-            //     "[dispatch] session: {}, packet.session_id: {}, from: {from}",
-            //     s.raw.id,
-            //     hex::encode(packet.session_id())
-            // );
-
             if s.raw.id.to_vec() != packet.session_id() {
-                log::warn!("[dispatch]: ignoring packet with session id mismatch - current session doesn't match packet session: {} != {}", s.raw.id, hex::encode(packet.session_id()));
+                log::warn!(
+                    "[dispatch]: ignoring protocol packet with session id mismatch - current session doesn't match packet session: {} != {}",
+                    s.raw.id,
+                    hex::encode(packet.session_id()),
+                );
                 continue;
             }
-        } else {
-            // log::trace!(
-            //     "[dispatch] session: None, packet.session.id: {}, from: {from}",
-            //     hex::encode(packet.session_id())
-            // );
         }
 
         if let Some(ref dispatcher) = dispatcher {
@@ -81,16 +64,19 @@ where
                 kind: Some(kind),
             }) => match kind {
                 proto::packet::Kind::Control(control) => {
+                    log::trace!("[dispatch]: control packet: {:?}", control);
                     handler
                         .on_control(session_id, control, from)
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Request(request) => {
+                    log::trace!("[dispatch]: request packet: {:?}", request);
                     handler
                         .on_request(session_id, request, from)
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Response(response) => {
+                    log::trace!("[dispatch]: response packet: {:?}", response);
                     match response.kind {
                         Some(kind) => match dispatcher {
                             Some(dispatcher) => dispatcher.dispatcher.dispatch_response(
@@ -108,6 +94,7 @@ where
                 }
             },
             codec::PacketKind::Forward(forward) => {
+                log::trace!("[dispatch]: forward packet: {:?}", forward);
                 // In case of temporary sessions we shouldn't get `Forward` packets,
                 // so we can safely ignore this case. But we can get `Forward` from unknown
                 // session. This can happen if:

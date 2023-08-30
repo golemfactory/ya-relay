@@ -307,7 +307,7 @@ async fn handle_forward_message(
 
     match command {
         "Ping" => {
-            let mut sender = forward(&client, fwd.transport, fwd.node_id).await?;
+            let mut sender = forward(client, fwd.transport, fwd.node_id).await?;
             sender
                 .send(format!("Pong:{request_id}").as_bytes().to_vec().into())
                 .await?;
@@ -330,7 +330,7 @@ async fn handle_forward_message(
             Ok(())
         }
         "Transfer" => {
-            let mut sender = forward(&client, fwd.transport, fwd.node_id).await?;
+            let mut sender = forward(client, fwd.transport, fwd.node_id).await?;
             let bytes_transferred = s
                 .next()
                 .ok_or_else(|| anyhow!("No data found"))?
