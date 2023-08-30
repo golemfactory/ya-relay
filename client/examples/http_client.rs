@@ -172,8 +172,6 @@ async fn disconnect(
             let r = messages.request();
             let msg = format!("Close Session:{}", r.id());
             log::debug!("Sending close session message: {}", msg);
-            let _s = client.sessions().await;
-
             let result = client.disconnect(node_id).await.map_err(|e| anyhow!("{e}"));
             match result {
                 Ok(_) => Ok("Disconnected"),
