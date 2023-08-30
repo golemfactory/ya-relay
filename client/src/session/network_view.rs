@@ -13,6 +13,7 @@ use crate::direct_session::{DirectSession, NodeEntry};
 use crate::error::{SessionError, TransitionError};
 use crate::session::session_traits::SessionDeregistration;
 
+use crate::session::session_state::SessionState::Closed;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, LastSeen, NodeInfo};
 use ya_relay_core::NodeId;
@@ -292,26 +293,6 @@ impl NodeView {
 
         self.notify_change(new_state.clone());
         Ok(new_state)
-    }
-
-    pub async fn transition_closed(&self) -> Result<(), TransitionError> {
-        {
-            let mut target = self.state.write().await;
-            target.state.transition(SessionState::Closed)?;
-        }
-
-        self.notify_change(SessionState::Closed);
-        Ok(())
-    }
-
-    pub async fn restart_initialization(&self) -> Result<(), TransitionError> {
-        {
-            let mut target = self.state.write().await;
-            target.state.transition(SessionState::RestartConnect)?;
-        }
-
-        self.notify_change(SessionState::RestartConnect);
-        Ok(())
     }
 
     pub async fn public_addresses(&self) -> Vec<SocketAddr> {

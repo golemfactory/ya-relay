@@ -44,11 +44,15 @@ impl From<Vec<SessionDesc>> for Sessions {
 pub(crate) struct Session {
     address: std::net::IpAddr,
     port: u16,
+    id: String,
 }
 
 impl fmt::Display for Session {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_fmt(format_args!("{}:{}", self.address, self.port))
+        f.write_fmt(format_args!(
+            "[{}]: {}:{}",
+            self.id, self.address, self.port
+        ))
     }
 }
 
@@ -56,7 +60,8 @@ impl From<SessionDesc> for Session {
     fn from(session: SessionDesc) -> Self {
         let address = session.remote.ip();
         let port = session.remote.port();
-        Self { address, port }
+        let id = session.id.to_string();
+        Self { address, port, id }
     }
 }
 
