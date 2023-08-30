@@ -169,8 +169,6 @@ impl Dispatcher {
                     return;
                 }
 
-                log::trace!("[error handler]: code: {}", code);
-
                 latch.store(true, SeqCst);
                 handler_fn().await;
                 latch.store(false, SeqCst);
