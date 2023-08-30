@@ -550,24 +550,10 @@ impl SessionLayer {
         // Makes function abort-safe. Dropping this future won't stop execution
         // of closing function.
         tokio::task::spawn_local(async move {
-            if let Some(current_session) = myself.find_session(session.raw.remote).await {
-                if current_session.raw.id != session.raw.id {
-                    log::warn!(
-                        "Cannot close session [{}] with [{}] ({}) - already closed.",
-                        session.raw.id,
-                        session.owner.default_id,
-                        session.raw.remote
-                    );
-                    return Ok(());
-                }
-            }
             let entry = myself.registry.guard(session.owner.default_id, &[]).await;
 
-            log::trace!("[Closing 1/3]: Transitioning session to `Closing` state.");
             entry.transition(SessionState::Closing).await?;
-            log::trace!("[Closing 2/3]: Unregistering session.");
             myself.unregister_session(session).await;
-            log::trace!("[Closing 3/3]: Transitioning session to `Closed` state.");
             entry.transition(SessionState::Closed).await?;
             Ok(())
         })

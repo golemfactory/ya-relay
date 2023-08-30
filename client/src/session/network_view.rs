@@ -295,16 +295,6 @@ impl NodeView {
         Ok(new_state)
     }
 
-    // pub async fn restart_initialization(&self) -> Result<(), TransitionError> {
-    //     {
-    //         let mut target = self.state.write().await;
-    //         target.state.transition(SessionState::RestartConnect)?;
-    //     }
-    //
-    //     self.notify_change(SessionState::RestartConnect);
-    //     Ok(())
-    // }
-
     pub async fn public_addresses(&self) -> Vec<SocketAddr> {
         let target = self.state.read().await;
         target.addresses.clone()

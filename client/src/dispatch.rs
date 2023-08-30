@@ -64,19 +64,16 @@ where
                 kind: Some(kind),
             }) => match kind {
                 proto::packet::Kind::Control(control) => {
-                    log::trace!("[dispatch]: control packet: {:?}", control);
                     handler
                         .on_control(session_id, control, from)
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Request(request) => {
-                    log::trace!("[dispatch]: request packet: {:?}", request);
                     handler
                         .on_request(session_id, request, from)
                         .map(spawn_local);
                 }
                 proto::packet::Kind::Response(response) => {
-                    log::trace!("[dispatch]: response packet: {:?}", response);
                     match response.kind {
                         Some(kind) => match dispatcher {
                             Some(dispatcher) => dispatcher.dispatcher.dispatch_response(
@@ -94,7 +91,6 @@ where
                 }
             },
             codec::PacketKind::Forward(forward) => {
-                log::trace!("[dispatch]: forward packet: {:?}", forward);
                 // In case of temporary sessions we shouldn't get `Forward` packets,
                 // so we can safely ignore this case. But we can get `Forward` from unknown
                 // session. This can happen if:
@@ -289,7 +285,6 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
-        // log::trace!("[dispatch_response] Trying to remove response for: request id {}, session: {}, code: {}, kind: {:?}", request_id, hex::encode(session_id.clone()), code, kind);
         match { self.responses.lock().unwrap().remove(&request_id) } {
             Some(sender) => {
                 if sender

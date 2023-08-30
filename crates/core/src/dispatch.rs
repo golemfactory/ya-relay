@@ -221,7 +221,6 @@ impl Dispatcher {
             })
         }
         .then(move |result| async move {
-            log::trace!("Removing response for: {:?}", request_id_);
             this.responses.borrow_mut().remove(&request_id_);
             result
         })
@@ -237,7 +236,6 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
-        log::debug!("Trying to remove response for {request_id}");
         match { self.responses.borrow_mut().remove(&request_id) } {
             Some(sender) => {
                 if sender
