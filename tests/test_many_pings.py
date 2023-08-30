@@ -12,6 +12,7 @@ LOGGER = logging.getLogger(__name__)
 
 file_num = 0
 
+
 def ping_nodes(client0, clients):
     ping_times = []
     for client in clients:
@@ -19,6 +20,7 @@ def ping_nodes(client0, clients):
         LOGGER.debug(f"Ping duration {ping_response['duration']}ms")
         ping_times.append(ping_response["duration"])
     return ping_times
+
 
 def calc(ping_times, plot=False):
     n = len(ping_times)
@@ -48,6 +50,7 @@ def calc(ping_times, plot=False):
         file_num += 1
 
     return (a, b, min_ping, max_ping, mean, variance)
+
 
 @pytest.mark.skip(reason="Takes too much time to run in CI")
 def test_many_pings(compose_up):
