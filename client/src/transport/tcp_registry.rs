@@ -311,6 +311,7 @@ pub(crate) async fn async_drop(
     channel: ChannelDesc,
     result: Option<Result<Arc<TcpConnection>, TcpError>>,
 ) {
+
     let result = match result.clone() {
         Some(Ok(conn)) => {
             match node
@@ -331,6 +332,9 @@ pub(crate) async fn async_drop(
             "Dropping `TcpPermit` without result.".to_string(),
         )),
     };
+
+
+    log::trace!("[async_drop]: drop connection to node: {}, result: {:?}", node.id(), result);
 
     node.notifier(channel)
         .send(result)

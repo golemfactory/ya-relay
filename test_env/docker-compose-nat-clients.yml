@@ -18,6 +18,12 @@ services:
     networks:
       - client-network-1
       - client-network-2
+    healthcheck:
+      test: [ "CMD", "nc", "-zv", "localhost", "7464" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 1s
 
   client-1:
     build:
@@ -33,6 +39,8 @@ services:
       - "2998:9081"
     networks:
       - client-network-1
+    depends_on:
+      - relay_server
 
   client-2:
     build:
@@ -48,6 +56,8 @@ services:
       - "2999:9081"
     networks:
       - client-network-2
+    depends_on:
+      - relay_server
       
 networks:
   client-network-1:

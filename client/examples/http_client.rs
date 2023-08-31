@@ -11,7 +11,9 @@ use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Instant,
+    io::Write,
 };
+use chrono::Local;
 use structopt::StructOpt;
 use tokio::sync::oneshot;
 use ya_relay_client::{channels::ForwardSender, Client, ClientBuilder, FailFast, GenericSender};
@@ -375,7 +377,19 @@ async fn handle_forward_message(
 }
 
 async fn run() -> Result<()> {
-    env_logger::init();
+    env_logger::Builder::new()
+        .parse_default_env()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {:5} {}] {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.module_path().unwrap_or("<unnamed>"),
+                record.args()
+            )
+        })
+        .init();
 
     let cli = Cli::from_args();
     let client = build_client(
