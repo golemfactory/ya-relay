@@ -23,7 +23,7 @@ services:
       retries: 3
       start_period: 1s
     environment:
-      - RUST_LOG=trace
+      - RUST_LOG=trace,actix_http=warn,actix_server=warn
 
   client:
     build:
@@ -41,7 +41,7 @@ services:
     depends_on:
       - relay_server
     environment:
-      - RUST_LOG=trace
+      - RUST_LOG=trace,actix_http=warn,actix_server=warn
 
 networks:
   relay-network:

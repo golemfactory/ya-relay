@@ -76,8 +76,6 @@ impl Server {
             }
         }
 
-        log::debug!("[dispatch] session_id = {:?}", session_id);
-
         match packet {
             PacketKind::Packet(proto::Packet { kind, session_id }) => {
                 log::debug!("[dispatch] PacketKind::Packet");
@@ -106,7 +104,6 @@ impl Server {
                     None => {
                         return match kind {
                             Some(proto::packet::Kind::Request(request)) => {
-                                log::debug!("[dispatch] start establish_session");
                                 self.clone().establish_session(id, from, request).await
                             }
                             Some(proto::packet::Kind::Control(proto::Control { kind })) => {
@@ -220,7 +217,11 @@ impl Server {
             let src_node = server
                 .nodes
                 .get_by_session(session_id)
-                .ok_or(Unauthorized::SessionNotFound(session_id))?;
+                .ok_or(Unauthorized::SessionNotFound(session_id))
+                .map_err(|e| {
+                    log::trace!("SessionNotFound: {:?}", session_id);
+                    e
+                })?;
 
             let dest_node = match server
                 .nodes
@@ -320,20 +321,18 @@ impl Server {
 
     async fn control(
         &self,
-        session: SessionId,
+        session_id: SessionId,
         packet: proto::Control,
         from: SocketAddr,
     ) -> ServerResult<()> {
-        log::debug!("Control packet from: {}. Packet: {:?}", from, packet);
-
         if let proto::Control {
             kind: Some(proto::control::Kind::Disconnected(Disconnected { by: Some(by) })),
         } = packet
         {
             let mut server = self.state.write().await;
             match by {
-                By::SessionId(_id) => match server.nodes.get_by_session(session) {
-                    None => return Err(Unauthorized::SessionNotFound(session).into()),
+                By::SessionId(_id) => match server.nodes.get_by_session(session_id) {
+                    None => return Err(Unauthorized::SessionNotFound(session_id).into()),
                     Some(node) => {
                         log::info!(
                             "Received Disconnected message from Node [{}]({}).",

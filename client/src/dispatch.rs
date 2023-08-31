@@ -42,6 +42,18 @@ where
             None => handler.dispatcher(from).await,
         };
 
+        if session.is_some() && packet.is_protocol_packet() {
+            let s = session.clone().unwrap();
+            if s.raw.id.to_vec() != packet.session_id() {
+                log::warn!(
+                    "[dispatch]: ignoring protocol packet with session id mismatch - current session doesn't match packet session: {} != {}",
+                    s.raw.id,
+                    hex::encode(packet.session_id()),
+                );
+                continue;
+            }
+        }
+
         if let Some(ref dispatcher) = dispatcher {
             dispatcher.dispatcher.update_seen();
         }

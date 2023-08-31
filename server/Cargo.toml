@@ -38,6 +38,7 @@ thiserror = "1.0"
 tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 url = "2.1"
+hex = "0.4.3"
 
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = [
@@ -45,5 +46,6 @@ serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "act
 ] }
 tokio-stream = "0.1.8"
 test-case = "3.1"
+
 
 ya-relay-client = { workspace = true, features = ["mock"] }

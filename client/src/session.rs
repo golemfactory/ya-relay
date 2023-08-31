@@ -35,6 +35,7 @@ use crate::routing_session::{NodeRouting, RoutingSender};
 use crate::session::session_initializer::SessionInitializer;
 use crate::transport::ForwardReceiver;
 
+use crate::error::SenderError::Session;
 use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
@@ -374,6 +375,8 @@ impl SessionLayer {
             handles.push(spawn_local_abortable(keep_alive_server_session(
                 self.clone(),
             )));
+        } else {
+            log::debug!("Keep alive server session not started");
         };
 
         {
@@ -538,7 +541,7 @@ impl SessionLayer {
         let entry = self.registry.guard(node_id, &[]).await;
         entry.transition(SessionState::Closing).await?;
         self.unregister(node_id).await;
-        entry.transition_closed().await?;
+        entry.transition(SessionState::Closed).await?;
         Ok(())
     }
 
@@ -551,7 +554,7 @@ impl SessionLayer {
 
             entry.transition(SessionState::Closing).await?;
             myself.unregister_session(session).await;
-            entry.transition_closed().await?;
+            entry.transition(SessionState::Closed).await?;
             Ok(())
         })
         .await
@@ -753,7 +756,10 @@ impl SessionLayer {
                 }
                 Err(e) => {
                     log::warn!("Failed to establish direct p2p session with [{node_id}]. {e}");
-                    permit.registry.restart_initialization().await?;
+                    permit
+                        .registry
+                        .transition(SessionState::RestartConnect)
+                        .await?;
                 }
             }
         } else {
@@ -772,7 +778,10 @@ impl SessionLayer {
                     log::warn!(
                         "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
                     );
-                    permit.registry.restart_initialization().await?;
+                    permit
+                        .registry
+                        .transition(SessionState::RestartConnect)
+                        .await?;
                 }
             }
         } else {

@@ -7,6 +7,7 @@ use backoff::backoff::Backoff;
 use backoff::Error::Transient;
 use backoff::{Error, ExponentialBackoff};
 use futures::future::err;
+use log::trace;
 use std::time::Duration;
 use ya_relay_core::NodeId;
 
@@ -75,6 +76,7 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
             .await_for_closed_or_failed()
             .await;
 
+        log::trace!("[keep-alive]: establishing server session");
         //Re-establish server session using retry policy with exponential backoff.
         let server_session = anchor.establish_server_session(&layer).await;
     }
