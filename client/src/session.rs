@@ -568,13 +568,14 @@ impl SessionLayer {
     }
 
     pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
-        self.session_with_connection_methods(node_id, vec![]).await
+        self.session_filtered_connection_methods(node_id, vec![])
+            .await
     }
 
     /// Returns `RoutingSender` which can be used to send packets to desired Node.
     /// Creates session with Node if necessary. Function will choose the most optimal
     /// route to destination.
-    pub async fn session_with_connection_methods(
+    pub async fn session_filtered_connection_methods(
         &self,
         node_id: NodeId,
         dont_use: Vec<ConnectionMethod>,
@@ -1442,7 +1443,7 @@ impl Handler for SessionLayer {
                         //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
                         let session = myself
-                            .session_with_connection_methods(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
+                            .session_filtered_connection_methods(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
                             .await.map_err(|e| anyhow!("Failed to resolve node with slot {slot}. {e}"))?;
 
                         session.target()
