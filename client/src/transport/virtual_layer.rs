@@ -152,7 +152,7 @@ impl TcpLayer {
         // Make sure we have session with the Node. This allows us to
         // exit early if target Node is unreachable.
         self.session_layer
-            .session(permit.node.id(), vec![])
+            .session(permit.node.id())
             .await
             .map_err(|e| TcpError::Generic(e.to_string()))?;
 

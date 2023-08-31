@@ -132,7 +132,7 @@ impl RoutingSender {
             Some(routing) => routing,
             None => match self
                 .layer
-                .session(self.target, vec![])
+                .session(self.target)
                 .await?
                 .node_routing
                 .upgrade()
@@ -158,7 +158,7 @@ impl RoutingSender {
     /// Calling this function doesn't guarantee, that `RoutingSender::send` won't require
     /// waiting for session. Connection can be lost again before we call `send.
     pub async fn connect(&mut self) -> Result<(), SessionError> {
-        self.layer.session(self.target, vec![]).await?;
+        self.layer.session(self.target).await?;
         Ok(())
     }
 
