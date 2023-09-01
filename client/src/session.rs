@@ -570,10 +570,19 @@ impl SessionLayer {
         false
     }
 
+    pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
+        self.session_filtered_connection_methods(node_id, vec![])
+            .await
+    }
+
     /// Returns `RoutingSender` which can be used to send packets to desired Node.
     /// Creates session with Node if necessary. Function will choose the most optimal
     /// route to destination.
-    pub async fn session(&self, node_id: NodeId) -> Result<RoutingSender, SessionError> {
+    pub async fn session_filtered_connection_methods(
+        &self,
+        node_id: NodeId,
+        dont_use: Vec<ConnectionMethod>,
+    ) -> Result<RoutingSender, SessionError> {
         log::trace!("Requested session with [{node_id}]");
 
         if let Some(routing) = self.get_node_routing(node_id).await {
@@ -637,7 +646,7 @@ impl SessionLayer {
                     permit
                         .collect_results(
                             permit
-                                .run_abortable(myself.resolve(remote_id, &permit, &[ConnectionMethod::Reverse, ConnectionMethod::Direct]))
+                                .run_abortable(myself.resolve(remote_id, &permit, &dont_use))
                                 .await,
                         )
                         .on_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
@@ -1456,7 +1465,7 @@ impl Handler for SessionLayer {
                         //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
                         let session = myself
-                            .session(ident.node_id)
+                            .session_filtered_connection_methods(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
                             .await.map_err(|e| anyhow!("Failed to resolve node with slot {slot}. {e}"))?;
 
                         session.target()
