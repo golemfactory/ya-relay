@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use futures::{future, try_join, FutureExt};
 use rand::Rng;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -231,14 +231,14 @@ async fn transfer_file(
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let data: Vec<u8> = body.into();
+            let data = String::from_utf8(data)?;
 
             let r = messages.request();
-            let end_message = format!("Transfer:{}:{};", r.id(), data.len());
+            let message = format!("Transfer:{}:{}:{};", r.id(), data.len(), data);
 
             let mut sender = forward(&client, transport, node_id).await?;
 
-            sender.send(data.into()).await?;
-            sender.send(end_message.as_bytes().to_vec().into()).await?;
+            sender.send(message.as_bytes().to_vec().into()).await?;
 
             r.result().await.map_err(|e| anyhow!("{e}"))
         })
@@ -255,36 +255,30 @@ async fn transfer_file(
     response::ok_json::<response::Transfer>(&msg)
 }
 
+type PartialMessages = HashMap<NodeId, String>;
+
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
     let mut receiver = client
         .forward_receiver()
         .await
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
+    let mut partial_messages = PartialMessages::new();
 
     while let Some(fwd) = receiver.recv().await {
-        if let Err(e) = handle_forward_messages(fwd, &client, &messages).await {
+        if let Err(e) =
+            handle_forward_messages(fwd, &client, &messages, &mut partial_messages).await
+        {
             log::warn!("Handle forward message failed: {e}")
         }
     }
     Ok(())
 }
 
-async fn forward(
-    client: &Client,
-    transport: TransportType,
-    node_id: NodeId,
-) -> Result<ForwardSender> {
-    match transport {
-        TransportType::Unreliable => client.forward_unreliable(node_id).await,
-        TransportType::Reliable => client.forward_reliable(node_id).await,
-        TransportType::Transfer => client.forward_transfer(node_id).await,
-    }
-}
-
 async fn handle_forward_messages(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
     messages: &Messages,
+    partial_messages: &mut PartialMessages,
 ) -> Result<()> {
     log::info!(
         "Got forward message. Node {}. Transport {}",
@@ -292,7 +286,52 @@ async fn handle_forward_messages(
         fwd.transport
     );
     let msgs = String::from_utf8(fwd.payload.into_vec())?;
-    let msgs = msgs.split(';');
+
+    if msgs.starts_with(";") {
+        if let Some(msg) = partial_messages.remove(&fwd.node_id) {
+            // Pending partial message was complete.
+            handle_forward_message(&msg, fwd.transport, fwd.node_id, client, messages).await?;
+        }
+    }
+
+    let is_complete = msgs.ends_with(";");
+
+    let mut msgs = msgs
+        .split(';')
+        .filter(|s| !s.trim().is_empty())
+        .collect::<VecDeque<&str>>();
+
+    // Handle first msg. Merge with existing partial message if any.
+    if let Some(msg) = msgs.pop_front() {
+        if let Some(partial_message) = partial_messages.remove(&fwd.node_id) {
+            if msgs.is_empty() && !is_complete {
+                // If it was single partial message then add it to partial_messages
+                let partial_message_continued = format!("{partial_message}{msg}");
+                partial_messages.insert(fwd.node_id.clone(), partial_message_continued);
+            } else {
+                let complete_message = format!("{partial_message}{msg}");
+                handle_forward_message(
+                    &complete_message,
+                    fwd.transport,
+                    fwd.node_id,
+                    client,
+                    messages,
+                )
+                .await?;
+            }
+        } else if is_complete {
+            handle_forward_message(msg, fwd.transport, fwd.node_id, client, messages).await?
+        }
+    }
+
+    // If incomplete pop last message and add it to partial_messages.
+    if !is_complete {
+        if let Some(partial_message) = msgs.pop_back() {
+            partial_messages.insert(fwd.node_id.clone(), partial_message.to_string());
+        }
+    }
+
+    // Handle remaining messages
     for msg in msgs {
         handle_forward_message(msg, fwd.transport, fwd.node_id, client, messages).await?
     }
@@ -306,6 +345,11 @@ async fn handle_forward_message(
     client: &Client,
     messages: &Messages,
 ) -> Result<()> {
+    let msg = msg.trim();
+    if msg.is_empty() {
+        return Ok(());
+    }
+    log::debug!("Forward msg data: {}", msg);
     let mut s = msg.split(':');
     let command = s
         .next()
@@ -344,8 +388,12 @@ async fn handle_forward_message(
             let mut sender = forward(client, transport, node_id).await?;
             let bytes_transferred = s
                 .next()
-                .ok_or_else(|| anyhow!("No data found"))?
+                .ok_or_else(|| anyhow!("No bytes transferred value"))?
                 .parse::<usize>()?;
+            let data = s.next().ok_or_else(|| anyhow!("No data value"))?;
+            if data.len() != bytes_transferred {
+                anyhow::bail!("Expected {} bytes, got {}", bytes_transferred, data.len());
+            }
 
             sender
                 .send(
@@ -384,6 +432,18 @@ async fn handle_forward_message(
             Ok(())
         }
         other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
+    }
+}
+
+async fn forward(
+    client: &Client,
+    transport: TransportType,
+    node_id: NodeId,
+) -> Result<ForwardSender> {
+    match transport {
+        TransportType::Unreliable => client.forward_unreliable(node_id).await,
+        TransportType::Reliable => client.forward_reliable(node_id).await,
+        TransportType::Transfer => client.forward_transfer(node_id).await,
     }
 }
 
