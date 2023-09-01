@@ -455,7 +455,9 @@ async fn build_client(
         FallbackCryptoProvider::default()
     };
 
-    let mut builder = ClientBuilder::from_url(relay_addr).crypto(provider);
+    let mut builder = ClientBuilder::from_url(relay_addr)
+        .crypto(provider)
+        .expire_session_after(std::time::Duration::from_secs(20));
 
     if let Some(bind) = p2p_bind_addr {
         builder = builder.listen(bind);

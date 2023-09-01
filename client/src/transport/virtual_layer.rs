@@ -56,6 +56,7 @@ impl TcpLayer {
         ingress: &Channel<Forwarded>,
         session_layer: SessionLayer,
     ) -> TcpLayer {
+        log::trace!("[VirtualTcp]: Creating TCP layer");
         let pcap = config.pcap_path.clone().map(|p| match pcap_writer(p) {
             Ok(pcap) => pcap,
             Err(err) => panic!("{}", err),
@@ -80,6 +81,7 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
+        log::trace!("[VirtualTcp]: Spawning TCP layer");
         let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
         let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
 
@@ -97,7 +99,7 @@ impl TcpLayer {
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
-        log::debug!("[VirtualTcp] Removing Node {node_id}");
+        log::trace!("[VirtualTcp]: Removing Node {node_id}");
 
         let remote_ip = self.registry.resolve_ip(node_id).await;
 
@@ -147,6 +149,10 @@ impl TcpLayer {
         channel: ChannelDesc,
         permit: &TcpPermit,
     ) -> Result<Arc<TcpConnection>, TcpError> {
+        log::trace!(
+            "[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.",
+            node_id = permit.node.id(),
+            channel = channel);
         let endpoint = IpEndpoint::new(permit.node.address, channel.port());
 
         // Make sure we have session with the Node. This allows us to
@@ -156,6 +162,7 @@ impl TcpLayer {
             .await
             .map_err(|e| TcpError::Generic(e.to_string()))?;
 
+        log::trace!("[VirtualTcp]: connected");
         Ok(Arc::new(TcpConnection {
             id: permit.node.id(),
             conn: self

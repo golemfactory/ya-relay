@@ -637,7 +637,7 @@ impl SessionLayer {
                     permit
                         .collect_results(
                             permit
-                                .run_abortable(myself.resolve(remote_id, &permit, &[]))
+                                .run_abortable(myself.resolve(remote_id, &permit, &[ConnectionMethod::Reverse, ConnectionMethod::Direct]))
                                 .await,
                         )
                         .on_err(|e| log::info!("Failed init session with {remote_id}. Error: {e}"))
