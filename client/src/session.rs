@@ -625,7 +625,7 @@ impl SessionLayer {
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
         let this = self.clone();
 
-        match self.registry.lock_outgoing(remote_id, &addrs, this).await {
+        let session = match self.registry.lock_outgoing(remote_id, &addrs, this).await {
             SessionLock::Permit(mut permit) => {
                 log::trace!("Acquired `SessionPermit` to init session with [{remote_id}]");
                 let myself = self.clone();
@@ -649,11 +649,32 @@ impl SessionLayer {
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
+        session.raw.dispatcher.handle_error(
+            proto::StatusCode::Unauthorized as i32,
+            true,
+            self.clone(),
+            Arc::downgrade(&session),
+            Self::error_handler(),
+        );
+
         self.get_node_routing(node_id)
             .await
             .ok_or(SessionError::Internal(format!(
                 "Session with [{remote_id}] closed immediately after establishing."
             )))
+    }
+
+    fn error_handler() -> fn(i32, SessionLayer, Weak<DirectSession>) -> LocalBoxFuture<'static, ()>
+    {
+        move |code: i32, layer: SessionLayer, session: Weak<DirectSession>| {
+            async move {
+                if let Some(session) = session.upgrade() {
+                    layer.close_session(session).await;
+                }
+                log::trace!("[session-layer]: handle_error {code}");
+            }
+            .boxed_local()
+        }
     }
 
     pub async fn server_session(&self) -> Result<Arc<DirectSession>, SessionError> {
@@ -704,15 +725,7 @@ impl SessionLayer {
             true,
             self.clone(),
             Arc::downgrade(&session),
-            move |code, layer, session| {
-                async move {
-                    if let Some(session) = session.upgrade() {
-                        layer.close_session(session).await;
-                    }
-                    log::debug!("handle_error {code}");
-                }
-                .boxed_local()
-            },
+            Self::error_handler(),
         );
 
         // TODO: Make sure this functionality is replaced in new code.

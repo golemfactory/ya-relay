@@ -71,7 +71,11 @@ impl VirtChannel {
 
     pub async fn transition(&self, new_state: TcpState) -> Result<(), TcpTransitionError> {
         let mut state = self.state.write().await;
-        log::trace!("[VirtChannel] Transition from {state:?} to {new_state:?}", state = state, new_state = new_state);
+        log::trace!(
+            "[VirtChannel] Transition from {state:?} to {new_state:?}",
+            state = state,
+            new_state = new_state
+        );
         state.transition(new_state)
     }
 
@@ -94,7 +98,11 @@ impl VirtNode {
         let trans_out_channel =
             VirtChannel::new(ChannelDesc(ChannelType::Transfer, ChannelDirection::Out));
 
-        log::trace!("[VirtNode] Created node with id: {id}, ip: {ip}", id = id, ip = ip);
+        log::trace!(
+            "[VirtNode] Created node with id: {id}, ip: {ip}",
+            id = id,
+            ip = ip
+        );
 
         // This code should place channels according to index values returned by `ChannelDesc::index` function.
         // We could use HashMap instead, but than we should handle case, when ChannelDesc is not in the array,
@@ -126,7 +134,11 @@ impl VirtNode {
         let channel = self.channel(channel);
         let mut state = channel.state.write().await;
 
-        log::trace!("[VirtNode] Transition from {state:?} to {new_state:?}", state = state, new_state = new_state);
+        log::trace!(
+            "[VirtNode] Transition from {state:?} to {new_state:?}",
+            state = state,
+            new_state = new_state
+        );
 
         state.transition(new_state)
     }
@@ -166,8 +178,11 @@ impl TcpRegistry {
     }
 
     pub async fn connect_attempt(&self, node: NodeId, channel: ChannelDesc) -> TcpLock {
-
-        log::trace!("[TcpRegistry] Connect attempt to node: {node}, channel: {channel}", node = node, channel = channel);
+        log::trace!(
+            "[TcpRegistry] Connect attempt to node: {node}, channel: {channel}",
+            node = node,
+            channel = channel
+        );
 
         let node = match self.resolve_node(node).await {
             Ok(node) => node,
@@ -273,7 +288,11 @@ pub enum TcpState {
 
 impl TcpState {
     pub fn transition(&mut self, new_state: TcpState) -> Result<(), TcpTransitionError> {
-        log::trace!("[TcpState] Transition from {state:?} to {new_state:?}", state = self, new_state = new_state);
+        log::trace!(
+            "[TcpState] Transition from {state:?} to {new_state:?}",
+            state = self,
+            new_state = new_state
+        );
         match (&self, &new_state) {
             (&TcpState::Closed, &TcpState::Connecting)
             | (&TcpState::Failed(_), &TcpState::Connecting)
@@ -316,7 +335,11 @@ impl TcpPermit {
         &mut self,
         result: Result<Arc<TcpConnection>, TcpError>,
     ) -> Result<Arc<TcpConnection>, TcpError> {
-        log::trace!("[TcpPermit] Finish connection to node: {}, result: {:?}", self.node.id(), result);
+        log::trace!(
+            "[TcpPermit] Finish connection to node: {}, result: {:?}",
+            self.node.id(),
+            result
+        );
         self.result = Some(result.clone());
         result
     }
@@ -327,7 +350,11 @@ pub(crate) async fn async_drop(
     channel: ChannelDesc,
     result: Option<Result<Arc<TcpConnection>, TcpError>>,
 ) {
-    log::trace!("[async_drop]: drop connection to node: {}, result: {:?}", node.id(), result);
+    log::trace!(
+        "[async_drop]: drop connection to node: {}, result: {:?}",
+        node.id(),
+        result
+    );
     let result = match result.clone() {
         Some(Ok(conn)) => {
             match node
@@ -424,7 +451,11 @@ impl TcpSender {
     /// TODO: We should use channel-like error where you can recover your payload
     ///       from error message.
     pub async fn send(&mut self, packet: Payload) -> Result<(), TcpError> {
-        log::trace!("[TcpSender]: Send to node: {node}, channel: {channel}", node = self.target, channel = self.channel);
+        log::trace!(
+            "[TcpSender]: Send to node: {node}, channel: {channel}",
+            node = self.target,
+            channel = self.channel
+        );
         let routing = match self.connection.upgrade() {
             Some(conn) => conn,
             None => match self
@@ -453,7 +484,11 @@ impl TcpSender {
     }
 
     pub async fn connect(&mut self) -> Result<(), TcpError> {
-        log::trace!("[TcpSender]: Connect to node: {node}, channel: {channel}", node = self.target, channel = self.channel);
+        log::trace!(
+            "[TcpSender]: Connect to node: {node}, channel: {channel}",
+            node = self.target,
+            channel = self.channel
+        );
         self.layer
             .connect(self.target, self.channel.0)
             .await
@@ -464,7 +499,11 @@ impl TcpSender {
     /// Closes connection to Node. In case of relayed connection only forwarding information
     /// will be removed.
     pub async fn disconnect(&mut self) -> Result<(), TcpError> {
-        log::trace!("[TcpSender]: Disconnect from node: {node}, channel: {channel}", node = self.target, channel = self.channel);
+        log::trace!(
+            "[TcpSender]: Disconnect from node: {node}, channel: {channel}",
+            node = self.target,
+            channel = self.channel
+        );
         self.layer.remove_node(self.target).await;
         Ok(())
     }
