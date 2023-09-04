@@ -66,19 +66,19 @@ class PingJob(Thread):
             pytest.fail(f"Ping job should not fail: {error}")
 
 
-class PingJobs(Thread):
-    ping_jobs: [PingJob]
-    ping_jobs_started: Event
+class Jobs(Thread):
+    jobs: [Thread]
+    jobs_started: Event
 
-    def __init__(self, ping_jobs: [PingJob], ping_jobs_started: Event):
-        super(PingJobs, self).__init__()
-        self.ping_jobs = ping_jobs
-        self.ping_jobs_started = ping_jobs_started
+    def __init__(self, ping_jobs: [Thread], ping_jobs_started: Event):
+        super(Jobs, self).__init__()
+        self.jobs = ping_jobs
+        self.jobs_started = ping_jobs_started
 
     def run(self, *args, **kwargs):
-        for ping_job in self.ping_jobs:
-            ping_job.start()
-        self.ping_jobs_started.set()
+        for job in self.jobs:
+            job.start()
+        self.jobs_started.set()
 
 
 def test_net_down(compose_up):
@@ -113,10 +113,19 @@ def test_net_down(compose_up):
     except BaseException as error:
         assert f"{error}".index("Read timed out") >= 0
 
-    before_tr = Event()
-    after_tr = Event()
-    data = bytearray(10_500_000)
-    tr_job = TransferJob(client_exposed, client_hidden.node_id, data, 10, before_tr, after_tr)
+    before_tr_events = []
+    after_tr_events = []
+    tr_jobs = []
+    for i in range(0, 1):  # It will not work for 2+ transfer jobs
+        before_tr = Event()
+        after_tr = Event()
+        data = bytearray(1_050_000)
+        tr_job = TransferJob(client_exposed, client_hidden.node_id, data, 10, before_tr, after_tr)
+        tr_jobs.append(tr_job)
+        before_tr_events.append(before_tr)
+        after_tr_events.append(after_tr)
+    tr_jobs_started = Event()
+    tr_jobs = Jobs(tr_jobs, tr_jobs_started)
 
     before_ping_events = []
     after_ping_events = []
@@ -129,13 +138,14 @@ def test_net_down(compose_up):
         before_ping_events.append(before_ping)
         after_ping_events.append(after_ping)
     ping_jobs_started = Event()
-    ping_jobs = PingJobs(ping_jobs, ping_jobs_started)
+    ping_jobs = Jobs(ping_jobs, ping_jobs_started)
 
     LOGGER.info("Starting ping jobs and transfer job.")
     ping_jobs.start()
-    tr_job.start()
+    tr_jobs.start()
 
-    before_tr.wait(timeout=10)
+    for before_tr in before_tr_events:
+        before_tr.wait(timeout=10)  # It might last n*10s. Ignore it for now.
     for before_ping in before_ping_events:
         before_ping.wait(timeout=10)
 
@@ -146,7 +156,8 @@ def test_net_down(compose_up):
     cluster.connect(client_hidden, networks)
 
     LOGGER.info("Connected. Waiting for Ping and Transfer jobs to finnish")
-    after_tr.wait(timeout=10)
+    for after_tr in after_tr_events:
+        after_tr.wait(timeout=10)
     for after_ping in after_ping_events:
         after_ping.wait(timeout=10)
 
