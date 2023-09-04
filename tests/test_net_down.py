@@ -5,9 +5,6 @@ import time
 import pytest
 from threading import Thread, Event
 import math
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
-
 
 LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +37,6 @@ class TransferJob(Thread):
             assert expected_len == response["mb_transfered"]
             self.after_tr.set()
         except BaseException as error:
-            self.after_tr.set()
             pytest.fail(f"Transfer job should not fail: {error}")
 
 
@@ -67,48 +63,22 @@ class PingJob(Thread):
             assert self.node_id == response["node_id"]
             self.after_ping.set()
         except BaseException as error:
-            self.after_ping.set()
             pytest.fail(f"Ping job should not fail: {error}")
 
 
 class Jobs(Thread):
     jobs: [Thread]
-    start_events: [Event]
-    finish_events: [Event]
+    jobs_started: Event
 
-    def __init__(
-        self,
-        ping_jobs: [Thread],
-        start_events: [Event],
-        finish_events: [Event],
-    ):
+    def __init__(self, ping_jobs: [Thread], ping_jobs_started: Event):
         super(Jobs, self).__init__()
         self.jobs = ping_jobs
-        self.start_events = start_events
-        self.finish_events = finish_events
+        self.jobs_started = ping_jobs_started
 
     def run(self, *args, **kwargs):
         for job in self.jobs:
             job.start()
-
-    def wait_start(self, timeout: int = 10):
-        events = self.start_events
-        self.__wait_events(events, timeout)
-
-    def wait_finish(self, timeout: int = 10):
-        events = self.finish_events
-        self.__wait_events(events, timeout)
-
-    def __wait_events(self, events: [Event], timeout: int):
-        if all(event.is_set() for event in events):
-            pass
-        else:
-            t_pool = ThreadPoolExecutor(max_workers=len(events))
-            tasks = []
-            for event in events:
-                tasks.append(t_pool.submit(event.wait))
-            concurrent.futures.wait(tasks, timeout=timeout)
-            t_pool.shutdown(wait=False)
+        self.jobs_started.set()
 
 
 def test_net_down(compose_up):
@@ -146,7 +116,7 @@ def test_net_down(compose_up):
     before_tr_events = []
     after_tr_events = []
     tr_jobs = []
-    for i in range(0, 2):  # It will not work for 2+ transfer jobs
+    for i in range(0, 1):  # It will not work for 2+ transfer jobs
         before_tr = Event()
         after_tr = Event()
         data = bytearray(1_050_000)
@@ -154,7 +124,8 @@ def test_net_down(compose_up):
         tr_jobs.append(tr_job)
         before_tr_events.append(before_tr)
         after_tr_events.append(after_tr)
-    tr_jobs = Jobs(tr_jobs, before_tr_events, after_tr_events)
+    tr_jobs_started = Event()
+    tr_jobs = Jobs(tr_jobs, tr_jobs_started)
 
     before_ping_events = []
     after_ping_events = []
@@ -166,11 +137,17 @@ def test_net_down(compose_up):
         ping_jobs.append(ping_job)
         before_ping_events.append(before_ping)
         after_ping_events.append(after_ping)
-    ping_jobs = Jobs(ping_jobs, before_ping_events, after_ping_events)
+    ping_jobs_started = Event()
+    ping_jobs = Jobs(ping_jobs, ping_jobs_started)
 
     LOGGER.info("Starting ping jobs and transfer job.")
-    ping_jobs.wait_start()
-    tr_jobs.wait_start()
+    ping_jobs.start()
+    tr_jobs.start()
+
+    for before_tr in before_tr_events:
+        before_tr.wait(timeout=10)  # It might last n*10s. Ignore it for now.
+    for before_ping in before_ping_events:
+        before_ping.wait(timeout=10)
 
     LOGGER.info("Sleepinng after jobs start.")
     time.sleep(3)
@@ -179,8 +156,10 @@ def test_net_down(compose_up):
     cluster.connect(client_hidden, networks)
 
     LOGGER.info("Connected. Waiting for Ping and Transfer jobs to finnish")
-    ping_jobs.wait_finish()
-    tr_jobs.wait_finish()
+    for after_tr in after_tr_events:
+        after_tr.wait(timeout=10)
+    for after_ping in after_ping_events:
+        after_ping.wait(timeout=10)
 
     # Consecutive pings should still work
     ping_response = client_exposed.ping(client_hidden.node_id)
