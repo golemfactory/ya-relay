@@ -349,7 +349,7 @@ async fn handle_forward_message(
     if msg.is_empty() {
         return Ok(());
     }
-    log::debug!("Forward msg data: {}", msg);
+    log::debug!("Forward msg data: {msg:.100} (trimmed to 100)");
     let mut s = msg.split(':');
     let command = s
         .next()
@@ -431,7 +431,7 @@ async fn handle_forward_message(
             };
             Ok(())
         }
-        other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
+        other_cmd => Err(anyhow!("Invalid command: {other_cmd:.100} (trimmed to 100)")),
     }
 }
 

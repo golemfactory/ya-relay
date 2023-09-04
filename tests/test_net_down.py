@@ -76,7 +76,7 @@ class PingJobs(Thread):
         self.ping_jobs_started = ping_jobs_started
 
     def run(self, *args, **kwargs):
-        for ping_job in self.ping_jobs_started:
+        for ping_job in self.ping_jobs:
             ping_job.start()
         self.ping_jobs_started.set()
 
@@ -115,16 +115,16 @@ def test_net_down(compose_up):
 
     before_tr = Event()
     after_tr = Event()
-    data = bytearray(1_050_000)
+    data = bytearray(10_500_000)
     tr_job = TransferJob(client_exposed, client_hidden.node_id, data, 10, before_tr, after_tr)
 
     before_ping_events = []
     after_ping_events = []
     ping_jobs = []
-    for i in range(1, 10):
+    for i in range(0, 10):
         before_ping = Event()
         after_ping = Event()
-        ping_job = PingJob(client_exposed, client_hidden.node_id, 100, before_ping, after_ping)
+        ping_job = PingJob(client_exposed, client_hidden.node_id, 10, before_ping, after_ping)
         ping_jobs.append(ping_job)
         before_ping_events.append(before_ping)
         after_ping_events.append(after_ping)
