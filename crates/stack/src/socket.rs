@@ -13,7 +13,7 @@ pub const ENV_VAR_TCP_TIMEOUT: &str = "YA_NET_TCP_TIMEOUT_MS";
 pub const ENV_VAR_TCP_KEEP_ALIVE: &str = "YA_NET_TCP_KEEP_ALIVE_MS";
 pub const ENV_VAR_TCP_ACK_DELAY: &str = "YA_NET_TCP_ACK_DELAY_MS";
 pub const ENV_VAR_TCP_NAGLE: &str = "YA_NET_TCP_ACK_DELAY";
-pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(5);
+pub const TCP_CONN_TIMEOUT: Duration = Duration::from_secs(25);
 pub const TCP_DISCONN_TIMEOUT: Duration = Duration::from_secs(2);
 const META_STORAGE_SIZE: usize = 1024;
 

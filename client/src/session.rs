@@ -583,7 +583,7 @@ impl SessionLayer {
         node_id: NodeId,
         dont_use: Vec<ConnectionMethod>,
     ) -> Result<RoutingSender, SessionError> {
-        log::trace!("Requested session with [{node_id}]");
+        log::trace!("[SessionLayer]: Requested session with [{node_id}]");
 
         if let Some(routing) = self.get_node_routing(node_id).await {
             // Why we need this ugly solution? Can't we just return `RoutingSender`?
@@ -1311,6 +1311,7 @@ impl Handler for SessionLayer {
         if let Some(kind) = control.kind {
             let fut = match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
+                    log::trace!("[on_control]: ReverseConnection message from {from}");
                     let myself = self;
                     tokio::task::spawn_local(async move {
                         myself
@@ -1322,6 +1323,7 @@ impl Handler for SessionLayer {
                     return None;
                 }
                 ya_relay_proto::proto::control::Kind::PauseForwarding(_) => async move {
+                    log::trace!("[on_control]: PauseForwarding message from {from}");
                     match self.find_session(from).await {
                         Some(session) => {
                             log::debug!(
@@ -1337,6 +1339,7 @@ impl Handler for SessionLayer {
                 }
                 .boxed_local(),
                 ya_relay_proto::proto::control::Kind::ResumeForwarding(_) => async move {
+                    log::trace!("[on_control]: ResumeForwarding message from {from}");
                     match self.find_session(from).await {
                         Some(session) => {
                             log::debug!("Forwarding resumed for session {}", session.raw.id);
@@ -1351,6 +1354,7 @@ impl Handler for SessionLayer {
                 ya_relay_proto::proto::control::Kind::Disconnected(
                     proto::control::Disconnected { by: Some(by) },
                 ) => {
+                    log::trace!("[on_control]: Disconnected message from {from}");
                     let myself = self;
                     async move {
                         myself
@@ -1469,6 +1473,7 @@ impl Handler for SessionLayer {
                             .await.map_err(|e| anyhow!("Failed to resolve node with slot {slot}. {e}"))?;
 
                         session.target()
+                        // return myself.send_disconnect(SessionId::from(forward.session_id), from).await;
                     }
                 }
             };

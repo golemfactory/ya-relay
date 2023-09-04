@@ -1,7 +1,7 @@
 #!/bin/bash
 
-cargo build --release
-cargo build --example http_client --release
+cargo build --release --features "packet-trace-enable"
+cargo build --example http_client --release --features "packet-trace-enable"
 
 docker build -f Dockerfile.base -t tests_base test_env/.
 # Start the network

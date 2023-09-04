@@ -152,7 +152,8 @@ impl TcpLayer {
         log::trace!(
             "[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.",
             node_id = permit.node.id(),
-            channel = channel);
+            channel = channel
+        );
         let endpoint = IpEndpoint::new(permit.node.address, channel.port());
 
         // Make sure we have session with the Node. This allows us to

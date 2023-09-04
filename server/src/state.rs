@@ -193,7 +193,14 @@ impl NodesState {
         self.slots
             .get(slot as usize)
             .cloned()
-            .and_then(|entry| entry.active())
+            .and_then(|entry| {
+                match &entry {
+                    Slot::Free => { log::trace!("[NodeState]: Getting session from slot: {} - Free", slot); }
+                    Slot::Some(s) => { log::trace!("[NodeState]: Getting session from slot: {} - Some(sessionId: {})", slot, s.session); }
+                    Slot::Purgatory(s) => { log::trace!("[NodeState]: Getting session from slot: {} - Purgatory(sessionId: {})", slot, s.session); }
+                }
+                entry.active()
+            })
     }
 
     pub fn get_by_session(&self, id: SessionId) -> Option<NodeSession> {
@@ -214,7 +221,14 @@ impl NodesState {
                 .slots
                 .get(slot as usize)
                 .cloned()
-                .and_then(|entry| entry.active()),
+                .and_then(|entry| {
+                    match &entry {
+                        Slot::Free => { log::trace!("[NodeState]: Getting session by node: {} - Free", id); }
+                        Slot::Some(s) => { log::trace!("[NodeState]: Getting session by node: {} - Some(sessionId: {})", id, s.session); }
+                        Slot::Purgatory(s) => { log::trace!("[NodeState]: Getting session by node: {} - Purgatory(sessionId: {})", id, s.session); }
+                    }
+                    entry.active()
+                }),
         }
     }
 
