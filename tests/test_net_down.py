@@ -116,7 +116,7 @@ def test_net_down(compose_up):
     before_tr_events = []
     after_tr_events = []
     tr_jobs = []
-    for i in range(0, 1):  # It will not work for 2+ transfer jobs
+    for i in range(0, 3): 
         before_tr = Event()
         after_tr = Event()
         data = bytearray(1_050_000)
@@ -130,7 +130,7 @@ def test_net_down(compose_up):
     before_ping_events = []
     after_ping_events = []
     ping_jobs = []
-    for i in range(0, 10):
+    for i in range(0, 30):
         before_ping = Event()
         after_ping = Event()
         ping_job = PingJob(client_exposed, client_hidden.node_id, 10, before_ping, after_ping)

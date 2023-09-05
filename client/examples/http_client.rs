@@ -235,7 +235,7 @@ async fn transfer_file(
 
             let r = messages.request();
             let message = format!("Transfer:{}:{}:{};", r.id(), data.len(), data);
-
+            log::trace!("Sending transfer msg: {message:.100}");
             let mut sender = forward(&client, transport, node_id).await?;
 
             sender.send(message.as_bytes().to_vec().into()).await?;
@@ -262,8 +262,7 @@ async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()>
         .forward_receiver()
         .await
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
-    let mut partial_messages = PartialMessages::new();
-
+    let mut partial_messages = Arc::new(Mutex::new(PartialMessages::new()));
     while let Some(fwd) = receiver.recv().await {
         if let Err(e) =
             handle_forward_messages(fwd, &client, &messages, &mut partial_messages).await
@@ -278,64 +277,67 @@ async fn handle_forward_messages(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
     messages: &Messages,
-    partial_messages: &mut PartialMessages,
+    partial_messages: &mut Arc<Mutex<PartialMessages>>,
 ) -> Result<()> {
     log::info!(
         "Got forward message. Node {}. Transport {}",
         fwd.node_id,
         fwd.transport
     );
-    let msgs = String::from_utf8(fwd.payload.into_vec())?;
 
-    if msgs.starts_with(";") {
-        if let Some(msg) = partial_messages.remove(&fwd.node_id) {
-            // Pending partial message was complete.
-            handle_forward_message(&msg, fwd.transport, fwd.node_id, client, messages).await?;
-        }
+    let msgs = String::from_utf8(fwd.payload.into_vec())?
+        .trim()
+        .to_string();
+
+    let msgs = split_messages(msgs, fwd.node_id, partial_messages)?;
+
+    for msg in msgs {
+        handle_forward_message(&msg, fwd.transport, fwd.node_id, client, messages).await?;
     }
+    Ok(())
+}
 
-    let is_complete = msgs.ends_with(";");
+fn split_messages(
+    msgs: String,
+    node_id: NodeId,
+    partial_messages: &mut Arc<Mutex<PartialMessages>>,
+) -> Result<VecDeque<String>> {
+    let mut partial_messages = partial_messages.lock().unwrap();
+
+    let previous_last_was_complete = msgs.starts_with(';');
+    let current_last_is_complete = msgs.ends_with(';');
 
     let mut msgs = msgs
-        .split(';')
-        .filter(|s| !s.trim().is_empty())
-        .collect::<VecDeque<&str>>();
+            .split(';')
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_owned)
+            .collect::<VecDeque<String>>();
 
-    // Handle first msg. Merge with existing partial message if any.
-    if let Some(msg) = msgs.pop_front() {
-        if let Some(partial_message) = partial_messages.remove(&fwd.node_id) {
-            if msgs.is_empty() && !is_complete {
-                // If it was single partial message then add it to partial_messages
-                let partial_message_continued = format!("{partial_message}{msg}");
-                partial_messages.insert(fwd.node_id.clone(), partial_message_continued);
-            } else {
-                let complete_message = format!("{partial_message}{msg}");
-                handle_forward_message(
-                    &complete_message,
-                    fwd.transport,
-                    fwd.node_id,
-                    client,
-                    messages,
-                )
-                .await?;
-            }
-        } else if is_complete {
-            handle_forward_message(msg, fwd.transport, fwd.node_id, client, messages).await?
+    if let Some(partial_message) = partial_messages.remove(&node_id) {
+        if previous_last_was_complete {
+            log::trace!("Handling messages. Pending partial message was complete. Msg: {partial_message:.100} (first 100)");
+            msgs.push_front(partial_message);
+        } else if msgs.len() == 1 && !current_last_is_complete {
+            let msg = msgs.pop_front().expect("Is not empty");
+            log::trace!("Handling messages. Merging partial message with current partial message. New partial: {msg:.100} (first 100)");
+            let partial_message_continued = format!("{partial_message}{msg}");
+            partial_messages.insert(node_id, partial_message_continued);
+        } else {
+            let msg = msgs.pop_front().expect("Is not empty");
+            log::trace!("Handling messages. Completing pending parital message with new message: {msg:.100} (first 100)");
+            let complete_message = format!("{partial_message}{msg}");
+            msgs.push_front(complete_message);
         }
     }
 
     // If incomplete pop last message and add it to partial_messages.
-    if !is_complete {
+    if !current_last_is_complete {
         if let Some(partial_message) = msgs.pop_back() {
-            partial_messages.insert(fwd.node_id.clone(), partial_message.to_string());
+            log::trace!("Handling messages. Adding pending partial message: {partial_message:.100} (first 100)");
+            partial_messages.insert(node_id, partial_message.to_string());
         }
     }
-
-    // Handle remaining messages
-    for msg in msgs {
-        handle_forward_message(msg, fwd.transport, fwd.node_id, client, messages).await?
-    }
-    Ok(())
+    Ok(msgs)
 }
 
 async fn handle_forward_message(
@@ -349,7 +351,7 @@ async fn handle_forward_message(
     if msg.is_empty() {
         return Ok(());
     }
-    log::debug!("Forward msg data: {msg:.100} (trimmed to 100)");
+    log::trace!("Forward msg data: {msg:.100} (first 100)");
     let mut s = msg.split(':');
     let command = s
         .next()
@@ -431,7 +433,9 @@ async fn handle_forward_message(
             };
             Ok(())
         }
-        other_cmd => Err(anyhow!("Invalid command: {other_cmd:.100} (trimmed to 100)")),
+        other_cmd => Err(anyhow!(
+            "Invalid command: {other_cmd:.100} (trimmed to 100)"
+        )),
     }
 }
 
