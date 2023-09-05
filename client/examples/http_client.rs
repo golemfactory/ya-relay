@@ -308,10 +308,10 @@ fn split_messages(
     let current_last_is_complete = msgs.ends_with(';');
 
     let mut msgs = msgs
-            .split(';')
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_owned)
-            .collect::<VecDeque<String>>();
+        .split(';')
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
+        .collect::<VecDeque<String>>();
 
     if let Some(partial_message) = partial_messages.remove(&node_id) {
         if previous_last_was_complete {
