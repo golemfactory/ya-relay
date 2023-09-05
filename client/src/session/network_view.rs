@@ -702,7 +702,9 @@ impl NodeAwaiting {
                 }
                 SessionState::FailedEstablish(e) => return Err(e),
                 _ => {
-                    log::trace!("Waiting for established session with [{node_id}]: skipping state: {state}")
+                    log::trace!(
+                        "Waiting for established session with [{node_id}]: skipping state: {state}"
+                    )
                 }
             };
 
