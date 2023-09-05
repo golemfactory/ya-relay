@@ -257,12 +257,14 @@ async fn transfer_file(
 
 type PartialMessages = HashMap<NodeId, String>;
 
+const MSG_SEPARATOR: &str = ";";
+
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
     let mut receiver = client
         .forward_receiver()
         .await
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
-    let mut partial_messages = Arc::new(Mutex::new(PartialMessages::new()));
+    let mut partial_messages = Default::default();
     while let Some(fwd) = receiver.recv().await {
         if let Err(e) =
             handle_forward_messages(fwd, &client, &messages, &mut partial_messages).await
@@ -277,7 +279,7 @@ async fn handle_forward_messages(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
     messages: &Messages,
-    partial_messages: &mut Arc<Mutex<PartialMessages>>,
+    partial_messages: &mut PartialMessages,
 ) -> Result<()> {
     log::info!(
         "Got forward message. Node {}. Transport {}",
@@ -300,43 +302,38 @@ async fn handle_forward_messages(
 fn split_messages(
     msgs: String,
     node_id: NodeId,
-    partial_messages: &mut Arc<Mutex<PartialMessages>>,
+    partial_messages: &mut PartialMessages,
 ) -> Result<VecDeque<String>> {
-    let mut partial_messages = partial_messages.lock().unwrap();
-
-    let previous_last_was_complete = msgs.starts_with(';');
-    let current_last_is_complete = msgs.ends_with(';');
+    let msgs = msgs.trim();
+    let previous_last_is_complete = msgs.starts_with(MSG_SEPARATOR);
+    let current_last_is_complete = msgs.ends_with(MSG_SEPARATOR);
 
     let mut msgs = msgs
-        .split(';')
+        .split(MSG_SEPARATOR)
         .filter(|s| !s.trim().is_empty())
         .map(str::to_owned)
         .collect::<VecDeque<String>>();
 
-    if let Some(partial_message) = partial_messages.remove(&node_id) {
-        if previous_last_was_complete {
-            log::trace!("Handling messages. Pending partial message was complete. Msg: {partial_message:.100} (first 100)");
-            msgs.push_front(partial_message);
-        } else if msgs.len() == 1 && !current_last_is_complete {
-            let msg = msgs.pop_front().expect("Is not empty");
-            log::trace!("Handling messages. Merging partial message with current partial message. New partial: {msg:.100} (first 100)");
-            let partial_message_continued = format!("{partial_message}{msg}");
-            partial_messages.insert(node_id, partial_message_continued);
+    if let Some(previous_last_partial) = partial_messages.remove(&node_id) {
+        if previous_last_is_complete {
+            log::trace!("Pending partial message is complete. Msg: {previous_last_partial:.100} (first 100)");
+            msgs.push_front(previous_last_partial);
+        } else if let Some(continuation) = msgs.pop_front() {
+            let partial_message_continued = format!("{previous_last_partial}{continuation}");
+            log::trace!("Merging previous last partial message with first current message. New msg: {partial_message_continued:.100} (first 100)");
+            msgs.push_front(partial_message_continued);
         } else {
-            let msg = msgs.pop_front().expect("Is not empty");
-            log::trace!("Handling messages. Completing pending parital message with new message: {msg:.100} (first 100)");
-            let complete_message = format!("{partial_message}{msg}");
-            msgs.push_front(complete_message);
+            anyhow::bail!(format!("Incoming message with id {node_id} should be a continuation of {previous_last_partial:.100} (first 100)"));
         }
     }
 
-    // If incomplete pop last message and add it to partial_messages.
     if !current_last_is_complete {
-        if let Some(partial_message) = msgs.pop_back() {
-            log::trace!("Handling messages. Adding pending partial message: {partial_message:.100} (first 100)");
-            partial_messages.insert(node_id, partial_message.to_string());
+        if let Some(current_partial) = msgs.pop_back() {
+            log::trace!("Adding pending partial message: {current_partial:.100} (first 100)");
+            partial_messages.insert(node_id, current_partial);
         }
     }
+
     Ok(msgs)
 }
 
@@ -538,4 +535,130 @@ async fn build_client(
 async fn main() -> anyhow::Result<()> {
     let local_set = tokio::task::LocalSet::new();
     local_set.run_until(run()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, VecDeque};
+
+    use crate::split_messages;
+
+    #[test]
+    fn complete_1st_partial_2nd_current_no_pending() {
+        let msgs = "msg_field_11:msg_field_12;msg_field_21:msg_field_22:msg_field_23".into();
+        let node_id = Default::default();
+        let partial_messages = &mut Default::default();
+        let expected_msgs = VecDeque::from(vec!["msg_field_11:msg_field_12".into()]);
+        let expected_partial_messages =
+            &mut HashMap::from([(node_id, "msg_field_21:msg_field_22:msg_field_23".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn complete_1st_current_no_pending() {
+        let msgs = "m1;".into();
+        let node_id = Default::default();
+        let partial_messages = &mut Default::default();
+        let expected_msgs = VecDeque::from(vec!["m1".into()]);
+        let expected_partial_messages = &mut HashMap::new();
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn empty_current_no_pending() {
+        let msgs = "".into();
+        let node_id = Default::default();
+        let partial_messages = &mut Default::default();
+        let expected_msgs = VecDeque::from(vec![]);
+        let expected_partial_messages = &mut HashMap::new();
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn empty_current_and_pending() {
+        let msgs = "".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        assert!(split_messages(msgs, node_id, partial_messages).is_err());
+    }
+
+    #[test]
+    fn empty_current_and_different_pending() {
+        let msgs = "".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(From::from([1; 20]), "x".into())]);
+        let expected_partial_messages = &mut partial_messages.clone();
+        split_messages(msgs, node_id, partial_messages).unwrap();
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn partial_current_and_complete_pending() {
+        let msgs = ";y".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        let expected_msgs = VecDeque::from(vec!["x".into()]);
+        let expected_partial_messages = &mut HashMap::from([(node_id, "y".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn complete_current_and_complete_pending() {
+        let msgs = ";y;".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        let expected_msgs = VecDeque::from(vec!["x".into(), "y".into()]);
+        let expected_partial_messages = &mut HashMap::new();
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn partial_current_and_partial_pending() {
+        let msgs = "y".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        let expected_msgs = VecDeque::new();
+        let expected_partial_messages = &mut HashMap::from([(node_id, "xy".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn partial_and_complete_current_and_partial_and_different_pending() {
+        let msgs = "y;z;q".into();
+        let node_id = Default::default();
+        let partial_messages =
+            &mut HashMap::from([(From::from([2; 20]), "p".into()), (node_id, "x".into())]);
+        let expected_msgs = VecDeque::from(vec!["xy".into(), "z".into()]);
+        let expected_partial_messages =
+            &mut HashMap::from([(From::from([2; 20]), "p".into()), (node_id, "q".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
 }
