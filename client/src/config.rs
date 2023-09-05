@@ -106,6 +106,7 @@ impl ClientBuilder {
     ///
     /// `fail_fast` argument determines whether to early return with an error when encountering
     /// issues during auto-connection to a relay on startup.
+    /// If fail_fast is set to true then we do not reinitialize session with relay server if it gets lost.
     pub fn connect(mut self, fail_fast: FailFast) -> ClientBuilder {
         self.auto_connect = true;
         match fail_fast {
