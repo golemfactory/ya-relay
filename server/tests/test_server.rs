@@ -1,6 +1,6 @@
-mod helpers;
+mod common;
 
-use helpers::{check_broadcast, spawn_receive_for_client};
+use common::{check_broadcast, spawn_receive_for_client};
 use std::net::UdpSocket;
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_server::testing::server::init_test_server;
