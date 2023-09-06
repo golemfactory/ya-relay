@@ -6,11 +6,13 @@ ARG RUST_LOG=info
 ENV LATENCY=$LATENCY
 ENV RUST_LOG=$RUST_LOG
 ENV BIND_IP=0.0.0.0
+ENV BIND_PROTO=tcp
 
 # Example: BIND_IP_PATTERN=^172\.22\.
 ENV BIND_IP_PATTERN=$BIND_IP_PATTERN
 # Container IP
 ENV BIND_IP=$BIND_IP
+ENV BIND_PROTO=$BIND_PROTO
 
 # Copy debug or release (prefered) build
 COPY ./target/debu[g]/example[s]/http_clien[t] /app/
@@ -23,7 +25,7 @@ CMD export SERVER_IP=$(getent hosts relay_server | cut -d' ' -f1 | head -n 1); \
         export BIND_IP=$(ip addr show | awk -v pattern="$BIND_IP_PATTERN" '/inet / && $2 ~ pattern {split($2, a, "/"); print a[1]}' | head -n 1); \
     fi; \
     if [ -n "$BIND_IP" ]; then \
-        export P2P_BIND_ADDR=tcp://$BIND_IP:9081; \
+        export P2P_BIND_ADDR=$BIND_PROTO://$BIND_IP:9081; \
         echo "Bind address: ${P2P_BIND_ADDR}"; \
     else echo "No bind address"; \
     fi; \

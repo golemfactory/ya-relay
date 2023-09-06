@@ -53,7 +53,7 @@ class Node:
             for key, value in ports.items()
         }
 
-    def address(self, name_part: str | None = None) -> str | None:
+    def address(self, name_part: str = "public") -> str | None:
         LOGGER.debug(f"Looking for {name_part}")
         LOGGER.debug(f"Net settings: {self.container.network_settings}")
         networks = self.container.network_settings.networks
@@ -63,7 +63,7 @@ class Node:
             return list(networks.values())[0].ip_address
         ips = []
         for name in networks:
-            if name_part in name:  # type: ignore
+            if name_part in name:
                 ips.append(networks[name].ip_address)
         if len(ips) == 0:
             return None
