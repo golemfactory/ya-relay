@@ -1495,11 +1495,20 @@ impl ConnectionMethod {
     }
 }
 
-#[cfg(any(test, feature = "mock"))]
-mod testing {
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::time::timeout;
+    use ya_relay_core::server_session::TransportType;
+    use ya_relay_core::NodeId;
+    use ya_relay_proto::proto::Payload;
+
+    use crate::raw_session::SessionType;
     use crate::session::session_initializer::SessionInitializer;
     use crate::session::SessionLayer;
     use crate::testing::accessors::SessionLayerPrivate;
+    use crate::testing::init::MockSessionNetwork;
 
     use anyhow::bail;
     use futures::future::LocalBoxFuture;
@@ -1525,20 +1534,6 @@ mod testing {
             .boxed_local()
         }
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use tokio::time::timeout;
-    use ya_relay_core::server_session::TransportType;
-    use ya_relay_core::NodeId;
-    use ya_relay_proto::proto::Payload;
-
-    use crate::raw_session::SessionType;
-    use crate::testing::init::MockSessionNetwork;
-
     #[actix_rt::test]
     async fn test_session_layer_happy_path() {
         let mut network = MockSessionNetwork::new().await.unwrap();

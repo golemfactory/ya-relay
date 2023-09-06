@@ -1,8 +1,7 @@
-#![cfg(feature = "mock")]
 mod helpers;
 
 use anyhow::Context;
-use futures::{SinkExt, StreamExt};
+use futures::StreamExt;
 use std::rc::Rc;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
@@ -10,23 +9,22 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::testing::forwarding_utils::spawn_receive;
-use ya_relay_client::ClientBuilder;
-use ya_relay_client::Forwarded;
+use ya_relay_client::channels::Forwarded;
+use ya_relay_client::{ClientBuilder, FailFast, GenericSender};
 use ya_relay_server::testing::server::init_test_server;
 
-use helpers::hack_make_ip_private;
+use helpers::{hack_make_ip_private, spawn_receive};
 
 #[serial_test::serial]
 async fn test_forward_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
 
@@ -70,11 +68,11 @@ async fn test_forward_reliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
 
@@ -100,8 +98,8 @@ async fn test_forward_reliable() -> anyhow::Result<()> {
 
     println!("Forwarding: reliable");
 
-    let mut tx1 = client1.forward(client2.node_id()).await.unwrap();
-    let mut tx2 = client2.forward(client1.node_id()).await.unwrap();
+    let mut tx1 = client1.forward_reliable(client2.node_id()).await.unwrap();
+    let mut tx2 = client2.forward_reliable(client1.node_id()).await.unwrap();
 
     tx1.send(vec![1u8].into()).await?;
     tx2.send(vec![2u8].into()).await?;
@@ -119,11 +117,11 @@ async fn test_p2p_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
 
@@ -164,11 +162,11 @@ async fn test_p2p_reliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
 
@@ -191,8 +189,8 @@ async fn test_p2p_reliable() -> anyhow::Result<()> {
 
     println!("Forwarding: reliable");
 
-    let mut tx1 = client1.forward(client2.node_id()).await?;
-    let mut tx2 = client2.forward(client1.node_id()).await?;
+    let mut tx1 = client1.forward_reliable(client2.node_id()).await?;
+    let mut tx2 = client2.forward_reliable(client1.node_id()).await?;
 
     tx1.send(vec![1u8].into()).await?;
     tx2.send(vec![2u8].into()).await?;
@@ -210,11 +208,11 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
     let client2 = ClientBuilder::from_url(wrapper.url())
-        .connect()
+        .connect(FailFast::Yes)
         .build()
         .await?;
 
@@ -249,7 +247,7 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
     }
     spawn_receive_counted(">> 2", received2.clone(), rx2);
 
-    let mut tx1 = client1.forward(client2.node_id()).await?;
+    let mut tx1 = client1.forward_reliable(client2.node_id()).await?;
     let big_payload = (0..255).collect::<Vec<u8>>();
     let iterations = (2048 / 256) + 1;
     let mut send_cnt = 0;
