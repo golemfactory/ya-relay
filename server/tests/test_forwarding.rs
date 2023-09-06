@@ -1,4 +1,4 @@
-mod helpers;
+mod common;
 
 use anyhow::Context;
 use futures::StreamExt;
@@ -13,7 +13,7 @@ use ya_relay_client::channels::Forwarded;
 use ya_relay_client::{ClientBuilder, FailFast, GenericSender};
 use ya_relay_server::testing::server::init_test_server;
 
-use helpers::{hack_make_ip_private, spawn_receive};
+use common::{hack_make_ip_private, spawn_receive};
 
 #[serial_test::serial]
 async fn test_forward_unreliable() -> anyhow::Result<()> {

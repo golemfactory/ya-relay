@@ -1,4 +1,4 @@
-mod helpers;
+mod common;
 
 use anyhow::Context;
 use std::rc::Rc;
@@ -11,7 +11,7 @@ use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider};
 use ya_relay_core::key::generate;
 use ya_relay_server::testing::server::init_test_server;
 
-use helpers::{hack_make_ip_private, spawn_receive};
+use common::{hack_make_ip_private, spawn_receive};
 
 #[serial_test::serial]
 async fn test_find_node_by_alias() -> anyhow::Result<()> {
