@@ -1,4 +1,4 @@
-mod common;
+pub mod common;
 
 use anyhow::Context;
 use std::rc::Rc;

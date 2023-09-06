@@ -1,4 +1,4 @@
-mod common;
+pub mod common;
 
 use common::{check_broadcast, spawn_receive_for_client};
 use std::net::UdpSocket;
