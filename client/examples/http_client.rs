@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 use futures::{future, try_join, FutureExt};
 use rand::Rng;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -139,7 +139,7 @@ async fn ping(
         .run_async(move |client: Client| async move {
             let r = messages.request();
             let mut sender = forward(&client, transport, node_id).await?;
-            let msg = format!("Ping:{}", r.id());
+            let msg = format!("Ping:{};", r.id());
 
             sender.send(msg.as_bytes().to_vec().into()).await?;
             log::trace!("[ping]: Ping {} sent {}. Waiting.", transport, node_id);
@@ -231,14 +231,14 @@ async fn transfer_file(
     let msg = client_sender
         .run_async(move |client: Client| async move {
             let data: Vec<u8> = body.into();
+            let data = String::from_utf8(data)?;
 
             let r = messages.request();
-            let end_message = format!("Transfer:{}:{}", r.id(), data.len());
-
+            let message = format!("Transfer:{}:{}:{};", r.id(), data.len(), data);
+            log::trace!("Sending transfer msg: {message:.100}");
             let mut sender = forward(&client, transport, node_id).await?;
 
-            sender.send(data.into()).await?;
-            sender.send(end_message.as_bytes().to_vec().into()).await?;
+            sender.send(message.as_bytes().to_vec().into()).await?;
 
             r.result().await.map_err(|e| anyhow!("{e}"))
         })
@@ -255,44 +255,100 @@ async fn transfer_file(
     response::ok_json::<response::Transfer>(&msg)
 }
 
+type PartialMessages = HashMap<NodeId, String>;
+
+const MSG_SEPARATOR: &str = ";";
+
 async fn receiver_task(client: Client, messages: Messages) -> anyhow::Result<()> {
     let mut receiver = client
         .forward_receiver()
         .await
         .ok_or(anyhow!("Couldn't get forward receiver"))?;
-
+    let mut partial_messages = Default::default();
     while let Some(fwd) = receiver.recv().await {
-        if let Err(e) = handle_forward_message(fwd, &client, &messages).await {
+        if let Err(e) =
+            handle_forward_messages(fwd, &client, &messages, &mut partial_messages).await
+        {
             log::warn!("Handle forward message failed: {e}")
         }
     }
     Ok(())
 }
 
-async fn forward(
-    client: &Client,
-    transport: TransportType,
-    node_id: NodeId,
-) -> Result<ForwardSender> {
-    match transport {
-        TransportType::Unreliable => client.forward_unreliable(node_id).await,
-        TransportType::Reliable => client.forward_reliable(node_id).await,
-        TransportType::Transfer => client.forward_transfer(node_id).await,
-    }
-}
-
-async fn handle_forward_message(
+async fn handle_forward_messages(
     fwd: ya_relay_client::channels::Forwarded,
     client: &Client,
     messages: &Messages,
+    partial_messages: &mut PartialMessages,
 ) -> Result<()> {
     log::info!(
         "Got forward message. Node {}. Transport {}",
         fwd.node_id,
         fwd.transport
     );
-    let msg = String::from_utf8(fwd.payload.into_vec())?;
 
+    let msgs = String::from_utf8(fwd.payload.into_vec())?
+        .trim()
+        .to_string();
+
+    let msgs = split_messages(msgs, fwd.node_id, partial_messages)?;
+
+    for msg in msgs {
+        handle_forward_message(&msg, fwd.transport, fwd.node_id, client, messages).await?;
+    }
+    Ok(())
+}
+
+fn split_messages(
+    msgs: String,
+    node_id: NodeId,
+    partial_messages: &mut PartialMessages,
+) -> Result<VecDeque<String>> {
+    let msgs = msgs.trim();
+    let previous_last_is_complete = msgs.starts_with(MSG_SEPARATOR);
+    let current_last_is_complete = msgs.ends_with(MSG_SEPARATOR);
+
+    let mut msgs = msgs
+        .split(MSG_SEPARATOR)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_owned)
+        .collect::<VecDeque<String>>();
+
+    if let Some(previous_last_partial) = partial_messages.remove(&node_id) {
+        if previous_last_is_complete {
+            log::trace!("Pending partial message is complete. Msg: {previous_last_partial:.100} (first 100)");
+            msgs.push_front(previous_last_partial);
+        } else if let Some(continuation) = msgs.pop_front() {
+            let partial_message_continued = format!("{previous_last_partial}{continuation}");
+            log::trace!("Merging previous last partial message with first current message. New msg: {partial_message_continued:.100} (first 100)");
+            msgs.push_front(partial_message_continued);
+        } else {
+            anyhow::bail!(format!("Incoming message with id {node_id} should be a continuation of {previous_last_partial:.100} (first 100)"));
+        }
+    }
+
+    if !current_last_is_complete {
+        if let Some(current_partial) = msgs.pop_back() {
+            log::trace!("Adding pending partial message: {current_partial:.100} (first 100)");
+            partial_messages.insert(node_id, current_partial);
+        }
+    }
+
+    Ok(msgs)
+}
+
+async fn handle_forward_message(
+    msg: &str,
+    transport: TransportType,
+    node_id: NodeId,
+    client: &Client,
+    messages: &Messages,
+) -> Result<()> {
+    let msg = msg.trim();
+    if msg.is_empty() {
+        return Ok(());
+    }
+    log::trace!("Forward msg data: {msg:.100} (first 100)");
     let mut s = msg.split(':');
     let command = s
         .next()
@@ -305,9 +361,9 @@ async fn handle_forward_message(
 
     match command {
         "Ping" => {
-            let mut sender = forward(client, fwd.transport, fwd.node_id).await?;
+            let mut sender = forward(client, transport, node_id).await?;
             sender
-                .send(format!("Pong:{request_id}").as_bytes().to_vec().into())
+                .send(format!("Pong:{request_id};").as_bytes().to_vec().into())
                 .await?;
 
             Ok(())
@@ -316,7 +372,7 @@ async fn handle_forward_message(
             match messages.respond(request_id) {
                 Ok((ts, sender)) => sender
                     .send(Ok(serde_json::to_string(&Pong {
-                        node_id: fwd.node_id.to_string(),
+                        node_id: node_id.to_string(),
                         duration: ts.elapsed(),
                     })?))
                     .ok(),
@@ -328,15 +384,19 @@ async fn handle_forward_message(
             Ok(())
         }
         "Transfer" => {
-            let mut sender = forward(client, fwd.transport, fwd.node_id).await?;
+            let mut sender = forward(client, transport, node_id).await?;
             let bytes_transferred = s
                 .next()
-                .ok_or_else(|| anyhow!("No data found"))?
+                .ok_or_else(|| anyhow!("No bytes transferred value"))?
                 .parse::<usize>()?;
+            let data = s.next().ok_or_else(|| anyhow!("No data value"))?;
+            if data.len() != bytes_transferred {
+                anyhow::bail!("Expected {} bytes, got {}", bytes_transferred, data.len());
+            }
 
             sender
                 .send(
-                    format!("TransferResponse:{request_id}:{bytes_transferred}")
+                    format!("TransferResponse:{request_id}:{bytes_transferred};")
                         .as_bytes()
                         .to_vec()
                         .into(),
@@ -357,7 +417,7 @@ async fn handle_forward_message(
                     sender
                         .send(Ok(serde_json::to_string(&Transfer {
                             mb_transfered,
-                            node_id: fwd.node_id.to_string(),
+                            node_id: node_id.to_string(),
                             duration: ts.elapsed(),
                             speed: mb_transfered as f32 / ts.elapsed().as_secs_f32(),
                         })?))
@@ -370,7 +430,21 @@ async fn handle_forward_message(
             };
             Ok(())
         }
-        other_cmd => Err(anyhow!("Invalid command: {other_cmd}")),
+        other_cmd => Err(anyhow!(
+            "Invalid command: {other_cmd:.100} (trimmed to 100)"
+        )),
+    }
+}
+
+async fn forward(
+    client: &Client,
+    transport: TransportType,
+    node_id: NodeId,
+) -> Result<ForwardSender> {
+    match transport {
+        TransportType::Unreliable => client.forward_unreliable(node_id).await,
+        TransportType::Reliable => client.forward_reliable(node_id).await,
+        TransportType::Transfer => client.forward_transfer(node_id).await,
     }
 }
 
@@ -461,4 +535,130 @@ async fn build_client(
 async fn main() -> anyhow::Result<()> {
     let local_set = tokio::task::LocalSet::new();
     local_set.run_until(run()).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{HashMap, VecDeque};
+
+    use crate::split_messages;
+
+    #[test]
+    fn complete_1st_partial_2nd_current_no_pending() {
+        let msgs = "msg_field_11:msg_field_12;msg_field_21:msg_field_22:msg_field_23".into();
+        let node_id = Default::default();
+        let partial_messages = &mut Default::default();
+        let expected_msgs = VecDeque::from(vec!["msg_field_11:msg_field_12".into()]);
+        let expected_partial_messages =
+            &mut HashMap::from([(node_id, "msg_field_21:msg_field_22:msg_field_23".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn complete_1st_current_no_pending() {
+        let msgs = "m1;".into();
+        let node_id = Default::default();
+        let partial_messages = &mut Default::default();
+        let expected_msgs = VecDeque::from(vec!["m1".into()]);
+        let expected_partial_messages = &mut HashMap::new();
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn empty_current_no_pending() {
+        let msgs = "".into();
+        let node_id = Default::default();
+        let partial_messages = &mut Default::default();
+        let expected_msgs = VecDeque::from(vec![]);
+        let expected_partial_messages = &mut HashMap::new();
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn empty_current_and_pending() {
+        let msgs = "".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        assert!(split_messages(msgs, node_id, partial_messages).is_err());
+    }
+
+    #[test]
+    fn empty_current_and_different_pending() {
+        let msgs = "".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(From::from([1; 20]), "x".into())]);
+        let expected_partial_messages = &mut partial_messages.clone();
+        split_messages(msgs, node_id, partial_messages).unwrap();
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn partial_current_and_complete_pending() {
+        let msgs = ";y".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        let expected_msgs = VecDeque::from(vec!["x".into()]);
+        let expected_partial_messages = &mut HashMap::from([(node_id, "y".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn complete_current_and_complete_pending() {
+        let msgs = ";y;".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        let expected_msgs = VecDeque::from(vec!["x".into(), "y".into()]);
+        let expected_partial_messages = &mut HashMap::new();
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn partial_current_and_partial_pending() {
+        let msgs = "y".into();
+        let node_id = Default::default();
+        let partial_messages = &mut HashMap::from([(node_id, "x".into())]);
+        let expected_msgs = VecDeque::new();
+        let expected_partial_messages = &mut HashMap::from([(node_id, "xy".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
+
+    #[test]
+    fn partial_and_complete_current_and_partial_and_different_pending() {
+        let msgs = "y;z;q".into();
+        let node_id = Default::default();
+        let partial_messages =
+            &mut HashMap::from([(From::from([2; 20]), "p".into()), (node_id, "x".into())]);
+        let expected_msgs = VecDeque::from(vec!["xy".into(), "z".into()]);
+        let expected_partial_messages =
+            &mut HashMap::from([(From::from([2; 20]), "p".into()), (node_id, "q".into())]);
+        assert_eq!(
+            expected_msgs,
+            split_messages(msgs, node_id, partial_messages).unwrap()
+        );
+        assert_eq!(expected_partial_messages, partial_messages);
+    }
 }
