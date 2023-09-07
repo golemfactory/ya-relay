@@ -12,9 +12,6 @@ ya-relay-stack = { workspace = true }
 ya-relay-proto = { workspace = true }
 ya-relay-core = { workspace = true }
 
-# Necessary for testing purposes
-# ya-relay-server = { workspace = true, optional = true }
-
 ya-packet-trace = "0.1.0"
 
 anyhow = "1.0"
@@ -65,4 +62,3 @@ env_logger = "0.10.0"
 [features]
 default = []
 packet-trace-enable = ["ya-packet-trace/enable"]
-# mock = ['ya-relay-server']
