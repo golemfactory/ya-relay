@@ -1,4 +1,4 @@
-#![cfg(feature = "mock")]
+pub mod common;
 
 use anyhow::{anyhow, Context};
 use futures::StreamExt;
@@ -13,7 +13,8 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use ya_relay_client::channels::Forwarded;
 use ya_relay_client::GenericSender;
 
-use ya_relay_client::testing::forwarding_utils::spawn_receive;
+use common::spawn_receive;
+
 use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_core::server_session::TransportType;
 
