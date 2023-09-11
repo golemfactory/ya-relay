@@ -13,13 +13,20 @@ ENV BIND_IP_PATTERN=$BIND_IP_PATTERN
 # Container IP
 ENV BIND_IP=$BIND_IP
 ENV BIND_PROTO=$BIND_PROTO
+# ENV GATEWAY_HOST=$GATEWAY_HOST
 
 # Copy debug or release (prefered) build
 COPY ./target/debu[g]/example[s]/http_clien[t] /app/
 COPY ./target/releas[e]/example[s]/http_clien[t] /app/
 RUN test -f /app/http_client || err "Failed to find http_client bin"
 
-CMD export SERVER_IP=$(getent hosts relay_server | cut -d' ' -f1 | head -n 1); \
+CMD if [ -n "$GATEWAY_HOST" ]; then \
+        export GATEWAY_IP=$(getent hosts $GATEWAY_HOST | cut -d' ' -f1 | head -n 1) \
+        && ip route del default \
+        && ip route add default via $GATEWAY_IP; \
+    fi; \
+    # export SERVER_IP=$(getent hosts relay_server | cut -d' ' -f1 | head -n 1); \
+    export SERVER_IP="172.30.0.3"; \
     echo "BIND_IP: '$BIND_IP', BIND_IP_PATTERN: '$BIND_IP_PATTERN', SERVER_IP: '$SERVER_IP'"; \
     if [ "$BIND_IP" != "0.0.0.0" ] &&  [ -n "$BIND_IP_PATTERN" ]; then \
         export BIND_IP=$(ip addr show | awk -v pattern="$BIND_IP_PATTERN" '/inet / && $2 ~ pattern {split($2, a, "/"); print a[1]}' | head -n 1); \

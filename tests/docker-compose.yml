@@ -16,9 +16,8 @@ services:
       - "7465:7465/tcp"
       - "7465:7465/udp"
     networks:
-      - public_network
-      - shared_a_network
-      - shared_b_network
+      public_network:
+        ipv4_address: 172.30.0.3
     hostname: relay_server
 
   public_client:
@@ -32,22 +31,38 @@ services:
       # - BIND_IP=
       - BIND_IP=${PUBLIC_BIND_IP}
       ## Without BIND_IP_PATTERN and BIND_IP it will bind to 0.0.0.0
-      # - BIND_IP_PATTERN=^172\.22\.0\.
-      # - BIND_IP_PATTERN=^172\.25\.0\.
+      # - BIND_IP_PATTERN=^172\.30\.0\.
       - BIND_IP_PATTERN=${PUBLIC_BIND_IP_PATTERN}
       - BIND_PROTO=${PUBLIC_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
+      - GATEWAY_HOST=
     ports:
       - "51000-51999:8081"
       - "52000-52999:9081/tcp"
       - "52000-52999:9081/udp"
     networks:
       - public_network
-      - shared_a_network
-      - shared_b_network
     depends_on:
       - relay_server
+
+  alice_gateway:
+    image: tests_base
+    cap_add:
+      - NET_ADMIN
+    hostname: alice_gateway
+    networks:
+      alice_network:
+        ipv4_address: 172.28.0.2
+      public_network:
+        ipv4_address: 172.30.0.2
+    command: >-
+      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE &&
+      iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE &&
+      iptables -A FORWARD -i eth1 -j ACCEPT &&
+      iptables -A FORWARD -i eth0 -j ACCEPT &&
+      ip route add 172.29.0.0/16 via 172.30.0.4 &&
+      tail -f /dev/null"
 
   alice_client:
     build:
@@ -57,25 +72,43 @@ services:
     - NET_ADMIN
     environment:
       ## Empty BIND_IP makes Dockerfile to not export P2P_BIND_ADDR
-      # - BIND_IP=
-      - BIND_IP=${ALICE_BIND_IP}
+      - BIND_IP=
+      # - BIND_IP=${ALICE_BIND_IP}
       ## P2P_BIND_ADDR set to address from private net breakes session init
-      # - BIND_IP_PATTERN=^172\.23\.0\.
-      # - BIND_IP_PATTERN=^172\.25\.0\.
+      # - BIND_IP_PATTERN=^172\.28\.0\.
       - BIND_IP_PATTERN=${ALICE_BIND_IP_PATTERN}
       - BIND_PROTO=${ALICE_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
+      - GATEWAY_HOST=alice_gateway
     ports:
       - "53000-53999:8081"
       - "54000-54999:9081/tcp"
       - "54000-54999:9081/udp"
     networks:
-      - alice_network
-      - public_network
-      - shared_a_network
+      alice_network:
+        ipv4_address: 172.28.0.3
     depends_on:
       - relay_server
+      - alice_gateway
+  
+  bob_gateway:
+    image: tests_base
+    cap_add:
+      - NET_ADMIN
+    hostname: bob_gateway
+    networks:
+      bob_network:
+        ipv4_address: 172.29.0.4
+      public_network:
+        ipv4_address: 172.30.0.4
+    command: >-
+      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE &&
+      iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE &&
+      iptables -A FORWARD -i eth1 -j ACCEPT &&
+      iptables -A FORWARD -i eth0 -j ACCEPT &&
+      ip route add 172.28.0.0/16 via 172.30.0.2 &&
+      tail -f /dev/null"
 
   bob_client:
     build:
@@ -88,48 +121,37 @@ services:
       # - BIND_IP=
       - BIND_IP=${BOB_BIND_IP}
       ## P2P_BIND_ADDR set to address from private net breakes session init
-      # - BIND_IP_PATTERN=^172\.24\.0\.
-      # - BIND_IP_PATTERN=^172\.26\.0\.
+      # - BIND_IP_PATTERN=^172\.29\.0\.
       - BIND_IP_PATTERN=${BOB_BIND_IP_PATTERN}
       - BIND_PROTO=${BOB_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
+      - GATEWAY_HOST=bob_gateway
     ports:
       - "55000-55999:8081"
       - "56000-56999:9081/tcp"
       - "56000-56999:9081/udp"
     networks:
-      - bob_network
-      - public_network
-      - shared_b_network
+      bob_network:
+        ipv4_address: 172.29.0.3
     depends_on:
       - relay_server
+      - bob_gateway
 
 # IMPORTANT: network name affects order (and which network default interface is using)
 networks:
-  public_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.22.0.0/16
   alice_network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.23.0.0/16
+        - subnet: 172.28.0.0/16
   bob_network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.24.0.0/16
-  # name starting with "shared_" is meant to place it after "public_", "alice_", and "bob_"
-  shared_a_network:
+        - subnet: 172.29.0.0/16
+  public_network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.25.0.0/16
-  shared_b_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.26.0.0/16
+        - subnet: 172.30.0.0/16
