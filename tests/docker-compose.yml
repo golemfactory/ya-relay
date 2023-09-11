@@ -17,7 +17,7 @@ services:
       - "7465:7465/udp"
     networks:
       public_network:
-        ipv4_address: 172.30.0.3
+        ipv4_address: 172.21.0.253
     hostname: relay_server
 
   public_client:
@@ -31,12 +31,14 @@ services:
       # - BIND_IP=
       - BIND_IP=${PUBLIC_BIND_IP}
       ## Without BIND_IP_PATTERN and BIND_IP it will bind to 0.0.0.0
-      # - BIND_IP_PATTERN=^172\.30\.0\.
+      # - BIND_IP_PATTERN=^172\.21\.0\.
       - BIND_IP_PATTERN=${PUBLIC_BIND_IP_PATTERN}
       - BIND_PROTO=${PUBLIC_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
+      # Empty GATEWAY_HOST to not change network settings for public client
       - GATEWAY_HOST=
+      - SERVER_IP=172.21.0.253
     ports:
       - "51000-51999:8081"
       - "52000-52999:9081/tcp"
@@ -53,15 +55,15 @@ services:
     hostname: alice_gateway
     networks:
       alice_network:
-        ipv4_address: 172.28.0.2
+        ipv4_address: 172.22.0.255
       public_network:
-        ipv4_address: 172.30.0.2
+        ipv4_address: 172.21.0.255
     command: >-
       sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE &&
       iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE &&
       iptables -A FORWARD -i eth1 -j ACCEPT &&
       iptables -A FORWARD -i eth0 -j ACCEPT &&
-      ip route add 172.29.0.0/16 via 172.30.0.4 &&
+      ip route add 172.23.0.0/16 via 172.21.0.254 &&
       tail -f /dev/null"
 
   alice_client:
@@ -72,22 +74,22 @@ services:
     - NET_ADMIN
     environment:
       ## Empty BIND_IP makes Dockerfile to not export P2P_BIND_ADDR
-      - BIND_IP=
-      # - BIND_IP=${ALICE_BIND_IP}
+      # - BIND_IP=
+      - BIND_IP=${ALICE_BIND_IP}
       ## P2P_BIND_ADDR set to address from private net breakes session init
-      # - BIND_IP_PATTERN=^172\.28\.0\.
+      # - BIND_IP_PATTERN=^172\.22\.0\.
       - BIND_IP_PATTERN=${ALICE_BIND_IP_PATTERN}
       - BIND_PROTO=${ALICE_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
       - GATEWAY_HOST=alice_gateway
+      - SERVER_IP=172.21.0.253
     ports:
       - "53000-53999:8081"
       - "54000-54999:9081/tcp"
       - "54000-54999:9081/udp"
     networks:
-      alice_network:
-        ipv4_address: 172.28.0.3
+      - alice_network
     depends_on:
       - relay_server
       - alice_gateway
@@ -99,15 +101,15 @@ services:
     hostname: bob_gateway
     networks:
       bob_network:
-        ipv4_address: 172.29.0.4
+        ipv4_address: 172.23.0.255
       public_network:
-        ipv4_address: 172.30.0.4
+        ipv4_address: 172.21.0.254
     command: >-
       sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE &&
       iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE &&
       iptables -A FORWARD -i eth1 -j ACCEPT &&
       iptables -A FORWARD -i eth0 -j ACCEPT &&
-      ip route add 172.28.0.0/16 via 172.30.0.2 &&
+      ip route add 172.22.0.0/16 via 172.21.0.255 &&
       tail -f /dev/null"
 
   bob_client:
@@ -121,37 +123,36 @@ services:
       # - BIND_IP=
       - BIND_IP=${BOB_BIND_IP}
       ## P2P_BIND_ADDR set to address from private net breakes session init
-      # - BIND_IP_PATTERN=^172\.29\.0\.
+      # - BIND_IP_PATTERN=^172\.23\.0\.
       - BIND_IP_PATTERN=${BOB_BIND_IP_PATTERN}
       - BIND_PROTO=${BOB_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
       - GATEWAY_HOST=bob_gateway
+      - SERVER_IP=172.21.0.253
     ports:
       - "55000-55999:8081"
       - "56000-56999:9081/tcp"
       - "56000-56999:9081/udp"
     networks:
-      bob_network:
-        ipv4_address: 172.29.0.3
+      - bob_network
     depends_on:
       - relay_server
       - bob_gateway
 
-# IMPORTANT: network name affects order (and which network default interface is using)
 networks:
-  alice_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.28.0.0/16
-  bob_network:
-    driver: bridge
-    ipam:
-      config:
-        - subnet: 172.29.0.0/16
   public_network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.30.0.0/16
+        - subnet: 172.21.0.0/16
+  alice_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.22.0.0/16
+  bob_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.23.0.0/16
