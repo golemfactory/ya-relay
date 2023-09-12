@@ -1495,7 +1495,7 @@ impl ConnectionMethod {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 mod tests {
     use std::time::Duration;
 

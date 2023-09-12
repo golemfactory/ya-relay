@@ -48,3 +48,41 @@ tokio-stream = "0.1.8"
 test-case = "3.1"
 
 ya-relay-client = { workspace = true }
+
+[features]
+test-utils = []
+
+[[test]]
+name = "test_expired_session"
+path = "tests/test_expired_session.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "test_broadcasts"
+path = "tests/test_broadcasts.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "test_forwarding"
+path = "tests/test_forwarding.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "test_closed_session"
+path = "tests/test_closed_session.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "test_discovery"
+path = "tests/test_discovery.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "test_server"
+path = "tests/test_server.rs"
+required-features = ["test-utils"]
+
+[[test]]
+name = "test_init_session"
+path = "tests/test_init_session.rs"
+required-features = ["test-utils"]
