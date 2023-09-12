@@ -45,6 +45,5 @@ def check_session_after_ping(
     client_1.ping(client_2.node_id)
 
     sessions = client_1.sessions()
-    LOGGER.info(f"Sessions after ping: {sessions}")
     sessions = {session["address"] for session in sessions["sessions"]}
-    assert expected_sessions.issubset(sessions)
+    assert expected_sessions == sessions
