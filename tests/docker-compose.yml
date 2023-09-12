@@ -98,7 +98,7 @@ services:
     image: tests_base
     cap_add:
       - NET_ADMIN
-    hostname: bobob_gateway
+    hostname: bob_gateway
     networks:
       bob_network:
         ipv4_address: 172.23.0.255
@@ -128,7 +128,7 @@ services:
       - BIND_PROTO=${BOB_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
-      - GATEWAY_HOST=bobob_gateway
+      - GATEWAY_HOST=bob_gateway
       - SERVER_IP=172.21.0.253
     ports:
       - "55000-55999:8081"
