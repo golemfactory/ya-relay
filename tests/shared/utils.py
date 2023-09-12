@@ -171,20 +171,23 @@ class Cluster:
             assert len(self.servers()) == scales.relay_server
         LOGGER.info(f"Successfully started")
 
-    def __find_container(self, name_part: str) -> List[Container]:
-        containers = []
-        for container in self.docker_client.container.list():
-            # LOGGER.info(f"[find-container]: Container: {container.name}")
-            if name_part in container.name:
-                containers.append(container)
-        return containers
+    def __find_container(self, name_parts: List[str]) -> List[Container]:
+        containers = self.docker_client.container.list()
+        return [container for container in containers if all(name_part in container.name for name_part in name_parts)]
 
-    def clients(self, name_part: str = "_client") -> List[Client]:
-        containers = self.__find_container(name_part)
+    def clients(self, name_part: str = "") -> List[Client]:
+        name_parts = [name_part, "_client"]
+        containers = self.__find_container(name_parts)
         return [Client(container) for container in containers]
 
-    def servers(self, name_part: str = "relay_server") -> List[Server]:
-        containers = self.__find_container(name_part)
+    def gateways(self, name_part: str = "") -> List[Server]:
+        name_parts = [name_part, "_gateway"]
+        containers = self.__find_container(name_parts)
+        return [Server(container) for container in containers]
+
+    def servers(self, name_part: str = "") -> List[Server]:
+        name_parts = [name_part, "_server"]
+        containers = self.__find_container(name_parts)
         return [Server(container) for container in containers]
 
     def disconnect(self, node: Node) -> Set[str]:
