@@ -48,7 +48,6 @@ services:
     depends_on:
       - relay_server
 
-  # not named "alice_gateway" to avoid finding it by "alice" keyword
   alice_gateway:
     image: tests_base
     cap_add:
@@ -60,12 +59,12 @@ services:
       public_network:
         ipv4_address: 172.21.0.255
     command: >-
-      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE &&
-      iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE &&
-      iptables -A FORWARD -i eth1 -j ACCEPT &&
-      iptables -A FORWARD -i eth0 -j ACCEPT &&
-      ip route add 172.23.0.0/16 via 172.21.0.254 &&
-      tail -f /dev/null"
+      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+      && iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
+      && iptables -A FORWARD -i eth1 -j ACCEPT
+      && iptables -A FORWARD -i eth0 -j ACCEPT
+      && ip route add 172.23.0.0/16 via 172.21.0.254
+      && tail -f /dev/null"
 
   alice_client:
     build:
@@ -95,7 +94,6 @@ services:
       - relay_server
       - alice_gateway
   
-  # not named "bobob_gateway" to avoid finding it by "bob" keyword
   bob_gateway:
     image: tests_base
     cap_add:
@@ -107,12 +105,12 @@ services:
       public_network:
         ipv4_address: 172.21.0.254
     command: >-
-      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE &&
-      iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE &&
-      iptables -A FORWARD -i eth1 -j ACCEPT &&
-      iptables -A FORWARD -i eth0 -j ACCEPT &&
-      ip route add 172.22.0.0/16 via 172.21.0.255 &&
-      tail -f /dev/null"
+      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+      && iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
+      && iptables -A FORWARD -i eth1 -j ACCEPT
+      && iptables -A FORWARD -i eth0 -j ACCEPT
+      && ip route add 172.22.0.0/16 via 172.21.0.255
+      && tail -f /dev/null"
 
   bob_client:
     build:
