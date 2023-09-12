@@ -17,6 +17,7 @@ services:
       - "7465:7465/udp"
     networks:
       public_network:
+        # Hardcoded address because `alice` and `bob` do not see domain, and they address `relay` through gateway using IP
         ipv4_address: 172.21.0.253
     hostname: relay_server
 
@@ -54,6 +55,8 @@ services:
       - NET_ADMIN
     hostname: alice_gateway
     networks:
+      # Hardcoded addresses because these are used in network config.
+      # IP values close to end of the available IP range to avoid collision with dynamically assigned addresses of clients.
       alice_network:
         ipv4_address: 172.22.0.255
       public_network:
@@ -100,6 +103,8 @@ services:
       - NET_ADMIN
     hostname: bob_gateway
     networks:
+      # Hardcoded addresses because these are used in network config.
+      # IP values close to end of the available IP range to avoid collision with dynamically assigned addresses of clients.
       bob_network:
         ipv4_address: 172.23.0.255
       public_network:
