@@ -30,16 +30,11 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
             .collect::<Vec<_>>();
         let now = Instant::now();
 
-        log::trace!("[expire]: Number of sessions: {}", sessions.len());
-
         // Collect futures in vector and execute asynchronously, because pinging
         // can last a few seconds especially in case of inactive sessions.
         let ping_futures = sessions
             .iter()
-            .map(|session| {
-                log::trace!("[expire]: keep alive session {} with {}", session.raw.id, session.owner.default_id);
-                session.raw.keep_alive(expiration)
-            })
+            .map(|session| session.raw.keep_alive(expiration))
             .collect::<Vec<_>>();
 
         let last_seen = futures::future::join_all(ping_futures).await;
@@ -85,9 +80,15 @@ async fn close_sessions(
 
         if session.owner.default_id == NodeId::default() {
             let f = session.list();
-            log::trace!("[close_session]: owner id is {}, has {} forwards", session.owner.default_id, f.len());
+            log::trace!(
+                "[close_session]: lost session with server - remove {} forwards",
+                f.len()
+            );
             for e in f {
-                log::trace!("[close_session]: removing forward node_id {}.", e.default_id);
+                log::trace!(
+                    "[close_session]: removing forward node_id {}.",
+                    e.default_id
+                );
                 layer.registry.remove_node(e.default_id).await;
             }
         }

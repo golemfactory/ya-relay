@@ -28,7 +28,9 @@ use crate::client::{ClientConfig, Forwarded};
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::dispatch::{dispatch, Handler};
 use crate::encryption::Encryption;
-use crate::error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult, TransitionError};
+use crate::error::{
+    ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult, TransitionError,
+};
 use crate::metrics::{metric_session_established, TARGET_ID};
 use crate::raw_session::{RawSession, SessionType};
 use crate::routing_session::{NodeRouting, RoutingSender};
@@ -36,7 +38,9 @@ use crate::session::session_initializer::SessionInitializer;
 use crate::transport::ForwardReceiver;
 
 use crate::error::SenderError::Session;
+use crate::session::session_state::SessionState::{Closed, FailedEstablish};
 use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
+use crate::SessionError::Network;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
@@ -48,8 +52,6 @@ use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
 use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
-use crate::session::session_state::SessionState::{Closed, FailedEstablish};
-use crate::SessionError::Network;
 
 type ReqFingerprint = (Vec<u8>, u64);
 
@@ -223,7 +225,7 @@ impl SessionDeregistration for SessionLayer {
             let mut state = self.state.write().await;
 
             // let mut ids = HashSet::<NodeId>::new();
-            let mut ids : HashSet::<NodeId> = vec![node_id].into_iter().collect();
+            let mut ids: HashSet<NodeId> = vec![node_id].into_iter().collect();
 
             let routing = state.nodes.get(&node_id).cloned();
             let direct = state.p2p_nodes.get(&node_id).cloned();
@@ -263,7 +265,7 @@ impl SessionDeregistration for SessionLayer {
             }
 
             if let Some(entry) = self.registry.get_entry(node_id).await {
-                log::trace!("[unregister]: found entry for {node_id}, removing...", );
+                log::trace!("[unregister]: found entry for {node_id}, removing...",);
                 self.registry.remove_node(node_id).await;
             }
 
@@ -615,11 +617,10 @@ impl SessionLayer {
         log::trace!("[session]: Node [{node_id}] not found in routing tables. Trying to establish session...");
 
         // Query relay server for Node information, we need to find out default id and aliases.
-        let info = match self
+        let info = self
             .query_node_info(node_id)
             .await
             .map_err(|e| SessionError::NotFound(format!("Error querying node {node_id}: {e}")))?;
-        };
 
         if info.identities.is_empty() {
             return Err(SessionError::Unexpected(format!(
@@ -638,8 +639,6 @@ impl SessionLayer {
         if node_id != remote_id {
             log::debug!("Resolving [{node_id}] as alias of [{remote_id}]");
         }
-
-        log::trace!("[session]: info found for node [{node_id}]");
 
         // TODO: Should we filter addresses or reject attempt to connect?
         //       In previous implementation we were filtering, but rationale is unknown.
@@ -1340,7 +1339,6 @@ impl Handler for SessionLayer {
         if let Some(kind) = control.kind {
             let fut = match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
-                    log::trace!("[on_control]: ReverseConnection message from {from}");
                     let myself = self;
                     tokio::task::spawn_local(async move {
                         myself
@@ -1352,7 +1350,6 @@ impl Handler for SessionLayer {
                     return None;
                 }
                 ya_relay_proto::proto::control::Kind::PauseForwarding(_) => async move {
-                    log::trace!("[on_control]: PauseForwarding message from {from}");
                     match self.find_session(from).await {
                         Some(session) => {
                             log::debug!(
@@ -1368,7 +1365,6 @@ impl Handler for SessionLayer {
                 }
                 .boxed_local(),
                 ya_relay_proto::proto::control::Kind::ResumeForwarding(_) => async move {
-                    log::trace!("[on_control]: ResumeForwarding message from {from}");
                     match self.find_session(from).await {
                         Some(session) => {
                             log::debug!("Forwarding resumed for session {}", session.raw.id);
@@ -1383,7 +1379,6 @@ impl Handler for SessionLayer {
                 ya_relay_proto::proto::control::Kind::Disconnected(
                     proto::control::Disconnected { by: Some(by) },
                 ) => {
-                    log::trace!("[on_control]: Disconnected message from {from}");
                     let myself = self;
                     async move {
                         myself
@@ -1458,8 +1453,6 @@ impl Handler for SessionLayer {
         let slot = forward.slot;
         let channel = self.ingress_channel.clone();
 
-        log::trace!("[on_forward]: from {}, slot: {}.", from, slot);
-
         let myself = self;
         let fut = async move {
             log::trace!(
@@ -1500,22 +1493,11 @@ impl Handler for SessionLayer {
                         //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
 
-                        if let Some(n) = session.get_by_id(&ident.node_id) {
-                            log::trace!("[session]: found by node id {}: {:?}", ident.node_id, n.default_id);
-                        }
-
-                        match myself
+                        let session = myself
                             .session_filtered_connection_methods(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
-                            .await {
-                            Ok(session) => {
-                                log::trace!("[on_forward]: session established {}", session.session_id());
-                                session.target()
-                            }
-                            Err(err) => {
-                                log::trace!("[on_forward]: failed to establish session with {}", ident.node_id);
-                                bail!("Failed to resolve node with slot {slot}. {err}")
-                            }
-                        }
+                            .await.map_err(|e| anyhow!("Failed to resolve node with slot {slot}. {e}"))?;
+
+                        session.target()
                     }
                 }
             };

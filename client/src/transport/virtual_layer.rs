@@ -229,17 +229,25 @@ impl TcpLayer {
         //       We should change incoming connection state to Established. Current code doesn't handle
         //       this correctly.
         if self.registry.resolve_node(node).await.is_err() {
-            log::debug!("[VirtualTcp::receive] Incoming message from new Node [{node}]. Adding connection.");
+            log::debug!(
+                "[VirtualTcp::receive] Incoming message from new Node [{node}]. Adding connection."
+            );
             self.registry.add_virt_node(node).await;
         } else {
-            log::trace!("[VirtualTcp::receive] Incoming message from known Node [{node}].", node = node);
+            log::trace!(
+                "[VirtualTcp::receive] Incoming message from known Node [{node}].",
+                node = node
+            );
         }
         self.inject(payload);
     }
 
     #[inline]
     pub fn inject(&self, payload: Payload) {
-        log::trace!("[inject]: start ({payload_len} B)", payload_len = payload.len());
+        log::trace!(
+            "[inject]: start ({payload_len} B)",
+            payload_len = payload.len()
+        );
         self.net.receive(payload);
         self.net.poll();
         log::trace!("[inject]: ...done");

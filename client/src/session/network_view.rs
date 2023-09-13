@@ -80,7 +80,11 @@ impl NetworkView {
 
         if let Some(target) = state.find(node_id, addrs) {
             let state = target.state.read().await;
-            log::trace!("[guard]: session with [{}] inserted: {}", node_id, state.state);
+            log::trace!(
+                "[guard]: session with [{}] inserted: {}",
+                node_id,
+                state.state
+            );
         }
 
         target
@@ -92,18 +96,24 @@ impl NetworkView {
         if let Some(target) = state.find(node_id, &[]) {
             if node_id != NodeId::default() {
                 log::trace!("[remove_node]: &by_node_id: {:p}", &state.by_node_id);
-                if let Some(_) = state.by_node_id.remove(&node_id) {
+                if state.by_node_id.remove(&node_id).is_some() {
                     log::trace!("[remove_node]: removed by node_id");
-                    state.by_node_id.iter().map(|(k, v)| (k, v.id)).for_each(|(k, v)| {
-                        log::trace!("[remove_node]: node_id -> node view: {} -> {}", k, v)
-                    });
+                    state
+                        .by_node_id
+                        .iter()
+                        .map(|(k, v)| (k, v.id))
+                        .for_each(|(k, v)| {
+                            log::trace!("[remove_node]: node_id -> node view: {} -> {}", k, v)
+                        });
                 }
             }
             log::trace!("[remove_node]: removing by addr");
             state.by_addr.retain(|_, node_view| node_view.id != node_id);
-            state.by_addr.iter().map(|(k, v)| (k, v.id)).for_each(|(k, v)| {
-                log::trace!("[remove_node]: addr -> node view: {} -> {}", k, v)
-            });
+            state
+                .by_addr
+                .iter()
+                .map(|(k, v)| (k, v.id))
+                .for_each(|(k, v)| log::trace!("[remove_node]: addr -> node view: {} -> {}", k, v));
         }
     }
 
@@ -149,7 +159,11 @@ impl NetworkView {
 
         for id in &info.identities {
             let target = entry.state.read().await;
-            log::trace!("[update_entry]: insert into by_node_id: {} -> {}", id.node_id, target.state);
+            log::trace!(
+                "[update_entry]: insert into by_node_id: {} -> {}",
+                id.node_id,
+                target.state
+            );
             state.by_node_id.insert(id.node_id, entry.clone());
         }
 
@@ -519,7 +533,11 @@ impl NodeView {
                         )
                     }
                 };
-                log::trace!("[lock_outgoing]: Session with [{}] is in state: {}, waiting", self.id, self.state.read().await.state);
+                log::trace!(
+                    "[lock_outgoing]: Session with [{}] is in state: {}, waiting",
+                    self.id,
+                    self.state.read().await.state
+                );
                 SessionLock::Wait(notifier)
             }
         }

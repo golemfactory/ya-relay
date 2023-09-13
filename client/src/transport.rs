@@ -202,7 +202,11 @@ impl TransportLayer {
         node_id: NodeId,
         channel: TransportType,
     ) -> anyhow::Result<ForwardSender> {
-        log::trace!("[forward_virtual_tcp]: node_id: {}, channel: {:?}", node_id, channel);
+        log::trace!(
+            "[forward_virtual_tcp]: node_id: {}, channel: {:?}",
+            node_id,
+            channel
+        );
         match self.get_forward_channel(node_id, channel).await {
             // If connection was closed in the meantime, it will be initialized on demand.
             // It will be problematic in some cases, because this can last up to a few seconds.
@@ -213,7 +217,7 @@ impl TransportLayer {
             Some(tx) => {
                 log::trace!("[forward_virtual_tcp]: forward channel already exists.");
                 Ok(tx)
-            },
+            }
             None => {
                 log::trace!("[forward_virtual_tcp]: forward channel does not exist.");
                 // Check if this isn't secondary identity. TcpLayer should always get default id.

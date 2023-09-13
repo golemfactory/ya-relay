@@ -97,7 +97,7 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
                 PacketKind::Forward(fwd) => {
                     log::trace!(
                         "[udp_sink]: forward: sessionId: [{}], slot: {}, payload-len: {}",
-                        hex::encode(&fwd.session_id),
+                        hex::encode(fwd.session_id),
                         fwd.slot,
                         fwd.payload.len()
                     );
