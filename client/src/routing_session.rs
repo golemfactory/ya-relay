@@ -128,12 +128,6 @@ impl RoutingSender {
         packet: Payload,
         transport: TransportType,
     ) -> Result<(), SessionError> {
-        log::trace!(
-            "[send]: Sending message to [{}] ({}) packet: {:?}",
-            self.target,
-            transport,
-            packet
-        );
         let routing = match self.node_routing.upgrade() {
             Some(routing) => routing,
             None => match self

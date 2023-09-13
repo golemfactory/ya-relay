@@ -246,8 +246,6 @@ impl SessionDeregistration for SessionLayer {
                 ids.extend(direct.owner.identities.iter())
             }
 
-            log::debug!("[unregister]: ids: [{:?}]", ids);
-
             for id in ids {
                 log::debug!("Disconnecting [{node_id}] - removing entries for identity: {id}");
 
@@ -273,10 +271,8 @@ impl SessionDeregistration for SessionLayer {
         };
 
         if let Some(direct) = direct {
-            log::trace!("[unregister]: closing session {}", direct.raw.id);
             self.close_session(direct).await;
         } else {
-            log::trace!("[unregister]: no direct session to be closed");
             increment_counter!("ya-relay.client.session.closed", TARGET_ID => node_id.to_string());
         }
     }
@@ -303,7 +299,6 @@ impl SessionDeregistration for SessionLayer {
         {
             let mut state = self.state.write().await;
             for id in &session.owner.identities {
-                log::trace!("[unregister_session]: removing entries from p2p_nodes and nodes for {id}");
                 state.p2p_nodes.remove(id);
                 state.nodes.remove(id);
             }
