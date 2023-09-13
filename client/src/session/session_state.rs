@@ -212,7 +212,6 @@ impl SessionState {
             // transition to `FailedEstablish` state.
             (SessionState::Established(_), SessionState::Closing) => true,
             (SessionState::Closing, SessionState::Closed) => true,
-            (SessionState::Closed, SessionState::Closed) => true,
             (SessionState::Incoming(prev), SessionState::Incoming(next)) => prev.allowed(next),
             (SessionState::Outgoing(prev), SessionState::Outgoing(next)) => prev.allowed(next),
             (SessionState::Relayed(prev), SessionState::Relayed(next)) => prev.allowed(next),

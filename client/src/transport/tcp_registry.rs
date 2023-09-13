@@ -71,11 +71,6 @@ impl VirtChannel {
 
     pub async fn transition(&self, new_state: TcpState) -> Result<(), TcpTransitionError> {
         let mut state = self.state.write().await;
-        log::trace!(
-            "[VirtChannel] Transition from {state:?} to {new_state:?}",
-            state = state,
-            new_state = new_state
-        );
         state.transition(new_state)
     }
 
@@ -97,12 +92,6 @@ impl VirtNode {
             VirtChannel::new(ChannelDesc(ChannelType::Transfer, ChannelDirection::In));
         let trans_out_channel =
             VirtChannel::new(ChannelDesc(ChannelType::Transfer, ChannelDirection::Out));
-
-        log::trace!(
-            "[VirtNode] Created node with id: {id}, ip: {ip}",
-            id = id,
-            ip = ip
-        );
 
         // This code should place channels according to index values returned by `ChannelDesc::index` function.
         // We could use HashMap instead, but than we should handle case, when ChannelDesc is not in the array,
@@ -133,12 +122,6 @@ impl VirtNode {
     ) -> Result<(), TcpTransitionError> {
         let channel = self.channel(channel);
         let mut state = channel.state.write().await;
-
-        log::trace!(
-            "[VirtNode] Transition from {state:?} to {new_state:?}",
-            state = state,
-            new_state = new_state
-        );
 
         state.transition(new_state)
     }
@@ -178,12 +161,6 @@ impl TcpRegistry {
     }
 
     pub async fn connect_attempt(&self, node: NodeId, channel: ChannelDesc) -> TcpLock {
-        log::trace!(
-            "[connect_attempt] Connect attempt to node: {node}, channel: {channel}",
-            node = node,
-            channel = channel
-        );
-
         let node = match self.resolve_node(node).await {
             Ok(node) => node,
             Err(_) => self.add_virt_node(node).await,
@@ -193,7 +170,6 @@ impl TcpRegistry {
 
         match node.transition(channel, TcpState::Connecting).await {
             Ok(_) => {
-                log::trace!("[connect_attempt]: OK: Connection already established.");
                 TcpLock::Permit(TcpPermit {
                     node,
                     channel,
@@ -201,7 +177,6 @@ impl TcpRegistry {
                 })
             }
             Err(_) => {
-                log::trace!("[connect_attempt]: Err: Connection failed.");
                 TcpLock::Wait(TcpAwaiting {
                     notifier,
                     channel: node.channel(channel),
@@ -211,7 +186,6 @@ impl TcpRegistry {
     }
 
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
-        log::trace!("[resolve_node] Resolve node: {node}", node = node);
         let state = self.state.read().await;
         let ip = state
             .ips
@@ -225,11 +199,9 @@ impl TcpRegistry {
     }
 
     pub async fn resolve_ip(&self, node: NodeId) -> Box<[u8]> {
-        let ip = IpAddress::from(to_ipv6(node.into_array()))
+        IpAddress::from(to_ipv6(node.into_array()))
             .as_bytes()
-            .into();
-        log::trace!("[resolve_ip] Resolve ip for {}: {:?}", node, ip);
-        ip
+            .into()
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
@@ -265,10 +237,6 @@ impl TcpRegistry {
     }
 
     pub async fn add_virt_node(&self, node_id: NodeId) -> VirtNode {
-        log::trace!(
-            "[add_virt_node] add_virt_node: {node_id}",
-            node_id = node_id
-        );
         let node = VirtNode::new(node_id, self.layer.clone());
         {
             let mut state = self.state.write().await;
@@ -298,9 +266,7 @@ pub enum TcpState {
 impl TcpState {
     pub fn transition(&mut self, new_state: TcpState) -> Result<(), TcpTransitionError> {
         log::trace!(
-            "[TcpState] Transition from {state:?} to {new_state:?}",
-            state = self,
-            new_state = new_state
+            "[TcpState] Transition from {self:?} to {new_state:?}"
         );
         match (&self, &new_state) {
             (&TcpState::Closed, &TcpState::Connecting)
@@ -359,11 +325,6 @@ pub(crate) async fn async_drop(
     channel: ChannelDesc,
     result: Option<Result<Arc<TcpConnection>, TcpError>>,
 ) {
-    log::trace!(
-        "[async_drop]: drop connection to node: {}, result: {:?}",
-        node.id(),
-        result
-    );
     let result = match result.clone() {
         Some(Ok(conn)) => {
             match node
@@ -460,11 +421,6 @@ impl TcpSender {
     /// TODO: We should use channel-like error where you can recover your payload
     ///       from error message.
     pub async fn send(&mut self, packet: Payload) -> Result<(), TcpError> {
-        log::trace!(
-            "[TcpSender]: Send to node: {node}, channel: {channel}",
-            node = self.target,
-            channel = self.channel
-        );
         let routing = match self.connection.upgrade() {
             Some(conn) => conn,
             None => match self
@@ -493,11 +449,6 @@ impl TcpSender {
     }
 
     pub async fn connect(&mut self) -> Result<(), TcpError> {
-        log::trace!(
-            "[TcpSender]: Connect to node: {node}, channel: {channel}",
-            node = self.target,
-            channel = self.channel
-        );
         self.layer
             .connect(self.target, self.channel.0)
             .await

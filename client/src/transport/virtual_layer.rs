@@ -56,7 +56,6 @@ impl TcpLayer {
         ingress: &Channel<Forwarded>,
         session_layer: SessionLayer,
     ) -> TcpLayer {
-        log::trace!("[VirtualTcp]: Creating TCP layer");
         let pcap = config.pcap_path.clone().map(|p| match pcap_writer(p) {
             Ok(pcap) => pcap,
             Err(err) => panic!("{}", err),
@@ -81,7 +80,6 @@ impl TcpLayer {
     }
 
     pub async fn spawn(&self, our_id: NodeId) -> anyhow::Result<()> {
-        log::trace!("[VirtualTcp]: Spawning TCP layer");
         let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
         let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
 
@@ -163,7 +161,6 @@ impl TcpLayer {
             .await
             .map_err(|e| TcpError::Generic(e.to_string()))?;
 
-        log::trace!("[VirtualTcp]: connected");
         Ok(Arc::new(TcpConnection {
             id: permit.node.id(),
             conn: self
@@ -208,7 +205,6 @@ impl TcpLayer {
             let fast_lane = self.virtual_tcp_fast_lane.borrow();
             fast_lane.contains(&node_id)
         };
-        log::trace!("[dispatch]: fast_lane exists {}", exists);
 
         if exists {
             self.inject(packet.payload);
@@ -233,11 +229,6 @@ impl TcpLayer {
                 "[VirtualTcp::receive] Incoming message from new Node [{node}]. Adding connection."
             );
             self.registry.add_virt_node(node).await;
-        } else {
-            log::trace!(
-                "[VirtualTcp::receive] Incoming message from known Node [{node}].",
-                node = node
-            );
         }
         self.inject(payload);
     }
