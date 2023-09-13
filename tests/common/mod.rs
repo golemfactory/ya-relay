@@ -1,3 +1,8 @@
+pub mod init;
+pub mod server;
+pub mod accessors;
+pub mod mocks;
+
 use anyhow::{bail, Context};
 use futures::StreamExt;
 use std::rc::Rc;
@@ -8,6 +13,8 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_client::{channels::ForwardSender, Client, GenericSender};
+
+use self::server::ServerWrapper;
 
 pub enum Mode {
     Reliable,
@@ -122,4 +129,19 @@ pub async fn check_broadcast(
     // Clear receiver for further usage.
     received.store(false, SeqCst);
     Ok(())
+}
+
+/// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.
+pub async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
+    let mut state = wrapper.server.state.write().await;
+
+    let mut info = state.nodes.get_by_node_id(client.node_id()).unwrap();
+    state.nodes.remove_session(info.info.slot);
+
+    // Server won't return any endpoints, so Client won't try to connect directly.
+    info.info.endpoints = vec![];
+    state.nodes.register(info);
+
+    drop(state);
+    client.set_public_addr(None).await;
 }

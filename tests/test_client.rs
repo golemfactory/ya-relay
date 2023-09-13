@@ -1,8 +1,10 @@
+mod common;
+
 use std::time::Duration;
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::utils::to_udp_url;
-use ya_relay_server::testing::server::init_test_server;
+use common::server::init_test_server;
 
 /// Client should be able to use the same port after it was shutdown.
 /// If it doesn't, it means that socket wasn't dropped correctly.

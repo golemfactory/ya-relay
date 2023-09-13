@@ -1,4 +1,4 @@
-pub mod common;
+mod common;
 
 use std::time::Duration;
 
@@ -6,7 +6,7 @@ use common::{check_broadcast, check_forwarding, spawn_receive_for_client, Mode};
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::utils::to_udp_url;
-use ya_relay_server::testing::server::{
+use common::server::{
     init_test_server, init_test_server_with_config, test_default_config,
 };
 
@@ -14,11 +14,9 @@ use ya_relay_server::testing::server::{
 async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
-    let crypto1 = FallbackCryptoProvider::default();
     let crypto2 = FallbackCryptoProvider::default();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .crypto(crypto1.clone())
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
@@ -31,39 +29,6 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
         .await?;
 
     let marker1 = spawn_receive_for_client(&client1, "Client1").await?;
-    let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
-
-    let _keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
-        .await
-        .unwrap();
-
-    let _keep2 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Reliable)
-        .await
-        .unwrap();
-
-    println!("Shutting down Client2");
-
-    let addr2 = client2.bind_addr().await?;
-
-    client2.shutdown().await.unwrap();
-    drop(_keep2);
-
-    println!("Waiting for session cleanup.");
-
-    // Wait expiration timeout + ping timeout + 1s margin
-    tokio::time::sleep(Duration::from_secs(6)).await;
-
-    println!("Starting Client2");
-
-    // Start client on the same port as previously.
-    let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .listen(to_udp_url(addr2).unwrap())
-        .crypto(crypto2.clone())
-        .connect(FailFast::Yes)
-        .expire_session_after(Duration::from_secs(2))
-        .build()
-        .await?;
-
     let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
 
     let _keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
@@ -90,9 +55,42 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     println!("Starting Client2");
 
     // Start client on the same port as previously.
-    let client2 = ClientBuilder::from_url(wrapper.url())
+    let mut client2 = ClientBuilder::from_url(wrapper.url())
         .listen(to_udp_url(addr2).unwrap())
         .crypto(crypto)
+        .connect(FailFast::Yes)
+        .expire_session_after(Duration::from_secs(2))
+        .build()
+        .await?;
+
+    let marker2 = spawn_receive_for_client(&client2, "Client2").await?;
+
+    let _keep1 = check_forwarding(&client1, &client2, marker2.clone(), Mode::Reliable)
+        .await
+        .unwrap();
+
+    let _keep2 = check_forwarding(&client2, &client1, marker1.clone(), Mode::Reliable)
+        .await
+        .unwrap();
+
+    println!("Shutting down Client2");
+
+    let addr2 = client2.bind_addr().await?;
+
+    client2.shutdown().await.unwrap();
+    drop(_keep2);
+
+    println!("Waiting for session cleanup.");
+
+    // Wait expiration timeout + ping timeout + 1s margin
+    tokio::time::sleep(Duration::from_secs(6)).await;
+
+    println!("Starting Client2");
+
+    // Start client on the same port as previously.
+    let client2 = ClientBuilder::from_url(wrapper.url())
+        .listen(to_udp_url(addr2).unwrap())
+        .crypto(crypto2)
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
@@ -114,11 +112,9 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
 async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
-    let crypto1 = FallbackCryptoProvider::default();
     let crypto2 = FallbackCryptoProvider::default();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
-        .crypto(crypto1.clone())
         .connect(FailFast::Yes)
         .expire_session_after(Duration::from_secs(2))
         .build()
@@ -263,7 +259,6 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     config.session_timeout = chrono::Duration::seconds(8);
 
     let wrapper = init_test_server_with_config(config).await?;
-
     let crypto2 = FallbackCryptoProvider::default();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
@@ -353,7 +348,6 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     config.session_timeout = chrono::Duration::seconds(15);
 
     let wrapper = init_test_server_with_config(config).await?;
-
     let crypto2 = FallbackCryptoProvider::default();
 
     let client1 = ClientBuilder::from_url(wrapper.url())
@@ -362,8 +356,8 @@ async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
         .build()
         .await?;
     let mut client2 = ClientBuilder::from_url(wrapper.url())
-        .crypto(crypto2.clone())
         .connect(FailFast::Yes)
+        .crypto(crypto2.clone())
         .expire_session_after(Duration::from_secs(15))
         .build()
         .await?;

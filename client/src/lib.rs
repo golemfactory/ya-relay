@@ -19,7 +19,7 @@ pub use client::{Client, ClientBuilder, FailFast, GenericSender, SessionError};
 /// This module is a public re-export cryptographic abstractions.
 pub use ya_relay_core::crypto;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(missing_docs)]
 pub mod testing;
 
@@ -54,4 +54,13 @@ pub mod channels {
 
     #[doc(inline)]
     pub use ya_relay_proto::codec::forward::PrefixedStream;
+}
+
+#[cfg(feature="test-utils")]
+pub mod test_utils {
+    pub use crate::config::ClientConfig;
+    pub use crate::session::session_initializer::SessionInitializer;
+    pub use crate::session::SessionLayer;
+    pub use crate::session::network_view::{NetworkView, SessionLock, SessionPermit};
+    pub use crate::transport::tcp_registry::VirtNode;
 }

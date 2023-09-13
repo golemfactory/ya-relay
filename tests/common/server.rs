@@ -1,4 +1,4 @@
-use crate::config::Config;
+use ya_relay_server::config::Config;
 use chrono::Local;
 use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
@@ -6,7 +6,7 @@ use std::io::Write;
 use std::time::Duration;
 use url::Url;
 
-use crate::server::Server;
+use ya_relay_server::server::Server;
 
 #[derive(Clone)]
 pub struct ServerWrapper {

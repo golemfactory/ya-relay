@@ -1,3 +1,5 @@
+mod common;
+
 use std::rc::Rc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::SeqCst;
@@ -12,7 +14,7 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 use ya_relay_client::channels::Forwarded;
 use ya_relay_client::{Client, ClientBuilder, FailFast};
 use ya_relay_core::NodeId;
-use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
+use common::server::{init_test_server, ServerWrapper};
 
 async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     let mut clients = vec![];

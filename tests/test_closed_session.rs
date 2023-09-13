@@ -1,3 +1,5 @@
+mod common;
+
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::time::Duration;
@@ -5,7 +7,7 @@ use test_case::test_case;
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider};
 use ya_relay_core::key::generate;
-use ya_relay_server::testing::server::init_test_server;
+use common::server::init_test_server;
 
 enum Node {
     WithAlias,
