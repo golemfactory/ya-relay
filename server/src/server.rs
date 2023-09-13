@@ -211,13 +211,6 @@ impl Server {
         let session_id = SessionId::from(packet.session_id);
         let slot = packet.slot;
 
-        log::trace!(
-            "[forward]: Forward packet from: {} session_id {} to slot {}.",
-            from,
-            session_id,
-            slot
-        );
-
         counter!(
             "ya-relay.packet.forward.incoming.size",
             packet.payload.len() as u64
@@ -338,11 +331,6 @@ impl Server {
         packet: proto::Control,
         from: SocketAddr,
     ) -> ServerResult<()> {
-        log::trace!(
-            "[control]: Control packet from: {} session_id {}",
-            from,
-            session_id
-        );
         if let proto::Control {
             kind: Some(proto::control::Kind::Disconnected(Disconnected { by: Some(by) })),
         } = packet

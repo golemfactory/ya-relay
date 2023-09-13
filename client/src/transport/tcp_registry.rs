@@ -169,19 +169,15 @@ impl TcpRegistry {
         let notifier = node.notifier(channel).subscribe();
 
         match node.transition(channel, TcpState::Connecting).await {
-            Ok(_) => {
-                TcpLock::Permit(TcpPermit {
-                    node,
-                    channel,
-                    result: None,
-                })
-            }
-            Err(_) => {
-                TcpLock::Wait(TcpAwaiting {
-                    notifier,
-                    channel: node.channel(channel),
-                })
-            }
+            Ok(_) => TcpLock::Permit(TcpPermit {
+                node,
+                channel,
+                result: None,
+            }),
+            Err(_) => TcpLock::Wait(TcpAwaiting {
+                notifier,
+                channel: node.channel(channel),
+            }),
         }
     }
 
@@ -265,9 +261,7 @@ pub enum TcpState {
 
 impl TcpState {
     pub fn transition(&mut self, new_state: TcpState) -> Result<(), TcpTransitionError> {
-        log::trace!(
-            "[TcpState] Transition from {self:?} to {new_state:?}"
-        );
+        log::trace!("[TcpState] Transition from {self:?} to {new_state:?}");
         match (&self, &new_state) {
             (&TcpState::Closed, &TcpState::Connecting)
             | (&TcpState::Failed(_), &TcpState::Connecting)

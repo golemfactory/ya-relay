@@ -190,38 +190,7 @@ impl NodesState {
     }
 
     pub fn get_by_slot(&self, slot: u32) -> Option<NodeSession> {
-        for (idx, slot) in self.slots.iter().enumerate() {
-            match slot {
-                Slot::Free => {}
-                Slot::Some(s) => {
-                    log::trace!("Slot[{}]: Some(sessionId: {})", idx, s.session)
-                }
-                Slot::Purgatory(s) => {
-                    log::trace!("Slot[{}]: Purgatory(sessionId: {})", idx, s.session)
-                }
-            };
-        }
-
         self.slots.get(slot as usize).cloned().and_then(|entry| {
-            match &entry {
-                Slot::Free => {
-                    log::trace!("[NodeState]: Getting session from slot: {} - Free", slot);
-                }
-                Slot::Some(s) => {
-                    log::trace!(
-                        "[NodeState]: Getting session from slot: {} - Some(sessionId: {})",
-                        slot,
-                        s.session
-                    );
-                }
-                Slot::Purgatory(s) => {
-                    log::trace!(
-                        "[NodeState]: Getting session from slot: {} - Purgatory(sessionId: {})",
-                        slot,
-                        s.session
-                    );
-                }
-            }
             if let Slot::Purgatory(s) = &entry {
                 log::trace!(
                     "[NodeState]: Purgatory session -> Trying to get session by NodeId: {}",
@@ -247,28 +216,11 @@ impl NodesState {
     pub fn get_by_node_id(&self, id: NodeId) -> Option<NodeSession> {
         match self.nodes.get(&id) {
             None => None,
-            Some(&slot) => self.slots.get(slot as usize).cloned().and_then(|entry| {
-                match &entry {
-                    Slot::Free => {
-                        log::trace!("[NodeState]: Getting session by node: {} - Free", id);
-                    }
-                    Slot::Some(s) => {
-                        log::trace!(
-                            "[NodeState]: Getting session by node: {} - Some(sessionId: {})",
-                            id,
-                            s.session
-                        );
-                    }
-                    Slot::Purgatory(s) => {
-                        log::trace!(
-                            "[NodeState]: Getting session by node: {} - Purgatory(sessionId: {})",
-                            id,
-                            s.session
-                        );
-                    }
-                }
-                entry.active()
-            }),
+            Some(&slot) => self
+                .slots
+                .get(slot as usize)
+                .cloned()
+                .and_then(|entry| entry.active()),
         }
     }
 

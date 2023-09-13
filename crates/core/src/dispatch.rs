@@ -38,30 +38,14 @@ where
                 kind: Some(kind),
             }) => match kind {
                 proto::packet::Kind::Control(control) => {
-                    // handler
-                    // .on_control(session_id, control, from)
-                    // .map(spawn_local);
-                    let f = handler.on_control(session_id, control, from);
-                    match f {
-                        Some(f) => {
-                            log::trace!("[dispatch]: Control packet from {}", from);
-                            f.await;
-                        }
-                        None => log::debug!("[dispatch]: Unexpected control packet from {}", from),
-                    };
+                    handler
+                        .on_control(session_id, control, from)
+                        .map(spawn_local);
                 }
                 proto::packet::Kind::Request(request) => {
-                    // handler
-                    //     .on_request(session_id, request, from)
-                    //     .map(spawn_local);
-                    let f = handler.on_request(session_id, request, from);
-                    match f {
-                        Some(f) => {
-                            log::trace!("[dispatch]: Request packet from {}", from);
-                            f.await;
-                        }
-                        None => log::debug!("[dispatch]: Unexpected request packet from {}", from),
-                    }
+                    handler
+                        .on_request(session_id, request, from)
+                        .map(spawn_local);
                 }
                 proto::packet::Kind::Response(response) => {
                     match response.kind {
@@ -81,15 +65,7 @@ where
                 }
             },
             codec::PacketKind::Forward(forward) => {
-                // handler.on_forward(forward, from).map(spawn_local);
-                let f = handler.on_forward(forward, from);
-                match f {
-                    Some(f) => {
-                        log::trace!("[dispatch]: Forward packet from {}", from);
-                        f.await;
-                    }
-                    None => log::debug!("[dispatch]: Unexpected forward packet from {}", from),
-                }
+                handler.on_forward(forward, from).map(spawn_local);
             }
             _ => log::warn!("Unable to dispatch packet from {}: not supported", from),
         };

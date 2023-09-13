@@ -206,7 +206,6 @@ impl NetworkView {
     }
 
     pub async fn shutdown(&self) {}
-    }
 }
 
 impl NetworkViewState {
