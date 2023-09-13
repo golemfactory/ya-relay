@@ -486,12 +486,6 @@ impl SessionLayer {
     /// Doesn't try to initialize session. `None` if session didn't exist.
     pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
         let state = self.state.read().await;
-        log::trace!(
-            "[get_node_routing]: for {} exists: {}, p2p_nodes entry exists: {}",
-            node_id,
-            state.nodes.contains_key(&node_id),
-            state.p2p_nodes.contains_key(&node_id)
-        );
         state
             .nodes
             .get(&node_id)
@@ -612,16 +606,7 @@ impl SessionLayer {
             // in place.
             // And there is second reason: if we have many threads waiting for session, than someone who
             // will come later, will get through, but the rest of threads would wait for `Established` state.
-            log::trace!("[session]: await_connected...");
-            match self.await_connected(node_id).await {
-                Ok(_) => {
-                    log::trace!("[session]: await_connected succeeded");
-                }
-                Err(e) => {
-                    log::trace!("[session]: await_connected failed {}", e);
-                    return Err(e);
-                }
-            }
+            self.await_connected(node_id).await?;
 
             log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
             return Ok(routing);
@@ -633,12 +618,7 @@ impl SessionLayer {
         let info = match self
             .query_node_info(node_id)
             .await
-            .map_err(|e| SessionError::NotFound(format!("Error querying node {node_id}: {e}"))) {
-            Ok(node_info) => node_info,
-            Err(e) => {
-                log::trace!("[session]: failed to find info for node [{node_id}]");
-                return Err(e);
-            }
+            .map_err(|e| SessionError::NotFound(format!("Error querying node {node_id}: {e}")))?;
         };
 
         if info.identities.is_empty() {
@@ -666,24 +646,6 @@ impl SessionLayer {
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
         let this = self.clone();
 
-
-        {
-            let state = self.state.read().await;
-            if state.p2p_sessions.contains_key(&addrs[0]) {
-                let entry = state.p2p_sessions.get(&addrs[0]);
-                log::trace!("[session]: p2p_sessions contains entry for {}: [{}]", addrs[0], entry.unwrap().owner.default_id);
-            } else {
-                log::trace!("[session]: p2p_sessions does not contain entry for {}", addrs[0]);
-            }
-
-            if state.p2p_nodes.contains_key(&remote_id) {
-                let entry = state.p2p_nodes.get(&remote_id);
-                log::trace!("[session]: p2p_nodes contains entry for {}: [{}]", remote_id, entry.unwrap().owner.default_id);
-            } else {
-                log::trace!("[session]: p2p_nodes does not contain entry for {}", remote_id);
-            }
-        }
-
         let session = match self.registry.lock_outgoing(remote_id, &addrs, this).await {
             SessionLock::Permit(mut permit) => {
                 log::trace!("Acquired `SessionPermit` to init session with [{remote_id}]");
@@ -704,17 +666,7 @@ impl SessionLayer {
                 .await
                 .map_err(|e| SessionError::Unexpected(e.to_string()))?
             }
-            SessionLock::Wait(mut waiter) => {
-                log::trace!("[session]: await_for_finish start");
-                let r = waiter.await_for_finish().await;
-                if let Err(e) = &r {
-                    log::trace!("[session]: await_for_finish failed: {}", e);
-                }
-                if let Ok(_) = &r {
-                    log::trace!("[session]: await_for_finish succeeded");
-                }
-                r
-            },
+            SessionLock::Wait(mut waiter) => waiter.await_for_finish().await,
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
