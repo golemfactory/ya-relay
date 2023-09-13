@@ -11,11 +11,9 @@ repository = "https://github.com/golemfactory/ya-relay"
 ya-relay-stack = { workspace = true }
 ya-relay-proto = { workspace = true }
 ya-relay-core = { workspace = true }
-ya-relay-server = { workspace = true, optional = true }
 
 ya-packet-trace = "0.1.0"
 
-actix-rt = { version = "2.7", optional = true }
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = "0.4"
@@ -64,19 +62,3 @@ env_logger = "0.10.0"
 [features]
 default = []
 packet-trace-enable = ["ya-packet-trace/enable"]
-test-utils = ["ya-relay-server", "actix-rt"]
-
-[[test]]
-name = "test_client"
-path = "tests/test_client.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "test_expired_session"
-path = "tests/test_expired_session.rs"
-required-features = ["test-utils"]
-
-[[test]]
-name = "test_forwarding"
-path = "tests/test_forwarding.rs"
-required-features = ["test-utils"]
