@@ -5,8 +5,8 @@ export CLIENT_LATENCY=3
 export SERVER_LATENCY=3
 export RUST_LOG=trace,mio=info,smoltcp=trace,actix_web=warn,actix_server=warn,actix_http=warn
 
-cargo build --release --features "packet-trace-enable"
-cargo build --example http_client --release --features "packet-trace-enable"
+cargo build --release
+cargo build --example http_client
 
 # Start the network
 docker compose -f test_env/docker-compose-nat-clients.yml up \
