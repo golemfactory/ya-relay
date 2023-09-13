@@ -63,6 +63,6 @@ thiserror = "1.0.44"
 env_logger = "0.10.0"
 
 [features]
-default = []
+default = ["packet-trace-enable"]
 packet-trace-enable = ["ya-packet-trace/enable"]
 mock = ['ya-relay-server']

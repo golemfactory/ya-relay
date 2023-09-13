@@ -35,6 +35,7 @@ pub struct AllowedForwards {
 
 impl AllowedForwards {
     pub fn add(&mut self, node: NodeEntry<NodeId>, slot: SlotId) {
+        log::trace!("[add]: node {} to slot {}", node.default_id, slot);
         // Remove previous information about node.
         // We are removing all identities and slot. This is redundant, because in most cases
         // using default id should be enough. This protects from situations, when `NodeEntries`
@@ -47,18 +48,41 @@ impl AllowedForwards {
         }
 
         for id in &node.identities {
+            log::trace!("[add]: insert node map entry {} -> {}", *id, slot);
             self.nodes.insert(*id, slot);
         }
+        log::trace!(
+            "[add]: insert slot map entry {} -> {}",
+            slot,
+            node.default_id
+        );
         self.slots.insert(slot, node);
     }
 
     pub fn remove(&mut self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
+        log::trace!("[remove]: trying to remove node {}", node_id);
         if let Some(slot) = self.nodes.remove(node_id) {
+            log::trace!("[remove]: removed node {}", node_id);
             if let Some(entry) = self.slots.remove(&slot) {
+                log::trace!("[remove]: removed slot {}", slot);
                 for id in &entry.identities {
                     self.nodes.remove(id);
                 }
                 return Some(entry);
+            } else {
+                log::trace!("[remove]: cannot remove, slot {} not found", slot);
+                for k in self.slots.keys() {
+                    log::trace!(
+                        "[remove]: existing slot entry {} -> {}",
+                        k,
+                        self.slots[k].default_id
+                    );
+                }
+            }
+        } else {
+            log::trace!("[remove]: cannot remove, node {} not found", node_id);
+            for k in self.nodes.keys() {
+                log::trace!("[remove]: existing node entry {} -> {}", k, self.nodes[k]);
             }
         }
         None
@@ -66,18 +90,29 @@ impl AllowedForwards {
 
     pub fn remove_by_slot(&mut self, slot: SlotId) -> Option<NodeId> {
         if let Some(default_id) = self.slots.get(&slot).map(|node| node.default_id) {
+            log::trace!("[remove_by_slot]: trying by slot {}... OK", slot);
             self.remove(&default_id);
             return Some(default_id);
         }
+        log::trace!(
+            "[remove_by_slot]: trying by slot {}... Failed, not found",
+            slot
+        );
         None
     }
 
     pub fn get_by_slot(&self, slot: SlotId) -> Option<NodeEntry<NodeId>> {
-        self.slots.get(&slot).cloned()
+        let node = self.slots.get(&slot).cloned();
+        if let Some(n) = &node {
+            log::trace!("[get_by_slot]: slot = {}, node = {:?}", slot, n.default_id);
+        }
+        node
     }
 
     pub fn get_slot(&self, node_id: &NodeId) -> Option<SlotId> {
-        self.nodes.get(node_id).cloned()
+        let slot = self.nodes.get(node_id).cloned();
+        log::trace!("[get_slot]: node_id = {}, slot = {:?}", node_id, slot);
+        slot
     }
 
     pub fn get_by_id(&self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {

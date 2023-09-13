@@ -156,6 +156,7 @@ pub struct Connect<'a> {
 
 impl<'a> Connect<'a> {
     pub fn new(connection: Connection, iface: Rc<RefCell<CaptureInterface<'a>>>) -> Self {
+        log::trace!("[Connect::new]: {:?}", connection);
         Self { connection, iface }
     }
 }
@@ -166,6 +167,8 @@ impl<'a> Future for Connect<'a> {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let iface_rfc = self.iface.clone();
         let mut iface = iface_rfc.borrow_mut();
+
+        log::trace!("[Connect::poll]: {:?}", self.connection);
 
         let socket = match iface.get_socket_safe::<tcp::Socket>(self.connection.handle) {
             Ok(s) => s,
@@ -233,6 +236,7 @@ impl<'a> Send<'a> {
         iface: Rc<RefCell<CaptureInterface<'a>>>,
         sent: F,
     ) -> Self {
+        log::trace!("[Send::new]: {:?}", connection);
         Self {
             data,
             offset: 0,
@@ -253,6 +257,10 @@ impl<'a> Future for Send<'a> {
 
             match conn.meta.protocol {
                 Protocol::Tcp => {
+                    log::trace!(
+                        "[Future(Send)::poll]: Sending TCP packet: {:?}",
+                        self.data.as_ref()
+                    );
                     let result = {
                         let socket = match iface.get_socket_safe::<tcp::Socket>(conn.handle) {
                             Ok(socket) => socket,
@@ -278,6 +286,10 @@ impl<'a> Future for Send<'a> {
                     };
                 }
                 Protocol::Udp => {
+                    log::trace!(
+                        "[Future(Send)::poll]: Sending UDP packet: {:?}",
+                        self.data.as_ref()
+                    );
                     let socket = match iface.get_socket_safe::<udp::Socket>(conn.handle) {
                         Ok(socket) => socket,
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),
@@ -288,6 +300,10 @@ impl<'a> Future for Send<'a> {
                         .map_err(|err| err.to_string())
                 }
                 Protocol::Icmp | Protocol::Ipv6Icmp => {
+                    log::trace!(
+                        "[Future(Send)::poll]: Sending ICMP packet: {:?}",
+                        self.data.as_ref()
+                    );
                     let socket = match iface.get_socket_safe::<icmp::Socket>(conn.handle) {
                         Ok(socket) => socket,
                         Err(e) => return Poll::Ready(Err(Error::Other(e.to_string()))),

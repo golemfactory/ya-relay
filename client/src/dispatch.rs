@@ -306,7 +306,10 @@ impl Dispatcher {
         if code != proto::StatusCode::Ok as i32 {
             let handlers = self.error_handlers.lock().unwrap();
             if let Some(handler) = handlers.get(&code) {
+                log::trace!("[dispatch_response]: Handling error code: {}", code);
                 spawn_local((*handler)());
+            } else {
+                log::trace!("[dispatch_response]: Not handling error code: {}", code);
             }
         }
     }

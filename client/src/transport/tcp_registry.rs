@@ -179,7 +179,7 @@ impl TcpRegistry {
 
     pub async fn connect_attempt(&self, node: NodeId, channel: ChannelDesc) -> TcpLock {
         log::trace!(
-            "[TcpRegistry] Connect attempt to node: {node}, channel: {channel}",
+            "[connect_attempt] Connect attempt to node: {node}, channel: {channel}",
             node = node,
             channel = channel
         );
@@ -192,20 +192,26 @@ impl TcpRegistry {
         let notifier = node.notifier(channel).subscribe();
 
         match node.transition(channel, TcpState::Connecting).await {
-            Ok(_) => TcpLock::Permit(TcpPermit {
-                node,
-                channel,
-                result: None,
-            }),
-            Err(_) => TcpLock::Wait(TcpAwaiting {
-                notifier,
-                channel: node.channel(channel),
-            }),
+            Ok(_) => {
+                log::trace!("[connect_attempt]: OK: Connection already established.");
+                TcpLock::Permit(TcpPermit {
+                    node,
+                    channel,
+                    result: None,
+                })
+            }
+            Err(_) => {
+                log::trace!("[connect_attempt]: Err: Connection failed.");
+                TcpLock::Wait(TcpAwaiting {
+                    notifier,
+                    channel: node.channel(channel),
+                })
+            }
         }
     }
 
     pub async fn resolve_node(&self, node: NodeId) -> anyhow::Result<VirtNode> {
-        log::trace!("[TcpRegistry] Resolve node: {node}", node = node);
+        log::trace!("[resolve_node] Resolve node: {node}", node = node);
         let state = self.state.read().await;
         let ip = state
             .ips
@@ -222,13 +228,13 @@ impl TcpRegistry {
         let ip = IpAddress::from(to_ipv6(node.into_array()))
             .as_bytes()
             .into();
-        log::trace!("[TcpRegistry] Resolve ip for {}: {:?}", node, ip);
+        log::trace!("[resolve_ip] Resolve ip for {}: {:?}", node, ip);
         ip
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
         // Removing all channels. Consider if we should remove channels one by one.
-        log::trace!("[TcpRegistry] Removing node: {node_id}", node_id = node_id);
+        log::trace!("[remove_node] Removing node: {node_id}", node_id = node_id);
         if let Ok(node) = self.resolve_node(node_id).await {
             node.transition(
                 (ChannelType::Messages, ChannelDirection::Out).into(),
@@ -259,7 +265,10 @@ impl TcpRegistry {
     }
 
     pub async fn add_virt_node(&self, node_id: NodeId) -> VirtNode {
-        log::trace!("[TcpRegistry] add_virt_node: {node_id}", node_id = node_id);
+        log::trace!(
+            "[add_virt_node] add_virt_node: {node_id}",
+            node_id = node_id
+        );
         let node = VirtNode::new(node_id, self.layer.clone());
         {
             let mut state = self.state.write().await;

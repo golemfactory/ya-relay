@@ -86,6 +86,27 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
             // Reusing the buffer, clear existing contents
             buf.clear();
 
+            match &packet {
+                PacketKind::Packet(pkt) => {
+                    log::trace!(
+                        "[udp_sink]: packet: sessionId: [{}], kind: {:?}",
+                        hex::encode(&pkt.session_id),
+                        pkt.kind
+                    );
+                }
+                PacketKind::Forward(fwd) => {
+                    log::trace!(
+                        "[udp_sink]: forward: sessionId: [{}], slot: {}, payload-len: {}",
+                        hex::encode(&fwd.session_id),
+                        fwd.slot,
+                        fwd.payload.len()
+                    );
+                }
+                PacketKind::ForwardCtd(_) => {
+                    log::trace!("[udp_sink]: forwardCtd");
+                }
+            }
+
             if let Err(e) = codec.encode(packet, &mut buf) {
                 log::warn!("Error encoding packet for: {target}. Error: {e}");
             } else if let Err(e) = {

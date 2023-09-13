@@ -28,7 +28,7 @@ use crate::client::{ClientConfig, Forwarded};
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::dispatch::{dispatch, Handler};
 use crate::encryption::Encryption;
-use crate::error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
+use crate::error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult, TransitionError};
 use crate::metrics::{metric_session_established, TARGET_ID};
 use crate::raw_session::{RawSession, SessionType};
 use crate::routing_session::{NodeRouting, RoutingSender};
@@ -48,6 +48,8 @@ use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::ReverseConnection;
 use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
+use crate::session::session_state::SessionState::{Closed, FailedEstablish};
+use crate::SessionError::Network;
 
 type ReqFingerprint = (Vec<u8>, u64);
 
@@ -215,12 +217,14 @@ impl SessionRegistration for SessionLayer {
 #[async_trait(?Send)]
 impl SessionDeregistration for SessionLayer {
     async fn unregister(&self, node_id: NodeId) {
-        log::debug!("Unregistering Node [{node_id}]");
+        log::debug!("[unregister]: Unregistering Node [{node_id}]");
 
         let direct = {
             let mut state = self.state.write().await;
 
-            let mut ids = HashSet::<NodeId>::new();
+            // let mut ids = HashSet::<NodeId>::new();
+            let mut ids : HashSet::<NodeId> = vec![node_id].into_iter().collect();
+
             let routing = state.nodes.get(&node_id).cloned();
             let direct = state.p2p_nodes.get(&node_id).cloned();
 
@@ -242,6 +246,8 @@ impl SessionDeregistration for SessionLayer {
                 ids.extend(direct.owner.identities.iter())
             }
 
+            log::debug!("[unregister]: ids: [{:?}]", ids);
+
             for id in ids {
                 log::debug!("Disconnecting [{node_id}] - removing entries for identity: {id}");
 
@@ -258,12 +264,19 @@ impl SessionDeregistration for SessionLayer {
                 }
             }
 
+            if let Some(entry) = self.registry.get_entry(node_id).await {
+                log::trace!("[unregister]: found entry for {node_id}, removing...", );
+                self.registry.remove_node(node_id).await;
+            }
+
             direct
         };
 
         if let Some(direct) = direct {
-            self.unregister_session(direct).await;
+            log::trace!("[unregister]: closing session {}", direct.raw.id);
+            self.close_session(direct).await;
         } else {
+            log::trace!("[unregister]: no direct session to be closed");
             increment_counter!("ya-relay.client.session.closed", TARGET_ID => node_id.to_string());
         }
     }
@@ -290,6 +303,7 @@ impl SessionDeregistration for SessionLayer {
         {
             let mut state = self.state.write().await;
             for id in &session.owner.identities {
+                log::trace!("[unregister_session]: removing entries from p2p_nodes and nodes for {id}");
                 state.p2p_nodes.remove(id);
                 state.nodes.remove(id);
             }
@@ -477,6 +491,12 @@ impl SessionLayer {
     /// Doesn't try to initialize session. `None` if session didn't exist.
     pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
         let state = self.state.read().await;
+        log::trace!(
+            "[get_node_routing]: for {} exists: {}, p2p_nodes entry exists: {}",
+            node_id,
+            state.nodes.contains_key(&node_id),
+            state.p2p_nodes.contains_key(&node_id)
+        );
         state
             .nodes
             .get(&node_id)
@@ -535,7 +555,7 @@ impl SessionLayer {
     /// TODO: `disconnect` shouldn't fail, because there is no reasonable reaction to this case.
     ///       This function must leave everything in clean state.
     pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
-        log::info!("Disconnecting Node [{node_id}]");
+        log::info!("[disconnect]: Disconnecting Node [{node_id}]");
 
         // Note: This function shouldn't return before changing state to `Closed` (abort-safety).
         let entry = self.registry.guard(node_id, &[]).await;
@@ -583,7 +603,7 @@ impl SessionLayer {
         node_id: NodeId,
         dont_use: Vec<ConnectionMethod>,
     ) -> Result<RoutingSender, SessionError> {
-        log::trace!("[SessionLayer]: Requested session with [{node_id}]");
+        log::trace!("[session]: Requested session with [{node_id}]");
 
         if let Some(routing) = self.get_node_routing(node_id).await {
             // Why we need this ugly solution? Can't we just return `RoutingSender`?
@@ -597,19 +617,34 @@ impl SessionLayer {
             // in place.
             // And there is second reason: if we have many threads waiting for session, than someone who
             // will come later, will get through, but the rest of threads would wait for `Established` state.
-            self.await_connected(node_id).await?;
+            log::trace!("[session]: await_connected...");
+            match self.await_connected(node_id).await {
+                Ok(_) => {
+                    log::trace!("[session]: await_connected succeeded");
+                }
+                Err(e) => {
+                    log::trace!("[session]: await_connected failed {}", e);
+                    return Err(e);
+                }
+            }
 
             log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
             return Ok(routing);
         }
 
-        log::trace!("Node [{node_id}] not found in routing tables. Trying to establish session...");
+        log::trace!("[session]: Node [{node_id}] not found in routing tables. Trying to establish session...");
 
         // Query relay server for Node information, we need to find out default id and aliases.
-        let info = self
+        let info = match self
             .query_node_info(node_id)
             .await
-            .map_err(|e| SessionError::NotFound(format!("Error querying node {node_id}: {e}")))?;
+            .map_err(|e| SessionError::NotFound(format!("Error querying node {node_id}: {e}"))) {
+            Ok(node_info) => node_info,
+            Err(e) => {
+                log::trace!("[session]: failed to find info for node [{node_id}]");
+                return Err(e);
+            }
+        };
 
         if info.identities.is_empty() {
             return Err(SessionError::Unexpected(format!(
@@ -629,10 +664,30 @@ impl SessionLayer {
             log::debug!("Resolving [{node_id}] as alias of [{remote_id}]");
         }
 
+        log::trace!("[session]: info found for node [{node_id}]");
+
         // TODO: Should we filter addresses or reject attempt to connect?
         //       In previous implementation we were filtering, but rationale is unknown.
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
         let this = self.clone();
+
+
+        {
+            let state = self.state.read().await;
+            if state.p2p_sessions.contains_key(&addrs[0]) {
+                let entry = state.p2p_sessions.get(&addrs[0]);
+                log::trace!("[session]: p2p_sessions contains entry for {}: [{}]", addrs[0], entry.unwrap().owner.default_id);
+            } else {
+                log::trace!("[session]: p2p_sessions does not contain entry for {}", addrs[0]);
+            }
+
+            if state.p2p_nodes.contains_key(&remote_id) {
+                let entry = state.p2p_nodes.get(&remote_id);
+                log::trace!("[session]: p2p_nodes contains entry for {}: [{}]", remote_id, entry.unwrap().owner.default_id);
+            } else {
+                log::trace!("[session]: p2p_nodes does not contain entry for {}", remote_id);
+            }
+        }
 
         let session = match self.registry.lock_outgoing(remote_id, &addrs, this).await {
             SessionLock::Permit(mut permit) => {
@@ -654,7 +709,17 @@ impl SessionLayer {
                 .await
                 .map_err(|e| SessionError::Unexpected(e.to_string()))?
             }
-            SessionLock::Wait(mut waiter) => waiter.await_for_finish().await,
+            SessionLock::Wait(mut waiter) => {
+                log::trace!("[session]: await_for_finish start");
+                let r = waiter.await_for_finish().await;
+                if let Err(e) = &r {
+                    log::trace!("[session]: await_for_finish failed: {}", e);
+                }
+                if let Ok(_) = &r {
+                    log::trace!("[session]: await_for_finish succeeded");
+                }
+                r
+            },
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
@@ -1017,9 +1082,7 @@ impl SessionLayer {
     }
 
     pub(crate) async fn await_connected(&self, node_id: NodeId) -> Result<(), SessionError> {
-        log::trace!(
-            "Session with Node [{node_id}] is registered. Waiting until it will be ready.."
-        );
+        log::trace!("[await_connected]: Session with Node [{node_id}] is registered.");
 
         let entry = self
             .registry
@@ -1028,6 +1091,9 @@ impl SessionLayer {
             .ok_or(SessionError::Internal(format!(
                 "Entry for Node [{node_id}] not found, despite it should exits."
             )))?;
+
+        log::trace!("[await_connected]: Waiting until it will be ready..");
+
         entry.awaiting_notifier().await_for_finish().await?;
         Ok(())
     }
@@ -1039,13 +1105,19 @@ impl SessionLayer {
         from: SocketAddr,
         request: proto::request::Session,
     ) -> Result<(), SessionError> {
-        log::trace!("Called `dispatch_session` by {from}.");
+        log::trace!(
+            "[dispatch_session]: from {}, sessionId: {}.",
+            from,
+            hex::encode(&session_id)
+        );
 
         let protocol = self.get_protocol().await?;
         let this = self.clone();
 
         if session_id.is_empty() {
-            log::trace!("Received `Session` packet with empty session id from {from}. Handling init attempt..");
+            log::trace!(
+                "[dispatch_session]: empty session id from {from}. Handling init attempt.."
+            );
 
             // Empty `session_id` indicates attempt to initialize session.
             let remote_id = challenge::recover_default_node_id(&request)
@@ -1095,6 +1167,11 @@ impl SessionLayer {
         from: SocketAddr,
         _request: proto::request::Ping,
     ) {
+        log::trace!(
+            "[on_ping]: from {}, sessionId: {}.",
+            from,
+            hex::encode(&session_id)
+        );
         let packet = proto::Packet::response(
             request_id,
             session_id,
@@ -1113,7 +1190,12 @@ impl SessionLayer {
         from: SocketAddr,
         by: By,
     ) -> anyhow::Result<()> {
-        log::trace!("Handling `Disconnected` from {from}");
+        log::trace!(
+            "[on_disconnected]: from {}, sessionId: {} by {:?}.",
+            from,
+            hex::encode(&session_id),
+            by
+        );
 
         // SessionId should be valid, otherwise this is some unknown session
         // so we should be cautious, when processing it.
@@ -1429,6 +1511,8 @@ impl Handler for SessionLayer {
         let slot = forward.slot;
         let channel = self.ingress_channel.clone();
 
+        log::trace!("[on_forward]: from {}, slot: {}.", from, slot);
+
         let myself = self;
         let fut = async move {
             log::trace!(
@@ -1468,12 +1552,23 @@ impl Handler for SessionLayer {
                         // TODO: Consider just adding node to `DirectSession` forwards list. If the other Node couldn't
                         //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
-                        let session = myself
-                            .session_filtered_connection_methods(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
-                            .await.map_err(|e| anyhow!("Failed to resolve node with slot {slot}. {e}"))?;
 
-                        session.target()
-                        // return myself.send_disconnect(SessionId::from(forward.session_id), from).await;
+                        if let Some(n) = session.get_by_id(&ident.node_id) {
+                            log::trace!("[session]: found by node id {}: {:?}", ident.node_id, n.default_id);
+                        }
+
+                        match myself
+                            .session_filtered_connection_methods(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
+                            .await {
+                            Ok(session) => {
+                                log::trace!("[on_forward]: session established {}", session.session_id());
+                                session.target()
+                            }
+                            Err(err) => {
+                                log::trace!("[on_forward]: failed to establish session with {}", ident.node_id);
+                                bail!("Failed to resolve node with slot {slot}. {err}")
+                            }
+                        }
                     }
                 }
             };

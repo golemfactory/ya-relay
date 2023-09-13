@@ -58,10 +58,18 @@ impl NetworkView {
     /// `SessionGuard` should be stored even if connection was closed,
     /// to avoid having multiple objects pointing to the same Node.
     pub async fn guard(&self, node_id: NodeId, addrs: &[SocketAddr]) -> NodeView {
+        log::trace!("[guard]: session with [{}]", node_id);
         let mut state = self.state.write().await;
         if let Some(target) = state.find(node_id, addrs) {
+            {
+                log::trace!("[guard]: &by_node_id: {:p}", &state.by_node_id);
+                let state = target.state.read().await;
+                log::trace!("[guard]: session with [{}] found: {}", node_id, state.state);
+            }
             return target;
         }
+
+        log::trace!("[guard]: session with [{}] not found, inserting", node_id);
 
         let target = NodeView::new(node_id, addrs.to_vec(), self.config.clone());
 
@@ -70,7 +78,33 @@ impl NetworkView {
             state.by_addr.insert(*addr, target.clone());
         }
 
+        if let Some(target) = state.find(node_id, addrs) {
+            let state = target.state.read().await;
+            log::trace!("[guard]: session with [{}] inserted: {}", node_id, state.state);
+        }
+
         target
+    }
+
+    pub async fn remove_node(&self, node_id: NodeId) {
+        log::trace!("[remove_node]: node_id {}", node_id);
+        let mut state = self.state.write().await;
+        if let Some(target) = state.find(node_id, &[]) {
+            if node_id != NodeId::default() {
+                log::trace!("[remove_node]: &by_node_id: {:p}", &state.by_node_id);
+                if let Some(_) = state.by_node_id.remove(&node_id) {
+                    log::trace!("[remove_node]: removed by node_id");
+                    state.by_node_id.iter().map(|(k, v)| (k, v.id)).for_each(|(k, v)| {
+                        log::trace!("[remove_node]: node_id -> node view: {} -> {}", k, v)
+                    });
+                }
+            }
+            log::trace!("[remove_node]: removing by addr");
+            state.by_addr.retain(|_, node_view| node_view.id != node_id);
+            state.by_addr.iter().map(|(k, v)| (k, v.id)).for_each(|(k, v)| {
+                log::trace!("[remove_node]: addr -> node view: {} -> {}", k, v)
+            });
+        }
     }
 
     /// Updates information about given Node.
@@ -114,6 +148,8 @@ impl NetworkView {
         };
 
         for id in &info.identities {
+            let target = entry.state.read().await;
+            log::trace!("[update_entry]: insert into by_node_id: {} -> {}", id.node_id, target.state);
             state.by_node_id.insert(id.node_id, entry.clone());
         }
 
@@ -141,7 +177,14 @@ impl NetworkView {
         addrs: &[SocketAddr],
         layer: impl SessionDeregistration,
     ) -> SessionLock {
-        self.guard(node_id, addrs).await.lock_outgoing(layer).await
+        log::trace!("[lock_outgoing]: session with [{}] start", node_id);
+        let r = self.guard(node_id, addrs).await.lock_outgoing(layer).await;
+        if let SessionLock::Permit(_) = &r {
+            log::trace!("[lock_outgoing]: session with [{}] end: Permit", node_id);
+        } else {
+            log::trace!("[lock_outgoing]: session with [{}] end: Wait", node_id);
+        }
+        r
     }
 
     pub async fn lock_incoming(
@@ -150,7 +193,14 @@ impl NetworkView {
         addrs: &[SocketAddr],
         layer: impl SessionDeregistration,
     ) -> SessionLock {
-        self.guard(node_id, addrs).await.lock_incoming(layer).await
+        log::trace!("[lock_incoming]: session with [{}] start", node_id);
+        let r = self.guard(node_id, addrs).await.lock_incoming(layer).await;
+        if let SessionLock::Permit(_) = &r {
+            log::trace!("[lock_incoming]: session with [{}] end: Permit", node_id);
+        } else {
+            log::trace!("[lock_incoming]: session with [{}] end: Wait", node_id);
+        }
+        r
     }
 
     pub async fn transition(
@@ -194,7 +244,9 @@ impl NetworkView {
         }
     }
 
-    pub async fn shutdown(&self) {}
+    pub async fn shutdown(&self) {
+        log::trace!("[shutdown]: ")
+    }
 }
 
 impl NetworkViewState {
@@ -467,7 +519,7 @@ impl NodeView {
                         )
                     }
                 };
-
+                log::trace!("[lock_outgoing]: Session with [{}] is in state: {}, waiting", self.id, self.state.read().await.state);
                 SessionLock::Wait(notifier)
             }
         }
@@ -588,6 +640,7 @@ impl SessionPermit {
         layer: Arc<Box<dyn SessionDeregistration>>,
         new_state: SessionState,
     ) {
+        log::trace!("[async_drop]: for node id: {}", node.id);
         let node_id = node.id;
         let reverse = matches!(&new_state, SessionState::ReverseConnection(_));
 
@@ -621,6 +674,7 @@ impl SessionPermit {
     /// Makes sure we deregister all data about this Node and abort all futures
     /// that might be during initialization.
     pub(crate) async fn clean_state(node: &NodeView, layer: Arc<Box<dyn SessionDeregistration>>) {
+        log::trace!("[clean_state]: {}", node.id);
         for addr in node.public_addresses().await {
             layer.abort_initializations(addr).await.ok();
         }
@@ -702,7 +756,9 @@ impl NodeAwaiting {
                 }
                 SessionState::FailedEstablish(e) => return Err(e),
                 _ => {
-                    log::trace!("Waiting for established session with [{node_id}]: skipping state: {state}")
+                    log::trace!(
+                        "Waiting for established session with [{node_id}]: skipping state: {state}"
+                    )
                 }
             };
 
@@ -723,7 +779,7 @@ impl NodeAwaiting {
                 }
                 SessionState::FailedEstablish(e) => return Err(e),
                 _ => {
-                    log::trace!("Waiting for Closed or FailedEstablished session with [{node_id}]. Current state: {state}")
+                    log::trace!("Waiting for Closed or FailedEstablished session with [{node_id}]. skipping state: {state}")
                 }
             };
 
