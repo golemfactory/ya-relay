@@ -8,13 +8,13 @@ use anyhow::{anyhow, Result};
 use chrono::Local;
 use futures::{future, try_join, FutureExt};
 use rand::Rng;
+use std::collections::VecDeque;
 use std::{
     collections::HashMap,
     io::Write,
     sync::{Arc, Mutex},
     time::Instant,
 };
-use std::collections::VecDeque;
 use structopt::StructOpt;
 use tokio::sync::oneshot;
 use ya_relay_client::{channels::ForwardSender, Client, ClientBuilder, FailFast, GenericSender};
