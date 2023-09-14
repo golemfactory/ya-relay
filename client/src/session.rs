@@ -273,7 +273,7 @@ impl SessionDeregistration for SessionLayer {
         };
 
         if let Some(direct) = direct {
-            self.close_session(direct).await;
+            self.unregister_session(direct).await;
         } else {
             increment_counter!("ya-relay.client.session.closed", TARGET_ID => node_id.to_string());
         }
