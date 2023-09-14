@@ -16,7 +16,9 @@ services:
       - "7465:7465/tcp"
       - "7465:7465/udp"
     networks:
-      - public_network
+      public_network:
+        # Hardcoded address because `alice` and `bob` do not see domain, and they address `relay` through gateway using IP
+        ipv4_address: 172.21.0.253
     hostname: relay_server
 
   public_client:
@@ -26,17 +28,46 @@ services:
     cap_add:
     - NET_ADMIN
     environment:
+      ## Empty BIND_IP makes Dockerfile to not export P2P_BIND_ADDR
+      # - BIND_IP=
+      - BIND_IP=${PUBLIC_BIND_IP}
       ## Without BIND_IP_PATTERN and BIND_IP it will bind to 0.0.0.0
-      # - BIND_IP_PATTERN=^172\.22\.0\.
+      # - BIND_IP_PATTERN=^172\.21\.0\.
+      - BIND_IP_PATTERN=${PUBLIC_BIND_IP_PATTERN}
+      - BIND_PROTO=${PUBLIC_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
+      # Empty GATEWAY_HOST to not change network settings for public client
+      - GATEWAY_HOST=
+      - SERVER_IP=172.21.0.253
     ports:
       - "51000-51999:8081"
-      - "52000-52999:9081"
+      - "52000-52999:9081/tcp"
+      - "52000-52999:9081/udp"
     networks:
       - public_network
     depends_on:
       - relay_server
+
+  alice_gateway:
+    image: tests_base
+    cap_add:
+      - NET_ADMIN
+    hostname: alice_gateway
+    networks:
+      # Hardcoded addresses because these are used in network config.
+      # IP values close to end of the available IP range to avoid collision with dynamically assigned addresses of clients.
+      alice_network:
+        ipv4_address: 172.22.0.255
+      public_network:
+        ipv4_address: 172.21.0.255
+    command: >-
+      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+      && iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
+      && iptables -A FORWARD -i eth1 -j ACCEPT
+      && iptables -A FORWARD -i eth0 -j ACCEPT
+      && ip route add 172.23.0.0/16 via 172.21.0.254
+      && tail -f /dev/null"
 
   alice_client:
     build:
@@ -46,19 +77,45 @@ services:
     - NET_ADMIN
     environment:
       ## Empty BIND_IP makes Dockerfile to not export P2P_BIND_ADDR
-      - BIND_IP=
+      # - BIND_IP=
+      - BIND_IP=${ALICE_BIND_IP}
       ## P2P_BIND_ADDR set to address from private net breakes session init
-      # - BIND_IP_PATTERN=^172\.23\.0\.
+      # - BIND_IP_PATTERN=^172\.22\.0\.
+      - BIND_IP_PATTERN=${ALICE_BIND_IP_PATTERN}
+      - BIND_PROTO=${ALICE_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
+      - GATEWAY_HOST=alice_gateway
+      - SERVER_IP=172.21.0.253
     ports:
       - "53000-53999:8081"
-      - "54000-54999:9081"
+      - "54000-54999:9081/tcp"
+      - "54000-54999:9081/udp"
     networks:
       - alice_network
-      - public_network
     depends_on:
       - relay_server
+      - alice_gateway
+  
+  bob_gateway:
+    image: tests_base
+    cap_add:
+      - NET_ADMIN
+    hostname: bob_gateway
+    networks:
+      # Hardcoded addresses because these are used in network config.
+      # IP values close to end of the available IP range to avoid collision with dynamically assigned addresses of clients.
+      bob_network:
+        ipv4_address: 172.23.0.255
+      public_network:
+        ipv4_address: 172.21.0.254
+    command: >-
+      sh -c "iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+      && iptables -t nat -A POSTROUTING -o eth1 -j MASQUERADE
+      && iptables -A FORWARD -i eth1 -j ACCEPT
+      && iptables -A FORWARD -i eth0 -j ACCEPT
+      && ip route add 172.22.0.0/16 via 172.21.0.255
+      && tail -f /dev/null"
 
   bob_client:
     build:
@@ -68,33 +125,39 @@ services:
     - NET_ADMIN
     environment:
       ## Empty BIND_IP makes Dockerfile to not export P2P_BIND_ADDR
-      - BIND_IP=
+      # - BIND_IP=
+      - BIND_IP=${BOB_BIND_IP}
       ## P2P_BIND_ADDR set to address from private net breakes session init
-      # - BIND_IP_PATTERN=^172\.24\.0\.
+      # - BIND_IP_PATTERN=^172\.23\.0\.
+      - BIND_IP_PATTERN=${BOB_BIND_IP_PATTERN}
+      - BIND_PROTO=${BOB_BIND_PROTO}
       - LATENCY=${CLIENT_LATENCY}
       - RUST_LOG=${RUST_LOG}
+      - GATEWAY_HOST=bob_gateway
+      - SERVER_IP=172.21.0.253
     ports:
       - "55000-55999:8081"
-      - "56000-56999:9081"
+      - "56000-56999:9081/tcp"
+      - "56000-56999:9081/udp"
     networks:
       - bob_network
-      - public_network
     depends_on:
       - relay_server
+      - bob_gateway
 
 networks:
   public_network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.22.0.0/16
+        - subnet: 172.21.0.0/16
   alice_network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.23.0.0/16
+        - subnet: 172.22.0.0/16
   bob_network:
     driver: bridge
     ipam:
       config:
-        - subnet: 172.24.0.0/16
+        - subnet: 172.23.0.0/16
