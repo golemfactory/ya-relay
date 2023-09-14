@@ -2,7 +2,24 @@ import pytest
 from python_on_whales import DockerClient
 from utils import Cluster, Scales
 
-default_build_args = {"SERVER_LATENCY": "20ms", "CLIENT_LATENCY": "5ms", "RUST_LOG": "info"}
+default_build_args = {
+    # general settings
+    "SERVER_LATENCY": "20ms",
+    "CLIENT_LATENCY": "5ms",
+    "RUST_LOG": "info",
+    # public client
+    "PUBLIC_BIND_IP": "",
+    "PUBLIC_BIND_IP_PATTERN": "",
+    "PUBLIC_BIND_PROTO": "tcp",
+    # alice client
+    "ALICE_BIND_IP": "",
+    "ALICE_BIND_IP_PATTERN": "",
+    "ALICE_BIND_PROTO": "tcp",
+    # bob client
+    "BOB_BIND_IP": "",
+    "BOB_BIND_IP_PATTERN": "",
+    "BOB_BIND_PROTO": "tcp",
+}
 
 
 @pytest.fixture(scope="session", autouse=True)
