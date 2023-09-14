@@ -297,6 +297,21 @@ impl SessionDeregistration for SessionLayer {
         // Node should handle disconnected Nodes properly even if he won't be notified.
         session.raw.disconnect().await.ok();
 
+        if session.owner.default_id == NodeId::default() {
+            let f = session.list();
+            log::trace!(
+                "[close_session]: lost session with server - remove {} forwards",
+                f.len()
+            );
+            for e in f {
+                log::trace!(
+                    "[close_session]: removing forward node_id {}.",
+                    e.default_id
+                );
+                self.registry.remove_node(e.default_id).await;
+            }
+        }
+
         let forwards = session.list();
         {
             let mut state = self.state.write().await;

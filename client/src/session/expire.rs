@@ -77,20 +77,5 @@ async fn close_sessions(
         );
 
         layer.close_session(session.clone()).await;
-
-        if session.owner.default_id == NodeId::default() {
-            let f = session.list();
-            log::trace!(
-                "[close_session]: lost session with server - remove {} forwards",
-                f.len()
-            );
-            for e in f {
-                log::trace!(
-                    "[close_session]: removing forward node_id {}.",
-                    e.default_id
-                );
-                layer.registry.remove_node(e.default_id).await;
-            }
-        }
     }
 }

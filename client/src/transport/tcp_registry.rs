@@ -200,24 +200,30 @@ impl TcpRegistry {
             .into()
     }
 
+    async fn close_channel(&self, node: &VirtNode, channel: ChannelDesc) {
+        if node.channel(channel).state().await != TcpState::Closed {
+            node.transition(channel, TcpState::Closed)
+                .await
+                .on_err(|e| {
+                    log::warn!(
+                        "Error closing channel for Node: {} (Messages): {}",
+                        node.id(),
+                        e
+                    )
+                })
+                .ok();
+        }
+    }
+
     pub async fn remove_node(&self, node_id: NodeId) {
         // Removing all channels. Consider if we should remove channels one by one.
         log::trace!("[remove_node] Removing node: {node_id}", node_id = node_id);
         if let Ok(node) = self.resolve_node(node_id).await {
-            node.transition(
-                (ChannelType::Messages, ChannelDirection::Out).into(),
-                TcpState::Closed,
-            )
-            .await
-            .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Messages): {e}"))
-            .ok();
-            node.transition(
-                (ChannelType::Transfer, ChannelDirection::Out).into(),
-                TcpState::Closed,
-            )
-            .await
-            .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Transfer): {e}"))
-            .ok();
+            let messages_out = (ChannelType::Messages, ChannelDirection::Out).into();
+            let transfer_out = (ChannelType::Transfer, ChannelDirection::Out).into();
+
+            self.close_channel(&node, messages_out).await;
+            self.close_channel(&node, transfer_out).await;
         };
 
         // let mut state = self.state.write().await;
