@@ -6,10 +6,8 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use ya_relay_core::testing::AbstractServerWrapper;
-use ya_relay_server::testing::server::ServerWrapper;
 
-use ya_relay_client::{channels::ForwardSender, Client, GenericSender};
+use crate::client::{Client, ForwardSender, GenericSender};
 
 pub enum Mode {
     Reliable,
@@ -124,10 +122,4 @@ pub async fn check_broadcast(
     // Clear receiver for further usage.
     received.store(false, SeqCst);
     Ok(())
-}
-
-/// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.
-pub async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
-    wrapper.remove_node_endpoints(client.node_id());
-    client.set_public_addr(None).await;
 }

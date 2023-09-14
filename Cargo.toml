@@ -28,8 +28,8 @@ ya-relay-util = { path = "crates/util", version = "0.1" }
 
 [dev-dependencies]
 ya-relay-client = { workspace = true, features = ["test-utils"] }
-ya-relay-server = { workspace = true }
-ya-relay-core = { workspace = true }
+ya-relay-server = { workspace = true, features = ["test-utils"] }
+ya-relay-core = { workspace = true, features = ["test-utils"] }
 ya-relay-proto = { workspace = true }
 
 anyhow = "1.0"

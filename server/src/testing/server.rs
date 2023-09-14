@@ -1,22 +1,42 @@
-use ya_relay_server::config::Config;
+use crate::config::Config;
+
 use chrono::Local;
+use futures::future::LocalBoxFuture;
 use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
 use std::io::Write;
-use std::time::Duration;
+use std::sync::Arc;
+use std::sync::Mutex;
+use tokio::time::Duration;
 use url::Url;
 
-use ya_relay_server::server::Server;
+use crate::server::Server;
 
 #[derive(Clone)]
 pub struct ServerWrapper {
-    pub server: Server,
+    pub server: Arc<Mutex<Server>>,
     handle: AbortHandle,
 }
 
-impl ServerWrapper {
-    pub fn url(&self) -> Url {
-        self.server.inner.url.clone()
+impl<'a> ya_relay_core::testing::AbstractServerWrapper<'a> for ServerWrapper {
+    fn url(&self) -> Url {
+        self.server.lock().unwrap().inner.url.clone()
+    }
+
+    fn remove_node_endpoints(&'a self, node: ya_relay_core::NodeId) -> LocalBoxFuture<'a, ()> {
+        let server = self.server.lock().unwrap();
+        Box::pin(async move {
+            let mut state = server.state.write().await;
+
+            let mut info = state.nodes.get_by_node_id(node).unwrap();
+            state.nodes.remove_session(info.info.slot);
+
+            // Server won't return any endpoints, so Client won't try to connect directly.
+            info.info.endpoints = vec![];
+            state.nodes.register(info);
+
+            drop(state);
+        })
     }
 }
 
@@ -55,7 +75,7 @@ pub async fn init_test_server_with_config(config: Config) -> anyhow::Result<Serv
     ));
 
     Ok(ServerWrapper {
-        server,
+        server: Arc::new(Mutex::new(server)),
         handle: abort_handle,
     })
 }
@@ -77,7 +97,13 @@ pub fn test_default_config() -> Config {
 
 impl Drop for ServerWrapper {
     fn drop(&mut self) {
-        self.server.inner.socket.clone().close_channel();
+        self.server
+            .lock()
+            .unwrap()
+            .inner
+            .socket
+            .clone()
+            .close_channel();
         self.handle.abort();
 
         log::debug!("[TEST] Dropping ServerWrapper.");

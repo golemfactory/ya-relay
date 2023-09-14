@@ -2,16 +2,19 @@ mod common;
 
 use std::convert::TryInto;
 
+use ya_relay_client::testing::init::MockSessionNetwork;
+use ya_relay_client::testing::private::SessionLock;
+use ya_relay_client::testing::private::SessionState;
 use ya_relay_client::ClientBuilder;
+use ya_relay_client::SessionError;
+use ya_relay_core::testing::AbstractServerWrapper;
 use ya_relay_proto::proto;
-use common::server::init_test_server;
-use ya_relay_client::network_view::SessionLock;
-use ya_relay_client::session_state::SessionState;
-use common::init::MockSessionNetwork;
+use ya_relay_server::testing::server::init_test_server;
 
 #[actix_rt::test]
 async fn test_session_protocol_happy_path() {
-    let mut network = MockSessionNetwork::new().await.unwrap();
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
     let layer1 = network.new_layer().await.unwrap();
     let layer2 = network.new_layer().await.unwrap();
     let protocol = layer1.protocol;
@@ -138,7 +141,7 @@ async fn test_session_protocol_disconnected_on_challenge_response() {}
 #[serial_test::serial]
 async fn test_query_self_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
-    let client = ClientBuilder::from_url(wrapper.server.inner.url.clone())
+    let client = ClientBuilder::from_url(wrapper.url())
         .build()
         .await
         .unwrap();

@@ -13,14 +13,15 @@ use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_client::channels::Forwarded;
 use ya_relay_client::{Client, ClientBuilder, FailFast};
+use ya_relay_core::testing::AbstractServerWrapper;
 use ya_relay_core::NodeId;
-use common::server::{init_test_server, ServerWrapper};
+use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     let mut clients = vec![];
     for _ in 0..count {
         clients.push(
-            ClientBuilder::from_url(wrapper.server.inner.url.clone())
+            ClientBuilder::from_url(wrapper.url())
                 .connect(FailFast::Yes)
                 .build()
                 .await

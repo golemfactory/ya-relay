@@ -9,10 +9,11 @@ use std::time::Duration;
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider};
 use ya_relay_core::key::generate;
-use common::server::init_test_server;
+use ya_relay_core::testing::AbstractServerWrapper;
+use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
-use common::spawn_receive;
 use common::hack_make_ip_private;
+use common::spawn_receive;
 
 #[serial_test::serial]
 async fn test_find_node_by_alias() -> anyhow::Result<()> {

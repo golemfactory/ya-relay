@@ -7,39 +7,22 @@ use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 
-use ya_relay_client::raw_session::SessionType;
-use ya_relay_client::session::session_initializer::SessionInitializer;
-use ya_relay_client::session::SessionLayer;
-use common::accessors::SessionLayerPrivate;
-use common::init::MockSessionNetwork;
+use ya_relay_client::testing::accessors::SessionLayerPrivate;
+use ya_relay_client::testing::init::MockSessionNetwork;
+use ya_relay_client::testing::private::SessionInitializer;
+use ya_relay_client::testing::private::SessionLayer;
+use ya_relay_client::testing::private::SessionType;
+use ya_relay_server::testing::server::init_test_server;
 
 use anyhow::bail;
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
 use std::net::SocketAddr;
 
-impl SessionLayerPrivate for SessionLayer {
-    fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionInitializer>> {
-        let myself = self.clone();
-        async move { Ok(myself.get_protocol().await?) }.boxed_local()
-    }
-
-    fn get_test_socket_addr(&self) -> LocalBoxFuture<anyhow::Result<SocketAddr>> {
-        let myself = self.clone();
-        async move {
-            if let Some(addr) = myself.get_local_addr().await {
-                let port = addr.port();
-                Ok(format!("127.0.0.1:{port}").parse()?)
-            } else {
-                bail!("Can't get local address.")
-            }
-        }
-        .boxed_local()
-    }
-}
 #[actix_rt::test]
 async fn test_session_layer_happy_path() {
-    let mut network = MockSessionNetwork::new().await.unwrap();
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
     let layer1 = network.new_layer().await.unwrap();
     let layer2 = network.new_layer().await.unwrap();
 
@@ -61,7 +44,8 @@ async fn test_session_layer_happy_path() {
 
 #[actix_rt::test]
 async fn test_session_layer_p2p_send_receive() {
-    let mut network = MockSessionNetwork::new().await.unwrap();
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
     let layer1 = network.new_layer().await.unwrap();
     let layer2 = network.new_layer().await.unwrap();
 
@@ -110,7 +94,8 @@ async fn test_session_layer_p2p_send_receive() {
 
 #[actix_rt::test]
 async fn test_session_layer_close_p2p_session() {
-    let mut network = MockSessionNetwork::new().await.unwrap();
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
     let layer1 = network.new_layer().await.unwrap();
     let layer2 = network.new_layer().await.unwrap();
 
@@ -139,7 +124,8 @@ async fn test_session_layer_close_p2p_session() {
 
 #[actix_rt::test]
 async fn test_session_layer_close_relayed_routing() {
-    let mut network = MockSessionNetwork::new().await.unwrap();
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
     let layer1 = network.new_layer().await.unwrap();
     let layer2 = network.new_layer().await.unwrap();
     let relay_id = NodeId::default();
@@ -176,7 +162,8 @@ async fn test_session_layer_close_relayed_routing() {
 
 #[actix_rt::test]
 async fn test_session_layer_reverse_connection() {
-    let mut network = MockSessionNetwork::new().await.unwrap();
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
     let layer1 = network.new_layer().await.unwrap();
     let layer2 = network.new_layer().await.unwrap();
 

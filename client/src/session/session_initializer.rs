@@ -249,7 +249,7 @@ impl SessionInitializer {
     /// that we are not processing 2 session initializations at the same time.
     ///
     /// See `SessionProtocol::init_session` for rationale behind this decision.
-    pub(crate) async fn init_p2p_session(
+    pub async fn init_p2p_session(
         &self,
         addr: SocketAddr,
         permit: &SessionPermit,

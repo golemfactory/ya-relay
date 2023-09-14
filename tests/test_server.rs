@@ -3,7 +3,8 @@ mod common;
 use common::{check_broadcast, spawn_receive_for_client};
 use std::net::UdpSocket;
 use ya_relay_client::{ClientBuilder, FailFast};
-use common::server::init_test_server;
+use ya_relay_core::testing::AbstractServerWrapper;
+use ya_relay_server::testing::server::init_test_server;
 
 /// Server should not shutdown when receives junks (single, garbage bytes).
 /// Testing if server does not shutdown when receives junks.

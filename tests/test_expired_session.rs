@@ -5,9 +5,10 @@ use std::time::Duration;
 use common::{check_broadcast, check_forwarding, spawn_receive_for_client, Mode};
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::FallbackCryptoProvider;
+use ya_relay_core::testing::AbstractServerWrapper;
 use ya_relay_core::utils::to_udp_url;
-use common::server::{
-    init_test_server, init_test_server_with_config, test_default_config,
+use ya_relay_server::testing::server::{
+    init_test_server, init_test_server_with_config, test_default_config, ServerWrapper,
 };
 
 #[serial_test::serial]

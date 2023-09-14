@@ -35,6 +35,8 @@ hex = "0.4.3"
 
 
 [dev-dependencies]
+ya-relay-core = { workspace = true, features = ["test-utils"] }
+
 actix-rt = "2.7"
 actix-web = "4.3"
 bytesize = "1.1"
