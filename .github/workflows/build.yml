@@ -98,11 +98,11 @@ jobs:
 
       - name: Install dependencies
         run: poetry install
-        working-directory: tests_py
+        working-directory: tests_integration
 
       - name: Initialize the test suite
         run: poetry run poe checks
-        working-directory: tests_py
+        working-directory: tests_integration
 
       - name: Install tools
         run: |
@@ -128,4 +128,4 @@ jobs:
 
       - name: Run test suite
         run: poetry run pytest
-        working-directory: tests_py
+        working-directory: tests_integration
