@@ -7,17 +7,10 @@ use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 
-
 use ya_relay_client::testing::init::MockSessionNetwork;
-
 
 use ya_relay_client::testing::private::SessionType;
 use ya_relay_server::testing::server::init_test_server;
-
-
-
-
-
 
 #[actix_rt::test]
 async fn test_session_layer_happy_path() {

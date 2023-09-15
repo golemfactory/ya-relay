@@ -9,24 +9,24 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use tokio::time::Duration;
 use url::Url;
+use ya_relay_core::testing::TestServerWrapper;
 
 use crate::server::Server;
 
 #[derive(Clone)]
 pub struct ServerWrapper {
-    pub server: Arc<Mutex<Server>>,
+    pub server: Server,
     handle: AbortHandle,
 }
 
-impl<'a> ya_relay_core::testing::TestServerWrapper<'a> for ServerWrapper {
+impl<'a> TestServerWrapper<'a> for ServerWrapper {
     fn url(&self) -> Url {
-        self.server.lock().unwrap().inner.url.clone()
+        self.server.inner.url.clone()
     }
 
     fn remove_node_endpoints(&'a self, node: ya_relay_core::NodeId) -> LocalBoxFuture<'a, ()> {
-        let server = self.server.lock().unwrap();
         Box::pin(async move {
-            let mut state = server.state.write().await;
+            let mut state = self.server.state.write().await;
 
             let mut info = state.nodes.get_by_node_id(node).unwrap();
             state.nodes.remove_session(info.info.slot);
@@ -75,7 +75,7 @@ pub async fn init_test_server_with_config(config: Config) -> anyhow::Result<Serv
     ));
 
     Ok(ServerWrapper {
-        server: Arc::new(Mutex::new(server)),
+        server,
         handle: abort_handle,
     })
 }
@@ -97,13 +97,7 @@ pub fn test_default_config() -> Config {
 
 impl Drop for ServerWrapper {
     fn drop(&mut self) {
-        self.server
-            .lock()
-            .unwrap()
-            .inner
-            .socket
-            .clone()
-            .close_channel();
+        self.server.inner.socket.clone().close_channel();
         self.handle.abort();
 
         log::debug!("[TEST] Dropping ServerWrapper.");
