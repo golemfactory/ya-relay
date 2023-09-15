@@ -7,7 +7,7 @@ use ya_relay_client::testing::private::SessionLock;
 use ya_relay_client::testing::private::SessionState;
 use ya_relay_client::ClientBuilder;
 use ya_relay_client::SessionError;
-use ya_relay_core::testing::AbstractServerWrapper;
+use ya_relay_core::testing::TestServerWrapper;
 use ya_relay_proto::proto;
 use ya_relay_server::testing::server::init_test_server;
 

@@ -7,17 +7,17 @@ use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 
-use ya_relay_client::testing::accessors::SessionLayerPrivate;
+
 use ya_relay_client::testing::init::MockSessionNetwork;
-use ya_relay_client::testing::private::SessionInitializer;
-use ya_relay_client::testing::private::SessionLayer;
+
+
 use ya_relay_client::testing::private::SessionType;
 use ya_relay_server::testing::server::init_test_server;
 
-use anyhow::bail;
-use futures::future::LocalBoxFuture;
-use futures::FutureExt;
-use std::net::SocketAddr;
+
+
+
+
 
 #[actix_rt::test]
 async fn test_session_layer_happy_path() {

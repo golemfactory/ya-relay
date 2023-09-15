@@ -7,8 +7,8 @@ use test_case::test_case;
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider};
 use ya_relay_core::key::generate;
-use ya_relay_core::testing::AbstractServerWrapper;
-use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
+use ya_relay_core::testing::TestServerWrapper;
+use ya_relay_server::testing::server::{init_test_server};
 
 enum Node {
     WithAlias,

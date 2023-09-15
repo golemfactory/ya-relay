@@ -3,7 +3,7 @@ mod common;
 use std::time::Duration;
 use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::FallbackCryptoProvider;
-use ya_relay_core::testing::AbstractServerWrapper;
+use ya_relay_core::testing::TestServerWrapper;
 use ya_relay_core::utils::to_udp_url;
 use ya_relay_server::testing::server::init_test_server;
 

@@ -18,7 +18,7 @@ pub struct ServerWrapper {
     handle: AbortHandle,
 }
 
-impl<'a> ya_relay_core::testing::AbstractServerWrapper<'a> for ServerWrapper {
+impl<'a> ya_relay_core::testing::TestServerWrapper<'a> for ServerWrapper {
     fn url(&self) -> Url {
         self.server.lock().unwrap().inner.url.clone()
     }

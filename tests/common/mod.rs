@@ -6,7 +6,7 @@ use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
-use ya_relay_core::testing::AbstractServerWrapper;
+use ya_relay_core::testing::TestServerWrapper;
 use ya_relay_server::testing::server::ServerWrapper;
 
 use ya_relay_client::{channels::ForwardSender, Client, GenericSender};
