@@ -6,7 +6,6 @@ use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
 use std::io::Write;
 
-
 use tokio::time::Duration;
 use url::Url;
 use ya_relay_core::testing::TestServerWrapper;
