@@ -5,8 +5,8 @@ use futures::future::LocalBoxFuture;
 use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
 use std::io::Write;
-use std::sync::Arc;
-use std::sync::Mutex;
+
+
 use tokio::time::Duration;
 use url::Url;
 use ya_relay_core::testing::TestServerWrapper;

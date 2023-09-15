@@ -24,7 +24,7 @@ pub async fn test_default_config(server: Url) -> anyhow::Result<ClientConfig> {
 impl SessionLayerPrivate for SessionLayer {
     fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionInitializer>> {
         let myself = self.clone();
-        async move { myself.get_protocol().await }.boxed_local()
+        async move { Ok(SessionLayer::get_protocol(&myself).await?) }.boxed_local()
     }
 
     fn get_test_socket_addr(&self) -> LocalBoxFuture<anyhow::Result<SocketAddr>> {

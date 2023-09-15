@@ -1227,7 +1227,7 @@ impl SessionLayer {
             .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
     }
 
-    async fn get_protocol(&self) -> Result<SessionInitializer, SessionError> {
+    pub(crate) async fn get_protocol(&self) -> Result<SessionInitializer, SessionError> {
         match self.state.read().await.init_protocol.clone() {
             None => Err(SessionError::Internal(
                 "`SessionProtocol` empty (not initialized?)".to_string(),
