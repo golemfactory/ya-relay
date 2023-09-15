@@ -85,12 +85,6 @@ impl<'a, SERVER: TestServerWrapper<'a>> MockSessionNetwork<'a, SERVER> {
         Ok(client)
     }
 
-    /// If Client will reconnect to relay server, he will have public IP again.
-    pub async fn hack_make_ip_private(&'a self, client: &Client) {
-        self.hack_make_layer_ip_private_impl(&client.transport.session_layer)
-            .await
-    }
-
     pub async fn hack_make_layer_ip_private(&'a self, wrapper: &SessionLayerWrapper) {
         self.hack_make_layer_ip_private_impl(&wrapper.layer).await
     }

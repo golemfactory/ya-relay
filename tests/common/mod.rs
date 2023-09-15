@@ -11,11 +11,13 @@ use ya_relay_server::testing::server::ServerWrapper;
 
 use ya_relay_client::{channels::ForwardSender, Client, GenericSender};
 
+#[allow(dead_code)]
 pub enum Mode {
     Reliable,
     Unreliable,
 }
 
+#[allow(dead_code)]
 pub fn spawn_receive<T: std::fmt::Debug + 'static>(
     label: &'static str,
     received: Rc<AtomicBool>,
@@ -39,6 +41,7 @@ pub fn spawn_receive<T: std::fmt::Debug + 'static>(
     });
 }
 
+#[allow(dead_code)]
 pub async fn spawn_receive_for_client(
     client: &Client,
     label: &'static str,
@@ -57,6 +60,7 @@ pub async fn spawn_receive_for_client(
 }
 
 /// Assign result to variable if you want to keep TCP connection alive.
+#[allow(dead_code)]
 pub async fn check_forwarding(
     sender_client: &Client,
     receiver_client: &Client,
@@ -99,6 +103,7 @@ pub async fn check_forwarding(
     Ok(tx)
 }
 
+#[allow(dead_code)]
 pub async fn check_broadcast(
     sender_client: &Client,
     receiver_client: &Client,
@@ -127,6 +132,7 @@ pub async fn check_broadcast(
 }
 
 /// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.
+#[allow(dead_code)]
 pub async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
     wrapper.remove_node_endpoints(client.node_id());
     client.set_public_addr(None).await;
