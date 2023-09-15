@@ -622,8 +622,3 @@ impl SessionInitializer {
         Ok(crypto_vec)
     }
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-// }
