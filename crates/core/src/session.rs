@@ -165,48 +165,6 @@ impl Session {
         result.map(|_| ())
     }
 
-    // pub async fn reverse_connection(&self, node_id: NodeId) -> anyhow::Result<()> {
-    //     let packet = proto::request::ReverseConnection {
-    //         node_id: node_id.into_array().to_vec(),
-    //     };
-    //     self.request::<proto::response::ReverseConnection>(
-    //         packet.into(),
-    //         self.id.to_vec(),
-    //         DEFAULT_REQUEST_TIMEOUT,
-    //     )
-    //     .await?;
-    //
-    //     Ok(())
-    // }
-
-    /// Check if any packet was seen during expiration period.
-    /// If it wasn't, ping will be sent.
-    /// Function returns timestamp of last seen packet from remote Node,
-    /// including ping that can be sent.
-    // pub async fn keep_alive(&self, expiration: Duration) -> Instant {
-    //     let last_seen = self.dispatcher.last_seen();
-    //
-    //     if last_seen + expiration < Instant::now() {
-    //         // Sending 3 pings after each other to avoid lost UDP packets.
-    //         // We need only one response.
-    //         // Note: futures are asynchronous, because we shouldn't wait for ping timeout
-    //         //       in case of lost packets.
-    //         futures::future::select_ok((0..3).map(|i| {
-    //             async move {
-    //                 tokio::time::sleep(Duration::from_millis(200 * i)).await;
-    //                 self.ping().await
-    //             }
-    //             .boxed_local()
-    //         }))
-    //         .await
-    //         // Ignoring error, because in such a case, we should disconnect anyway.
-    //         .ok();
-    //     }
-    //
-    //     // Could be updated after ping.
-    //     self.dispatcher.last_seen()
-    // }
-
     pub async fn disconnect(&self) -> anyhow::Result<()> {
         // Don't use temporary session, because we don't want to initialize session
         // with this address, nor receive the response.
