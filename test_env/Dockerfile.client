@@ -14,6 +14,7 @@ ENV BIND_IP_PATTERN=$BIND_IP_PATTERN
 ENV BIND_IP=$BIND_IP
 ENV BIND_PROTO=$BIND_PROTO
 ENV GATEWAY_HOST=$GATEWAY_HOST
+ENV SESSION_EXPIRATION=$SESSION_EXPIRATION
 
 # Copy debug or release (prefered) build
 COPY ./target/debu[g]/example[s]/http_clien[t] /app/

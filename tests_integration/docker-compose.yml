@@ -40,6 +40,7 @@ services:
       # Empty GATEWAY_HOST to not change network settings for public client
       - GATEWAY_HOST=
       - SERVER_IP=172.21.0.253
+      - SESSION_EXPIRATION=${SESSION_EXPIRATION}
     ports:
       - "51000-51999:8081"
       - "52000-52999:9081/tcp"
@@ -87,6 +88,7 @@ services:
       - RUST_LOG=${RUST_LOG}
       - GATEWAY_HOST=alice_gateway
       - SERVER_IP=172.21.0.253
+      - SESSION_EXPIRATION=${SESSION_EXPIRATION}
     ports:
       - "53000-53999:8081"
       - "54000-54999:9081/tcp"
@@ -135,6 +137,7 @@ services:
       - RUST_LOG=${RUST_LOG}
       - GATEWAY_HOST=bob_gateway
       - SERVER_IP=172.21.0.253
+      - SESSION_EXPIRATION=${SESSION_EXPIRATION}
     ports:
       - "55000-55999:8081"
       - "56000-56999:9081/tcp"
