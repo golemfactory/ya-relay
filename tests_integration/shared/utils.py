@@ -89,39 +89,52 @@ class Client(Node):
         Node.__init__(self, container=container)
         self.node_id = read_node_id(container=container)
 
-    def __external_port(self, port: int = 8081):
-        return self.ports()[f"{port}/tcp"]
+    def external_port(self, internal_port: int = 8081):
+        return self.ports()[f"{internal_port}/tcp"]
 
-    def ping(self, node_id: str, port: int = 8081, timeout: int | None = 5, transport: str = "reliable"):
+    def ping(
+        self,
+        node_id: str,
+        port: int = 8081,
+        timeout: int | None = 5,
+        transport: str = "reliable",
+        external_port: int | None = None,
+    ):
         LOGGER.debug(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
-        port = self.__external_port(port)
+        port = external_port if external_port is not None else self.external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/ping/{transport}/{node_id}", headers=http_client_headers, timeout=timeout
         )
         response = read_json_response(response)
         return response
 
-    def sessions(self, port: int = 8081, timeout: int | None = 5):
+    def sessions(self, port: int = 8081, timeout: int | None = 5, external_port: int | None = None):
         LOGGER.debug(f"GET Sessions ({self.container.name} - {self.node_id})")
-        port = self.__external_port(port)
+        port = external_port if external_port is not None else self.external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/sessions", headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
-    def find(self, node_id: str, port: int = 8081, timeout: int | None = 5):
+    def find(self, node_id: str, port: int = 8081, timeout: int | None = 5, external_port: int | None = None):
         LOGGER.debug(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
-        port = self.__external_port(port)
+        port = external_port if external_port is not None else self.external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers, timeout=timeout
         )
         return read_json_response(response)
 
     def transfer(
-        self, node_id: str, data: bytes, port: int = 8081, timeout: int | None = None, transport: str = "reliable"
+        self,
+        node_id: str,
+        data: bytes,
+        port: int = 8081,
+        timeout: int | None = None,
+        transport: str = "reliable",
+        external_port: int | None = None,
     ):
         LOGGER.debug(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
-        port = self.__external_port(port)
+        port = external_port if external_port is not None else self.external_port(port)
         response: requests.Response = requests.post(
             f"http://localhost:{port}/transfer-file/{transport}/{node_id}",
             data,
@@ -194,7 +207,7 @@ class Cluster:
         networks = set()
         if isinstance(node.container.network_settings.networks, Dict):
             for network in node.container.network_settings.networks:
-                LOGGER.info(f"Disconnecting {node} from {network}")
+                LOGGER.info(f"Disconnecting {node.container.name} from {network}")
                 self.docker_client.network.disconnect(network, node.container)
                 networks.add(network)
         return networks
