@@ -79,7 +79,7 @@ def check_session_expiration_after_disconnect(
 
     try:
         # Ping with reliable transport should fail on disconnected client which uses reliable transport.
-        # It shouuld happen after SESSION_EXPIRATION and before ping request timeout.
+        # It should happen after SESSION_EXPIRATION and before ping request timeout.
         ping_response = client_1.ping(client_2.node_id, timeout=ping_timeout, transport="reliable")
         pytest.fail(f"Ping to disconnected relayed client should fail. Instead got: {ping_response}")
     except BaseException as error:
