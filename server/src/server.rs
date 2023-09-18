@@ -433,7 +433,6 @@ impl Server {
         .map_err(|_| InternalError::Send)?;
 
         log::trace!("[ping_request]: Responding to ping from: {from} session_id {session_id}");
-        );
         Ok(())
     }
 
