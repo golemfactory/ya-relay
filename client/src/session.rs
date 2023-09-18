@@ -224,7 +224,6 @@ impl SessionDeregistration for SessionLayer {
         let direct = {
             let mut state = self.state.write().await;
 
-            // let mut ids = HashSet::<NodeId>::new();
             let mut ids: HashSet<NodeId> = vec![node_id].into_iter().collect();
 
             let routing = state.nodes.get(&node_id).cloned();
