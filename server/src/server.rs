@@ -432,7 +432,7 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::trace!(
+        log::trace!("[ping_request]: Responding to ping from: {from} session_id {session_id}");
             "[ping_request]: Responding to ping from: {} session_id {}",
             from,
             session_id
