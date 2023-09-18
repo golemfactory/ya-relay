@@ -55,34 +55,47 @@ def test_session_expiration_after_disconnect(compose_up):
     cluster: Cluster = compose_up(
         public_clients=2, alice_clients=1, bob_clients=1, build_args={"SESSION_EXPIRATION": session_expiration}
     )
+    server: Server = cluster.servers()[0]
 
+    LOGGER.info("Testing session expiration on clients using Relayed connection")
     client_alice = cluster.clients("alice")[0]
     client_bob = cluster.clients("bob")[0]
-    LOGGER.info("Testing session expiration on clients using relayed connection")
-    check_session_expiration_after_disconnect(cluster, client_alice, client_bob, session_expiration)
+    ping_response = client_alice.ping(client_bob.node_id)
+    LOGGER.info("Check sessions after ping")
+    assert client_bob.node_id == ping_response["node_id"]
+    check_sessions(client_alice, {server.address()})
+    check_sessions(client_bob, {server.address()})
+    LOGGER.info("Disconnecting bob")
+    cluster.disconnect(client_bob)
+    time.sleep(1)
+    LOGGER.info("Check sessions right after disconnect")
+    check_sessions(client_alice, {server.address()})
+    # check_sessions(client_bob, {server.address()})
+    time.sleep(2)
+    LOGGER.info("Check sessions after session expiration period")
+    check_sessions(client_alice, {server.address()})
+    # check_sessions(client_bob, {})
 
-    client_public_1 = cluster.clients("public")[0]
-    client_pubic_2 = cluster.clients("public")[1]
-    LOGGER.info("Testing session expiration on clients using p2p connection")
-    check_session_expiration_after_disconnect(cluster, client_public_1, client_pubic_2, session_expiration)
+    LOGGER.info("Testing session expiration on clients using P2P connection")
+    client_0 = cluster.clients("public")[0]
+    client_1 = cluster.clients("public")[1]
+    ping_response = client_0.ping(client_1.node_id)
+    LOGGER.info("Check sessions after ping")
+    assert client_1.node_id == ping_response["node_id"]
+    check_sessions(client_0, {server.address(), client_1.address()})
+    check_sessions(client_1, {server.address(), client_0.address()})
+    LOGGER.info("Disconnecting p2p client")
+    client_1_address = client_1.address()
+    cluster.disconnect(client_1)
+    time.sleep(1)
+    LOGGER.info("Check sessions right after disconnect")
+    check_sessions(client_0, {server.address(), client_1_address})
+    # check_sessions(client_1, {server.address(), client_0.address()})
+    time.sleep(3)
+    LOGGER.info("Check sessions after session expiration period")
+    check_sessions(client_0, {server.address()})
+    # check_sessions(client_1, {})
 
-
-def check_session_expiration_after_disconnect(
-    cluster: Cluster, client_1: Client, client_2: Client, session_expiration: int, ping_timeout: int = 13
-):
-    ping_response = client_1.ping(client_2.node_id)
-    assert client_2.node_id == ping_response["node_id"]
-
-    LOGGER.info("Disconnecting client")
-    disconnect_time = time.time()
-    cluster.disconnect(client_2)
-
-    try:
-        # Ping with reliable transport should fail on disconnected client which uses reliable transport.
-        # It should happen after SESSION_EXPIRATION and before ping request timeout.
-        ping_response = client_1.ping(client_2.node_id, timeout=ping_timeout, transport="reliable")
-        pytest.fail(f"Ping to disconnected relayed client should fail. Instead got: {ping_response}")
-    except BaseException as error:
-        LOGGER.info(f"Ping error: {error}")
-        ping_error_delay = time.time() - disconnect_time
-        assert session_expiration < ping_error_delay and ping_timeout > ping_error_delay
+def check_sessions(client: Client, expected_sessions):
+    sessions = client.sessions()
+    assert expected_sessions == {session["address"] for session in sessions["sessions"]}
