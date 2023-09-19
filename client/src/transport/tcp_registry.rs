@@ -512,23 +512,3 @@ impl ChannelDesc {
         self.0 as u16
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    use crate::testing::init::MockSessionNetwork;
-
-    /// `VirtNode` code assumes that channels are residing under index, that can be returned
-    /// by `ChannelDesc::index` function.
-    #[actix_rt::test]
-    async fn test_virt_node_creation_assumption() {
-        let mut network = MockSessionNetwork::new().await.unwrap();
-        let layer = network.new_layer().await.unwrap().layer;
-
-        let virt = VirtNode::new(NodeId::default(), layer);
-        for i in 0..4 {
-            assert_eq!(virt.channels[i].channel.index(), i);
-        }
-    }
-}

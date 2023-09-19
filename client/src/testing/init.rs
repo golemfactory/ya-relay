@@ -1,4 +1,7 @@
 use anyhow::bail;
+use futures::future::LocalBoxFuture;
+use futures::FutureExt;
+use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use url::Url;
@@ -11,19 +14,39 @@ use crate::session::SessionLayer;
 use crate::testing::accessors::SessionLayerPrivate;
 
 use crate::testing::mocks::MockHandler;
+use ya_relay_core::testing::TestServerWrapper;
 use ya_relay_core::NodeId;
-#[cfg(any(test, feature = "mock"))]
-use ya_relay_server::testing::server::{init_test_server, ServerWrapper};
 
 pub async fn test_default_config(server: Url) -> anyhow::Result<ClientConfig> {
     ClientBuilder::from_url(server).build_config().await
 }
 
+impl SessionLayerPrivate for SessionLayer {
+    fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionInitializer>> {
+        let myself = self.clone();
+        async move { Ok(SessionLayer::get_protocol(&myself).await?) }.boxed_local()
+    }
+
+    fn get_test_socket_addr(&self) -> LocalBoxFuture<anyhow::Result<SocketAddr>> {
+        let myself = self.clone();
+        async move {
+            if let Some(addr) = myself.get_local_addr().await {
+                let port = addr.port();
+                Ok(format!("127.0.0.1:{port}").parse()?)
+            } else {
+                bail!("Can't get local address.")
+            }
+        }
+        .boxed_local()
+    }
+}
+
 #[derive(Clone)]
-pub struct MockSessionNetwork {
-    pub server: ServerWrapper,
+pub struct MockSessionNetwork<'a, SERVER: TestServerWrapper<'a>> {
+    pub server: SERVER,
     pub layers: Vec<SessionLayerWrapper>,
     pub clients: Vec<Client>,
+    _phantom: PhantomData<&'a SERVER>,
 }
 
 #[derive(Clone)]
@@ -37,17 +60,18 @@ pub struct SessionLayerWrapper {
     pub guards: NetworkView,
 }
 
-impl MockSessionNetwork {
-    pub async fn new() -> anyhow::Result<MockSessionNetwork> {
+impl<'a, SERVER: TestServerWrapper<'a>> MockSessionNetwork<'a, SERVER> {
+    pub fn new(server: SERVER) -> anyhow::Result<MockSessionNetwork<'a, SERVER>> {
         Ok(MockSessionNetwork {
-            server: init_test_server().await?,
+            server,
             layers: vec![],
             clients: vec![],
+            _phantom: Default::default(),
         })
     }
 
     pub async fn new_layer(&mut self) -> anyhow::Result<SessionLayerWrapper> {
-        let layer = spawn_session_layer(&self.server).await?;
+        let layer = spawn_session_layer(self.server.url()).await?;
         self.layers.push(layer.clone());
         Ok(layer)
     }
@@ -61,39 +85,25 @@ impl MockSessionNetwork {
         Ok(client)
     }
 
-    /// If Client will reconnect to relay server, he will have public IP again.
-    pub async fn hack_make_ip_private(&self, client: &Client) {
-        self.hack_make_layer_ip_private_impl(&client.transport.session_layer)
-            .await
-    }
-
-    pub async fn hack_make_layer_ip_private(&self, wrapper: &SessionLayerWrapper) {
+    pub async fn hack_make_layer_ip_private(&'a self, wrapper: &SessionLayerWrapper) {
         self.hack_make_layer_ip_private_impl(&wrapper.layer).await
     }
 
     /// If Client will reconnect to relay server, he will have public IP again.
-    async fn hack_make_layer_ip_private_impl(&self, layer: &SessionLayer) {
+    async fn hack_make_layer_ip_private_impl(&'a self, layer: &SessionLayer) {
         log::info!(
             "Making Node's {} IP private on relay server",
             layer.config.node_id
         );
-
-        let mut state = self.server.server.state.write().await;
-
-        let mut info = state.nodes.get_by_node_id(layer.config.node_id).unwrap();
-        state.nodes.remove_session(info.info.slot);
-
-        // Server won't return any endpoints, so Client won't try to connect directly.
-        info.info.endpoints = vec![];
-        state.nodes.register(info);
-
-        drop(state);
+        self.server
+            .remove_node_endpoints(layer.config.node_id)
+            .await;
         layer.set_public_addr(None).await;
     }
 }
 
-pub async fn spawn_session_layer(wrapper: &ServerWrapper) -> anyhow::Result<SessionLayerWrapper> {
-    let config = Arc::new(test_default_config(wrapper.server.inner.url.clone()).await?);
+pub async fn spawn_session_layer(url: Url) -> anyhow::Result<SessionLayerWrapper> {
+    let config = Arc::new(test_default_config(url).await?);
     let mut layer = SessionLayer::new(config);
     let capturer = MockHandler::new(layer.clone());
     layer.spawn_with_dispatcher(capturer.clone()).await?;

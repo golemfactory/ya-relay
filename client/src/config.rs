@@ -147,7 +147,7 @@ impl ClientBuilder {
         Ok(self)
     }
 
-    pub(crate) async fn build_config(mut self) -> anyhow::Result<ClientConfig> {
+    pub async fn build_config(mut self) -> anyhow::Result<ClientConfig> {
         let bind_url = self
             .bind_url
             .unwrap_or_else(|| Url::parse("udp://0.0.0.0:0").unwrap());

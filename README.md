@@ -2,4 +2,4 @@
 
 ## Environment setup
 
-[Functional tests](tests/README.md) setup guide (including setup for WSL2)
+[Integration tests](tests_integration/README.md) setup guide.

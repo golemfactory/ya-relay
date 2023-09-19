@@ -39,3 +39,6 @@ uuid = { version = "0.8", features = ["v4"] }
 
 [dev-dependencies]
 env_logger = { version = "0.10", default-features = false }
+
+[features]
+test-utils = []
