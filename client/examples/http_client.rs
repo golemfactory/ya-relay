@@ -8,13 +8,13 @@ use anyhow::{anyhow, Result};
 use chrono::Local;
 use futures::{future, try_join, FutureExt};
 use rand::Rng;
-use std::collections::VecDeque;
 use std::{
     collections::HashMap,
     io::Write,
     sync::{Arc, Mutex},
     time::Instant,
 };
+use std::{collections::VecDeque, time::Duration};
 use structopt::StructOpt;
 use tokio::sync::oneshot;
 use ya_relay_client::{channels::ForwardSender, Client, ClientBuilder, FailFast, GenericSender};
@@ -44,6 +44,8 @@ struct Cli {
     key_file: Option<String>,
     #[structopt(long, env = "PASSWORD", parse(from_str = Protected::from))]
     password: Option<Protected>,
+    #[structopt(long, env = "SESSION_EXPIRATION", default_value = "20")]
+    session_expiration: u64,
 }
 
 type ClientWrap = self::wrap::SendWrap<Client>;
@@ -472,6 +474,7 @@ async fn run() -> Result<()> {
         cli.p2p_bind_addr,
         cli.key_file.as_deref(),
         cli.password,
+        Duration::from_secs(cli.session_expiration),
     )
     .await?;
     let client_cloned = client.clone();
@@ -522,6 +525,7 @@ async fn build_client(
     p2p_bind_addr: Option<url::Url>,
     key_file: Option<&str>,
     password: Option<Protected>,
+    session_expiration: Duration,
 ) -> Result<Client> {
     let secret = key_file.map(|key_file| load_or_generate(key_file, password));
     let provider = if let Some(secret_key) = secret {
@@ -532,7 +536,7 @@ async fn build_client(
 
     let mut builder = ClientBuilder::from_url(relay_addr)
         .crypto(provider)
-        .expire_session_after(std::time::Duration::from_secs(20));
+        .expire_session_after(session_expiration);
 
     if let Some(bind) = p2p_bind_addr {
         builder = builder.listen(bind);

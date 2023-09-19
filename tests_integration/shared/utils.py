@@ -109,7 +109,7 @@ class Client(Node):
         )
         return read_json_response(response)
 
-    def find(self, node_id: str, port: int = 8081, timeout: int | None = 5):
+    def find(self, node_id: str, port: int = 8081, timeout: int | None = 5, external_port: int | None = None):
         LOGGER.debug(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
@@ -118,7 +118,12 @@ class Client(Node):
         return read_json_response(response)
 
     def transfer(
-        self, node_id: str, data: bytes, port: int = 8081, timeout: int | None = None, transport: str = "reliable"
+        self,
+        node_id: str,
+        data: bytes,
+        port: int = 8081,
+        timeout: int | None = None,
+        transport: str = "reliable",
     ):
         LOGGER.debug(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
@@ -194,7 +199,7 @@ class Cluster:
         networks = set()
         if isinstance(node.container.network_settings.networks, Dict):
             for network in node.container.network_settings.networks:
-                LOGGER.info(f"Disconnecting {node} from {network}")
+                LOGGER.info(f"Disconnecting {node.container.name} from {network}")
                 self.docker_client.network.disconnect(network, node.container)
                 networks.add(network)
         return networks

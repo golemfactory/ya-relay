@@ -19,6 +19,7 @@ default_build_args = {
     "BOB_BIND_IP": "",
     "BOB_BIND_IP_PATTERN": "",
     "BOB_BIND_PROTO": "tcp",
+    "SESSION_EXPIRATION": "20",
 }
 
 
