@@ -89,28 +89,27 @@ class Client(Node):
         Node.__init__(self, container=container)
         self.node_id = read_node_id(container=container)
 
-    def external_port(self, internal_port: int = 8081):
-        return self.ports()[f"{internal_port}/tcp"]
+    def __external_port(self, port: int = 8081):
+        return self.ports()[f"{port}/tcp"]
 
     def ping(
         self,
         node_id: str,
         port: int = 8081,
         timeout: int | None = 5,
-        transport: str = "reliable",
-        external_port: int | None = None,
+        transport: str = "reliable"
     ):
         LOGGER.debug(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
-        port = external_port if external_port is not None else self.external_port(port)
+        port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/ping/{transport}/{node_id}", headers=http_client_headers, timeout=timeout
         )
         response = read_json_response(response)
         return response
 
-    def sessions(self, port: int = 8081, timeout: int | None = 5, external_port: int | None = None):
+    def sessions(self, port: int = 8081, timeout: int | None = 5):
         LOGGER.debug(f"GET Sessions ({self.container.name} - {self.node_id})")
-        port = external_port if external_port is not None else self.external_port(port)
+        port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/sessions", headers=http_client_headers, timeout=timeout
         )
@@ -118,7 +117,7 @@ class Client(Node):
 
     def find(self, node_id: str, port: int = 8081, timeout: int | None = 5, external_port: int | None = None):
         LOGGER.debug(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
-        port = external_port if external_port is not None else self.external_port(port)
+        port = self.__external_port(port)
         response: requests.Response = requests.get(
             f"http://localhost:{port}/find-node/{node_id}", headers=http_client_headers, timeout=timeout
         )
@@ -131,10 +130,9 @@ class Client(Node):
         port: int = 8081,
         timeout: int | None = None,
         transport: str = "reliable",
-        external_port: int | None = None,
     ):
         LOGGER.debug(f"POST Transfer file to {node_id} ({self.container.name} - {self.node_id})")
-        port = external_port if external_port is not None else self.external_port(port)
+        port = self.__external_port(port)
         response: requests.Response = requests.post(
             f"http://localhost:{port}/transfer-file/{transport}/{node_id}",
             data,

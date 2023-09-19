@@ -66,16 +66,13 @@ def test_session_expiration_after_disconnect(compose_up):
     check_sessions(client_0, {server.address()})
     check_sessions(client_1, {server.address()})
     LOGGER.info("Disconnecting bob")
-    # client_1_external_port = client_1.external_port()
     cluster.disconnect(client_1)
     time.sleep(1)
     LOGGER.info("Check sessions right after disconnect")
     check_sessions(client_0, {server.address()})
-    # check_sessions(client_1, {server.address()}, client_1_external_port)
     time.sleep(5)
     LOGGER.info("Check sessions after session expiration period")
     check_sessions(client_0, {server.address()})
-    # check_sessions(client_1, {}, client_1_external_port)
 
     LOGGER.info("Testing session expiration on clients using P2P connection")
     client_0 = cluster.clients("public")[0]
@@ -87,18 +84,15 @@ def test_session_expiration_after_disconnect(compose_up):
     check_sessions(client_1, {server.address(), client_0.address()})
     LOGGER.info("Disconnecting p2p client")
     client_1_address = client_1.address()
-    # client_1_external_port = client_1.external_port()
     cluster.disconnect(client_1)
     time.sleep(1)
     LOGGER.info("Check sessions right after disconnect")
     check_sessions(client_0, {server.address(), client_1_address})
-    # check_sessions(client_1, {server.address(), client_0.address()}, client_1_external_port)
     time.sleep(5)
     LOGGER.info("Check sessions after session expiration period")
     check_sessions(client_0, {server.address()})
-    # check_sessions(client_1, {}, client_1_external_port)
 
 
-def check_sessions(client: Client, expected_sessions: Set[Any] | Dict[Any, Any], external_port: int | None = None):
-    sessions = client.sessions(external_port=external_port)
+def check_sessions(client: Client, expected_sessions: Set[Any] | Dict[Any, Any]):
+    sessions = client.sessions()
     assert expected_sessions == {session["address"] for session in sessions["sessions"]}
