@@ -101,7 +101,9 @@ impl TransportLayer {
             channel.disconnect().await.ok();
         }
 
-        self.virtual_tcp.shutdown().await;
+        self.virtual_tcp
+            .shutdown(self.session_layer.config.node_id)
+            .await;
 
         // After Tcp shutdown will return, we are sending last Tcp packet to notify other Node,
         // that connection is closed. We shouldn't close sessions before we give them chance to be sent.

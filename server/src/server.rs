@@ -56,9 +56,15 @@ pub struct ServerImpl {
 
 impl Server {
     pub async fn dispatch(&self, from: SocketAddr, packet: PacketKind) -> ServerResult<()> {
-        log::debug!("Server::dispatch");
-
         let session_id = PacketKind::session_id(&packet);
+
+        log::trace!(
+            "[dispatch]: from: {} packet: {:?} session_id: [{}]",
+            from,
+            packet,
+            hex::encode(&session_id)
+        );
+
         if !session_id.is_empty() {
             let id = SessionId::try_from(session_id.clone())
                 .map_err(|_| Unauthorized::InvalidSessionId(session_id.clone()))?;
@@ -94,7 +100,7 @@ impl Server {
                 let id = SessionId::try_from(session_id.clone())
                     .map_err(|_| Unauthorized::InvalidSessionId(session_id))?;
 
-                log::debug!("[dispatch] id = {:?}", id);
+                log::debug!("[dispatch] session_id = {:?}", id);
 
                 let node = match { self.state.read().await.nodes.get_by_session(id) } {
                     Some(node) => {
@@ -426,7 +432,7 @@ impl Server {
         .await
         .map_err(|_| InternalError::Send)?;
 
-        log::trace!("Responding to ping from: {}", from);
+        log::trace!("[ping_request]: Responding to ping from: {from} session_id {session_id}");
         Ok(())
     }
 
@@ -441,7 +447,11 @@ impl Server {
             .try_into()
             .map_err(|_| BadRequest::InvalidNodeId)?;
 
-        log::debug!("{} requested Node [{}] info.", from, node_id);
+        log::debug!(
+            "[node_request]: {} requested Node [{}] info.",
+            from,
+            node_id
+        );
 
         let node_info = {
             match self.state.read().await.nodes.get_by_node_id(node_id) {
@@ -821,9 +831,9 @@ impl Server {
             let s = self.clone();
             let start = Utc::now();
 
-            log::trace!("Cleaning up abandoned sessions");
+            log::trace!("[session_cleaner]: Cleaning up abandoned sessions");
             s.check_session_timeouts().await;
-            log::trace!("Session cleanup complete");
+            log::trace!("[session_cleaner]: Session cleanup complete");
 
             histogram!(
                 "ya-relay.session.cleaner.processing-time",

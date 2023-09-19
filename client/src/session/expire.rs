@@ -20,7 +20,7 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
     let expiration = layer.config.session_expiration;
 
     loop {
-        log::trace!("Checking, if all sessions are alive. Removing not active sessions.");
+        log::trace!("[expire]: Checking, if all sessions are alive. Removing not active sessions.");
 
         let sessions = layer
             .sessions()

@@ -122,6 +122,7 @@ impl VirtNode {
     ) -> Result<(), TcpTransitionError> {
         let channel = self.channel(channel);
         let mut state = channel.state.write().await;
+
         state.transition(new_state)
     }
 
@@ -199,23 +200,30 @@ impl TcpRegistry {
             .into()
     }
 
+    async fn close_channel(&self, node: &VirtNode, channel: ChannelDesc) {
+        if node.channel(channel).state().await != TcpState::Closed {
+            node.transition(channel, TcpState::Closed)
+                .await
+                .on_err(|e| {
+                    log::warn!(
+                        "Error closing channel for Node: {} (Messages): {}",
+                        node.id(),
+                        e
+                    )
+                })
+                .ok();
+        }
+    }
+
     pub async fn remove_node(&self, node_id: NodeId) {
         // Removing all channels. Consider if we should remove channels one by one.
+        log::trace!("[remove_node] Removing node: {node_id}", node_id = node_id);
         if let Ok(node) = self.resolve_node(node_id).await {
-            node.transition(
-                (ChannelType::Messages, ChannelDirection::Out).into(),
-                TcpState::Closed,
-            )
-            .await
-            .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Messages): {e}"))
-            .ok();
-            node.transition(
-                (ChannelType::Transfer, ChannelDirection::Out).into(),
-                TcpState::Closed,
-            )
-            .await
-            .on_err(|e| log::warn!("Tcp removing Node: {node_id} (Transfer): {e}"))
-            .ok();
+            let messages_out = (ChannelType::Messages, ChannelDirection::Out).into();
+            let transfer_out = (ChannelType::Transfer, ChannelDirection::Out).into();
+
+            self.close_channel(&node, messages_out).await;
+            self.close_channel(&node, transfer_out).await;
         };
 
         // let mut state = self.state.write().await;
@@ -259,6 +267,7 @@ pub enum TcpState {
 
 impl TcpState {
     pub fn transition(&mut self, new_state: TcpState) -> Result<(), TcpTransitionError> {
+        log::trace!("[TcpState] Transition from {self:?} to {new_state:?}");
         match (&self, &new_state) {
             (&TcpState::Closed, &TcpState::Connecting)
             | (&TcpState::Failed(_), &TcpState::Connecting)
@@ -301,6 +310,11 @@ impl TcpPermit {
         &mut self,
         result: Result<Arc<TcpConnection>, TcpError>,
     ) -> Result<Arc<TcpConnection>, TcpError> {
+        log::trace!(
+            "[TcpPermit] Finish connection to node: {}, result: {:?}",
+            self.node.id(),
+            result
+        );
         self.result = Some(result.clone());
         result
     }
@@ -345,7 +359,7 @@ pub(crate) async fn async_drop(
 
 impl Drop for TcpPermit {
     fn drop(&mut self) {
-        log::trace!("Dropping `TcpPermit` for {}.", self.node.id());
+        log::trace!("[TcpPermit]: Dropping for {}.", self.node.id());
         tokio::task::spawn_local(async_drop(
             self.node.clone(),
             self.channel,
@@ -445,6 +459,11 @@ impl TcpSender {
     /// Closes connection to Node. In case of relayed connection only forwarding information
     /// will be removed.
     pub async fn disconnect(&mut self) -> Result<(), TcpError> {
+        log::trace!(
+            "[TcpSender]: Disconnect from node: {node}, channel: {channel}",
+            node = self.target,
+            channel = self.channel
+        );
         self.layer.remove_node(self.target).await;
         Ok(())
     }

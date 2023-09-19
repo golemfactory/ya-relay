@@ -5,10 +5,13 @@ use actix_web::{
     App, HttpResponse, HttpServer, Responder,
 };
 use anyhow::{anyhow, Result};
+use chrono::Local;
 use futures::{future, try_join, FutureExt};
 use rand::Rng;
+use std::collections::VecDeque;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::HashMap,
+    io::Write,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -449,7 +452,19 @@ async fn forward(
 }
 
 async fn run() -> Result<()> {
-    env_logger::init();
+    env_logger::Builder::new()
+        .parse_default_env()
+        .format(|buf, record| {
+            writeln!(
+                buf,
+                "[{} {:5} {}] {}",
+                Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                record.level(),
+                record.module_path().unwrap_or("<unnamed>"),
+                record.args()
+            )
+        })
+        .init();
 
     let cli = Cli::from_args();
     let client = build_client(
@@ -515,7 +530,9 @@ async fn build_client(
         FallbackCryptoProvider::default()
     };
 
-    let mut builder = ClientBuilder::from_url(relay_addr).crypto(provider);
+    let mut builder = ClientBuilder::from_url(relay_addr)
+        .crypto(provider)
+        .expire_session_after(std::time::Duration::from_secs(20));
 
     if let Some(bind) = p2p_bind_addr {
         builder = builder.listen(bind);

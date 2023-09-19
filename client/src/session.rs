@@ -14,6 +14,7 @@ use metrics::{gauge, increment_counter};
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
+use std::iter::FromIterator;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, Weak};
 use std::thread::sleep;
@@ -28,7 +29,9 @@ use crate::client::{ClientConfig, Forwarded};
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::dispatch::{dispatch, Handler};
 use crate::encryption::Encryption;
-use crate::error::{ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult};
+use crate::error::{
+    ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult, TransitionError,
+};
 use crate::metrics::{metric_session_established, TARGET_ID};
 use crate::raw_session::{RawSession, SessionType};
 use crate::routing_session::{NodeRouting, RoutingSender};
@@ -36,7 +39,9 @@ use crate::session::session_initializer::SessionInitializer;
 use crate::transport::ForwardReceiver;
 
 use crate::error::SenderError::Session;
+use crate::session::session_state::SessionState::{Closed, FailedEstablish};
 use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
+use crate::SessionError::Network;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
 use ya_relay_core::udp_stream::{udp_bind, OutStream};
@@ -215,12 +220,13 @@ impl SessionRegistration for SessionLayer {
 #[async_trait(?Send)]
 impl SessionDeregistration for SessionLayer {
     async fn unregister(&self, node_id: NodeId) {
-        log::debug!("Unregistering Node [{node_id}]");
+        log::debug!("[unregister]: Unregistering Node [{node_id}]");
 
         let direct = {
             let mut state = self.state.write().await;
 
-            let mut ids = HashSet::<NodeId>::new();
+            let mut ids: HashSet<NodeId> = HashSet::from_iter(vec![node_id]);
+
             let routing = state.nodes.get(&node_id).cloned();
             let direct = state.p2p_nodes.get(&node_id).cloned();
 
@@ -258,6 +264,11 @@ impl SessionDeregistration for SessionLayer {
                 }
             }
 
+            if let Some(entry) = self.registry.get_entry(node_id).await {
+                log::trace!("[unregister]: found entry for {node_id}, removing...",);
+                self.registry.remove_node(node_id).await;
+            }
+
             direct
         };
 
@@ -285,6 +296,21 @@ impl SessionDeregistration for SessionLayer {
         // Notifies other Node that we are closing connection. This is only graceful optimization.
         // Node should handle disconnected Nodes properly even if he won't be notified.
         session.raw.disconnect().await.ok();
+
+        if session.owner.default_id == NodeId::default() {
+            let f = session.list();
+            log::trace!(
+                "[close_session]: lost session with server - remove {} forwards",
+                f.len()
+            );
+            for e in f {
+                log::trace!(
+                    "[close_session]: removing forward node_id {}.",
+                    e.default_id
+                );
+                self.registry.remove_node(e.default_id).await;
+            }
+        }
 
         let forwards = session.list();
         {
@@ -535,7 +561,7 @@ impl SessionLayer {
     /// TODO: `disconnect` shouldn't fail, because there is no reasonable reaction to this case.
     ///       This function must leave everything in clean state.
     pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
-        log::info!("Disconnecting Node [{node_id}]");
+        log::info!("[disconnect]: Disconnecting Node [{node_id}]");
 
         // Note: This function shouldn't return before changing state to `Closed` (abort-safety).
         let entry = self.registry.guard(node_id, &[]).await;
@@ -583,7 +609,7 @@ impl SessionLayer {
         node_id: NodeId,
         dont_use: Vec<ConnectionMethod>,
     ) -> Result<RoutingSender, SessionError> {
-        log::trace!("Requested session with [{node_id}]");
+        log::trace!("[session]: Requested session with [{node_id}]");
 
         if let Some(routing) = self.get_node_routing(node_id).await {
             // Why we need this ugly solution? Can't we just return `RoutingSender`?
@@ -603,7 +629,7 @@ impl SessionLayer {
             return Ok(routing);
         }
 
-        log::trace!("Node [{node_id}] not found in routing tables. Trying to establish session...");
+        log::trace!("[session]: Node [{node_id}] not found in routing tables. Trying to establish session...");
 
         // Query relay server for Node information, we need to find out default id and aliases.
         let info = self
@@ -634,7 +660,7 @@ impl SessionLayer {
         let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
         let this = self.clone();
 
-        match self.registry.lock_outgoing(remote_id, &addrs, this).await {
+        let session = match self.registry.lock_outgoing(remote_id, &addrs, this).await {
             SessionLock::Permit(mut permit) => {
                 log::trace!("Acquired `SessionPermit` to init session with [{remote_id}]");
                 let myself = self.clone();
@@ -658,11 +684,32 @@ impl SessionLayer {
         }
         .map_err(|e| SessionError::Generic(e.to_string()))?;
 
+        session.raw.dispatcher.handle_error(
+            proto::StatusCode::Unauthorized as i32,
+            true,
+            self.clone(),
+            Arc::downgrade(&session),
+            Self::error_handler(),
+        );
+
         self.get_node_routing(node_id)
             .await
             .ok_or(SessionError::Internal(format!(
                 "Session with [{remote_id}] closed immediately after establishing."
             )))
+    }
+
+    fn error_handler() -> fn(i32, SessionLayer, Weak<DirectSession>) -> LocalBoxFuture<'static, ()>
+    {
+        move |code: i32, layer: SessionLayer, session: Weak<DirectSession>| {
+            async move {
+                if let Some(session) = session.upgrade() {
+                    layer.close_session(session).await;
+                }
+                log::trace!("[session-layer]: handle_error {code}");
+            }
+            .boxed_local()
+        }
     }
 
     pub async fn server_session(&self) -> Result<Arc<DirectSession>, SessionError> {
@@ -713,15 +760,7 @@ impl SessionLayer {
             true,
             self.clone(),
             Arc::downgrade(&session),
-            move |code, layer, session| {
-                async move {
-                    if let Some(session) = session.upgrade() {
-                        layer.close_session(session).await;
-                    }
-                    log::debug!("handle_error {code}");
-                }
-                .boxed_local()
-            },
+            Self::error_handler(),
         );
 
         // TODO: Make sure this functionality is replaced in new code.
@@ -1004,9 +1043,7 @@ impl SessionLayer {
     }
 
     pub(crate) async fn await_connected(&self, node_id: NodeId) -> Result<(), SessionError> {
-        log::trace!(
-            "Session with Node [{node_id}] is registered. Waiting until it will be ready.."
-        );
+        log::trace!("[await_connected]: Session with Node [{node_id}] is registered.");
 
         let entry = self
             .registry
@@ -1015,6 +1052,9 @@ impl SessionLayer {
             .ok_or(SessionError::Internal(format!(
                 "Entry for Node [{node_id}] not found, despite it should exits."
             )))?;
+
+        log::trace!("[await_connected]: Waiting until it will be ready..");
+
         entry.awaiting_notifier().await_for_finish().await?;
         Ok(())
     }
@@ -1026,13 +1066,19 @@ impl SessionLayer {
         from: SocketAddr,
         request: proto::request::Session,
     ) -> Result<(), SessionError> {
-        log::trace!("Called `dispatch_session` by {from}.");
+        log::trace!(
+            "[dispatch_session]: from {}, sessionId: {}.",
+            from,
+            hex::encode(&session_id)
+        );
 
         let protocol = self.get_protocol().await?;
         let this = self.clone();
 
         if session_id.is_empty() {
-            log::trace!("Received `Session` packet with empty session id from {from}. Handling init attempt..");
+            log::trace!(
+                "[dispatch_session]: empty session id from {from}. Handling init attempt.."
+            );
 
             // Empty `session_id` indicates attempt to initialize session.
             let remote_id = challenge::recover_default_node_id(&request)
@@ -1082,6 +1128,11 @@ impl SessionLayer {
         from: SocketAddr,
         _request: proto::request::Ping,
     ) {
+        log::trace!(
+            "[on_ping]: from {}, sessionId: {}.",
+            from,
+            hex::encode(&session_id)
+        );
         let packet = proto::Packet::response(
             request_id,
             session_id,
@@ -1100,7 +1151,12 @@ impl SessionLayer {
         from: SocketAddr,
         by: By,
     ) -> anyhow::Result<()> {
-        log::trace!("Handling `Disconnected` from {from}");
+        log::trace!(
+            "[on_disconnected]: from {}, sessionId: {} by {:?}.",
+            from,
+            hex::encode(&session_id),
+            by
+        );
 
         // SessionId should be valid, otherwise this is some unknown session
         // so we should be cautious, when processing it.
@@ -1451,6 +1507,7 @@ impl Handler for SessionLayer {
                         // TODO: Consider just adding node to `DirectSession` forwards list. If the other Node couldn't
                         //       establish p2p session with us, we won't be able to do this anyway.
                         log::debug!("Attempting to establish connection to Node {} (slot {})", ident.node_id, node.slot);
+
                         let session = myself
                             .session_filtered_connection_methods(ident.node_id, vec![ConnectionMethod::Reverse, ConnectionMethod::Direct])
                             .await.map_err(|e| anyhow!("Failed to resolve node with slot {slot}. {e}"))?;

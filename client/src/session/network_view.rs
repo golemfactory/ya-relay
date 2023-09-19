@@ -73,6 +73,17 @@ impl NetworkView {
         target
     }
 
+    pub async fn remove_node(&self, node_id: NodeId) {
+        log::trace!("[remove_node]: node_id {}", node_id);
+        let mut state = self.state.write().await;
+        if let Some(target) = state.find(node_id, &[]) {
+            if node_id != NodeId::default() {
+                state.by_node_id.remove(&node_id).is_some();
+                state.by_addr.retain(|_, node_view| node_view.id != node_id);
+            }
+        }
+    }
+
     /// Updates information about given Node.
     /// This function must keep data in `NetworkView` consistent. It should check all NodeIds,
     /// because some of them may already been in separate `NodeViews`. This could happen
@@ -467,7 +478,6 @@ impl NodeView {
                         )
                     }
                 };
-
                 SessionLock::Wait(notifier)
             }
         }
@@ -588,6 +598,7 @@ impl SessionPermit {
         layer: Arc<Box<dyn SessionDeregistration>>,
         new_state: SessionState,
     ) {
+        log::trace!("[async_drop]: for node id: {}", node.id);
         let node_id = node.id;
         let reverse = matches!(&new_state, SessionState::ReverseConnection(_));
 
@@ -621,6 +632,7 @@ impl SessionPermit {
     /// Makes sure we deregister all data about this Node and abort all futures
     /// that might be during initialization.
     pub(crate) async fn clean_state(node: &NodeView, layer: Arc<Box<dyn SessionDeregistration>>) {
+        log::trace!("[clean_state]: {}", node.id);
         for addr in node.public_addresses().await {
             layer.abort_initializations(addr).await.ok();
         }
@@ -702,7 +714,9 @@ impl NodeAwaiting {
                 }
                 SessionState::FailedEstablish(e) => return Err(e),
                 _ => {
-                    log::trace!("Waiting for established session with [{node_id}]: state: {state}")
+                    log::trace!(
+                        "Waiting for established session with [{node_id}]: skipping state: {state}"
+                    )
                 }
             };
 
@@ -723,7 +737,7 @@ impl NodeAwaiting {
                 }
                 SessionState::FailedEstablish(e) => return Err(e),
                 _ => {
-                    log::trace!("Waiting for Closed or FailedEstablished session with [{node_id}]. Current state: {state}")
+                    log::trace!("Waiting for Closed or FailedEstablished session with [{node_id}]. skipping state: {state}")
                 }
             };
 

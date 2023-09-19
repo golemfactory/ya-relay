@@ -190,10 +190,16 @@ impl NodesState {
     }
 
     pub fn get_by_slot(&self, slot: u32) -> Option<NodeSession> {
-        self.slots
-            .get(slot as usize)
-            .cloned()
-            .and_then(|entry| entry.active())
+        self.slots.get(slot as usize).cloned().and_then(|entry| {
+            if let Slot::Purgatory(s) = &entry {
+                log::trace!(
+                    "[NodeState]: Purgatory session -> Trying to get session by NodeId: {}",
+                    s.info.default_node_id()
+                );
+                return self.get_by_node_id(s.info.default_node_id());
+            }
+            entry.active()
+        })
     }
 
     pub fn get_by_session(&self, id: SessionId) -> Option<NodeSession> {

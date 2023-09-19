@@ -156,6 +156,7 @@ impl SessionState {
             (SessionState::Outgoing(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::ReverseConnection(_), SessionState::FailedEstablish(_)) => true,
             (SessionState::RestartConnect, SessionState::FailedEstablish(_)) => true,
+            (SessionState::FailedEstablish(_), SessionState::FailedEstablish(_)) => true,
             // Session can be moved to `Established` only if it was set to `Ready` by `SessionProtocol`
             // or in case of `ReverseConnection`, when reverse `SessionPermit` sets `Reverse-Finished` state.
             (SessionState::Incoming(InitState::Ready), SessionState::Established(_)) => true,

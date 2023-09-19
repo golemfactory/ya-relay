@@ -35,6 +35,7 @@ pub struct AllowedForwards {
 
 impl AllowedForwards {
     pub fn add(&mut self, node: NodeEntry<NodeId>, slot: SlotId) {
+        log::trace!("[add]: node {} to slot {}", node.default_id, slot);
         // Remove previous information about node.
         // We are removing all identities and slot. This is redundant, because in most cases
         // using default id should be enough. This protects from situations, when `NodeEntries`
@@ -53,6 +54,7 @@ impl AllowedForwards {
     }
 
     pub fn remove(&mut self, node_id: &NodeId) -> Option<NodeEntry<NodeId>> {
+        log::trace!("[remove]: trying to remove node {}", node_id);
         if let Some(slot) = self.nodes.remove(node_id) {
             if let Some(entry) = self.slots.remove(&slot) {
                 for id in &entry.identities {

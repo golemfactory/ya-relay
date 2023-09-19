@@ -97,7 +97,7 @@ impl TcpLayer {
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
-        log::debug!("[VirtualTcp] Removing Node {node_id}");
+        log::trace!("[VirtualTcp]: Removing Node {node_id}");
 
         let remote_ip = self.registry.resolve_ip(node_id).await;
 
@@ -147,6 +147,11 @@ impl TcpLayer {
         channel: ChannelDesc,
         permit: &TcpPermit,
     ) -> Result<Arc<TcpConnection>, TcpError> {
+        log::trace!(
+            "[VirtualTcp] Connecting to node [{node_id}], channel: {channel}.",
+            node_id = permit.node.id(),
+            channel = channel
+        );
         let endpoint = IpEndpoint::new(permit.node.address, channel.port());
 
         // Make sure we have session with the Node. This allows us to
@@ -193,6 +198,7 @@ impl TcpLayer {
     }
 
     pub async fn dispatch(&self, packet: Forwarded) {
+        log::trace!("[dispatch]: from {}", packet.node_id);
         let node_id = packet.node_id;
         let exists = {
             // Optimisation to avoid resolving Node if possible.
@@ -210,6 +216,7 @@ impl TcpLayer {
     }
 
     pub async fn receive(&self, node: NodeId, payload: Payload) {
+        log::trace!("[receive]: from {}", node);
         ya_packet_trace::packet_trace_maybe!("TcpLayer::Receive", {
             &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
         });
@@ -218,7 +225,9 @@ impl TcpLayer {
         //       We should change incoming connection state to Established. Current code doesn't handle
         //       this correctly.
         if self.registry.resolve_node(node).await.is_err() {
-            log::debug!("[VirtualTcp] Incoming message from new Node [{node}]. Adding connection.");
+            log::debug!(
+                "[VirtualTcp::receive] Incoming message from new Node [{node}]. Adding connection."
+            );
             self.registry.add_virt_node(node).await;
         }
         self.inject(payload);
@@ -226,12 +235,17 @@ impl TcpLayer {
 
     #[inline]
     pub fn inject(&self, payload: Payload) {
+        log::trace!(
+            "[inject]: start ({payload_len} B)",
+            payload_len = payload.len()
+        );
         self.net.receive(payload);
         self.net.poll();
+        log::trace!("[inject]: ...done");
     }
 
-    pub async fn shutdown(&self) {
-        let our_id = self.session_layer.config.node_id;
+    pub async fn shutdown(&self, id: NodeId) {
+        let our_id = id;
         let virt_endpoint = channel_endpoint(our_id, ChannelType::Messages);
         let virt_transfer_endpoint = channel_endpoint(our_id, ChannelType::Transfer);
 
@@ -403,6 +417,8 @@ impl TcpLayer {
                         }
                     };
 
+                    log::trace!("[egress_router]: node: {}", node.id());
+
                     // `RoutingSender::send` will lazily create session with target Node.
                     // In most cases session will exist, but if not, we need to protect from
                     // blocking the rest of packets in the stream.
@@ -411,6 +427,11 @@ impl TcpLayer {
                     // TCP sessions are able to survive disconnection on lower layer. In previous
                     // implementation we disconnected TCP and all GSB messages in queue were lost.
                     tokio::task::spawn_local(async move {
+                        log::trace!(
+                            "[{}] egress router: forwarding to [{}]",
+                            myself.net_id(),
+                            node.id()
+                        );
                         if let Err(error) = node
                             .routing
                             .send(egress.payload.into(), TransportType::Reliable)
