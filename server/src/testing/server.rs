@@ -1,10 +1,14 @@
 use crate::config::Config;
+
 use chrono::Local;
+use futures::future::LocalBoxFuture;
 use futures::future::{AbortHandle, Abortable};
 use futures::FutureExt;
 use std::io::Write;
-use std::time::Duration;
+
+use tokio::time::Duration;
 use url::Url;
+use ya_relay_core::testing::TestServerWrapper;
 
 use crate::server::Server;
 
@@ -14,9 +18,24 @@ pub struct ServerWrapper {
     handle: AbortHandle,
 }
 
-impl ServerWrapper {
-    pub fn url(&self) -> Url {
+impl<'a> TestServerWrapper<'a> for ServerWrapper {
+    fn url(&self) -> Url {
         self.server.inner.url.clone()
+    }
+
+    fn remove_node_endpoints(&'a self, node: ya_relay_core::NodeId) -> LocalBoxFuture<'a, ()> {
+        Box::pin(async move {
+            let mut state = self.server.state.write().await;
+
+            let mut info = state.nodes.get_by_node_id(node).unwrap();
+            state.nodes.remove_session(info.info.slot);
+
+            // Server won't return any endpoints, so Client won't try to connect directly.
+            info.info.endpoints = vec![];
+            state.nodes.register(info);
+
+            drop(state);
+        })
     }
 }
 

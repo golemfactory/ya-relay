@@ -19,7 +19,7 @@ pub use client::{Client, ClientBuilder, FailFast, GenericSender, SessionError};
 /// This module is a public re-export cryptographic abstractions.
 pub use ya_relay_core::crypto;
 
-#[cfg(any(test, feature = "mock"))]
+#[cfg(any(test, feature = "test-utils"))]
 #[allow(missing_docs)]
 pub mod testing;
 
