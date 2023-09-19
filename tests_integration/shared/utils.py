@@ -92,13 +92,7 @@ class Client(Node):
     def __external_port(self, port: int = 8081):
         return self.ports()[f"{port}/tcp"]
 
-    def ping(
-        self,
-        node_id: str,
-        port: int = 8081,
-        timeout: int | None = 5,
-        transport: str = "reliable"
-    ):
+    def ping(self, node_id: str, port: int = 8081, timeout: int | None = 5, transport: str = "reliable"):
         LOGGER.debug(f"GET Ping node {node_id} ({self.container.name} - {self.node_id})")
         port = self.__external_port(port)
         response: requests.Response = requests.get(
