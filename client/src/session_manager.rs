@@ -437,7 +437,13 @@ impl SessionManager {
         }
         .unwrap_or(node_id);
 
-        self.registry.get_node(default_id).await
+        let default_result = self.registry.get_node(default_id).await;
+        if default_result.is_ok() {
+            default_result
+        } else {
+            log::debug!("Default identity [{default_id}] for node id [{node_id}] not found. Retry using node id directly.");
+            self.registry.get_node(node_id).await
+        }
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
@@ -1507,6 +1513,11 @@ impl SessionManagerState {
             Some(default_id) => default_id,
             None => node_id, // given node_id is a default_id
         };
-        self.node_aliases.remove(&default_id);
+
+        if let Some(ids) = self.node_aliases.remove(&default_id) {
+            for id in ids {
+                self.node_default_id.remove(&id.node_id);
+            }
+        };
     }
 }
