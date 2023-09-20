@@ -1507,10 +1507,6 @@ impl SessionManagerState {
             Some(default_id) => default_id,
             None => node_id, // given node_id is a default_id
         };
-        if let Some(ids) = self.node_aliases.remove(&default_id) {
-            for id in ids {
-                self.node_default_id.remove(&id.node_id);
-            }
-        };
+        self.node_aliases.remove(&default_id);
     }
 }
