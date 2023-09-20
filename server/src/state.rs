@@ -106,7 +106,8 @@ impl NodesState {
     }
 
     pub fn check_timeouts(&mut self, timeout: chrono::Duration, purge_timeout: chrono::Duration) {
-        self.slots
+        let to_remove = self
+            .slots
             .iter()
             .filter_map(|slot| {
                 if let Slot::Some(ns) = slot {
@@ -124,9 +125,20 @@ impl NodesState {
                     None
                 }
             })
-            .collect::<Vec<u32>>()
-            .into_iter()
-            .for_each(|slot| self.remove_session(slot));
+            .collect::<Vec<u32>>();
+
+        if !to_remove.is_empty() {
+            log::debug!("Sessions scheduled for removal.");
+            log::debug!("* Sessions: {:#?}", self.sessions);
+            log::debug!("* Nodes: {:#?}", self.nodes);
+            to_remove
+                .into_iter()
+                .for_each(|slot| self.remove_session(slot));
+
+            log::debug!("Sessions removal complete.");
+            log::debug!("* Sessions: {:#?}", self.sessions);
+            log::debug!("* Nodes: {:#?}", self.nodes);
+        }
 
         let deadline = Utc::now().sub(purge_timeout);
         for slot in &mut self.slots {
@@ -145,11 +157,18 @@ impl NodesState {
     }
 
     pub fn remove_session(&mut self, slot: u32) {
+        log::debug!("Attempting removal from slot {slot}");
         if let Slot::Some(session) = &self.slots[slot as usize] {
             self.sessions.remove(&session.session);
             self.nodes.remove(&session.info.node_id());
+            log::debug!(
+                "* Removing session {} and primary node id {}",
+                session.session,
+                session.info.node_id()
+            );
             for ident in session.info.identities.iter() {
                 self.nodes.remove(&ident.node_id);
+                log::debug!("* removing secondary node id {}", ident.node_id);
             }
 
             self.slots[slot as usize] = Slot::Purgatory(session.clone());
