@@ -3,6 +3,7 @@ from utils import set_netem, Cluster, Client, Server
 import pytest
 import logging
 import time
+import requests
 from typing import Set, Any, Dict
 
 LOGGER = logging.getLogger(__name__)
@@ -92,7 +93,69 @@ def test_session_expiration_after_disconnect(compose_up):
     LOGGER.info("Check sessions after session expiration period")
     check_sessions(client_0, {server.address()})
 
+def test_server_session_restored_after_disconnect(compose_up):
+    session_expiration = 3
+    cluster: Cluster = compose_up(
+        public_clients=1, alice_clients=1, bob_clients=0, build_args={"SESSION_EXPIRATION": session_expiration}
+    )
+    server: Server = cluster.servers()[0]
+
+    LOGGER.info("Testing server session after start")
+    client_0 = cluster.clients("public")[0]
+    alice = cluster.clients("alice")[0]
+    check_sessions(client_0, {server.address()})
+    check_sessions(alice, {server.address()})
+
+    LOGGER.info("Testing server session is lost after disconnect")
+    networks_0 = cluster.disconnect(client_0)
+    networks_alice = cluster.disconnect(alice)
+    time.sleep(5)
+    cluster.connect(client_0, networks_0)
+    cluster.connect(alice, networks_alice)
+#     check_sessions(client_0, {})
+#     check_sessions(bob, {})
+#     check_sessions(alice, {})
+
+    LOGGER.info("Testing server session is restored")
+    time.sleep(5)
+    check_sessions(client_0, {server.address()})
+    check_sessions(alice, {server.address()})
+
+def test_ping_after_disconnect_and_reconnect(compose_up):
+    session_expiration = 3
+    cluster: Cluster = compose_up(
+        public_clients=0, alice_clients=1, bob_clients=1, build_args={"SESSION_EXPIRATION": session_expiration}
+    )
+    server: Server = cluster.servers()[0]
+
+    LOGGER.info("Initial ping")
+    alice = cluster.clients("alice")[0]
+    bob = cluster.clients("bob")[0]
+    alice.ping(bob.node_id)
+
+    LOGGER.info("Testing ping after disconnect")
+    networks = cluster.disconnect(bob)
+    with pytest.raises(requests.exceptions.ReadTimeout) as excinfo:
+        alice.ping(bob.node_id)
+    assert "timeout" in str(excinfo.value)
+
+    LOGGER.info("Testing sessions after disconnect")
+    time.sleep(5)
+    cluster.connect(bob, networks)
+    check_sessions(bob, {})
+
+    LOGGER.info("Testing ping after reconnect")
+    time.sleep(5)
+    check_sessions(bob, {server.address()})
+
+    try:
+        alice.ping(bob.node_id)
+    except Exception as excinfo:
+        pytest.fail(f"Unexpected exception raised: {excinfo}")
 
 def check_sessions(client: Client, expected_sessions: Set[Any] | Dict[Any, Any]):
-    sessions = client.sessions()
-    assert expected_sessions == {session["address"] for session in sessions["sessions"]}
+    client_sessions = client.sessions()
+    LOGGER.info(f"Sessions: {client_sessions}")
+    actual_sessions = {session["address"] for session in client_sessions["sessions"]}
+    assert len(expected_sessions) == 0 and len(actual_sessions) == 0 or expected_sessions == actual_sessions
+

@@ -144,6 +144,7 @@ class LoggerJob(threading.Thread):
         self.compose_client = compose_client
 
     def run(self, *args, **kwargs):
+        LOGGER.info(f"Logger started")
         for _, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
             line = line.decode("utf-8")
             line = line.strip()
