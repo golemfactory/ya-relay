@@ -93,6 +93,7 @@ def test_session_expiration_after_disconnect(compose_up):
     LOGGER.info("Check sessions after session expiration period")
     check_sessions(client_0, {server.address()})
 
+
 def test_server_session_restored_after_disconnect(compose_up):
     session_expiration = 3
     cluster: Cluster = compose_up(
@@ -112,14 +113,15 @@ def test_server_session_restored_after_disconnect(compose_up):
     time.sleep(5)
     cluster.connect(client_0, networks_0)
     cluster.connect(alice, networks_alice)
-#     check_sessions(client_0, {})
-#     check_sessions(bob, {})
-#     check_sessions(alice, {})
+    #     check_sessions(client_0, {})
+    #     check_sessions(bob, {})
+    #     check_sessions(alice, {})
 
     LOGGER.info("Testing server session is restored")
     time.sleep(5)
     check_sessions(client_0, {server.address()})
     check_sessions(alice, {server.address()})
+
 
 def test_ping_after_disconnect_and_reconnect(compose_up):
     session_expiration = 3
@@ -153,9 +155,9 @@ def test_ping_after_disconnect_and_reconnect(compose_up):
     except Exception as excinfo:
         pytest.fail(f"Unexpected exception raised: {excinfo}")
 
+
 def check_sessions(client: Client, expected_sessions: Set[Any] | Dict[Any, Any]):
     client_sessions = client.sessions()
     LOGGER.info(f"Sessions: {client_sessions}")
     actual_sessions = {session["address"] for session in client_sessions["sessions"]}
     assert len(expected_sessions) == 0 and len(actual_sessions) == 0 or expected_sessions == actual_sessions
-
