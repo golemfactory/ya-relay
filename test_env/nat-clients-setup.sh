@@ -6,7 +6,7 @@ export SERVER_LATENCY=3
 export RUST_LOG=trace,mio=info,smoltcp=trace,actix_web=warn,actix_server=warn,actix_http=warn
 
 cargo build --release
-cargo build --example http_client
+cargo build --example http_client --release
 
 # Start the network
 docker compose -f test_env/docker-compose-nat-clients.yml up \
@@ -16,5 +16,5 @@ docker compose -f test_env/docker-compose-nat-clients.yml up \
     --build relay_server \
     --force-recreate
 
-docker compose -f test_env/docker-compose.yml down
+docker compose -f test_env/docker-compose-nat-clients.yml down
 docker image prune -f
