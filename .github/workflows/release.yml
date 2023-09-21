@@ -107,7 +107,7 @@ jobs:
 
       - name: Build linux
         run: |
-          cargo build --release --target x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl -p ya-relay-server
       # - name: Pack
       #   id: pack
       #   shell: bash
