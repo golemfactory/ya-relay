@@ -234,4 +234,3 @@ def set_netem(node: Node, latency="0ms"):
         command=["tc", "qdisc", "replace", "dev", "eth0", "root", "netem", "delay", latency],
         privileged=True,
     )
-

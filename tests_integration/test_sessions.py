@@ -150,6 +150,7 @@ def test_ping_after_disconnect_and_reconnect(compose_up):
     except Exception as excinfo:
         pytest.fail(f"Unexpected exception raised: {excinfo}")
 
+
 def check_sessions(client: Client, expected_sessions: Set[Any] | Dict[Any, Any]):
     client_sessions = client.sessions()
     LOGGER.info(f"Sessions: {client_sessions}")
