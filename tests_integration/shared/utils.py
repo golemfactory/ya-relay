@@ -84,10 +84,13 @@ TClient = TypeVar("TClient", bound="Client")
 
 class Client(Node):
     node_id: str
+    container_name: str
 
     def __init__(self, container: Container):
         Node.__init__(self, container=container)
         self.node_id = read_node_id(container=container)
+        self.container_name = container.name
+        LOGGER.info(f"Client {self.node_id} started for container {container.name}")
 
     def __external_port(self, port: int = 8081):
         return self.ports()[f"{port}/tcp"]
@@ -135,6 +138,19 @@ class Client(Node):
         )
         return read_json_response(response)
 
+    def reset_gateway(self, gateway_ip: str):
+        LOGGER.info(f"Reset gateway for '{self.container_name}', gateway_ip {gateway_ip}")
+        docker.execute(
+            container=self.container_name,
+            command=["ip", "route", "del", "default"],
+            privileged=True,
+        )
+        docker.execute(
+            container=self.container_name,
+            command=["ip", "route", "add", "default", "via", gateway_ip],
+            privileged=True,
+        )
+
 
 class LoggerJob(threading.Thread):
     compose_client: DockerClient
@@ -144,6 +160,7 @@ class LoggerJob(threading.Thread):
         self.compose_client = compose_client
 
     def run(self, *args, **kwargs):
+        LOGGER.info(f"Logger started")
         for _, line in self.compose_client.compose.logs([], follow=True, stream=True, timestamps=False):
             line = line.decode("utf-8")
             line = line.strip()

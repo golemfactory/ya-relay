@@ -3,6 +3,7 @@ from utils import set_netem, Cluster, Client, Server
 import pytest
 import logging
 import time
+import requests
 from typing import Set, Any, Dict
 
 LOGGER = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def check_session_after_ping(
     assert expected_sessions == sessions
 
 
-def test_session_expiration_after_disconnect(compose_up):
+def test_session_expiration_after_disconnect_and_reinit_after_reconnect(compose_up):
     session_expiration = 3
     cluster: Cluster = compose_up(
         public_clients=2, alice_clients=1, bob_clients=1, build_args={"SESSION_EXPIRATION": session_expiration}
@@ -60,19 +61,27 @@ def test_session_expiration_after_disconnect(compose_up):
     LOGGER.info("Testing session expiration on clients using Relayed connection")
     client_0 = cluster.clients("alice")[0]
     client_1 = cluster.clients("bob")[0]
+    client_1_gateway = cluster.gateways("bob")[0]
     ping_response = client_0.ping(client_1.node_id)
     LOGGER.info("Check sessions after ping")
     assert client_1.node_id == ping_response["node_id"]
     check_sessions(client_0, {server.address()})
     check_sessions(client_1, {server.address()})
     LOGGER.info("Disconnecting bob")
-    cluster.disconnect(client_1)
+    client_1_networks = cluster.disconnect(client_1)
     time.sleep(1)
     LOGGER.info("Check sessions right after disconnect")
     check_sessions(client_0, {server.address()})
     time.sleep(5)
     LOGGER.info("Check sessions after session expiration period")
     check_sessions(client_0, {server.address()})
+
+    LOGGER.info("Check server session was lost after disconnect but gets reconnected")
+    cluster.connect(client_1, client_1_networks)
+    client_1.reset_gateway(client_1_gateway.address("bob"))
+    check_sessions(client_1, {})
+    time.sleep(5)
+    check_sessions(client_1, {server.address()})
 
     LOGGER.info("Testing session expiration on clients using P2P connection")
     client_0 = cluster.clients("public")[0]
@@ -84,15 +93,53 @@ def test_session_expiration_after_disconnect(compose_up):
     check_sessions(client_1, {server.address(), client_0.address()})
     LOGGER.info("Disconnecting p2p client")
     client_1_address = client_1.address()
-    cluster.disconnect(client_1)
+    client_1_networks = cluster.disconnect(client_1)
     time.sleep(1)
     LOGGER.info("Check sessions right after disconnect")
     check_sessions(client_0, {server.address(), client_1_address})
     time.sleep(5)
     LOGGER.info("Check sessions after session expiration period")
+    LOGGER.info(f"address: {client_0.address()} {client_1.address()} {server.address()}")
     check_sessions(client_0, {server.address()})
+
+    LOGGER.info("Check server session was lost after disconnect but gets reconnected")
+    cluster.connect(client_1, client_1_networks)
+    check_sessions(client_1, {client_0.address()})
+    time.sleep(5)
+    check_sessions(client_1, {client_0.address(), server.address()})
+
+
+def test_ping_after_disconnect_and_reconnect(compose_up):
+    session_expiration = 3
+    cluster: Cluster = compose_up(
+        public_clients=0, alice_clients=1, bob_clients=1, build_args={"SESSION_EXPIRATION": session_expiration}
+    )
+    server: Server = cluster.servers()[0]
+
+    LOGGER.info("Initial ping")
+    alice = cluster.clients("alice")[0]
+    bob = cluster.clients("bob")[0]
+    bob_gateway = cluster.gateways("bob")[0]
+    alice.ping(bob.node_id)
+
+    LOGGER.info("Testing ping after disconnect should fail")
+    networks = cluster.disconnect(bob)
+    with pytest.raises(requests.exceptions.ReadTimeout) as excinfo:
+        alice.ping(bob.node_id)
+    assert "timeout" in str(excinfo.value)
+
+    LOGGER.info("Testing ping after reconnect")
+    cluster.connect(bob, networks)
+    bob.reset_gateway(bob_gateway.address("bob"))
+    time.sleep(1)
+
+    try:
+        alice.ping(bob.node_id)
+    except Exception as excinfo:
+        pytest.fail(f"Unexpected exception raised: {excinfo}")
 
 
 def check_sessions(client: Client, expected_sessions: Set[Any] | Dict[Any, Any]):
-    sessions = client.sessions()
-    assert expected_sessions == {session["address"] for session in sessions["sessions"]}
+    client_sessions = client.sessions()
+    actual_sessions = {session["address"] for session in client_sessions["sessions"]}
+    assert len(expected_sessions) == 0 and len(actual_sessions) == 0 or expected_sessions == actual_sessions
