@@ -1,11 +1,9 @@
 #!/bin/bash
 
-cargo build --release
-cargo build -p ya-relay-client --example http_client --release
+source ./build.sh
 
-docker build -f Dockerfile.base -t tests_base test_env/.
 # Start the network
-docker compose -f test_env/docker-compose-2nets.yml up \
+docker compose -f docker-compose-2nets.yml up \
     --detach \
     --remove-orphans \
     --build client-exposed \
@@ -29,10 +27,10 @@ export HIDDEN_NODE_ID=$(docker logs $HIDDEN_CONTAINER_ID 2>&1 | grep "NODE ID" |
 export NETWORK_OF_HIDDEN_CLIENT=$(docker container inspect -f '{{range $net,$v := .NetworkSettings.Networks}}{{printf "%s" $net}}{{end}}' $HIDDEN_CONTAINER_ID); echo $NETWORK_OF_HIDDEN_CLIENT
 
 # Ping hidden client from exposed client
-curl -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
+curl -w "Ping: exposed client -> hidden node\n" -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 
 # Ping exposed client from hidden client
-curl -X GET http://$HIDDEN_CLIENT_IP:8081/ping/$EXPOSED_NODE_ID
+curl -w "Ping: hidden client -> exposed node\n" -X GET http://$HIDDEN_CLIENT_IP:8081/ping/$EXPOSED_NODE_ID
 
 if [[ $(curl -s -X GET http://$EXPOSED_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]] || [[ $(curl -s -X GET http://$HIDDEN_CLIENT_IP:8081/sessions | wc -l) -eq 1 ]];
 then
@@ -41,8 +39,10 @@ else
   echo "Initial sessions OK"
 fi
 
-curl -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
-curl -X GET http://$HIDDEN_CLIENT_IP:8081/sessions
+echo "exposed client sessions"
+curl -w "\n" -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
+echo "hidden client sessions"
+curl -w "\n" -X GET http://$HIDDEN_CLIENT_IP:8081/sessions
 
 # Disconnect hidden client from network
 docker network disconnect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
@@ -51,20 +51,22 @@ docker network disconnect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
 sleep 30
 
 # Ping hidden client from exposed client
-curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
+curl -w "Ping: exposed client -> hidden node\n" -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 
 # Connect hidden client to network
 docker network connect $NETWORK_OF_HIDDEN_CLIENT $HIDDEN_CONTAINER_ID
 
 # Ping hidden client from exposed client
-curl -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
+curl -w "Ping: exposed client -> hidden node\n" -m 5 -X GET http://$EXPOSED_CLIENT_IP:8081/ping/$HIDDEN_NODE_ID
 
 # Give hidden node some time to restore session with server
 sleep 5
 
 # check if session with server exists
-curl -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
-curl -X GET http://$HIDDEN_CLIENT_IP:8081/sessions
+echo "exposed client sessions"
+curl -w "\n" -X GET http://$EXPOSED_CLIENT_IP:8081/sessions
+echo "hidden client sessions"
+curl -w "\n" -X GET http://$HIDDEN_CLIENT_IP:8081/sessions
 
 if [ $(curl -s -X GET http://$HIDDEN_CLIENT_IP:8081/sessions | grep 7464) ];
 then
@@ -74,5 +76,5 @@ else
 fi
 
 # Stop the network
-docker compose -f test_env/docker-compose-2nets.yml down --remove-orphans
+docker compose -f docker-compose-2nets.yml down --remove-orphans
 docker image prune -f

@@ -14,15 +14,14 @@ while getopts ":c:" options; do
 	esac
 done
 
-cargo build --release
-cargo build -p ya-relay-client --example http_client --release
+source ./build.sh
 
 # Start the network
-docker compose -f test_env/docker-compose.yml up \
+docker compose -f docker-compose.yml up \
     --remove-orphans \
     --build client \
     --build relay_server \
     --scale client=$CLIENTS
 
-docker compose -f test_env/docker-compose.yml down
+docker compose -f docker-compose.yml down
 docker image prune -f

@@ -85,7 +85,7 @@ pub enum ConnectionMethod {
 /// [`RoutingSender`] is designed with possibility to use many relay servers at the same time.
 /// If session with one relay will be closed, [`RoutingSender`] can update it's routing information
 /// in a transparent way, so external layers won't notice the change, when sending subsequent packets.
-/// Thanks to this [`TcpLayer`] doesn't have to close Tcp connection even if underlying session is closed.  
+/// Thanks to this [`TcpLayer`] doesn't have to close Tcp connection even if underlying session is closed.
 #[derive(Clone)]
 pub struct SessionLayer {
     pub config: Arc<ClientConfig>,
