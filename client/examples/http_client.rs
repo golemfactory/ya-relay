@@ -46,6 +46,8 @@ struct Cli {
     password: Option<Protected>,
     #[structopt(long, env = "SESSION_EXPIRATION", default_value = "20")]
     session_expiration: u64,
+    #[structopt(long, env = "SESSION_REQUEST_TIMEOUT", default_value = "3")]
+    session_request_timeout: u64,
 }
 
 type ClientWrap = self::wrap::SendWrap<Client>;
@@ -475,6 +477,7 @@ async fn run() -> Result<()> {
         cli.key_file.as_deref(),
         cli.password,
         Duration::from_secs(cli.session_expiration),
+        Duration::from_secs(cli.session_request_timeout),
     )
     .await?;
     let client_cloned = client.clone();
@@ -526,6 +529,7 @@ async fn build_client(
     key_file: Option<&str>,
     password: Option<Protected>,
     session_expiration: Duration,
+    session_request_timeout: Duration,
 ) -> Result<Client> {
     let secret = key_file.map(|key_file| load_or_generate(key_file, password));
     let provider = if let Some(secret_key) = secret {
@@ -536,7 +540,8 @@ async fn build_client(
 
     let mut builder = ClientBuilder::from_url(relay_addr)
         .crypto(provider)
-        .expire_session_after(session_expiration);
+        .expire_session_after(session_expiration)
+        .session_request_timeout(session_request_timeout);
 
     if let Some(bind) = p2p_bind_addr {
         builder = builder.listen(bind);

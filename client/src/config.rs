@@ -81,6 +81,7 @@ pub struct ClientBuilder {
     auto_connect: bool,
     auto_connect_fail_fast: bool,
     session_expiration: Option<Duration>,
+    session_request_timeout: Option<Duration>,
     stack_config: StackConfig,
 }
 
@@ -93,6 +94,7 @@ impl ClientBuilder {
             auto_connect: false,
             auto_connect_fail_fast: false,
             session_expiration: None,
+            session_request_timeout: None,
             stack_config: Default::default(),
         }
     }
@@ -124,6 +126,11 @@ impl ClientBuilder {
 
     pub fn expire_session_after(mut self, expiration: Duration) -> Self {
         self.session_expiration = Some(expiration);
+        self
+    }
+
+    pub fn session_request_timeout(mut self, timeout: Duration) -> Self {
+        self.session_request_timeout = Some(timeout);
         self
     }
 
@@ -176,7 +183,9 @@ impl ClientBuilder {
             server_session_reconnect_max_interval: Duration::from_secs(300),
             stack_config: self.stack_config,
             ping_measure_interval: Duration::from_secs(300),
-            session_request_timeout: Duration::from_millis(3000),
+            session_request_timeout: self
+                .session_request_timeout
+                .unwrap_or_else(|| Duration::from_millis(3000)),
             challenge_request_timeout: Duration::from_millis(8000),
             reverse_connection_tmp_timeout: Duration::from_secs(3),
             reverse_connection_real_timeout: Duration::from_secs(13),
