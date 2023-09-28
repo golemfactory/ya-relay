@@ -1,7 +1,6 @@
 use crate::direct_session::DirectSession;
 use crate::session::network_view::{NodeAwaiting, NodeView};
 use crate::session::session_state::SessionState;
-use crate::session::session_traits::SessionDeregistration;
 use crate::session::SessionLayer;
 use backoff::backoff::Backoff;
 use backoff::Error::Transient;
