@@ -712,6 +712,10 @@ impl SessionLayer {
         }
     }
 
+    pub async fn get_server_session(&self) -> Option<Arc<DirectSession>> {
+        self.state.read().await.p2p_sessions.get(&self.config.srv_addr).cloned()
+    }
+
     pub async fn server_session(&self) -> Result<Arc<DirectSession>, SessionError> {
         // A little bit dirty hack, that we give default NodeId (0x00) for relay server.
         // TODO: In the future relays should have regular NodeId
@@ -721,7 +725,7 @@ impl SessionLayer {
 
         log::trace!("Requested Relay server session with [{remote_id}] ({addr}).");
 
-        if let Some(session) = { self.state.read().await.p2p_sessions.get(&addr).cloned() } {
+        if let Some(session) = self.get_server_session().await {
             log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
             return Ok(session);
         }

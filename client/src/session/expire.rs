@@ -47,20 +47,19 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
         log::trace!("Closing {} expired sessions.", expired.len());
         close_sessions(layer.clone(), sessions, expired).await;
 
-        let node_info_futures = match layer.server_session().await {
-            Ok(server_session) => {
+        let node_info_futures = match layer.get_server_session().await {
+            Some(server_session) => {
                 let server_sessions = std::iter::repeat(server_session.clone());
                 server_session.list().into_iter().zip(server_sessions)
                     .map(|(node, server_session)| async move { (node.default_id.clone(), server_session.raw.find_node(node.default_id).await) })
                 .collect::<Vec<_>>()
             },
-            Err(_) => vec![],
+            None => vec![],
         };
         log::debug!("{} forwards to ping", node_info_futures.len());
         let last_seen_relayed = futures::future::join_all(node_info_futures).await;
 
         let utc_now = Utc::now();
-        // let expiration_chrono = chrono::Duration::from_std(expiration).unwrap_or(chrono::Duration::max_value());
         let elapsed = utc_now - expiration - chrono::Duration::seconds(42);
         let (expired_relayed, live_relayed): (Vec<_>, Vec<_>) = last_seen_relayed
             .into_iter()
