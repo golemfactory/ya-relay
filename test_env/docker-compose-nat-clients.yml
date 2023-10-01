@@ -58,7 +58,7 @@ services:
       - client-network-2
     depends_on:
       - relay_server
-      
+
 networks:
   client-network-1:
     driver: bridge
