@@ -2,7 +2,7 @@ use crate::client::SessionError;
 use backoff::future::retry;
 use backoff::Error::Transient;
 use backoff::{Error, ExponentialBackoff};
-use chrono::{DateTime, Utc, NaiveDateTime};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use std::cmp::min;
 use std::future::Future;
 use std::sync::Arc;
@@ -33,10 +33,7 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
 }
 
 // Checks for live sessions and calculates the sleep time until the next session expiration
-async fn timeout_sessions(
-    layer: SessionLayer,
-    expiration: Duration,
-) -> Duration {
+async fn timeout_sessions(layer: SessionLayer, expiration: Duration) -> Duration {
     let now = Instant::now();
 
     let sessions = layer
@@ -62,43 +59,39 @@ async fn timeout_sessions(
 
     log::trace!("Closing {} expired sessions.", expired.len());
 
-    let close_session_futures = expired.into_iter()
-        .map(|(idx, _)| {
-            let session = sessions[idx].clone();
-            let layer = layer.clone();
-            async move {
-                log::info!(
-                    "Closing session {} ({}) not responding to ping.",
-                    session.raw.id,
-                    session.raw.remote
-                );
+    let close_session_futures = expired.into_iter().map(|(idx, _)| {
+        let session = sessions[idx].clone();
+        let layer = layer.clone();
+        async move {
+            log::info!(
+                "Closing session {} ({}) not responding to ping.",
+                session.raw.id,
+                session.raw.remote
+            );
 
-                layer.close_session(session).await;
-            }
-        });
+            layer.close_session(session).await;
+        }
+    });
     futures::future::join_all(close_session_futures).await;
 
     let next_expiration = live.into_iter().map(|(_, ts)| ts).min().unwrap_or(now) + expiration;
     next_expiration.saturating_duration_since(Instant::now())
 }
 
-async fn timeout_relay_slots(
-    layer: SessionLayer,
-    expiration: Duration,
-) -> Duration {
+async fn timeout_relay_slots(layer: SessionLayer, expiration: Duration) -> Duration {
     let node_info_futures = match layer.get_server_session().await {
-        Some(server_session) => {
-            server_session.list().into_iter()
-                .map(|node| {
-                    let server_session= server_session.clone();
-                    async move {
-                        let node_id = node.default_id.clone();
-                        let node_info = server_session.raw.find_node(node.default_id).await;
-                        (node_id, node_info)
-                    }
-                })
-                .collect::<Vec<_>>()
-        },
+        Some(server_session) => server_session
+            .list()
+            .into_iter()
+            .map(|node| {
+                let server_session = server_session.clone();
+                async move {
+                    let node_id = node.default_id.clone();
+                    let node_info = server_session.raw.find_node(node.default_id).await;
+                    (node_id, node_info)
+                }
+            })
+            .collect::<Vec<_>>(),
         None => vec![],
     };
     log::debug!("{} relay slots to ping", node_info_futures.len());
@@ -109,21 +102,20 @@ async fn timeout_relay_slots(
     let (expired, live): (Vec<_>, Vec<_>) = last_seen_relayed
         .into_iter()
         .map(|(node_id, node_info)| {
-            let last_seen = node_info.map(|node_info|
-                    DateTime::<Utc>::from_timestamp(node_info.seen_ts as i64, 0)
-                        .map(|dt| dt + expiration)
-                        .unwrap_or(elapsed)
-                    );
+            let last_seen = node_info.map(|node_info| {
+                DateTime::<Utc>::from_timestamp(node_info.seen_ts as i64, 0)
+                    .map(|dt| dt + expiration)
+                    .unwrap_or(elapsed)
+            });
             (node_id, last_seen)
         })
-        .partition(|(node_id, last_seen_result)| {
-            match last_seen_result {
-                Ok(last_seen) => *last_seen + expiration < now,
-                Err(_) => true,
-            }
+        .partition(|(node_id, last_seen_result)| match last_seen_result {
+            Ok(last_seen) => *last_seen + expiration < now,
+            Err(_) => true,
         });
 
-    let disconnect_futures = expired.iter()
+    let disconnect_futures = expired
+        .iter()
         .map(|(node_id, _)| {
             log::trace!("Closing relayed connection to {}.", node_id);
             layer.disconnect(node_id.clone())
@@ -132,10 +124,12 @@ async fn timeout_relay_slots(
 
     futures::future::join_all(disconnect_futures).await;
 
-    let next_expiration = live.into_iter()
+    let next_expiration = live
+        .into_iter()
         .map(|(_, ts)| ts.unwrap())
         .min()
-        .unwrap_or(now) + expiration;
+        .unwrap_or(now)
+        + expiration;
     let sleep = next_expiration - Utc::now();
     if sleep < chrono::Duration::zero() {
         Duration::from_secs(0)

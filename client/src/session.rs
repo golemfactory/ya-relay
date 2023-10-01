@@ -713,7 +713,12 @@ impl SessionLayer {
     }
 
     pub async fn get_server_session(&self) -> Option<Arc<DirectSession>> {
-        self.state.read().await.p2p_sessions.get(&self.config.srv_addr).cloned()
+        self.state
+            .read()
+            .await
+            .p2p_sessions
+            .get(&self.config.srv_addr)
+            .cloned()
     }
 
     pub async fn server_session(&self) -> Result<Arc<DirectSession>, SessionError> {
