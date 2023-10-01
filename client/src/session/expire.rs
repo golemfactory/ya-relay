@@ -22,8 +22,8 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
     loop {
         log::trace!("[expire]: Checking, if all sessions are alive. Removing not active sessions.");
 
-        let next_session_expiration = timeout_sessions(layer.clone(), expiration.clone()).await;
-        let next_slot_expiration = timeout_relay_slots(layer.clone(), expiration.clone()).await;
+        let next_session_expiration = timeout_sessions(layer.clone(), expiration).await;
+        let next_slot_expiration = timeout_relay_slots(layer.clone(), expiration).await;
 
         let sleep = min(next_session_expiration, next_slot_expiration);
 
@@ -86,7 +86,7 @@ async fn timeout_relay_slots(layer: SessionLayer, expiration: Duration) -> Durat
             .map(|node| {
                 let server_session = server_session.clone();
                 async move {
-                    let node_id = node.default_id.clone();
+                    let node_id = node.default_id;
                     let node_info = server_session.raw.find_node(node.default_id).await;
                     (node_id, node_info)
                 }
@@ -118,7 +118,7 @@ async fn timeout_relay_slots(layer: SessionLayer, expiration: Duration) -> Durat
         .iter()
         .map(|(node_id, _)| {
             log::trace!("Closing relayed connection to {}.", node_id);
-            layer.disconnect(node_id.clone())
+            layer.disconnect(*node_id)
         })
         .collect::<Vec<_>>();
 
