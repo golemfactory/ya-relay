@@ -23,9 +23,9 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
         log::trace!("[expire]: Checking, if all sessions are alive. Removing not active sessions.");
 
         let next_session_expiration = timeout_sessions(layer.clone(), expiration).await;
-        // let next_slot_expiration = timeout_relay_slots(layer.clone(), expiration).await;
+        let next_slot_expiration = timeout_relay_slots(layer.clone(), expiration).await;
 
-        let sleep = min(next_session_expiration, expiration);
+        let sleep = min(next_session_expiration, next_slot_expiration);
 
         log::trace!("Next sessions / relayed slots cleanup in {:?}", sleep);
         tokio::time::sleep(sleep).await;
