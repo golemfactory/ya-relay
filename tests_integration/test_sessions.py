@@ -10,7 +10,10 @@ LOGGER = logging.getLogger(__name__)
 
 
 def test_sessions_with_and_without_p2p(compose_up):
-    cluster: Cluster = compose_up(public_clients=2, alice_clients=2, bob_clients=2)
+    cluster: Cluster = compose_up(
+        public_clients=2, alice_clients=2, bob_clients=2,
+        build_args={"RUST_LOG": "info,ya_relay_client::session=trace"}
+    )
 
     LOGGER.info(f"Testing session between clients (same network, p2p)")
     server: Server = cluster.servers()[0]
@@ -46,15 +49,14 @@ def check_session_after_ping(
 ):
     client_1.ping(client_2.node_id)
 
-    sessions = client_1.sessions()
-    sessions = {session["address"] for session in sessions["sessions"]}
-    assert expected_sessions == sessions
+    check_sessions(client_1, expected_sessions)
 
 
 def test_session_expiration_after_disconnect_and_reinit_after_reconnect(compose_up):
     session_expiration = 3
     cluster: Cluster = compose_up(
-        public_clients=2, alice_clients=1, bob_clients=1, build_args={"SESSION_EXPIRATION": session_expiration}
+        public_clients=2, alice_clients=1, bob_clients=1,
+        build_args={"SESSION_EXPIRATION": session_expiration, "RUST_LOG": "info,ya_relay_client::session=trace"}
     )
     server: Server = cluster.servers()[0]
 
@@ -72,14 +74,13 @@ def test_session_expiration_after_disconnect_and_reinit_after_reconnect(compose_
     time.sleep(1)
     LOGGER.info("Check sessions right after disconnect")
     check_sessions(client_0, {server.address()})
-    time.sleep(5)
+    time.sleep(10)
     LOGGER.info("Check sessions after session expiration period")
     check_sessions(client_0, {server.address()})
-
+    check_sessions(client_1, {})
     LOGGER.info("Check server session was lost after disconnect but gets reconnected")
     cluster.connect(client_1, client_1_networks)
     client_1.reset_gateway(client_1_gateway.address("bob"))
-    check_sessions(client_1, {})
     time.sleep(5)
     check_sessions(client_1, {server.address()})
 
@@ -142,4 +143,8 @@ def test_ping_after_disconnect_and_reconnect(compose_up):
 def check_sessions(client: Client, expected_sessions: Set[Any] | Dict[Any, Any]):
     client_sessions = client.sessions()
     actual_sessions = {session["address"] for session in client_sessions["sessions"]}
-    assert len(expected_sessions) == 0 and len(actual_sessions) == 0 or expected_sessions == actual_sessions
+    try:
+        assert len(expected_sessions) == 0 and len(actual_sessions) == 0 or expected_sessions == actual_sessions
+    except AssertionError as e:
+        LOGGER.info(f"Client logs for {client.container.name}\n{client.logs()}")
+        raise e

@@ -1,7 +1,7 @@
 #!/bin/bash
 
-cargo build --release
-cargo build -p ya-relay-client --example http_client --release
+cargo build --release || exit 1
+cargo build -p ya-relay-client --example http_client --release || exit 1
 for d in debug release
 do
   mkdir -p target/$d/examples

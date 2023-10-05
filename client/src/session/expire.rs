@@ -79,6 +79,8 @@ async fn timeout_sessions(layer: SessionLayer, expiration: Duration) -> Duration
 }
 
 async fn timeout_relay_slots(layer: SessionLayer, expiration: Duration) -> Duration {
+    let now = Utc::now();
+
     let node_info_futures = match layer.get_server_session().await {
         Some(server_session) => server_session
             .list()
@@ -97,15 +99,14 @@ async fn timeout_relay_slots(layer: SessionLayer, expiration: Duration) -> Durat
     log::debug!("{} relay slots to ping", node_info_futures.len());
     let last_seen_relayed = futures::future::join_all(node_info_futures).await;
 
-    let now = Utc::now();
-    let elapsed = now - expiration - chrono::Duration::seconds(42);
+    let timed_out = now - expiration - chrono::Duration::seconds(42);
     let (expired, live): (Vec<_>, Vec<_>) = last_seen_relayed
         .into_iter()
         .map(|(node_id, node_info)| {
             let last_seen = node_info.map(|node_info| {
                 DateTime::<Utc>::from_timestamp(node_info.seen_ts as i64, 0)
                     .map(|dt| dt + expiration)
-                    .unwrap_or(elapsed)
+                    .unwrap_or(timed_out)
             });
             (node_id, last_seen)
         })
@@ -115,10 +116,10 @@ async fn timeout_relay_slots(layer: SessionLayer, expiration: Duration) -> Durat
         });
 
     let disconnect_futures = expired
-        .iter()
+        .into_iter()
         .map(|(node_id, _)| {
             log::trace!("Closing relayed connection to {}.", node_id);
-            layer.disconnect(*node_id)
+            layer.disconnect(node_id)
         })
         .collect::<Vec<_>>();
 
