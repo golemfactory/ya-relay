@@ -11,8 +11,7 @@ LOGGER = logging.getLogger(__name__)
 
 def test_sessions_with_and_without_p2p(compose_up):
     cluster: Cluster = compose_up(
-        public_clients=2, alice_clients=2, bob_clients=2,
-        build_args={"RUST_LOG": "info,ya_relay_client::session=trace"}
+        public_clients=2, alice_clients=2, bob_clients=2, build_args={"RUST_LOG": "info,ya_relay_client::session=trace"}
     )
 
     LOGGER.info(f"Testing session between clients (same network, p2p)")
@@ -55,8 +54,10 @@ def check_session_after_ping(
 def test_session_expiration_after_disconnect_and_reinit_after_reconnect(compose_up):
     session_expiration = 3
     cluster: Cluster = compose_up(
-        public_clients=2, alice_clients=1, bob_clients=1,
-        build_args={"SESSION_EXPIRATION": session_expiration, "RUST_LOG": "info,ya_relay_client::session=trace"}
+        public_clients=2,
+        alice_clients=1,
+        bob_clients=1,
+        build_args={"SESSION_EXPIRATION": session_expiration, "RUST_LOG": "info,ya_relay_client::session=trace"},
     )
     server: Server = cluster.servers()[0]
 

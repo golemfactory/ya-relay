@@ -107,7 +107,7 @@ class Client(Node):
     def sessions(self, port: int = 8081, timeout: int | None = 5):
         LOGGER.debug(f"GET Sessions ({self.container.name} - {self.node_id})")
         response = self.container.execute(["curl", "--max-time", str(timeout), "http://127.0.0.1:8081/sessions"])
-        return json.loads(response)
+        return json.loads(str(response))
 
     def find(self, node_id: str, port: int = 8081, timeout: int | None = 5, external_port: int | None = None):
         LOGGER.debug(f"GET Find node {node_id} ({self.container.name} - {self.node_id})")
