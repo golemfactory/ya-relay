@@ -20,6 +20,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 1s
+    environment:
+      - RUST_LOG=${RUST_LOG}
 
   client-exposed:
     build:
@@ -34,6 +36,8 @@ services:
       - relay-network-1
     depends_on:
       - relay_server
+    environment:
+      - RUST_LOG=${RUST_LOG}
 
   client-hidden:
     build:
@@ -48,6 +52,8 @@ services:
       - relay-network-1
     depends_on:
       - relay_server
+    environment:
+      - RUST_LOG=${RUST_LOG}
 
 
 networks:
