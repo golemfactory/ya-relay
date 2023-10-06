@@ -227,6 +227,20 @@ async fn info(client_sender: web::Data<ClientWrap>) -> impl Responder {
     Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
 }
 
+#[get("/neighbours/{count}")]
+async fn neighbours(count: web::Path<u32>, client_sender: web::Data<ClientWrap>) -> impl Responder {
+    let msg = client_sender
+        .run_async(move |client: Client| async move {
+            let count = count.into_inner();
+            let neighbours = client.neighbours(count).await?;
+            Ok::<_, anyhow::Error>(neighbours)
+        })
+        .await
+        .map_err(ErrorInternalServerError)?
+        .map_err(ErrorInternalServerError)?;
+    Ok::<_, actix_web::Error>(HttpResponse::Ok().json(msg))
+}
+
 #[post("/transfer-file/{transport}/{node_id}")]
 async fn transfer_file(
     path: web::Path<(TransportType, NodeId)>,
@@ -502,6 +516,7 @@ async fn run() -> Result<()> {
             .service(sessions)
             .service(disconnect)
             .service(info)
+            .service(neighbours)
             .service(transfer_file)
     })
     .workers(4)
