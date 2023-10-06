@@ -432,7 +432,7 @@ impl Client {
             .await
             .map_err(|e| anyhow!("Error establishing session with relay: {e}"))?
             .raw
-            .neighbours(count, false)
+            .neighbours(count, true)
             .await?;
 
         let nodes = neighbours
