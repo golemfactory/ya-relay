@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use crate::server::Server;
+use super::server::Server;
 use ya_relay_proto::codec::PacketKind;
 
 impl Server {

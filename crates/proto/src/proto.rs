@@ -13,6 +13,7 @@ use crate::codec::DecodeError;
 
 use crate::proto::request::{Kind, Session};
 pub use ya_relay_util::Payload;
+pub use prost::Message;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 

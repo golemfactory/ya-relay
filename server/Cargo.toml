@@ -1,31 +1,21 @@
 [package]
 name = "ya-relay-server"
-version = "0.2.2"
+version = "0.3.0"
 authors = ["Golem Factory <contact@golem.network>"]
-edition = "2018"
+edition = "2021"
 description = "Node discovery server for forwarding data between Golem network ndoes"
 license = "LGPL-3.0"
 repository = "https://github.com/golemfactory/ya-relay"
 
-[lib]
-name = "ya_relay_server"
-path = "src/lib.rs"
-
-[[bin]]
-name = "ya-relay-server"
-path = "src/main.rs"
-
-
 [dependencies]
 ya-relay-proto = { workspace = true }
-# TODO: do not use "test-utils" when not needed
-ya-relay-core = { workspace = true, features = ["test-utils"] }
+ya-relay-core = { workspace = true }
 
 actix-rt = "2.7"
 anyhow = "1.0"
 chrono = "0.4"
 dotenv = "0.15"
-env_logger = { version = "0.10.0", default-features = false }
+env_logger = { version = "0.10.0", default-features = false, features = ["humantime"] }
 futures = "0.3"
 governor = "0.3.2"
 humantime = "2.1"
@@ -34,12 +24,17 @@ log = "0.4"
 metrics = "0.21"
 metrics-exporter-prometheus = { version = "0.12", features = ["http-listener"] }
 rand = { version = "0.8", features = ["std"] }
-structopt = "0.3"
+clap = { version = "4.4.6", features = ["derive", "env", "color"]}
+lazy_static = "1.4.0"
+dashmap = "4.0.2"
+
 thiserror = "1.0"
-tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt"] }
+tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt", "io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 url = "2.1"
 hex = "0.4.3"
+parking_lot = "0.12.1"
+socket2 = {  version = "0.5.3", features = ["all"] }
 
 [dev-dependencies]
 serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = [
@@ -49,4 +44,5 @@ tokio-stream = "0.1.8"
 test-case = "3.1"
 
 [features]
-test-utils = []
+test-utils = ["ya-relay-core/test-utils"]
+

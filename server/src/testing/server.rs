@@ -10,7 +10,7 @@ use tokio::time::Duration;
 use url::Url;
 use ya_relay_core::testing::TestServerWrapper;
 
-use crate::server::Server;
+use crate::legacy::server::Server;
 
 #[derive(Clone)]
 pub struct ServerWrapper {

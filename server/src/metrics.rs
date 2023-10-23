@@ -3,6 +3,10 @@ use chrono::{DateTime, Utc};
 use metrics::{describe_histogram, register_counter, register_histogram, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
+mod instance_count;
+
+pub use instance_count::*;
+
 pub fn register_metrics(addr: std::net::SocketAddr) {
     let builder = PrometheusBuilder::new()
         .with_http_listener(addr)
@@ -82,6 +86,8 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
         Unit::Microseconds,
         "Time between receiving packet and finishing processing (responding if applicable)."
     );
+
+    crate::udp_server::register_metrics();
 }
 
 pub fn elapsed_metric(since: DateTime<Utc>) -> f64 {

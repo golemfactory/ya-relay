@@ -6,7 +6,7 @@ use governor::RateLimiter;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
@@ -145,6 +145,17 @@ impl TryFrom<Vec<u8>> for SessionId {
         Ok(SessionId { id })
     }
 }
+
+impl TryFrom<&[u8]> for SessionId {
+    type Error = anyhow::Error;
+
+    fn try_from(session: &[u8]) -> Result<Self> {
+        let id: [u8; SESSION_ID_SIZE] = session.try_into()?;
+
+        Ok(SessionId { id })
+    }
+}
+
 
 impl TryFrom<&str> for SessionId {
     type Error = anyhow::Error;
