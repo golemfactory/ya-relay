@@ -71,7 +71,7 @@ impl SessionInitializer {
 
     /// Creates temporary session used only during initialization.
     /// Only one session will be created for one target Node address.
-    pub async fn temporary_session(&self, addr: &SocketAddr) -> Arc<RawSession> {
+    pub fn temporary_session(&self, addr: &SocketAddr) -> Arc<RawSession> {
         let sink = self.sink.clone();
         let mut state = self.state.lock().unwrap();
         match state.tmp_sessions.get(addr) {
@@ -85,7 +85,7 @@ impl SessionInitializer {
     }
 
     /// Different from `temporary_session` because it doesn't create new session.
-    pub async fn get_temporary_session(&self, addr: &SocketAddr) -> Option<Arc<RawSession>> {
+    pub fn get_temporary_session(&self, addr: &SocketAddr) -> Option<Arc<RawSession>> {
         let state = self.state.lock().unwrap();
         state.tmp_sessions.get(addr).cloned()
     }
@@ -113,7 +113,7 @@ impl SessionInitializer {
 
         guard.transition_outgoing(InitState::Initializing).await?;
 
-        let tmp_session = self.temporary_session(&addr).await;
+        let tmp_session = self.temporary_session(&addr);
 
         log::debug!("[{this_id}] initializing session with [{node_id}] ({addr})");
 
@@ -338,7 +338,7 @@ impl SessionInitializer {
             Err(_aborted) => Err(SessionError::Internal("Aborted".to_string())),
         })
         .or_else(move |result| async move {
-            let session = this1.temporary_session(&with).await;
+            let session = this1.temporary_session(&with);
             session.disconnect().await.ok();
 
             log::warn!(
@@ -401,7 +401,7 @@ impl SessionInitializer {
 
         guard.transition_incoming(InitState::Initializing).await?;
 
-        let tmp_session = self.temporary_session(&with).await;
+        let tmp_session = self.temporary_session(&with);
 
         let (packet, raw_challenge) =
             challenge::prepare_challenge_response(config.challenge_difficulty);

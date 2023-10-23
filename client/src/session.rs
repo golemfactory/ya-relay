@@ -354,10 +354,9 @@ impl SessionDeregistration for SessionLayer {
         entry.abort_initialization().await;
 
         let protocol = self.get_protocol().await?;
-        if let Some(session) = protocol.get_temporary_session(&remote).await {
+        if let Some(session) = protocol.get_temporary_session(&remote) {
             session.disconnect().await.ok();
             protocol.cleanup_initialization(&session.id).await;
-            return Ok(());
         }
         Ok(())
     }
@@ -1328,7 +1327,7 @@ impl Handler for SessionLayer {
     fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<RawSession>>> {
         async move {
             if let Ok(protocol) = self.get_protocol().await {
-                protocol.get_temporary_session(&from).await
+                protocol.get_temporary_session(&from)
             } else {
                 None
             }
