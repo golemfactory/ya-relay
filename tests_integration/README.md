@@ -23,8 +23,8 @@ Build and run
 
 ```bash
 # Dockerfiles take local release or debug binaries (if release is missing)
-cargo build
-cargo build -p ya-relay-client --example http_client
+cargo build --workspace --release
+cargo build -p ya-relay-client --example http_client --release
 # Switch to Python 3.10
 source .venv/bin/activate
 # Install poetry
