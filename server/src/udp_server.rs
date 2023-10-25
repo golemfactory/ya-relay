@@ -1,20 +1,20 @@
 //!
 //!
+use crate::metrics::InstanceCountGuard;
 use actix_rt::net::UdpSocket;
 use actix_rt::Arbiter;
 use futures::prelude::*;
+use metrics::{Key, Label, Unit};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use metrics::{Key, Label, Unit};
 use ya_relay_proto::codec::BytesMut;
-use crate::metrics::InstanceCountGuard;
 
-static KEY_UDP_SERVER_WORKERS : &str = "udp-server.workers";
-static KEY_UDP_SERVER_PACKETS : &str = "udp-server.packets";
+static KEY_UDP_SERVER_WORKERS: &str = "udp-server.workers";
+static KEY_UDP_SERVER_PACKETS: &str = "udp-server.packets";
 
 fn udp_socket_for(bind_addr: SocketAddr) -> io::Result<UdpSocket> {
     let protocol = Protocol::UDP;
@@ -46,7 +46,7 @@ pub struct UdpServerBuilder<F> {
 }
 
 pub struct UdpServer {
-    arbiters : Vec<Arbiter>
+    arbiters: Vec<Arbiter>,
 }
 
 impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
@@ -78,13 +78,13 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
             if bind_addr.port() == 0 {
                 let socket = udp_socket_for(bind_addr)?;
                 socket.local_addr()?
-            }
-            else {
+            } else {
                 bind_addr
             }
         };
 
-        let key_workers = Key::from_static_name(KEY_UDP_SERVER_WORKERS).with_extra_labels(vec![Label::new("addr", bind_addr.to_string())]);
+        let key_workers = Key::from_static_name(KEY_UDP_SERVER_WORKERS)
+            .with_extra_labels(vec![Label::new("addr", bind_addr.to_string())]);
         let g_workers = recorder.register_gauge(&key_workers);
         let mut arbiters = Vec::new();
         let (start_tx, mut start_rx) = tokio::sync::mpsc::channel(self.workers);
@@ -159,25 +159,19 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
             }
         }
 
-        Ok(UdpServer {
-            arbiters
-        })
+        Ok(UdpServer { arbiters })
     }
 }
 
-
 impl UdpServer {
-
     pub fn stop(self) {
         for arbiter in self.arbiters {
             arbiter.stop();
         }
     }
-
 }
 
-impl<Out : Worker, F: Fn(Rc<UdpSocket>) -> anyhow::Result<Out>> WorkerFactory for F
-{
+impl<Out: Worker, F: Fn(Rc<UdpSocket>) -> anyhow::Result<Out>> WorkerFactory for F {
     type Worker = Out;
 
     fn new_worker(&self, reply: Rc<UdpSocket>) -> anyhow::Result<Self::Worker> {
@@ -196,20 +190,23 @@ where
     }
 }
 
-
-pub fn worker_fn<OutputFut, F>(f : F) -> anyhow::Result<impl Worker>
-where OutputFut : Future<Output=anyhow::Result<()>>, F : Fn(BytesMut, SocketAddr) -> anyhow::Result<OutputFut>
+pub fn worker_fn<OutputFut, F>(f: F) -> anyhow::Result<impl Worker>
+where
+    OutputFut: Future<Output = anyhow::Result<()>>,
+    F: Fn(BytesMut, SocketAddr) -> anyhow::Result<OutputFut>,
 {
-    Ok(move |request, src| {
-        match f(request, src) {
-            Ok(fut) => fut.left_future(),
-            Err(e) => future::err(e).right_future()
-        }
+    Ok(move |request, src| match f(request, src) {
+        Ok(fut) => fut.left_future(),
+        Err(e) => future::err(e).right_future(),
     })
 }
 
 pub fn register_metrics() {
     let recorder = metrics::recorder();
 
-    recorder.describe_gauge(KEY_UDP_SERVER_WORKERS.into(), Some(Unit::Count), "number of server workers".into());
+    recorder.describe_gauge(
+        KEY_UDP_SERVER_WORKERS.into(),
+        Some(Unit::Count),
+        "number of server workers".into(),
+    );
 }

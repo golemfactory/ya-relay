@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 
-use metrics::{describe_histogram, register_counter, register_histogram, Unit};
+use metrics::{describe_gauge, describe_histogram, register_counter, register_histogram, Unit};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 mod instance_count;
@@ -85,6 +85,12 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
         "ya-relay.packet.response-time",
         Unit::Microseconds,
         "Time between receiving packet and finishing processing (responding if applicable)."
+    );
+
+    describe_gauge!(
+        "ya-relay.ipcheck.addrs",
+        Unit::Count,
+        "Number of Socket Addresses in Queue"
     );
 
     crate::udp_server::register_metrics();

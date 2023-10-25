@@ -1,27 +1,26 @@
-use std::collections::HashMap;
-use std::sync::Arc;
 use ::metrics::Counter;
 use parking_lot::{RwLock, RwLockUpgradableReadGuard};
+use std::collections::HashMap;
+use std::sync::Arc;
 use ya_relay_core::NodeId;
 
 pub type SlotId = u32;
 
 struct Inner {
-    nodes : HashMap<NodeId, SlotId>,
-    slots : Vec<NodeId>
+    nodes: HashMap<NodeId, SlotId>,
+    slots: Vec<NodeId>,
 }
 
 pub struct SlotManager {
-    inner : RwLock<Inner>,
-    created_counter : Counter
+    inner: RwLock<Inner>,
+    created_counter: Counter,
 }
 
 impl SlotManager {
-
     pub fn new() -> Arc<Self> {
         let mut inner = Inner {
             nodes: Default::default(),
-            slots: Default::default()
+            slots: Default::default(),
         };
 
         let node_id = Default::default();
@@ -30,12 +29,12 @@ impl SlotManager {
 
         Arc::new(Self {
             inner: RwLock::new(inner),
-            created_counter: metrics::created_counter()
+            created_counter: metrics::created_counter(),
         })
     }
 
-    pub fn slot(&self, node_id : NodeId) -> SlotId {
-        let g=  self.inner.upgradable_read();
+    pub fn slot(&self, node_id: NodeId) -> SlotId {
+        let g = self.inner.upgradable_read();
         if let Some(slot_id) = g.nodes.get(&node_id) {
             return *slot_id;
         }
@@ -49,23 +48,26 @@ impl SlotManager {
         slot_id
     }
 
+    pub fn node(&self, slot: SlotId) -> Option<NodeId> {
+        let slot = slot as usize;
+        self.inner.read().slots.get(slot).cloned()
+    }
+
     pub fn len(&self) -> usize {
         self.inner.read().slots.len()
     }
 }
 
-
 mod metrics {
-    use metrics::{Counter, Key, recorder};
+    use metrics::{recorder, Counter, Key};
 
-    const SLOT_CREATED : &str = "ya-relay.slot.created";
+    const SLOT_CREATED: &str = "ya-relay.slot.created";
 
-    static KEY_SLOT_CREATED : Key = Key::from_static_name(SLOT_CREATED);
+    static KEY_SLOT_CREATED: Key = Key::from_static_name(SLOT_CREATED);
 
     pub fn created_counter() -> Counter {
         recorder().register_counter(&KEY_SLOT_CREATED)
     }
-
 }
 
 #[cfg(test)]
@@ -85,11 +87,14 @@ mod tests {
         let m = SlotManager::new();
         let mut rng = thread_rng();
 
-        let mut slots = (1..10).into_iter().map(|_| {
-            let node_id : NodeId= rng.gen::<[u8;20]>().into();
+        let mut slots = (1..10)
+            .into_iter()
+            .map(|_| {
+                let node_id: NodeId = rng.gen::<[u8; 20]>().into();
 
-            (node_id, m.slot(node_id))
-        }).collect::<Vec<_>>();
+                (node_id, m.slot(node_id))
+            })
+            .collect::<Vec<_>>();
 
         assert_eq!(m.slot(NodeId::default()), 0);
         for _ in 0..100 {
@@ -100,6 +105,4 @@ mod tests {
             assert_eq!(m.len(), 10);
         }
     }
-
-
 }

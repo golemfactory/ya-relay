@@ -1,18 +1,14 @@
 use metrics::Gauge;
 
 pub struct InstanceCountGuard {
-    inner : Gauge
+    inner: Gauge,
 }
 
 impl InstanceCountGuard {
-
-    pub fn new(gauge : Gauge) -> Self {
+    pub fn new(gauge: Gauge) -> Self {
         gauge.increment(1f64);
-        Self {
-            inner: gauge
-        }
+        Self { inner: gauge }
     }
-
 }
 
 impl Drop for InstanceCountGuard {

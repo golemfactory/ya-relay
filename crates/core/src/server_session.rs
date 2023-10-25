@@ -29,6 +29,14 @@ pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],
 }
 
+impl SessionId {
+
+    pub fn to_array(&self) -> [u8; SESSION_ID_SIZE] {
+        self.id
+    }
+
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub protocol: proto::Protocol,

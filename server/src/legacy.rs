@@ -1,2 +1,2 @@
-pub mod server;
 mod packet;
+pub mod server;

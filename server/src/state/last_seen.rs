@@ -1,25 +1,23 @@
+use lazy_static::lazy_static;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
-use lazy_static::lazy_static;
-use tokio::time::Instant;
+use std::time::{Duration, Instant};
 
 lazy_static! {
-    static ref SERVER_START : Instant = Instant::now();
+    static ref SERVER_START: Instant = Instant::now();
 }
 
 pub struct LastSeen {
-    ts : AtomicU32
+    ts: AtomicU32,
 }
 
 pub struct Clock {
-    server_start : &'static Instant,
-    now : Instant,
-    ts : u32
+    server_start: &'static Instant,
+    now: Instant,
+    ts: u32,
 }
 
 impl Clock {
-
     pub fn now() -> Self {
         let server_start = SERVER_START.deref();
         let now = Instant::now();
@@ -28,7 +26,9 @@ impl Clock {
         let ts = (now - *server_start).as_secs() as u32;
 
         Self {
-            server_start, now, ts
+            server_start,
+            now,
+            ts,
         }
     }
 
@@ -41,24 +41,21 @@ impl Clock {
         LastSeen { ts }
     }
 
-    pub fn touch(&self, last_seen : &LastSeen) {
+    pub fn touch(&self, last_seen: &LastSeen) {
         last_seen.ts.store(self.ts, Ordering::Release);
     }
 
-    pub fn age(&self, last_seen : &LastSeen) -> Duration {
+    pub fn age(&self, last_seen: &LastSeen) -> Duration {
         let ts = last_seen.ts.load(Ordering::Acquire);
         let diff = self.ts.checked_sub(ts).unwrap_or_default();
         Duration::from_secs(diff.into())
     }
-
 }
 
 impl LastSeen {
     pub fn now() -> LastSeen {
         let ts = SERVER_START.elapsed().as_secs() as u32;
-        LastSeen {
-            ts: ts.into()
-        }
+        LastSeen { ts: ts.into() }
     }
 
     pub fn touch(&self) {

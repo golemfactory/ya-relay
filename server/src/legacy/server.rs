@@ -31,7 +31,7 @@ use ya_relay_proto::proto;
 use ya_relay_proto::proto::control::disconnected::By;
 use ya_relay_proto::proto::control::Disconnected;
 use ya_relay_proto::proto::request::Kind;
-use ya_relay_proto::proto::{Request, RequestId, StatusCode};
+use ya_relay_proto::proto::{RequestId, StatusCode};
 
 #[derive(Clone)]
 pub struct Server {
@@ -845,8 +845,8 @@ impl Server {
     async fn check_session_timeouts(&self) {
         let mut server = self.state.write().await;
         server.nodes.check_timeouts(
-            self.config.session_timeout,
-            self.config.session_purge_timeout,
+            chrono::Duration::from_std(self.config.session_timeout).unwrap(),
+            chrono::Duration::from_std(self.config.session_purge_timeout).unwrap(),
         );
     }
 
