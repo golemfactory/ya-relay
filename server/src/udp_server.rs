@@ -1,30 +1,22 @@
 //!
 //!
-use crate::metrics::InstanceCountGuard;
-use actix_rt::net::UdpSocket;
-use actix_rt::Arbiter;
-use futures::prelude::*;
-use metrics::{Key, Label, Unit};
-use socket2::{Domain, Protocol, Socket, Type};
 use std::future::Future;
-use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use ya_relay_proto::codec::BytesMut;
+
+use actix_rt::Arbiter;
+use bytes::BytesMut;
+use futures::prelude::*;
+use metrics::{Key, Label, Unit};
+
+pub use socket::{PacketType, UdpSocket, UdpSocketConfig};
+
+use crate::metrics::InstanceCountGuard;
+
+mod socket;
 
 static KEY_UDP_SERVER_WORKERS: &str = "udp-server.workers";
-static KEY_UDP_SERVER_PACKETS: &str = "udp-server.packets";
-
-fn udp_socket_for(bind_addr: SocketAddr) -> io::Result<UdpSocket> {
-    let protocol = Protocol::UDP;
-    let socket = Socket::new(Domain::for_address(bind_addr), Type::DGRAM, Some(protocol))?;
-    socket.set_reuse_address(true)?;
-    socket.set_reuse_port(true)?;
-    socket.set_nonblocking(true)?;
-    socket.bind(&bind_addr.into())?;
-    Ok(UdpSocket::from_std(std::net::UdpSocket::from(socket))?)
-}
 
 pub trait WorkerFactory {
     type Worker: Worker;
@@ -35,7 +27,7 @@ pub trait WorkerFactory {
 pub trait Worker {
     type Fut: Future<Output = anyhow::Result<()>>;
 
-    fn handle(&self, request: BytesMut, src: SocketAddr) -> Self::Fut;
+    fn handle(&self, request: BytesMut, src: SocketAddr, pt: PacketType) -> Self::Fut;
 }
 
 pub struct UdpServerBuilder<F> {
@@ -46,6 +38,7 @@ pub struct UdpServerBuilder<F> {
 }
 
 pub struct UdpServer {
+    bind_addr: SocketAddr,
     arbiters: Vec<Arbiter>,
 }
 
@@ -76,7 +69,9 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
         let recorder = metrics::recorder();
         let bind_addr = {
             if bind_addr.port() == 0 {
-                let socket = udp_socket_for(bind_addr)?;
+                let socket = socket::UdpSocketConfig::new()
+                    .multi_bind()
+                    .bind(bind_addr)?;
                 socket.local_addr()?
             } else {
                 bind_addr
@@ -91,7 +86,11 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
 
         for worker_idx in 0..self.workers {
             let g_workers = g_workers.clone();
-            let socket = udp_socket_for(bind_addr)?;
+            let socket = socket::UdpSocketConfig::new()
+                .multi_bind()
+                .min_recv_buffer(4 * 1024 * 1024)
+                .recv_err()
+                .bind(bind_addr)?;
             let factory = factory.clone();
             let start_tx = start_tx.clone();
 
@@ -104,6 +103,7 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
                         .unwrap()
                 })
             };
+
             let _h = arbiter.spawn(async move {
                 let h = tokio::task::spawn_local(async move {
                     let socket = Rc::new(socket);
@@ -124,10 +124,11 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
                     loop {
                         let g = ws.clone().acquire_owned().await?;
                         buf.reserve(max_packet_size);
-                        let (len, src_addr) = socket.recv_buf_from(&mut buf).await?;
+                        let (src_addr, pt) = socket.recv_any(&mut buf).await?;
+                        /*let src_addr= socket.recv_from(&mut buf).await?;
+                        let pt = PacketType::Data;*/
                         let packet = buf.split();
-                        debug_assert_eq!(len, packet.len());
-                        let task = worker.handle(packet, src_addr);
+                        let task = worker.handle(packet, src_addr, pt);
                         tokio::task::spawn_local(async move {
                             if let Err(e) = task.await {
                                 log::error!("[{worker_idx}][{src_addr}] invalid request: {:?}", e);
@@ -135,7 +136,6 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
                             drop(g);
                         });
                     }
-                    //Ok::<(), anyhow::Error>(())
                 });
 
                 let err = match h.await {
@@ -144,8 +144,6 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
                     Ok(Ok(())) => anyhow::anyhow!("stop"),
                 };
                 log::error!("worker {} crashed: {:?}", worker_idx, err);
-
-                ()
             });
             arbiters.push(arbiter);
         }
@@ -159,7 +157,10 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
             }
         }
 
-        Ok(UdpServer { arbiters })
+        Ok(UdpServer {
+            arbiters,
+            bind_addr,
+        })
     }
 }
 
@@ -168,6 +169,17 @@ impl UdpServer {
         for arbiter in self.arbiters {
             arbiter.stop();
         }
+    }
+
+    #[cfg(feature = "test-utils")]
+    pub(crate) fn stop_internal(&self) {
+        for arbiter in &self.arbiters {
+            arbiter.stop();
+        }
+    }
+
+    pub fn bind_addr(&self) -> SocketAddr {
+        self.bind_addr
     }
 }
 
@@ -179,14 +191,16 @@ impl<Out: Worker, F: Fn(Rc<UdpSocket>) -> anyhow::Result<Out>> WorkerFactory for
     }
 }
 
-impl<Output, F: Fn(BytesMut, SocketAddr) -> Output> Worker for F
+struct FnWrap<F>(F);
+
+impl<Output, F: Fn(BytesMut, SocketAddr, PacketType) -> Output> Worker for FnWrap<F>
 where
     F::Output: Future<Output = anyhow::Result<()>>,
 {
     type Fut = F::Output;
 
-    fn handle(&self, request: BytesMut, src: SocketAddr) -> Self::Fut {
-        self(request, src)
+    fn handle(&self, request: BytesMut, src: SocketAddr, pt: PacketType) -> Self::Fut {
+        self.0(request, src, pt)
     }
 }
 
@@ -195,10 +209,28 @@ where
     OutputFut: Future<Output = anyhow::Result<()>>,
     F: Fn(BytesMut, SocketAddr) -> anyhow::Result<OutputFut>,
 {
-    Ok(move |request, src| match f(request, src) {
+    Ok(FnWrap(move |request, src, pt| {
+        if matches!(pt, PacketType::Data) {
+            match f(request, src) {
+                Ok(fut) => fut.left_future(),
+                Err(e) => future::ready(Err(e)).right_future(),
+            }
+        } else {
+            log::debug!("[{:?}] got {:?}", src, pt);
+            future::ready(Ok(())).right_future()
+        }
+    }))
+}
+
+pub fn worker_err_fn<OutputFut, F>(f: F) -> anyhow::Result<impl Worker>
+where
+    OutputFut: Future<Output = anyhow::Result<()>>,
+    F: Fn(PacketType, BytesMut, SocketAddr) -> anyhow::Result<OutputFut>,
+{
+    Ok(FnWrap(move |request, src, pt| match f(pt, request, src) {
         Ok(fut) => fut.left_future(),
-        Err(e) => future::err(e).right_future(),
-    })
+        Err(e) => future::ready(Err(e)).right_future(),
+    }))
 }
 
 pub fn register_metrics() {

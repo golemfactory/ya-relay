@@ -1,23 +1,21 @@
 use crate::server::CompletionHandler;
-use crate::state::slot_manager::SlotManager;
+
 use crate::state::Clock;
-use crate::{AddrStatus, SessionManager, SessionState};
+use crate::udp_server::UdpSocket;
+use crate::{SessionManager};
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{request, response, Identity, Packet, StatusCode, control, Message};
+use ya_relay_proto::proto::{control, request, response, Message, Packet, StatusCode};
 
 mod metric {
-    use crate::server::DoneAck;
-    use crate::state::Clock;
-    use metrics::{recorder, Counter, Histogram, Key};
+    use metrics::{recorder, Counter, Key};
 
-    const KEY_START: Key = Key::from_static_name("ya-relay.packet.reverse-connection");
-    const KEY_ERROR: Key = Key::from_static_name("ya-relay.packet.reverse-connection.error");
-    const KEY_DONE: Key = Key::from_static_name("ya-relay.packet.reverse-connection.done");
+    static KEY_START: Key = Key::from_static_name("ya-relay.packet.reverse-connection");
+    static KEY_ERROR: Key = Key::from_static_name("ya-relay.packet.reverse-connection.error");
+    static KEY_DONE: Key = Key::from_static_name("ya-relay.packet.reverse-connection.done");
 
     #[derive(Clone)]
     pub struct RcMetric {
@@ -33,11 +31,7 @@ mod metric {
             let done = recorder.register_counter(&KEY_DONE);
             let error = recorder.register_counter(&KEY_ERROR);
 
-            Self {
-                start,
-                done,
-                error,
-            }
+            Self { start, done, error }
         }
     }
 }
@@ -46,11 +40,11 @@ pub struct RcHandler {
     session_manager: Arc<SessionManager>,
     metrics: metric::RcMetric,
     ack: CompletionHandler,
-    socket : Rc<UdpSocket>
+    socket: Rc<UdpSocket>,
 }
 
 impl RcHandler {
-    pub fn new(session_manager: &Arc<SessionManager>, socket : &Rc<UdpSocket>) -> Self {
+    pub fn new(session_manager: &Arc<SessionManager>, socket: &Rc<UdpSocket>) -> Self {
         let session_manager = Arc::clone(session_manager);
         let metrics = metric::RcMetric::default();
         let ack = super::counter_ack(&metrics.done, &metrics.error);
@@ -59,7 +53,7 @@ impl RcHandler {
             session_manager,
             metrics,
             ack,
-            socket
+            socket,
         }
     }
 
@@ -72,6 +66,7 @@ impl RcHandler {
         param: &request::ReverseConnection,
     ) -> Option<(CompletionHandler, Packet)> {
         self.metrics.start.increment(1);
+        log::debug!("1");
         let session_ref = match self.session_manager.session(&session_id) {
             Some(session_ref) if session_ref.peer == src => session_ref,
             _ => {
@@ -87,6 +82,7 @@ impl RcHandler {
             }
         };
 
+        log::debug!("2");
         let request_node_id: NodeId = match param.node_id.as_slice().try_into() {
             Ok(node_id) => node_id,
             Err(_) => {
@@ -103,13 +99,12 @@ impl RcHandler {
         };
 
         clock.touch(&session_ref.ts);
-
-        let g = session_ref.state.lock();
-        let (endpoints, node_id) = match &*g {
-            SessionState::Est { node_id, addr_status: s @ AddrStatus::Valid, ..} => (s.endpoints(session_ref.peer), *node_id),
-            _ => {
+        log::debug!("3");
+        let node_id = session_ref.node_id;
+        let endpoints = match session_ref.endpoint() {
+            Some(e) => vec![e],
+            None => {
                 log::debug!("[{src}] rejecting reverse connection. reason: no public ip");
-
                 return Some((
                     self.ack.clone(),
                     Packet::response(
@@ -118,37 +113,48 @@ impl RcHandler {
                         StatusCode::BadRequest,
                         response::ReverseConnection::default(),
                     ),
+                ));
+            }
+        };
+
+        let (dst_addr, dst_session_id) = match self.session_manager.node_session(request_node_id) {
+            Some(it) => (it.peer, it.session_id),
+            None => {
+                return Some((
+                    self.ack.clone(),
+                    Packet::response(
+                        request_id,
+                        session_id.to_vec(),
+                        StatusCode::NotFound,
+                        response::ReverseConnection::default(),
+                    ),
                 ))
             }
         };
 
-        drop(g);
-
-        let (dst_addr, dst_session_id) =
-            match self.session_manager.node_session(request_node_id) {
-                Some(it) => (it.peer, it.session_id),
-                None => {
-                    return Some((
-                        self.ack.clone(),
-                        Packet::response(
-                            request_id,
-                            session_id.to_vec(),
-                            StatusCode::NotFound,
-                            response::ReverseConnection::default(),
-                        ),
-                    ))
-                }
-            };
-
         let socket = self.socket.clone();
-        let bytes = Packet::control(dst_session_id.to_vec(), control::ReverseConnection { node_id: node_id.into_array().to_vec(), endpoints }).encode_to_vec();
-        let _ = tokio::task::spawn_local(async move {
+        let bytes = Packet::control(
+            dst_session_id.to_vec(),
+            control::ReverseConnection {
+                node_id: node_id.into_array().to_vec(),
+                endpoints,
+            },
+        )
+        .encode_to_vec();
+        let h = tokio::task::spawn_local(async move {
+            log::debug!("[{src} sending reverse connection to {dst_addr}");
             socket.send_to(&bytes, dst_addr).await.ok();
         });
+        drop(h);
 
         Some((
             self.ack.clone(),
-            Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, response::ReverseConnection {}),
+            Packet::response(
+                request_id,
+                session_id.to_vec(),
+                StatusCode::Ok,
+                response::ReverseConnection {},
+            ),
         ))
     }
 }

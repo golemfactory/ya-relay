@@ -20,7 +20,7 @@ futures = "0.3"
 governor = "0.3.2"
 humantime = "2.1"
 itertools = "0.10.1"
-log = {  version = "0.4", features = ["release_max_level_info"] }
+log = {  version = "0.4", default-features = false }
 metrics = "0.21"
 metrics-exporter-prometheus = { version = "0.12", features = ["http-listener"] }
 rand = { version = "0.8", features = ["std"] }
@@ -34,18 +34,19 @@ tokio-util = { version = "0.7", features = ["codec"] }
 url = "2.1"
 hex = "0.4.3"
 parking_lot = "0.12.1"
-socket2 = {  version = "0.5.3", features = ["all"] }
 bytes = "1.5.0"
 quick_cache = "0.4.0"
+libc = "0.2"
+tiny-keccak = "2"
 
 [dev-dependencies]
-serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = [
-    "actix-rt2",
-] }
+tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-stream = "0.1.8"
 test-case = "3.1"
 ethsign = "0.8.0"
+test-log = "0.2.13"
 
 [features]
 test-utils = ["ya-relay-core/test-utils"]
+small = ["log/max_level_info"]
 

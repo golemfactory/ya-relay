@@ -30,11 +30,9 @@ pub struct SessionId {
 }
 
 impl SessionId {
-
     pub fn to_array(&self) -> [u8; SESSION_ID_SIZE] {
         self.id
     }
-
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -164,7 +162,6 @@ impl TryFrom<&[u8]> for SessionId {
     }
 }
 
-
 impl TryFrom<&str> for SessionId {
     type Error = anyhow::Error;
 
@@ -223,8 +220,10 @@ impl TryFrom<proto::Endpoint> for Endpoint {
         let address: SocketAddr = address.parse()?;
 
         Ok(Endpoint {
-            protocol: proto::Protocol::from_i32(endpoint.protocol)
-                .ok_or_else(|| anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
+            protocol: endpoint
+                .protocol
+                .try_into()
+                .map_err(|_| anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
             address,
         })
     }

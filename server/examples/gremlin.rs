@@ -1,8 +1,8 @@
 use anyhow::bail;
-use clap::{Command, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use futures::prelude::*;
 use rand::Rng;
-use std::io;
+
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::time::Duration;
@@ -14,7 +14,7 @@ use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider, Publ
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::utils::ResultExt;
 use ya_relay_proto::codec::BytesMut;
-use ya_relay_proto::proto::request::Session;
+
 use ya_relay_proto::proto::{packet, request, response, Message, Packet, Request, Response};
 
 #[derive(Parser)]
@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
                 GremlinCmd::FloodRegister {} => {
                     let mut request_id = 1;
                     let mut buffer = BytesMut::new();
-                    let (keys, signers) = gen_crypto(1).await?;
+                    let (_keys, signers) = gen_crypto(1).await?;
                     loop {
                         if !args.delay.is_zero() {
                             tokio::time::sleep(args.delay).await;
@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
 
                             buffer.reserve(64000);
 
-                            let (s, src) = socket.recv_buf_from(&mut buffer).await?;
+                            let (_s, _src) = socket.recv_buf_from(&mut buffer).await?;
                             log::info!("{}:{} challenge response", worker, request_id);
                             let packet_bytes = buffer.split();
                             let response_packet = Packet::decode(packet_bytes)?;
@@ -126,9 +126,9 @@ async fn main() -> anyhow::Result<()> {
                                             kind:
                                                 Some(response::Kind::Session(response::Session {
                                                     challenge_req: Some(challenge),
-                                                    challenge_resp,
-                                                    supported_encryptions,
-                                                    identities,
+                                                    challenge_resp: _,
+                                                    supported_encryptions: _,
+                                                    identities: _,
                                                 })),
                                         })),
                                 } => {
@@ -171,7 +171,7 @@ async fn main() -> anyhow::Result<()> {
                             drop(solve_packet);
 
                             loop {
-                                let (s, src) = socket.recv_buf_from(&mut buffer).await?;
+                                let (_s, _src) = socket.recv_buf_from(&mut buffer).await?;
                                 let packet_bytes = buffer.split();
                                 let response_packet = Packet::decode(packet_bytes)?;
                                 match response_packet {
@@ -179,8 +179,8 @@ async fn main() -> anyhow::Result<()> {
                                         session_id,
                                         kind:
                                             Some(packet::Kind::Response(Response {
-                                                request_id,
-                                                code,
+                                                request_id: _,
+                                                code: _,
                                                 kind:
                                                     Some(response::Kind::Session(response::Session {
                                                         challenge_req: None,
@@ -220,7 +220,7 @@ async fn main() -> anyhow::Result<()> {
                                 .send_to(&register_packet.encode_to_vec(), args.target)
                                 .await?;
                             log::info!("{}:{} register send", worker, request_id);
-                            let (s, src) = socket.recv_buf_from(&mut buffer).await?;
+                            let (_s, _src) = socket.recv_buf_from(&mut buffer).await?;
                             let packet_bytes = buffer.split();
                             let response_packet = Packet::decode(packet_bytes)?;
                             log::info!(
@@ -232,7 +232,7 @@ async fn main() -> anyhow::Result<()> {
                             Ok(())
                         })
                         .await
-                        .on_error(|e| log::error!("{} timeout", worker));
+                        .on_error(|_e| log::error!("{} timeout", worker));
                     }
                 }
             }

@@ -14,6 +14,5 @@ impl InstanceCountGuard {
 impl Drop for InstanceCountGuard {
     fn drop(&mut self) {
         self.inner.decrement(1f64);
-        log::info!("stop");
     }
 }

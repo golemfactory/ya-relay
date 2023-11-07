@@ -20,7 +20,7 @@ async fn main() -> anyhow::Result<()> {
     register_metrics(args.metrics_scrape_addr);
 
     eprintln!("log level = {}", log::max_level());
-    let server = ya_relay_server::run(&args).await?;
+    let _server = ya_relay_server::run(&args).await?;
     log::info!("started");
     futures::future::pending::<()>().await;
     Ok(())

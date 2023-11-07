@@ -34,7 +34,7 @@ fn tuples_vec_to_map<NODE: Eq + PartialEq + Hash + Clone>(
 
 #[test_case(Node::WithAlias ; "shutdowning node with alias")]
 #[test_case(Node::WithoutAlias; "shutdowning node without alias")]
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_closed_session(node_to_shutdown: Node) -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 

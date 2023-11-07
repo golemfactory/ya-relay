@@ -1,3 +1,4 @@
+use prost_build::Config;
 use std::env;
 
 fn main() {
@@ -9,5 +10,9 @@ fn main() {
         );
     }
     println!("cargo:rerun-if-changed=protobuf/ya_relay.proto");
-    prost_build::compile_protos(&["protobuf/ya_relay.proto"], &["protobuf/"]).unwrap();
+    Config::new()
+        .protoc_arg("--experimental_allow_proto3_optional")
+        //.bytes(["session_id"])
+        .compile_protos(&["protobuf/ya_relay.proto"], &["protobuf/"])
+        .unwrap();
 }

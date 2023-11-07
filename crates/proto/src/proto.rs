@@ -12,8 +12,8 @@ use prost::encoding::{decode_key, encode_key, WireType};
 use crate::codec::DecodeError;
 
 use crate::proto::request::{Kind, Session};
-pub use ya_relay_util::Payload;
 pub use prost::Message;
+pub use ya_relay_util::Payload;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
 

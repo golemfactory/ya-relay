@@ -1,31 +1,28 @@
-use crate::server::{CompletionHandler, DoneAck};
+use crate::server::CompletionHandler;
 use crate::state::slot_manager::{SlotId, SlotManager};
 use crate::state::Clock;
-use crate::{SessionManager, SessionRef, SessionState};
+use crate::SessionManager;
 use bytes::BytesMut;
-use itertools::Itertools;
+
+use crate::udp_server::UdpSocket;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
-use tokio::net::UdpSocket;
 use ya_relay_core::server_session::SessionId;
-use ya_relay_proto::proto::packet::Kind::Control;
-use ya_relay_proto::proto::response::Neighbours;
-use ya_relay_proto::proto::{
-    control, packet, request, response, Forward, Identity, Packet, Payload, Response, StatusCode,
-};
+
+use ya_relay_proto::proto::{control, Forward, Packet, Payload};
 
 mod metric {
     use crate::server::DoneAck;
     use crate::state::Clock;
-    use metrics::{recorder, Counter, Histogram, Key};
+    use metrics::{recorder, Counter, Key};
 
-    const KEY_START: Key = Key::from_static_name("ya-relay.packet.forward");
-    const KEY_ERROR: Key = Key::from_static_name("ya-relay.packet.forward.error");
-    const KEY_DONE: Key = Key::from_static_name("ya-relay.packet.forward.done");
+    static START: Key = Key::from_static_name("ya-relay.packet.forward");
+    static ERROR: Key = Key::from_static_name("ya-relay.packet.forward.error");
+    static DONE: Key = Key::from_static_name("ya-relay.packet.forward.done");
 
-    const IN_SIZE: Key = Key::from_static_name("ya-relay.packet.forward.incoming.size");
-    const OUT_SIZE: Key = Key::from_static_name("ya-relay.packet.forward.outgoing.size");
+    static IN_SIZE: Key = Key::from_static_name("ya-relay.packet.forward.incoming.size");
+    static OUT_SIZE: Key = Key::from_static_name("ya-relay.packet.forward.outgoing.size");
 
     #[derive(Clone)]
     pub struct ForwardMetric {
@@ -39,9 +36,9 @@ mod metric {
     impl Default for ForwardMetric {
         fn default() -> Self {
             let recorder = recorder();
-            let start = recorder.register_counter(&KEY_START);
-            let done = recorder.register_counter(&KEY_DONE);
-            let error = recorder.register_counter(&KEY_ERROR);
+            let start = recorder.register_counter(&START);
+            let done = recorder.register_counter(&DONE);
+            let error = recorder.register_counter(&ERROR);
             let in_bytes = recorder.register_counter(&IN_SIZE);
             let out_bytes = recorder.register_counter(&OUT_SIZE);
             Self {
@@ -55,11 +52,11 @@ mod metric {
     }
 
     impl DoneAck for ForwardMetric {
-        fn done(&self, clock: &Clock) {
+        fn done(&self, _clock: &Clock) {
             self.done.increment(1);
         }
 
-        fn error(&self, clock: &Clock) {
+        fn error(&self, _clock: &Clock) {
             self.error.increment(1);
         }
     }
@@ -111,7 +108,7 @@ impl ForwardHandler {
                 if session_ref.peer != src {
                     return None;
                 }
-                let src_node_id = session_ref.node_id()?;
+                let src_node_id = session_ref.node_id;
                 let src_slot = self.slot_manager.slot(src_node_id);
                 clock.touch(&session_ref.ts);
 

@@ -1,25 +1,29 @@
-use crate::server::{CompletionHandler};
-use crate::state::slot_manager::SlotManager;
-use crate::state::Clock;
-use crate::{SessionManager, SessionState};
-use itertools::Itertools;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
+
+use itertools::Itertools;
+
 use ya_relay_core::server_session::SessionId;
 use ya_relay_proto::proto::response::Neighbours;
-use ya_relay_proto::proto::{packet, request, response, Identity, Packet, Response, StatusCode};
+use ya_relay_proto::proto::{request, Packet, StatusCode};
+
+use crate::server::CompletionHandler;
+use crate::state::slot_manager::SlotManager;
+use crate::state::Clock;
+use crate::SessionManager;
 
 mod metric {
-    use crate::server::DoneAck;
-    use crate::state::Clock;
     use metrics::{recorder, Counter, Histogram, Key};
 
-    const KEY_START: Key = Key::from_static_name("ya-relay.packet.neighborhood");
-    const KEY_ERROR: Key = Key::from_static_name("ya-relay.packet.neighborhood.error");
-    const KEY_DONE: Key = Key::from_static_name("ya-relay.packet.neighborhood.done");
+    use crate::server::DoneAck;
+    use crate::state::Clock;
 
-    const PROCESSING_TIME: Key =
+    static KEY_START: Key = Key::from_static_name("ya-relay.packet.neighborhood");
+    static KEY_ERROR: Key = Key::from_static_name("ya-relay.packet.neighborhood.error");
+    static KEY_DONE: Key = Key::from_static_name("ya-relay.packet.neighborhood.done");
+
+    static PROCESSING_TIME: Key =
         Key::from_static_name("ya-relay.packet.neighborhood.processing-time");
 
     #[derive(Clone)]
@@ -81,13 +85,14 @@ impl NeighboursHandler {
     }
     pub fn handle(
         &self,
-        clock: &Clock,
+        _clock: &Clock,
         src: SocketAddr,
         request_id: u64,
         session_id: SessionId,
         param: &request::Neighbours,
     ) -> Option<(CompletionHandler, Packet)> {
         self.metrics.start.increment(1);
+        let decoder = super::state_decoder::decoder(&self.session_manager, &self.slot_manager);
 
         let session_ref = match self.session_manager.session(&session_id) {
             Some(session_ref) if session_ref.peer == src => session_ref,
@@ -103,52 +108,23 @@ impl NeighboursHandler {
                 ))
             }
         };
-        let node_id = match &*session_ref.state.lock() {
-            SessionState::Est { node_id, .. } => *node_id,
-            _ => {
-                return Some((
-                    self.ack.clone(),
-                    Packet::response(
-                        request_id,
-                        session_id.to_vec(),
-                        StatusCode::Unauthorized,
-                        Neighbours::default(),
-                    ),
-                ))
-            }
-        };
-        debug_assert!(!session_ref.state.is_locked());
+        let node_id = session_ref.node_id;
+
         let neighbours = self
             .session_manager
             .neighbours(node_id, param.count as usize);
 
         let nodes = neighbours
             .into_iter()
-            .filter_map(|session_ref| {
-                let (node_id, identities) = match &*session_ref.state.lock() {
-                    SessionState::Est { node_id, keys, .. } => {
-                        (*node_id, keys.into_iter().map(Into::into).collect())
-                    }
-                    _ => return None,
-                };
-                Some(response::Node {
-                    identities,
-                    endpoints: vec![],
-                    slot: self.slot_manager.slot(node_id),
-                    supported_encryptions: vec![],
-                    ..Default::default()
-                })
-            })
+            .map(|session_ref| decoder.to_node_info(&session_ref))
             .collect_vec();
 
-        let response = Packet {
-            session_id: session_id.to_vec(),
-            kind: Some(packet::Kind::Response(Response {
-                code: StatusCode::Ok.into(),
-                request_id,
-                kind: Some(response::Kind::Neighbours(Neighbours { nodes })),
-            })),
-        };
+        let response = Packet::response(
+            request_id,
+            session_id.to_vec(),
+            StatusCode::Ok,
+            Neighbours { nodes },
+        );
 
         Some((self.ack.clone(), response))
     }

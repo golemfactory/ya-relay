@@ -3,39 +3,47 @@ use crate::state::last_seen::{Clock, LastSeen};
 use crate::state::session_manager::metrics::SessionManagerMetrics;
 use dashmap::DashMap;
 use parking_lot::Mutex;
-use std::cmp::{Ordering, Reverse};
+use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
-use std::hint::black_box;
-use std::iter;
 use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use std::{cmp, iter, thread};
 use tokio::time;
-use ya_relay_core::challenge::RawChallenge;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{Endpoint, Protocol};
+use ya_relay_proto::proto::Endpoint;
+use ya_relay_proto::proto::Protocol::Udp;
+
+#[derive(clap::Args)]
+#[command(next_help_heading = "Session manager options")]
+pub struct SessionManagerConfig {
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10s")]
+    pub session_cleaner_interval: Duration,
+    #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10min")]
+    pub session_purge_timeout: Duration,
+}
 
 mod metrics {
-    use metrics::{recorder, Counter, Key, Gauge};
+    use metrics::{recorder, Counter, Gauge, Key};
 
-    const SESSIONS: Key = Key::from_static_name("ya-relay.session");
+    static SESSIONS: Key = Key::from_static_name("ya-relay.session");
 
-    const NODES: Key = Key::from_static_name("ya-relay.session.nodes");
-    const CREATED: Key = Key::from_static_name("ya-relay.session.created");
-    const REMOVED: Key = Key::from_static_name("ya_relay.session.removed");
+    static NODES: Key = Key::from_static_name("ya-relay.session.nodes");
+    static CREATED: Key = Key::from_static_name("ya-relay.session.created");
+    static REMOVED: Key = Key::from_static_name("ya_relay.session.removed");
 
-    const PURGED: Key = Key::from_static_name("ya_relay.session.purged");
+    static PURGED: Key = Key::from_static_name("ya_relay.session.purged");
 
     pub struct SessionManagerMetrics {
         pub created: Counter,
         pub removed: Counter,
         pub purged: Counter,
-        pub sessions : Gauge,
-        pub nodes : Gauge
+        pub sessions: Gauge,
+        pub nodes: Gauge,
     }
 
     impl Default for SessionManagerMetrics {
@@ -52,7 +60,7 @@ mod metrics {
                 removed,
                 purged,
                 sessions,
-                nodes
+                nodes,
             }
         }
     }
@@ -66,13 +74,20 @@ pub struct Session {
     pub session_id: SessionId,
     pub peer: SocketAddr,
     pub ts: LastSeen,
-    pub state: Mutex<SessionState>,
+    pub node_id: NodeId,
+    pub keys: Vec<Identity>,
+    pub supported_encryptions: Vec<String>,
+    pub addr_status: Mutex<AddrStatus>,
 }
 
 impl Session {
-    pub fn node_id(&self) -> Option<NodeId> {
-        match &*self.state.lock() {
-            SessionState::Est { node_id, .. } => Some(*node_id),
+    pub fn endpoint(&self) -> Option<Endpoint> {
+        match &*self.addr_status.lock() {
+            AddrStatus::Valid(_) => Some(Endpoint {
+                protocol: Udp.into(),
+                address: self.peer.ip().to_string(),
+                port: self.peer.port().into(),
+            }),
             _ => None,
         }
     }
@@ -80,36 +95,23 @@ impl Session {
 
 pub enum AddrStatus {
     Unknown,
-    Pending,
-    Valid,
-    Invalid,
+    Pending(Instant),
+    Valid(Instant),
+    Invalid(Instant),
 }
 
 impl AddrStatus {
-    pub fn endpoints(&self, peer: SocketAddr) -> Vec<Endpoint> {
-        match self {
-            AddrStatus::Valid => vec![Endpoint {
-                protocol: Protocol::Udp.into(),
-                address: peer.ip().to_string(),
-                port: peer.port() as u32,
-            }],
-            _ => Vec::new(),
+    pub fn is_pending(&self) -> bool {
+        matches!(self, AddrStatus::Unknown | AddrStatus::Pending(_))
+    }
+
+    pub fn set_valid(&mut self, valid: bool) {
+        *self = if valid {
+            AddrStatus::Valid(Instant::now())
+        } else {
+            AddrStatus::Invalid(Instant::now())
         }
     }
-}
-
-pub enum SessionState {
-    Pending {
-        challenge: RawChallenge,
-        difficulty: u64,
-    },
-    Est {
-        node_id: NodeId,
-        keys: Vec<Identity>,
-        addr_status: AddrStatus,
-    },
-    #[cfg(test)]
-    Dummy,
 }
 
 type NodeSessionSet = Arc<Mutex<Vec<SessionWeakRef>>>;
@@ -137,15 +139,19 @@ impl SessionManager {
 
     pub fn start_cleanup_processor(
         self: &Arc<Self>,
-        session_cleaner_interval: Duration,
-        session_timeout: Duration,
-        session_purge_timeout: Duration,
+        &SessionManagerConfig {
+            session_cleaner_interval,
+            session_purge_timeout,
+            ..
+        }: &SessionManagerConfig,
     ) {
         let g_nodes = self.metrics.nodes.clone();
         let g_sessions = self.metrics.sessions.clone();
 
         let this = Arc::downgrade(self);
+        log::info!("start {:?}", thread::current().id());
         tokio::spawn(async move {
+            log::info!("spawn {:?}", thread::current().id());
             loop {
                 log::debug!("clean wait");
                 time::sleep(session_cleaner_interval).await;
@@ -155,17 +161,20 @@ impl SessionManager {
                     Some(sm) => sm,
                     None => break,
                 };
+                //log::debug!("total = {}", sm.sessions.iter().map(|shard| shard.lock().len()).sum::<usize>());
 
                 let mut total_clean = 0;
                 let mut total_size = 0;
                 for slot in &sm.sessions {
                     let mut g = slot.lock();
                     let start_size = g.len();
-                    g.retain(|session_id, session_ref| {
+                    g.retain(|_session_id, session_ref| {
                         let age = clock.age(&session_ref.ts);
+
                         age <= session_purge_timeout
                     });
-                    let end_size = black_box(g.len());
+                    //fence(Ordering::AcqRel);
+                    let end_size = g.len();
                     total_size += end_size;
                     let removed = start_size - end_size;
                     drop(g);
@@ -177,10 +186,11 @@ impl SessionManager {
                         log::debug!("session clean {removed} removed from shard");
                     }
                 }
-                log::debug!("clean end: {total_clean}/{total_size}");
+                log::debug!("clean end: {total_clean}/{}", total_size + total_clean);
                 g_sessions.set(total_size as f64);
                 sm.clean_node_sessions();
                 g_nodes.set(sm.node_sessions.len() as f64);
+                //log::debug!("total = {}", sm.sessions.iter().map(|shard| shard.lock().len()).sum::<usize>());
             }
         });
     }
@@ -193,13 +203,13 @@ impl SessionManager {
         }
 
         impl PartialOrd for Distance {
-            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
                 Some(self.cmp(other))
             }
         }
 
         impl Ord for Distance {
-            fn cmp(&self, other: &Self) -> Ordering {
+            fn cmp(&self, other: &Self) -> cmp::Ordering {
                 let lhr: (Reverse<u32>, &[u8]) = (self.distance, self.id.as_ref());
                 let rhr: (Reverse<u32>, &[u8]) = (other.distance, other.id.as_ref());
 
@@ -236,6 +246,18 @@ impl SessionManager {
         g.push(session_w)
     }
 
+    pub fn link_sessions(&self, session: &SessionRef) {
+        let session_w = Arc::downgrade(session);
+        for id in &session.keys {
+            let entry = self.node_sessions.entry(id.node_id).or_default();
+            let mut g = entry.lock();
+            g.retain(|s| s.strong_count() > 0);
+            if g.iter().all(|s| !Weak::ptr_eq(s, &session_w)) {
+                g.push(session_w.clone())
+            }
+        }
+    }
+
     pub fn node_session(&self, node_id: NodeId) -> Option<SessionRef> {
         if let Some(refs) = self.node_sessions.get_mut(&node_id) {
             let mut g = refs.value().lock();
@@ -250,7 +272,7 @@ impl SessionManager {
     }
 
     fn clean_node_sessions(&self) {
-        self.node_sessions.retain(|&node_id, sessions| {
+        self.node_sessions.retain(|&_node_id, sessions| {
             let mut g = sessions.lock();
             g.retain(|s| s.upgrade().is_some());
             !g.is_empty()
@@ -260,41 +282,50 @@ impl SessionManager {
     pub fn new_session(
         &self,
         clock: &Clock,
+        session_id: SessionId,
         peer: SocketAddr,
-        challenge: RawChallenge,
-        difficulty: u64,
-    ) -> SessionRef {
-        self.metrics.created.increment(1);
-        let session_id = SessionId::generate();
-        let state = Mutex::new(SessionState::Pending {
-            challenge,
-            difficulty,
-        });
+        node_id: NodeId,
+        keys: Vec<Identity>,
+        supported_encryptions: Vec<String>,
+    ) -> Result<SessionRef, SessionRef> {
+        let addr_status = Mutex::new(AddrStatus::Unknown);
         let ts = clock.last_seen();
         let session_ref = Arc::new(Session {
             session_id,
             peer,
             ts,
-            state,
+            node_id,
+            keys,
+            supported_encryptions,
+            addr_status,
         });
 
-        self.session_slot(&session_id)
-            .lock()
-            .insert(session_id, session_ref.clone());
-        session_ref
+        let mut g = self.session_slot(&session_id).lock();
+        let prev = g.insert(session_id, session_ref.clone());
+        if let Some(prev) = prev {
+            g.insert(session_id, prev.clone());
+            drop(g);
+            Err(prev)
+        } else {
+            drop(g);
+            self.metrics.created.increment(1);
+            Ok(session_ref)
+        }
     }
 
     #[cfg(test)]
     fn add_dummy_session(&self) -> SessionRef {
         let session_id = SessionId::generate();
-        let state = Mutex::new(SessionState::Dummy);
         let ts = LastSeen::now();
         let peer = "127.0.0.1:40".parse().unwrap();
         let session_ref = Arc::new(Session {
             session_id,
             peer,
             ts,
-            state,
+            node_id: Default::default(),
+            keys: vec![],
+            supported_encryptions: vec![],
+            addr_status: Mutex::new(AddrStatus::Unknown),
         });
         self.session_slot(&session_id)
             .lock()
@@ -305,17 +336,16 @@ impl SessionManager {
     #[cfg(test)]
     fn add_est_session(&self, node_id: NodeId) -> SessionRef {
         let session_id = SessionId::generate();
-        let state = Mutex::new(SessionState::Est {
-            node_id,
-            addr_status: AddrStatus::Unknown
-        });
         let ts = LastSeen::now();
         let peer = "127.0.0.1:40".parse().unwrap();
         let session_ref = Arc::new(Session {
             session_id,
             peer,
             ts,
-            state,
+            node_id,
+            keys: Default::default(),
+            supported_encryptions: Default::default(),
+            addr_status: Mutex::new(AddrStatus::Unknown),
         });
         self.session_slot(&session_id)
             .lock()
@@ -326,7 +356,7 @@ impl SessionManager {
     pub fn session(&self, session_id: &SessionId) -> Option<SessionRef> {
         self.session_slot(session_id)
             .lock()
-            .get(&session_id)
+            .get(session_id)
             .cloned()
     }
 
@@ -335,11 +365,7 @@ impl SessionManager {
         session_id: &SessionId,
         f: F,
     ) -> Option<Out> {
-        if let Some(session_ref) = self.session(session_id) {
-            Some(f(&session_ref))
-        } else {
-            None
-        }
+        self.session(session_id).map(|session_ref| f(&session_ref))
     }
 
     pub fn remove_session(&self, session: &SessionId) -> Option<SessionRef> {
@@ -369,9 +395,10 @@ mod tests {
         thread_rng().gen::<[u8; 20]>().into()
     }
 
-    #[test]
+    #[test_log::test]
     fn test_clean_sessions() {
         let sm = SessionManager::new();
+
         let n1: NodeId = gen_node_id();
         let n2: NodeId = gen_node_id();
         let n3: NodeId = gen_node_id();
@@ -408,7 +435,7 @@ mod tests {
         assert_eq!(sm.node_sessions.len(), 1);
     }
 
-    #[test]
+    #[test_log::test]
     fn test_neighbours() {
         let sm = SessionManager::new();
         let mut ids = Vec::new();
@@ -422,7 +449,7 @@ mod tests {
         let neighbours = sm.neighbours(base, 10);
         let v1 = neighbours
             .into_iter()
-            .map(|s| hamming_distance(base, s.node_id().unwrap()))
+            .map(|s| hamming_distance(base, s.node_id))
             .collect_vec();
         let mut v2 = ids
             .into_iter()

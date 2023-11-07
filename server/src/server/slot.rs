@@ -1,23 +1,25 @@
+use crate::server::state_decoder::decoder;
 use crate::server::CompletionHandler;
 use crate::state::slot_manager::SlotManager;
 use crate::state::Clock;
-use crate::{SessionManager, SessionState};
+use crate::SessionManager;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{request, response, Identity, Packet, StatusCode};
+use ya_relay_proto::proto::{request, response, Packet, StatusCode};
 
 mod metric {
     use crate::server::DoneAck;
     use crate::state::Clock;
     use metrics::{recorder, Counter, Histogram, Key};
 
-    const KEY_START: Key = Key::from_static_name("ya-relay.packet.slot-info");
-    const KEY_ERROR: Key = Key::from_static_name("ya-relay.packet.slot-info.error");
-    const KEY_DONE: Key = Key::from_static_name("ya-relay.packet.slot-info.done");
-    const PROCESSING_TIME: Key = Key::from_static_name("ya-relay.packet.slot-info.processing-time");
+    static KEY_START: Key = Key::from_static_name("ya-relay.packet.slot-info");
+    static KEY_ERROR: Key = Key::from_static_name("ya-relay.packet.slot-info.error");
+    static KEY_DONE: Key = Key::from_static_name("ya-relay.packet.slot-info.done");
+    static PROCESSING_TIME: Key =
+        Key::from_static_name("ya-relay.packet.slot-info.processing-time");
 
     #[derive(Clone)]
     pub struct SlotMetric {
@@ -103,51 +105,23 @@ impl SlotHandler {
         clock.touch(&session_ref.ts);
 
         let request_node_id: NodeId = self.slot_manager.node(param.slot)?;
-
-        let (keys, found_node_id, endpoints) =
-            match self.session_manager.node_session(request_node_id) {
-                Some(it) => match &*it.state.lock() {
-                    SessionState::Est {
-                        keys,
-                        node_id,
-                        addr_status,
-                        ..
-                    } => (keys.clone(), *node_id, addr_status.endpoints(it.peer)),
-                    _ => {
-                        return Some((
-                            self.ack.clone(),
-                            Packet::response(
-                                request_id,
-                                session_id.to_vec(),
-                                StatusCode::NotFound,
-                                response::Node::default(),
-                            ),
-                        ))
-                    }
-                },
-                None => {
-                    return Some((
-                        self.ack.clone(),
-                        Packet::response(
-                            request_id,
-                            session_id.to_vec(),
-                            StatusCode::NotFound,
-                            response::Node::default(),
-                        ),
-                    ))
-                }
-            };
-
-        let node = response::Node {
-            identities: keys.into_iter().map(Into::into).collect(),
-            endpoints,
-            slot: param.slot,
-            supported_encryptions: vec![],
-            ..Default::default()
-        };
-        Some((
-            self.ack.clone(),
-            Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, node),
-        ))
+        let decoder = decoder(&self.session_manager, &self.slot_manager);
+        if let Some(session_ref) = self.session_manager.node_session(request_node_id) {
+            let node = decoder.to_node_info(&session_ref);
+            Some((
+                self.ack.clone(),
+                Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, node),
+            ))
+        } else {
+            Some((
+                self.ack.clone(),
+                Packet::response(
+                    request_id,
+                    session_id.to_vec(),
+                    StatusCode::NotFound,
+                    response::Node::default(),
+                ),
+            ))
+        }
     }
 }

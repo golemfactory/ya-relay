@@ -15,7 +15,7 @@ codec = ["futures", "tokio", "tokio-util", "bytes", "derive_more", "thiserror"]
 [dependencies]
 ya-relay-util = { workspace = true }
 
-prost = "0.10"
+prost = "0.12"
 rand = "0.8"
 
 anyhow = "1.0"
@@ -31,4 +31,4 @@ tokio-util = { version = "0.7", optional = true, features = ["codec"] }
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 
 [build-dependencies]
-prost-build = "0.10"
+prost-build = "0.12"
