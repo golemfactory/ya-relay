@@ -32,3 +32,4 @@ tokio = { version = "1", features = ["macros", "sync", "time"] }
 
 [build-dependencies]
 prost-build = "0.12"
+protoc-prebuilt = "0.2.0"

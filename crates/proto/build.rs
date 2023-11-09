@@ -2,6 +2,12 @@ use prost_build::Config;
 use std::env;
 
 fn main() {
+    #[cfg(target_os = "linux")]
+    {
+        let (protoc_bin, _) = protoc_prebuilt::init("24.0").unwrap();
+        env::set_var("PROTOC", protoc_bin);
+    }
+
     println!("cargo:rerun-if-env-changed=BUILD_SHOW_GENPATH");
     if env::var("BUILD_SHOW_GENPATH").is_ok() {
         println!(
