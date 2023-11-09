@@ -246,7 +246,7 @@ impl AddrStatus {
         match self {
             AddrStatus::Valid(v) => v.elapsed(),
             AddrStatus::Invalid(v) => v.elapsed(),
-            _ => Duration::default()
+            _ => Duration::default(),
         }
     }
 }
