@@ -5,9 +5,8 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use actix_web::{get, web, Responder};
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use ya_relay_core::server_session::SessionId;
+
 use ya_relay_core::NodeId;
 use ya_relay_server::metrics::register_metrics;
 use ya_relay_server::{AddrStatus, Config, Selector, SessionManager};

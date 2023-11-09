@@ -4,11 +4,13 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix_rt::Arbiter;
 use bytes::BytesMut;
 use futures::prelude::*;
 use metrics::{Key, Label, Unit};
+use tokio::time;
 
 pub use socket::{PacketType, UdpSocket, UdpSocketConfig};
 
@@ -124,7 +126,14 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
                     loop {
                         let g = ws.clone().acquire_owned().await?;
                         buf.reserve(max_packet_size);
-                        let (src_addr, pt) = socket.recv_any(&mut buf).await?;
+                        let (src_addr, pt) = match socket.recv_any(&mut buf).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                log::error!("[{worker_idx}] recv-any error: {:?}", e);
+                                time::sleep(Duration::from_millis(100)).await;
+                                continue;
+                            }
+                        };
                         /*let src_addr= socket.recv_from(&mut buf).await?;
                         let pt = PacketType::Data;*/
                         let packet = buf.split();
