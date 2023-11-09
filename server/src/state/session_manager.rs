@@ -12,6 +12,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Write};
 use std::net::SocketAddr;
 use std::path::Path;
+use std::str::FromStr;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use std::{cmp, fs, io, iter, thread};
@@ -79,6 +80,54 @@ mod metrics {
 pub type SessionRef = Arc<Session>;
 
 pub type SessionWeakRef = Weak<Session>;
+
+pub enum Selector {
+    All,
+    Prefix { value: u32, mask: u32 },
+}
+
+impl FromStr for Selector {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "all" {
+            return Ok(Selector::All);
+        }
+
+        let v = u32::from_str_radix(s, 16)?;
+        let bits = s.len() * 4;
+        let value = v << (32 - bits);
+        let mask = u32::MAX << (32 - bits);
+        Ok(Selector::Prefix { value, mask })
+    }
+}
+
+trait PrefixExt {
+    fn extract_prefix(&self) -> u32;
+}
+
+impl PrefixExt for SessionId {
+    fn extract_prefix(&self) -> u32 {
+        let a = self.to_array();
+        u32::from_be_bytes(a[0..4].try_into().unwrap())
+    }
+}
+
+impl PrefixExt for NodeId {
+    fn extract_prefix(&self) -> u32 {
+        let a = self.into_array();
+        u32::from_be_bytes(a[0..4].try_into().unwrap())
+    }
+}
+
+impl Selector {
+    fn match_prefix<T: PrefixExt>(&self, v: T) -> bool {
+        match self {
+            Self::All => true,
+            Self::Prefix { value, mask } => (v.extract_prefix() & *mask) == *value,
+        }
+    }
+}
 
 pub struct Session {
     pub session_id: SessionId,
@@ -215,6 +264,23 @@ impl SessionManager {
             node_sessions,
             metrics,
         })
+    }
+
+    pub fn num_sessions(&self) -> usize {
+        self.sessions.iter().map(|s| s.lock().len()).sum()
+    }
+
+    pub fn nodes_for(
+        &self,
+        selector: Selector,
+        limit: usize,
+    ) -> HashMap<NodeId, Vec<SessionWeakRef>> {
+        self.node_sessions
+            .iter()
+            .filter(|e| selector.match_prefix(*e.key()))
+            .map(|e| (*e.key(), e.value().lock().clone()))
+            .take(limit)
+            .collect()
     }
 
     pub fn start_cleanup_processor(

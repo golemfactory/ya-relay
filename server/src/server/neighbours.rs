@@ -2,8 +2,6 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use itertools::Itertools;
-
 use ya_relay_core::server_session::SessionId;
 use ya_relay_proto::proto::response::Neighbours;
 use ya_relay_proto::proto::{request, Packet, StatusCode};
@@ -117,7 +115,7 @@ impl NeighboursHandler {
         let nodes = neighbours
             .into_iter()
             .map(|session_ref| decoder.to_node_info(&session_ref))
-            .collect_vec();
+            .collect();
 
         let response = Packet::response(
             request_id,

@@ -1,5 +1,5 @@
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
@@ -74,16 +74,29 @@ pub struct Server {
     slot_manager: Arc<SlotManager>,
 }
 
+#[inline]
+fn slots_path<P: AsRef<Path>>(state_dir: P) -> PathBuf {
+    state_dir.as_ref().join("slots.state")
+}
+
+#[inline]
+fn sessions_path<P: AsRef<Path>>(state_dir: P) -> PathBuf {
+    state_dir.as_ref().join("sessions.state")
+}
+
 impl Server {
     pub fn save_state(&self, state_dir: &Path) -> anyhow::Result<()> {
-        self.slot_manager.save(&state_dir.join("slots.state"))?;
-        self.session_manager
-            .save(&state_dir.join("sessions.state"))?;
+        self.slot_manager.save(&slots_path(state_dir))?;
+        self.session_manager.save(&sessions_path(state_dir))?;
         Ok(())
     }
 
     pub fn bind_addr(&self) -> SocketAddr {
         self.udp_server.bind_addr()
+    }
+
+    pub fn sessions(&self) -> Arc<SessionManager> {
+        self.session_manager.clone()
     }
 
     #[cfg(feature = "test-utils")]
@@ -102,7 +115,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
     let slot_manager = config
         .state_dir
         .as_ref()
-        .map(|path| path.join("slots.state"))
+        .map(slots_path)
         .and_then(|p| {
             if p.exists() {
                 SlotManager::load(&p).ok()
@@ -115,7 +128,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
     let session_manager = config
         .state_dir
         .as_ref()
-        .map(|path| path.join("sessions.state"))
+        .map(sessions_path)
         .and_then(|p| {
             if p.exists() {
                 match SessionManager::load(&p) {

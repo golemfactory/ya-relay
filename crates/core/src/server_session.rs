@@ -1,8 +1,5 @@
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
-use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
-use governor::RateLimiter;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -73,20 +70,6 @@ pub struct LastSeen {
 pub struct RequestHistory {
     capacity: usize,
     ids: Arc<RwLock<VecDeque<u64>>>,
-}
-
-#[derive(Clone)]
-pub struct NodeSession {
-    pub info: NodeInfo,
-
-    /// Address from which Session was initialized
-    pub address: SocketAddr,
-    pub session: SessionId,
-    pub last_seen: LastSeen,
-    pub forwarding_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
-
-    /// Request IDs of the last n requests
-    pub request_history: RequestHistory,
 }
 
 impl From<DateTime<Utc>> for LastSeen {

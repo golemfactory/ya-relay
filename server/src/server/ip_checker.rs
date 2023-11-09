@@ -99,18 +99,21 @@ fn checker(
     let (tx, rx) = mpsc::unbounded_channel::<CheckIpRequestRef>();
     let checker_socket = UdpSocketConfig::new().recv_err().bind((ip, 0).into())?;
     let requests = RefCell::new(BTreeMap::new());
-    let queue_size_gauge = metrics::new_ip_check_requests();
+    let (worker_idx, queue_size_gauge) = metrics::new_ip_check_requests();
 
     let state = Rc::new(IpCheckerState {
         checker_socket,
         requests,
     });
 
+    queue_size_gauge.set(0f64);
+
     let retry_job = {
         let state = Rc::downgrade(&state);
         let timeout = timeout;
 
         spawn_local(async move {
+            log::warn!("[{worker_idx}] ip-check retry started");
             while let Some(state) = state.upgrade() {
                 if let Err(e) = state.send_pings(timeout).await {
                     log::error!("failed to send ip check: {:?}", e);
@@ -119,7 +122,7 @@ fn checker(
                 drop(state);
                 sleep(retry_after).await
             }
-            log::info!("ip-check retry stopped");
+            log::warn!("[{worker_idx}] ip-check retry stopped");
         })
     };
 
@@ -155,19 +158,19 @@ fn checker(
                                 })),
                         } => {
                             if let Err(e) = state.resolve_success(peer, &session_id) {
-                                log::error!("[{:?}] invalid ping response {:?}", peer, e);
+                                log::error!("[{}] invalid ping response {:?}", peer, e);
                             }
                         }
                         other => {
-                            log::warn!("[{:?}] invalid packet {:?}", peer, other);
+                            log::warn!("[{}] invalid packet {:?}", peer, other);
                         }
                     },
                     PacketType::Unreachable(reason) => {
-                        log::debug!("[{peer:?}] unreachable {reason:?}");
+                        log::debug!("[{peer}] unreachable {reason:?}");
                         state.resolve_unreachable(peer);
                     }
                     PacketType::Other => {
-                        log::error!("[{peer:?}] received unknown error");
+                        log::error!("[{peer}] received unknown error");
                     }
                 }
             }
@@ -333,9 +336,9 @@ mod metrics {
         recorder().register_gauge(&key)
     }
 
-    pub fn new_ip_check_requests() -> Gauge {
+    pub fn new_ip_check_requests() -> (usize, Gauge) {
         let worker_idx = WORKER_IDX.fetch_add(1, Ordering::SeqCst);
-        ip_check_requests(worker_idx)
+        (worker_idx, ip_check_requests(worker_idx))
     }
 }
 

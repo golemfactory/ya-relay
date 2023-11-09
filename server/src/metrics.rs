@@ -1,22 +1,20 @@
 use chrono::{DateTime, Utc};
 
 use metrics::{describe_gauge, describe_histogram, register_counter, register_histogram, Unit};
-use metrics_exporter_prometheus::PrometheusBuilder;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 
 mod instance_count;
 
 pub use instance_count::*;
 
-pub fn register_metrics(addr: std::net::SocketAddr) {
+pub fn register_metrics() -> PrometheusHandle {
     let builder = PrometheusBuilder::new()
-        .with_http_listener(addr)
         .set_quantiles(&[
             0.0, 0.01, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99, 0.999,
         ])
         .expect("Metrics initialization failure");
 
-    log::info!("Metrics http listener at {addr}");
-    builder.install().expect("Metrics installation failure");
+    let handle = builder.install_recorder().unwrap();
 
     register_counter!("ya-relay.packet.incoming.error");
     register_counter!("ya-relay.packet.incoming");
@@ -94,6 +92,8 @@ pub fn register_metrics(addr: std::net::SocketAddr) {
     );
 
     crate::udp_server::register_metrics();
+
+    handle
 }
 
 pub fn elapsed_metric(since: DateTime<Utc>) -> f64 {
