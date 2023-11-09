@@ -2,7 +2,7 @@ use crate::server::CompletionHandler;
 
 use crate::state::Clock;
 use crate::udp_server::UdpSocket;
-use crate::{SessionManager};
+use crate::SessionManager;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;

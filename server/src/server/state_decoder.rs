@@ -35,4 +35,3 @@ impl<'a, 'b> Decoder<'a, 'b> {
         }
     }
 }
-

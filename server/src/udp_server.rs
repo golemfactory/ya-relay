@@ -171,7 +171,6 @@ impl UdpServer {
         }
     }
 
-    #[cfg(feature = "test-utils")]
     pub(crate) fn stop_internal(&self) {
         for arbiter in &self.arbiters {
             arbiter.stop();

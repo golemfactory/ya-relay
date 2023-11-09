@@ -95,7 +95,6 @@ impl UdpSocketConfig {
     pub fn bind(self, bind_addr: SocketAddr) -> io::Result<UdpSocket> {
         use helpers::*;
 
-        log::debug!("bind addr: {:?}", bind_addr);
         let bind_addr = match bind_addr {
             SocketAddr::V4(v) => v,
             _ => return Err(io::Error::new(io::ErrorKind::Other, "wrong protocol")),

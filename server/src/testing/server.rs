@@ -2,19 +2,18 @@ use crate::config::Config;
 
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
-use std::net;
 use std::rc::Rc;
+use std::{future, net};
 
-use crate::udp_server::UdpServer;
+use crate::server::{IpCheckerConfig, Server, ServerConfig, SessionHandlerConfig};
+use crate::SessionManagerConfig;
 use tokio::time::Duration;
 use url::Url;
 use ya_relay_core::testing::TestServerWrapper;
-use crate::server::{IpCheckerConfig, ServerConfig, SessionHandlerConfig};
-use crate::SessionManagerConfig;
 
 #[derive(Clone)]
 pub struct ServerWrapper {
-    pub server: Rc<UdpServer>,
+    pub server: Rc<Server>,
 }
 
 impl<'a> TestServerWrapper<'a> for ServerWrapper {
@@ -23,8 +22,11 @@ impl<'a> TestServerWrapper<'a> for ServerWrapper {
         format!("udp://{addr}").parse().unwrap()
     }
 
-    fn remove_node_endpoints(&'a self, _node: ya_relay_core::NodeId) -> LocalBoxFuture<'a, ()> {
-        async move { todo!() }.boxed_local()
+    fn remove_node_endpoints(&'a self, node: ya_relay_core::NodeId) -> LocalBoxFuture<'a, ()> {
+        if let Some(session_ref) = self.server.session_manager.node_session(node) {
+            session_ref.addr_status.lock().set_valid(false);
+        }
+        future::ready(()).boxed_local()
     }
 }
 
@@ -41,6 +43,7 @@ pub async fn init_test_server_with_config(config: Config) -> anyhow::Result<Serv
 pub fn test_default_config() -> Config {
     Config {
         metrics_scrape_addr: (net::Ipv4Addr::LOCALHOST, 0).into(),
+        state_dir: None,
         server: ServerConfig {
             address: (net::Ipv4Addr::LOCALHOST, 0).into(),
             workers: 1,
@@ -50,7 +53,10 @@ pub fn test_default_config() -> Config {
             session_cleaner_interval: Duration::from_secs(10),
             session_purge_timeout: Duration::from_secs(20),
         },
-        session_handler: SessionHandlerConfig { difficulty: 1, salt: None },
+        session_handler: SessionHandlerConfig {
+            difficulty: 1,
+            salt: None,
+        },
         ip_check: IpCheckerConfig {
             timeout: Duration::from_millis(300),
             retry_cnt: 1,
@@ -61,7 +67,7 @@ pub fn test_default_config() -> Config {
 
 impl Drop for ServerWrapper {
     fn drop(&mut self) {
-        self.server.stop_internal();
+        self.server.stop();
         log::debug!("[TEST] Dropping ServerWrapper.");
     }
 }

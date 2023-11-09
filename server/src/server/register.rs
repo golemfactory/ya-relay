@@ -1,4 +1,4 @@
-use std::net::{SocketAddr};
+use std::net::SocketAddr;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;

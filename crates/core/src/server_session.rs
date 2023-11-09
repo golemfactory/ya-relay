@@ -24,7 +24,7 @@ pub enum TransportType {
     Transfer,
 }
 
-#[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq, Ord)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq, Ord, Serialize, Deserialize)]
 pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],
 }

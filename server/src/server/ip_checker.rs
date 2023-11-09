@@ -8,17 +8,16 @@ use std::time::{Duration, Instant};
 use std::{io, mem};
 
 use bytes::BytesMut;
+use clap::Args;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
 use tokio::time::sleep;
-use ya_relay_core::server_session::SessionId;
 
+use ya_relay_core::server_session::SessionId;
 use ya_relay_proto::proto::{packet, request, response, Message, Packet, Response};
 
-use crate::state::Clock;
 use crate::udp_server::{PacketType, UdpSocket, UdpSocketConfig};
 use crate::{SessionRef, SessionWeakRef};
-use clap::Args;
 
 const MAX_PING_SIZE: usize = 100;
 
@@ -91,7 +90,7 @@ struct CheckIpRequest {
 
 type CheckIpRequestRef = Box<CheckIpRequest>;
 
-pub fn checker(
+fn checker(
     ip: IpAddr,
     retry_after: Duration,
     timeout: Duration,
@@ -100,6 +99,7 @@ pub fn checker(
     let (tx, rx) = mpsc::unbounded_channel::<CheckIpRequestRef>();
     let checker_socket = UdpSocketConfig::new().recv_err().bind((ip, 0).into())?;
     let requests = RefCell::new(BTreeMap::new());
+    let queue_size_gauge = metrics::new_ip_check_requests();
 
     let state = Rc::new(IpCheckerState {
         checker_socket,
@@ -115,6 +115,7 @@ pub fn checker(
                 if let Err(e) = state.send_pings(timeout).await {
                     log::error!("failed to send ip check: {:?}", e);
                 }
+                queue_size_gauge.set(state.size() as f64);
                 drop(state);
                 sleep(retry_after).await
             }
@@ -224,6 +225,14 @@ impl IpCheckerState {
         Ok(())
     }
 
+    fn size(&self) -> usize {
+        self.requests
+            .borrow()
+            .iter()
+            .map(|(_, reqs)| reqs.len())
+            .sum()
+    }
+
     async fn send_pings(&self, timeout: Duration) -> io::Result<()> {
         let mut to_ping = Vec::new();
         {
@@ -310,15 +319,23 @@ impl IpCheckerState {
 }
 
 mod metrics {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use metrics::*;
 
     static KEY_IP_CHECK_REQUESTS: Key = Key::from_static_name("ya-relay.ip-check.addrs");
+    static WORKER_IDX: AtomicUsize = AtomicUsize::new(0);
 
     pub fn ip_check_requests(worker_idx: usize) -> Gauge {
         let l = ("worker", worker_idx.to_string());
         let key = KEY_IP_CHECK_REQUESTS.with_extra_labels(vec![(&l).into()]);
 
         recorder().register_gauge(&key)
+    }
+
+    pub fn new_ip_check_requests() -> Gauge {
+        let worker_idx = WORKER_IDX.fetch_add(1, Ordering::SeqCst);
+        ip_check_requests(worker_idx)
     }
 }
 

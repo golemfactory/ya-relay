@@ -8,7 +8,7 @@ async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(
         "RUST_LOG",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,smoltcp=info".to_string()),
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info".to_string()),
     );
     env_logger::Builder::new()
         .parse_default_env()
@@ -19,9 +19,12 @@ async fn main() -> anyhow::Result<()> {
 
     register_metrics(args.metrics_scrape_addr);
 
-    eprintln!("log level = {}", log::max_level());
-    let _server = ya_relay_server::run(&args).await?;
+    let server = ya_relay_server::run(&args).await?;
     log::info!("started");
-    futures::future::pending::<()>().await;
+
+    let _a = tokio::signal::ctrl_c().await;
+    if let Some(state_dir) = &args.state_dir {
+        server.save_state(state_dir)?;
+    }
     Ok(())
 }

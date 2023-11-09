@@ -1,12 +1,9 @@
-use std::error::Error;
-use anyhow::bail;
-
 use std::rc::Rc;
 
 use std::sync::Arc;
 use std::time::Duration;
 use ya_relay_proto::codec::BytesMut;
-use ya_relay_server::udp_server::{UdpServerBuilder, UdpSocket, worker_fn};
+use ya_relay_server::udp_server::{worker_fn, UdpServerBuilder, UdpSocket};
 
 #[actix_rt::main]
 async fn main() -> anyhow::Result<()> {

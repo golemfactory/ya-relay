@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
                             tokio::time::sleep(args.delay).await;
                         }
 
-                        tokio::time::timeout(Duration::from_secs(4), async {
+                        let _ = tokio::time::timeout(Duration::from_secs(4), async {
                             request_id += 1;
                             let request_packet = Packet {
                                 session_id: Default::default(),

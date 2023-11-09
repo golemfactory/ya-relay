@@ -1,17 +1,22 @@
 use crate::state::hamming_distance;
 use crate::state::last_seen::{Clock, LastSeen};
 use crate::state::session_manager::metrics::SessionManagerMetrics;
+use anyhow::{anyhow, Context};
 use dashmap::DashMap;
 use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
+use std::io::{BufRead, Write};
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
-use std::{cmp, iter, thread};
+use std::{cmp, fs, io, iter, thread};
 use tokio::time;
+use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
@@ -28,7 +33,7 @@ pub struct SessionManagerConfig {
 }
 
 mod metrics {
-    use metrics::{recorder, Counter, Gauge, Key};
+    use metrics::{recorder, Counter, Gauge, Histogram, Key};
 
     static SESSIONS: Key = Key::from_static_name("ya-relay.session");
 
@@ -38,12 +43,15 @@ mod metrics {
 
     static PURGED: Key = Key::from_static_name("ya_relay.session.purged");
 
+    static PROCESSING: Key = Key::from_static_name("ya-relay.session.cleaner.processing-time");
+
     pub struct SessionManagerMetrics {
         pub created: Counter,
         pub removed: Counter,
         pub purged: Counter,
         pub sessions: Gauge,
         pub nodes: Gauge,
+        pub processing: Histogram,
     }
 
     impl Default for SessionManagerMetrics {
@@ -54,6 +62,7 @@ mod metrics {
             let purged = r.register_counter(&PURGED);
             let sessions = r.register_gauge(&SESSIONS);
             let nodes = r.register_gauge(&NODES);
+            let processing = r.register_histogram(&PROCESSING);
 
             Self {
                 created,
@@ -61,6 +70,7 @@ mod metrics {
                 purged,
                 sessions,
                 nodes,
+                processing,
             }
         }
     }
@@ -78,6 +88,71 @@ pub struct Session {
     pub keys: Vec<Identity>,
     pub supported_encryptions: Vec<String>,
     pub addr_status: Mutex<AddrStatus>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct PubKey {
+    #[serde(with = "serde_bytes_array")]
+    inner: [u8; 64],
+}
+
+impl<'a> From<&'a Identity> for PubKey {
+    fn from(value: &'a Identity) -> Self {
+        let inner = value.public_key.bytes().clone();
+        Self { inner }
+    }
+}
+
+impl PubKey {
+    fn decode(&self) -> Identity {
+        let public_key = PublicKey::from_slice(&self.inner).unwrap();
+        let node_id = NodeId::from(*public_key.address());
+        Identity {
+            node_id,
+            public_key,
+        }
+    }
+}
+
+mod serde_bytes_array {
+    use core::convert::TryInto;
+    use std::borrow::Cow;
+
+    use serde::de::Error;
+    use serde::{Deserializer, Serializer};
+
+    /// This just specializes [`serde_bytes::serialize`] to `<T = [u8]>`.
+    pub(crate) fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serde_bytes::serialize(bytes, serializer)
+    }
+
+    /// This takes the result of [`serde_bytes::deserialize`] from `[u8]` to `[u8; N]`.
+    pub(crate) fn deserialize<'de, D, const N: usize>(deserializer: D) -> Result<[u8; N], D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let slice: Cow<'_, [u8]> = serde_bytes::deserialize(deserializer)?;
+        let array: [u8; N] = slice.as_ref().try_into().map_err(|_| {
+            let expected = format!("[u8; {}]", N);
+            D::Error::invalid_length(slice.len(), &expected.as_str())
+        })?;
+        Ok(array)
+    }
+}
+
+// WARN: Never change this struct.
+#[derive(Serialize, Deserialize)]
+struct SessionData {
+    session_id: SessionId,
+    peer: SocketAddr,
+    session_key: Option<PubKey>,
+    keys: Vec<PubKey>,
+    supported_encryptions: Vec<String>,
+    addr_valid: bool,
+    flags: u64,
 }
 
 impl Session {
@@ -103,6 +178,11 @@ pub enum AddrStatus {
 impl AddrStatus {
     pub fn is_pending(&self) -> bool {
         matches!(self, AddrStatus::Unknown | AddrStatus::Pending(_))
+    }
+
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        matches!(self, AddrStatus::Valid(_))
     }
 
     pub fn set_valid(&mut self, valid: bool) {
@@ -153,6 +233,7 @@ impl SessionManager {
         tokio::spawn(async move {
             log::info!("spawn {:?}", thread::current().id());
             loop {
+                let start = Instant::now();
                 log::debug!("clean wait");
                 time::sleep(session_cleaner_interval).await;
                 log::debug!("clean start {:?}", session_purge_timeout);
@@ -190,7 +271,7 @@ impl SessionManager {
                 g_sessions.set(total_size as f64);
                 sm.clean_node_sessions();
                 g_nodes.set(sm.node_sessions.len() as f64);
-                //log::debug!("total = {}", sm.sessions.iter().map(|shard| shard.lock().len()).sum::<usize>());
+                sm.metrics.processing.record(start.elapsed());
             }
         });
     }
@@ -382,13 +463,78 @@ impl SessionManager {
         let idx = (s.finish() & 0xf) as usize;
         &self.sessions[idx]
     }
+
+    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
+        let mut f = io::BufWriter::new(
+            fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .open(path)?,
+        );
+
+        for shard in &self.sessions {
+            for s in shard.lock().values() {
+                let session_data = SessionData {
+                    session_id: s.session_id,
+                    peer: s.peer,
+                    session_key: None,
+                    flags: 0,
+                    supported_encryptions: s.supported_encryptions.clone(),
+                    keys: s.keys.iter().map(Into::into).collect(),
+                    addr_valid: s.addr_status.lock().is_valid(),
+                };
+                rmp_serde::encode::write(&mut f, &session_data)?;
+            }
+        }
+        f.flush()?;
+
+        Ok(())
+    }
+
+    pub fn load(path: &Path) -> anyhow::Result<Arc<Self>> {
+        let mut f = io::BufReader::new(fs::OpenOptions::new().read(true).open(path)?);
+
+        let me = Self::new();
+
+        while has_data(&mut f)? {
+            let node_info: SessionData =
+                rmp_serde::decode::from_read(&mut f).context("decoding state")?;
+            let addr_status = if node_info.addr_valid {
+                AddrStatus::Valid(Instant::now())
+            } else {
+                AddrStatus::Invalid(Instant::now())
+            };
+            let keys: Vec<_> = node_info.keys.iter().map(PubKey::decode).collect();
+
+            let session = Arc::new(Session {
+                session_id: node_info.session_id,
+                peer: node_info.peer,
+                ts: LastSeen::now(),
+                node_id: keys.first().ok_or_else(|| anyhow!("invalid data"))?.node_id,
+                keys,
+                supported_encryptions: node_info.supported_encryptions,
+                addr_status: Mutex::new(addr_status),
+            });
+            me.session_slot(&session.session_id)
+                .lock()
+                .insert(session.session_id, session.clone());
+            me.link_sessions(&session);
+        }
+
+        Ok(me)
+    }
+}
+
+fn has_data<R: BufRead>(r: &mut R) -> io::Result<bool> {
+    Ok(!r.fill_buf()?.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use itertools::Itertools;
     use rand::{thread_rng, Rng};
+    use std::io;
     use ya_relay_core::NodeId;
 
     fn gen_node_id() -> NodeId {
@@ -450,12 +596,41 @@ mod tests {
         let v1 = neighbours
             .into_iter()
             .map(|s| hamming_distance(base, s.node_id))
-            .collect_vec();
+            .collect::<Vec<_>>();
         let mut v2 = ids
             .into_iter()
             .map(|id| hamming_distance(base, id))
-            .collect_vec();
+            .collect::<Vec<_>>();
         v2.sort();
         assert_eq!(v1, &v2[1..=10]);
+    }
+
+    #[test_log::test]
+    fn test_save_load() {
+        let mut buffer = Vec::new();
+
+        for _ in 0..15 {
+            let session_id = SessionId::generate();
+            let peer = "127.0.0.1:40".parse().unwrap();
+            let inner = [0u8; 64];
+            let key = PubKey { inner };
+
+            let data = SessionData {
+                session_id,
+                peer,
+                session_key: None,
+                keys: vec![key],
+                supported_encryptions: vec![],
+                addr_valid: false,
+                flags: 0,
+            };
+            rmp_serde::encode::write(&mut buffer, &data).unwrap();
+        }
+        log::info!("{} bytes written", buffer.len());
+        let mut c = io::Cursor::new(&buffer);
+        while has_data(&mut c).unwrap() {
+            let data: SessionData = rmp_serde::decode::from_read(&mut c).unwrap();
+            log::info!("decoded {}", data.session_id);
+        }
     }
 }

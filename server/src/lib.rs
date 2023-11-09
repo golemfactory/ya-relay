@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 mod config;
 pub mod metrics;
 mod server;
