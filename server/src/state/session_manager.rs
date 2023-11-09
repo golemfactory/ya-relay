@@ -241,6 +241,14 @@ impl AddrStatus {
             AddrStatus::Invalid(Instant::now())
         }
     }
+
+    pub fn age(&self) -> Duration {
+        match self {
+            AddrStatus::Valid(v) => v.elapsed(),
+            AddrStatus::Invalid(v) => v.elapsed(),
+            _ => Duration::default()
+        }
+    }
 }
 
 type NodeSessionSet = Arc<Mutex<Vec<SessionWeakRef>>>;

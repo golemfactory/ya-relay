@@ -11,6 +11,7 @@ use bytes::BytesMut;
 use clap::Args;
 use tokio::sync::mpsc;
 use tokio::task::{spawn_local, JoinHandle};
+use tokio::time;
 use tokio::time::sleep;
 
 use ya_relay_core::server_session::SessionId;
@@ -133,7 +134,14 @@ fn checker(
             let mut data = BytesMut::with_capacity(MAX_PING_SIZE);
             loop {
                 data.reserve(MAX_PING_SIZE);
-                let (peer, packet_type) = state.checker_socket.recv_any(&mut data).await?;
+                let (peer, packet_type) = match state.checker_socket.recv_any(&mut data).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::error!(target: "service::check_ip", "[{worker_idx}] recv any {:?}", e);
+                        time::sleep(Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
                 let packet = match Packet::decode(&mut data.split()) {
                     Ok(p) => p,
                     Err(e) => {

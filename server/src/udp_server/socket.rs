@@ -203,7 +203,7 @@ impl UdpSocket {
         use libc::*;
 
         self.inner
-            .async_io(Interest::READABLE, || unsafe {
+            .async_io(Interest::READABLE | Interest::ERROR, || unsafe {
                 let mut control_buffer = [mem::MaybeUninit::<u8>::uninit(); 1024];
                 let mut remote: sockaddr_in = mem::zeroed();
 
