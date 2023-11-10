@@ -1,9 +1,7 @@
 use actix_rt::net::UdpSocket as BaseUpdSocket;
-use bytes::{BufMut, BytesMut};
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use bytes::BytesMut;
+use std::net::SocketAddr;
 use std::{io, mem, ptr};
-use tokio::io::Interest;
 
 pub struct UdpSocketConfig {
     min_recv_buffer: Option<usize>,
@@ -32,6 +30,7 @@ pub enum UnreachableReason {
     Other(u8),
 }
 
+#[cfg(target_os = "linux")]
 mod icmp {
     use libc::*;
 
@@ -69,7 +68,20 @@ mod icmp {
 
 mod helpers {
     use super::*;
+    #[cfg(unix)]
     pub use libc::*;
+    pub use std::ffi::c_int;
+    #[cfg(unix)]
+    pub use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+    #[cfg(windows)]
+    pub use std::os::windows::prelude::*;
+    use std::sync::Once;
+    #[cfg(windows)]
+    use windows_sys::Win32::Networking::WinSock::{setsockopt as syssetsockopt, SOCKET_ERROR};
+    #[cfg(windows)]
+    pub use windows_sys::Win32::Networking::WinSock::{INVALID_SOCKET, SOCKET, SOCK_DGRAM};
+
+    #[cfg(unix)]
     pub unsafe fn setsockopt<T>(
         fd: BorrowedFd,
         opt: c_int,
@@ -89,9 +101,128 @@ mod helpers {
         }
         Ok(())
     }
+
+    #[cfg(windows)]
+    pub unsafe fn setsockopt<T>(
+        fd: BorrowedSocket,
+        opt: c_int,
+        val: c_int,
+        payload: T,
+    ) -> io::Result<()> {
+        let payload = ptr::addr_of!(payload).cast();
+        let res = syssetsockopt(
+            fd.as_raw_socket() as SOCKET,
+            opt,
+            val,
+            payload,
+            mem::size_of::<T>() as i32,
+        );
+        if res == SOCKET_ERROR {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn init() {
+        static INIT: Once = Once::new();
+
+        INIT.call_once(|| {
+            // Initialize winsock through the standard library by just creating a
+            // dummy socket. Whether this is successful or not we drop the result as
+            // libstd will be sure to have initialized winsock.
+            let _ = std::net::UdpSocket::bind("127.0.0.1:34254");
+        });
+    }
 }
 
 impl UdpSocketConfig {
+    #[cfg(windows)]
+    pub fn bind(self, bind_addr: SocketAddr) -> io::Result<UdpSocket> {
+        use helpers::*;
+
+        #[allow(non_camel_case_types)]
+        type sa_family_t = windows_sys::Win32::Networking::WinSock::ADDRESS_FAMILY;
+
+        use windows_sys::Win32::Networking::WinSock::{
+            bind, WSASocketW, AF_INET, SOCKADDR_IN as sockaddr_in, SO_RCVBUF, SO_REUSEADDR,
+            SO_SNDBUF, WSA_FLAG_OVERLAPPED,
+        };
+        const IPPROTO_IP: c_int = windows_sys::Win32::Networking::WinSock::IPPROTO_IP as c_int;
+        const SOL_SOCKET: c_int = windows_sys::Win32::Networking::WinSock::SOL_SOCKET as c_int;
+
+        let bind_addr = match bind_addr {
+            SocketAddr::V4(v) => v,
+            _ => return Err(io::Error::new(io::ErrorKind::Other, "wrong protocol")),
+        };
+
+        init();
+
+        let fd = unsafe {
+            let res = WSASocketW(
+                AF_INET as c_int,
+                SOCK_DGRAM,
+                0,
+                ptr::null_mut(),
+                0,
+                WSA_FLAG_OVERLAPPED,
+            );
+
+            if res == INVALID_SOCKET {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            let fd = OwnedSocket::from_raw_socket(res as u64);
+
+            if self.bind_multi {
+                setsockopt(fd.as_socket(), SOL_SOCKET, SO_REUSEADDR, 1 as c_int)?;
+            }
+
+            if let Some(min_recv_buffer) = self.min_recv_buffer {
+                setsockopt(
+                    fd.as_socket(),
+                    SOL_SOCKET,
+                    SO_RCVBUF,
+                    min_recv_buffer as c_int,
+                )?;
+            }
+
+            if let Some(min_send_buffer) = self.min_send_buffer {
+                setsockopt(
+                    fd.as_socket(),
+                    SOL_SOCKET,
+                    SO_SNDBUF,
+                    min_send_buffer as c_int,
+                )?;
+            }
+
+            let addr = sockaddr_in {
+                sin_family: AF_INET,
+                sin_port: bind_addr.port().to_be(),
+                sin_addr: mem::transmute(bind_addr.ip().octets()),
+                sin_zero: mem::zeroed(),
+            };
+
+            let res = bind(
+                fd.as_raw_socket() as SOCKET,
+                ptr::addr_of!(addr).cast(),
+                mem::size_of_val(&addr) as i32,
+            );
+            if res != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+
+            fd
+        };
+
+        let s = std::net::UdpSocket::from(fd);
+        s.set_nonblocking(true)?;
+
+        Ok(UdpSocket {
+            inner: BaseUpdSocket::from_std(s)?,
+        })
+    }
+
+    #[cfg(unix)]
     pub fn bind(self, bind_addr: SocketAddr) -> io::Result<UdpSocket> {
         use helpers::*;
 
@@ -106,12 +237,14 @@ impl UdpSocketConfig {
                 return Err(std::io::Error::last_os_error());
             }
             let fd = OwnedFd::from_raw_fd(res);
+
             if self.bind_multi {
                 setsockopt(fd.as_fd(), SOL_SOCKET, SO_REUSEPORT, 1 as c_int)?;
             } else if bind_addr.port() != 0 {
                 setsockopt(fd.as_fd(), SOL_SOCKET, SO_REUSEADDR, 1 as c_int)?;
             }
 
+            #[cfg(target_os = "linux")]
             if self.recv_err {
                 setsockopt(fd.as_fd(), SOL_IP, IP_RECVERR, 1 as c_int)?;
             }
@@ -129,6 +262,8 @@ impl UdpSocketConfig {
                 sin_port: bind_addr.port().to_be(),
                 sin_addr: mem::transmute(bind_addr.ip().octets()),
                 sin_zero: mem::zeroed(),
+                #[cfg(target_os = "macos")]
+                sin_len: mem::size_of::<sockaddr_in>() as u8,
             };
 
             let res = bind(
@@ -199,8 +334,18 @@ impl UdpSocket {
         Ok(src)
     }
 
+    #[cfg(not(target_os = "linux"))]
     pub async fn recv_any(&self, buffer: &mut BytesMut) -> io::Result<(SocketAddr, PacketType)> {
-        use libc::*;
+        let (_len, src) = self.inner.recv_buf_from(buffer).await?;
+        Ok((src, PacketType::Data))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub async fn recv_any(&self, buffer: &mut BytesMut) -> io::Result<(SocketAddr, PacketType)> {
+        use bytes::BufMut;
+        use helpers::*;
+        use std::net::{Ipv4Addr, SocketAddrV4};
+        use tokio::io::Interest;
 
         self.inner
             .async_io(Interest::READABLE | Interest::ERROR, || unsafe {
