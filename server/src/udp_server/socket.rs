@@ -171,7 +171,7 @@ impl UdpSocketConfig {
                 return Err(std::io::Error::last_os_error());
             }
 
-            let fd = OwnedSocket::from_raw_socket(res as u64);
+            let fd = OwnedSocket::from_raw_socket(res as RawSocket);
 
             if self.bind_multi {
                 setsockopt(fd.as_socket(), SOL_SOCKET, SO_REUSEADDR, 1 as c_int)?;

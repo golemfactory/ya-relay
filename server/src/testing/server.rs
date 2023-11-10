@@ -1,15 +1,14 @@
 use crate::config::Config;
 
+use crate::server::{IpCheckerConfig, Server, ServerConfig, SessionHandlerConfig};
+use crate::SessionManagerConfig;
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
 use std::rc::Rc;
 use std::{future, net};
-
-use crate::server::{IpCheckerConfig, Server, ServerConfig, SessionHandlerConfig};
-use crate::SessionManagerConfig;
 use tokio::time::Duration;
-use url::Url;
 use ya_relay_core::testing::TestServerWrapper;
+use ya_relay_core::utils::Url;
 
 #[derive(Clone)]
 pub struct ServerWrapper {
