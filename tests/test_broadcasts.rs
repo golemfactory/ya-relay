@@ -31,7 +31,7 @@ async fn start_clients(wrapper: &ServerWrapper, count: u32) -> Vec<Client> {
     clients
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_neighbourhood() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 13).await;
@@ -60,7 +60,7 @@ async fn test_neighbourhood() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let clients = start_clients(&wrapper, 3).await;
@@ -78,7 +78,7 @@ async fn test_neighbourhood_too_big_neighbourhood_request() -> anyhow::Result<()
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_broadcast() -> anyhow::Result<()> {
     const NEIGHBOURHOOD_SIZE: u32 = 8;
     let wrapper = init_test_server().await.unwrap();

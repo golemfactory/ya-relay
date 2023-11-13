@@ -40,11 +40,11 @@ impl PacketKind {
         }
     }
 
-    pub fn session_id(&self) -> Vec<u8> {
+    pub fn session_id(&self) -> &[u8] {
         match self {
-            PacketKind::Packet(Packet { session_id, .. }) => session_id.clone(),
-            PacketKind::Forward(Forward { session_id, .. }) => session_id.to_vec(),
-            PacketKind::ForwardCtd(_) => vec![],
+            PacketKind::Packet(Packet { session_id, .. }) => session_id,
+            PacketKind::Forward(Forward { session_id, .. }) => session_id.as_slice(),
+            PacketKind::ForwardCtd(_) => &[],
         }
     }
 
