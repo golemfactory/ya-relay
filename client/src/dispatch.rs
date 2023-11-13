@@ -36,10 +36,10 @@ where
 
         // First look for existing session, but if it doesn't exist, maybe we
         // can find dispatcher from temporary session that is being initialized at this moment.
-        let session = handler.session(from).await;
+        let session = handler.session(from);
         let dispatcher = match session.clone() {
             Some(session) => Some(session.raw.clone()),
-            None => handler.dispatcher(from).await,
+            None => handler.dispatcher(from),
         };
 
         if session.is_some() && packet.is_protocol_packet() {
@@ -108,12 +108,12 @@ where
 /// Handles incoming packets. Used exclusively by the `dispatch` function
 pub trait Handler {
     /// Returns a clone of a `Dispatcher` object for temporary sessions.
-    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<RawSession>>>;
+    fn dispatcher(&self, from: SocketAddr) -> Option<Arc<RawSession>>;
 
     /// Returns established session, if it exists. Otherwise returns None.
     /// It doesn't take into account temporary sessions, so you should call `Handler::dispatcher`
     /// later.
-    fn session(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<DirectSession>>>;
+    fn session(&self, from: SocketAddr) -> Option<Arc<DirectSession>>;
 
     /// Handles `proto::Control` packets
     fn on_control(

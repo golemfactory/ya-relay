@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail};
 use futures::future::{join_all, AbortHandle};
 use futures::{FutureExt, TryFutureExt};
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::future::Future;
@@ -10,7 +11,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use parking_lot::Mutex;
 
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
@@ -412,9 +412,7 @@ impl Client {
     /// * `anyhow::Result<Vec<NodeId>>`: A Result object containing a vector of neighbour NodeIds or an error.
     ///
     pub async fn neighbours(&self, count: u32) -> anyhow::Result<Vec<NodeId>> {
-        if let Some(neighbours) = {
-            self.state.lock().neighbours.clone()
-        } {
+        if let Some(neighbours) = { self.state.lock().neighbours.clone() } {
             if neighbours.nodes.len() as u32 >= count
                 && neighbours.updated + self.config.neighbourhood_ttl > Instant::now()
             {
