@@ -1,6 +1,6 @@
 ## Running server
 
-`cargo run -p ya-relay-server -- -a udp://127.0.0.1:7464 --ip-checker-port 7465`
+`cargo run -p ya-relay-server -- -a udp://127.0.0.1:7464`
 
 ## Running client
 

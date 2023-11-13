@@ -17,7 +17,7 @@ use ya_relay_server::testing::server::init_test_server;
 use common::hack_make_ip_private;
 use common::spawn_receive;
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_forward_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
@@ -65,7 +65,7 @@ async fn test_forward_unreliable() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_forward_reliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
@@ -114,7 +114,7 @@ async fn test_forward_reliable() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_p2p_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
@@ -159,7 +159,7 @@ async fn test_p2p_unreliable() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_p2p_reliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
@@ -205,7 +205,7 @@ async fn test_p2p_reliable() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_rate_limiter() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
