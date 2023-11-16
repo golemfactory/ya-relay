@@ -4,36 +4,31 @@ use std::rc::Rc;
 pub use ethsign::{PublicKey, SecretKey, Signature};
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
-use secp256k1::Secp256k1;
 use secp256k1::rand;
+use secp256k1::Secp256k1;
 
 use ya_client_model::NodeId;
 
 use crate::key::generate;
 
-
 #[derive(Clone)]
 pub struct SessionCrypto {
-    secret : secp256k1::SecretKey,
-    public_key : secp256k1::PublicKey
+    secret: secp256k1::SecretKey,
+    public_key: secp256k1::PublicKey,
 }
 
 impl SessionCrypto {
-
     pub fn generate() -> anyhow::Result<Self> {
         let secp = Secp256k1::new();
         let mut rng = rand::rngs::OsRng::new()?;
 
         let (secret, public_key) = secp.generate_keypair(&mut rng);
-        Ok(SessionCrypto {
-            secret, public_key
-        })
+        Ok(SessionCrypto { secret, public_key })
     }
 
     pub fn pub_key(&self) -> PublicKey {
         ethsign::PublicKey::from_slice(&self.public_key.serialize_uncompressed()).unwrap()
     }
-
 }
 
 pub trait CryptoProvider {

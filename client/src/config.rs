@@ -20,13 +20,11 @@ pub enum FailFast {
     No,
 }
 
-
-
 #[derive(Clone)]
 pub struct ClientConfig {
     pub node_id: NodeId,
     pub node_pub_key: PublicKey,
-    pub session_crypto : SessionCrypto,
+    pub session_crypto: SessionCrypto,
     pub crypto: Rc<dyn CryptoProvider>,
     pub challenge_difficulty: u64,
 

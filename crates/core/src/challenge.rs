@@ -1,12 +1,13 @@
 use crate::crypto::Crypto;
 use anyhow::{anyhow, bail};
+use std::collections::HashMap;
 use std::convert::TryFrom;
 
+use digest::{Digest, Output};
 use ethsign::PublicKey;
+use futures::future::LocalBoxFuture;
 use futures::{Future, FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use rand::Rng;
-use digest::{Digest, Output};
-use futures::future::LocalBoxFuture;
 use sha2::Sha256;
 
 use crate::identity::Identity;
@@ -27,7 +28,7 @@ pub fn solve<'a, D: Digest, C: Crypto + 'a>(
     challenge: Vec<u8>,
     difficulty: u64,
     crypto_vec: Vec<C>,
-    session_public_key: PublicKey
+    session_public_key: PublicKey,
 ) -> impl Future<Output = anyhow::Result<proto::ChallengeResponse>> + 'a {
     // Compute challenge in different thread to avoid blocking the runtime.
     // Note: computing starts here, not after awaiting.
@@ -43,18 +44,17 @@ pub fn solve<'a, D: Digest, C: Crypto + 'a>(
             .await?;
 
         let session_pub_key = session_public_key.bytes().to_vec();
-        let session_key_msg = hash_session_key(solution.as_slice(), &session_pub_key);
+        let session_key_msg = hash_session_key(&session_pub_key);
         let session_sign = futures::stream::iter(crypto_vec)
-            .then(|crypto| {
-                sign(&session_key_msg, &crypto)
-            }).try_collect()
+            .then(|crypto| sign(&session_key_msg, &crypto))
+            .try_collect()
             .await?;
 
         Ok(proto::ChallengeResponse {
             solution,
             signatures: signatures,
             session_sign,
-            session_pub_key
+            session_pub_key,
         })
     }
 }
@@ -95,25 +95,18 @@ pub fn verify<D: Digest>(
     Ok(expected.as_slice() == to_verify && zeros >= difficulty)
 }
 
-
-fn hash_session_key(solution : &[u8], session_pub_key : &[u8]) -> Output<Sha256> {
-    fn _hash_session_key<D: Digest>(solution: &[u8], session_pub_key: &[u8]) -> Output<D> {
+fn hash_session_key(session_pub_key: &[u8]) -> Output<Sha256> {
+    fn _hash_session_key<D: Digest>(session_pub_key: &[u8]) -> Output<D> {
         D::new()
             .chain(b"golem session key")
-            .chain(solution)
             .chain(session_pub_key)
             .finalize()
     }
 
-    _hash_session_key::<Sha256>(solution, session_pub_key)
+    _hash_session_key::<Sha256>(session_pub_key)
 }
 
-#[test]
-fn test_hash_session_key() {
-
-    let v = hash_session_key(&[], b"test");
-    eprintln!("v={:?}",v);
-}
+pub type Proof = Vec<u8>;
 
 pub fn recover_identities_from_challenge<D: Digest>(
     raw_challenge: &[u8],
@@ -121,6 +114,29 @@ pub fn recover_identities_from_challenge<D: Digest>(
     response: Option<proto::ChallengeResponse>,
     remote_id: Option<NodeId>,
 ) -> anyhow::Result<(NodeId, Vec<Identity>, Option<PublicKey>)> {
+    let (node_id, keys, pk) = recover_identities_from_challenge_with_proof::<D>(
+        raw_challenge,
+        difficulty,
+        response,
+        remote_id,
+    )?;
+    Ok(if let Some((pk, _)) = pk {
+        (node_id, keys, Some(pk))
+    } else {
+        (node_id, keys, None)
+    })
+}
+
+pub fn recover_identities_from_challenge_with_proof<D: Digest>(
+    raw_challenge: &[u8],
+    difficulty: u64,
+    response: Option<proto::ChallengeResponse>,
+    remote_id: Option<NodeId>,
+) -> anyhow::Result<(
+    NodeId,
+    Vec<Identity>,
+    Option<(PublicKey, HashMap<NodeId, Vec<u8>>)>,
+)> {
     let response = response.ok_or_else(|| anyhow::anyhow!("Missing ChallengeResponse"))?;
 
     if !verify::<D>(raw_challenge, difficulty, &response.solution)? {
@@ -152,21 +168,24 @@ pub fn recover_identities_from_challenge<D: Digest>(
         }))
         .collect::<anyhow::Result<_>>()?;
 
-    if !response.session_sign.is_empty()  {
+    let mut proofs = HashMap::new();
+
+    if !response.session_sign.is_empty() {
         let session_pub_key = PublicKey::from_slice(&response.session_pub_key)
             .map_err(|_| anyhow!("Failed to decode session key"))?;
 
-        for (signature, identity) in response.session_sign.iter().zip(&identities) {
-            let identity : &Identity = identity;
-            let m  = hash_session_key(&response.solution, &response.session_pub_key);
-            let id_key = recover(signature, m.as_slice())?;
+        for (signature, identity) in response.session_sign.into_iter().zip(&identities) {
+            let identity: &Identity = identity;
+
+            let m = hash_session_key(&response.session_pub_key);
+            let id_key = recover(&signature, m.as_slice())?;
             if id_key.bytes() != identity.public_key.bytes() {
                 bail!("invalid session key identity signature");
             }
+            proofs.insert(identity.node_id, signature);
         }
-        Ok((default_id, identities, Some(session_pub_key)))
-    }
-    else {
+        Ok((default_id, identities, Some((session_pub_key, proofs))))
+    } else {
         Ok((default_id, identities, None))
     }
 }
@@ -178,17 +197,20 @@ pub fn recover_default_node_id(request: &proto::request::Session) -> anyhow::Res
     }
 }
 
-fn sign<'a>(message: &'a [u8], crypto: &impl Crypto) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
-    crypto.sign(message)
+fn sign<'a>(
+    message: &'a [u8],
+    crypto: &impl Crypto,
+) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
+    crypto
+        .sign(message)
         .and_then(|sig| {
             let mut result = Vec::with_capacity(SIGNATURE_SIZE);
             result.push(sig.v);
             result.extend_from_slice(&sig.r[..]);
             result.extend_from_slice(&sig.s[..]);
-            async move {
-                Ok(result)
-            }
-        }).boxed_local()
+            async move { Ok(result) }
+        })
+        .boxed_local()
 }
 
 fn recover(sig: &[u8], message: &[u8]) -> anyhow::Result<PublicKey> {
