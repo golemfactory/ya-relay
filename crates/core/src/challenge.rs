@@ -1,11 +1,11 @@
 use crate::crypto::Crypto;
 use anyhow::{anyhow, bail};
-use std::convert::{TryFrom};
+use std::convert::TryFrom;
 
 use ethsign::PublicKey;
 use futures::{Future, StreamExt, TryStreamExt};
 use rand::Rng;
-use digest::{Digest, Output, Update};
+use digest::{Digest, Output};
 use sha2::Sha256;
 
 use crate::identity::Identity;

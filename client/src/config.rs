@@ -174,6 +174,7 @@ impl ClientBuilder {
         Ok(ClientConfig {
             node_id: default_id,
             node_pub_key: default_pub_key,
+            session_crypto: SessionCrypto::generate()?,
             crypto,
             challenge_difficulty: 1,
             bind_url,

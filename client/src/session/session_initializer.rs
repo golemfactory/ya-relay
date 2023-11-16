@@ -174,7 +174,7 @@ impl SessionInitializer {
             .into());
         }
 
-        let (remote_id, identities) = match {
+        let (remote_id, identities, session_key) = match {
             if challenge {
                 log::trace!("Validating challenge from: [{node_id}] ({addr})");
 
@@ -438,7 +438,7 @@ impl SessionInitializer {
 
             // Validate the challenge before we start solving it ourselves.
             // This way we avoid DDoS.
-            let (node_id, identities) =
+            let (node_id, identities, session_key) =
                 challenge::recover_identities_from_challenge::<ChallengeDigest>(
                     &raw_challenge,
                     config.challenge_difficulty,
