@@ -25,7 +25,9 @@ pub fn decoder<'a, 'b>(
 
 impl<'a, 'b> Decoder<'a, 'b> {
     pub fn to_node_info(&self, session: &Session, context: NodeId) -> NodeInfo {
-        let identities = session.keys.iter().map(Into::into).collect();
+        let identities = session.keys.iter()
+            .filter(|id| id.node_id == context)
+            .map(Into::into).collect();
         let (session_pub_key, session_key_proof) =
             if let Some((session_key, proofs)) = &session.session_key {
                 let session_pub_key = session_key.bytes().to_vec();
