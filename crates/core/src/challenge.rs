@@ -293,7 +293,7 @@ mod tests {
     use rand::Rng;
 
     use crate::challenge::ChallengeDigest;
-    use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider};
+    use crate::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider, SessionCrypto};
     use ya_client_model::NodeId;
 
     async fn gen_crypto(n: usize) -> anyhow::Result<(Vec<PublicKey>, Vec<Rc<dyn Crypto>>)> {
@@ -319,10 +319,16 @@ mod tests {
         const DIFFICULTY: u64 = 2;
 
         let (keys, crypto_vec) = gen_crypto(3).await?;
+        let session = SessionCrypto::generate()?;
         let challenge: Vec<u8> = (0..16).collect();
 
-        let response =
-            super::solve::<ChallengeDigest, _>(challenge.clone(), DIFFICULTY, crypto_vec).await?;
+        let response = super::solve::<ChallengeDigest, _>(
+            challenge.clone(),
+            DIFFICULTY,
+            crypto_vec,
+            session.pub_key(),
+        )
+        .await?;
 
         let (node_id, identities, _) = super::recover_identities_from_challenge::<ChallengeDigest>(
             challenge.as_slice(),

@@ -27,8 +27,24 @@ impl SessionCrypto {
     }
 
     pub fn pub_key(&self) -> PublicKey {
-        ethsign::PublicKey::from_slice(&self.public_key.serialize_uncompressed()).unwrap()
+        let bytes = &self.public_key.serialize_uncompressed();
+        ethsign::PublicKey::from_slice(&bytes[0..64]).unwrap()
     }
+}
+
+#[test]
+fn test_session_crypto() -> anyhow::Result<()> {
+    use tiny_keccak::Hasher;
+
+    let sc = SessionCrypto::generate()?;
+    let pkb = sc.public_key.serialize_uncompressed();
+    let mut k = tiny_keccak::Keccak::v256();
+    k.update(&pkb[0..64]);
+    let mut output = [0u8; 32];
+    k.finalize(&mut output);
+    assert_eq!(sc.pub_key().address(), &output[12..]);
+
+    Ok(())
 }
 
 pub trait CryptoProvider {
