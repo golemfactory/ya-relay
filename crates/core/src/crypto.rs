@@ -12,6 +12,7 @@ use ya_client_model::NodeId;
 use crate::key::generate;
 
 
+#[derive(Clone)]
 pub struct SessionCrypto {
     secret : secp256k1::SecretKey,
     public_key : secp256k1::PublicKey
