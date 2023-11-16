@@ -3,9 +3,10 @@ use anyhow::{anyhow, bail};
 use std::convert::{TryFrom};
 
 use ethsign::PublicKey;
-use futures::{Future, StreamExt, TryStreamExt};
+use futures::{Future, FutureExt, StreamExt, TryFutureExt, TryStreamExt};
 use rand::Rng;
 use digest::{Digest, Output, Update};
+use futures::future::LocalBoxFuture;
 use sha2::Sha256;
 
 use crate::identity::Identity;
@@ -26,6 +27,7 @@ pub fn solve<'a, D: Digest, C: Crypto + 'a>(
     challenge: Vec<u8>,
     difficulty: u64,
     crypto_vec: Vec<C>,
+    session_public_key: PublicKey
 ) -> impl Future<Output = anyhow::Result<proto::ChallengeResponse>> + 'a {
     // Compute challenge in different thread to avoid blocking the runtime.
     // Note: computing starts here, not after awaiting.
@@ -35,16 +37,24 @@ pub fn solve<'a, D: Digest, C: Crypto + 'a>(
     async move {
         let solution = challenge_handle.await??;
         let message = sha2::Sha256::digest(solution.as_slice());
-        let signatures: anyhow::Result<Vec<_>> = futures::stream::iter(crypto_vec)
+        let signatures: Vec<_> = futures::stream::iter(crypto_vec.iter())
             .then(|crypto| sign(message.as_slice(), crypto))
             .try_collect()
-            .await;
+            .await?;
+
+        let session_pub_key = session_public_key.bytes().to_vec();
+        let session_key_msg = hash_session_key(solution.as_slice(), &session_pub_key);
+        let session_sign = futures::stream::iter(crypto_vec)
+            .then(|crypto| {
+                sign(&session_key_msg, &crypto)
+            }).try_collect()
+            .await?;
 
         Ok(proto::ChallengeResponse {
             solution,
-            signatures: signatures?,
-            session_sign: todo!(),
-            session_pub_key: todo!()
+            signatures: signatures,
+            session_sign,
+            session_pub_key
         })
     }
 }
@@ -168,15 +178,17 @@ pub fn recover_default_node_id(request: &proto::request::Session) -> anyhow::Res
     }
 }
 
-async fn sign(message: &[u8], crypto: impl Crypto) -> anyhow::Result<Vec<u8>> {
-    let sig = crypto.sign(message).await?;
-
-    let mut result = Vec::with_capacity(SIGNATURE_SIZE);
-    result.push(sig.v);
-    result.extend_from_slice(&sig.r[..]);
-    result.extend_from_slice(&sig.s[..]);
-
-    Ok(result)
+fn sign<'a>(message: &'a [u8], crypto: &impl Crypto) -> LocalBoxFuture<'a, anyhow::Result<Vec<u8>>> {
+    crypto.sign(message)
+        .and_then(|sig| {
+            let mut result = Vec::with_capacity(SIGNATURE_SIZE);
+            result.push(sig.v);
+            result.extend_from_slice(&sig.r[..]);
+            result.extend_from_slice(&sig.s[..]);
+            async move {
+                Ok(result)
+            }
+        }).boxed_local()
 }
 
 fn recover(sig: &[u8], message: &[u8]) -> anyhow::Result<PublicKey> {
