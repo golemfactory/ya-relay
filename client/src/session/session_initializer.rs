@@ -553,6 +553,7 @@ impl SessionInitializer {
         };
 
         let limit = self.simultaneous_challenges.clone();
+        let session_public_key = self.config.session_crypto.pub_key();
 
         // Compute challenge in different thread to avoid blocking runtime.
         // Note: computing starts here, not after awaiting.
@@ -565,6 +566,7 @@ impl SessionInitializer {
                 request.challenge,
                 request.difficulty,
                 crypto_vec,
+                session_public_key,
             )
             .await
         }
