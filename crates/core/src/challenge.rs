@@ -1,11 +1,12 @@
 use crate::crypto::Crypto;
-use anyhow::bail;
-use std::convert::TryFrom;
+use anyhow::{anyhow, bail};
+use std::convert::{TryFrom};
 
-use digest::{Digest, Output};
 use ethsign::PublicKey;
 use futures::{Future, StreamExt, TryStreamExt};
 use rand::Rng;
+use digest::{Digest, Output, Update};
+use sha2::Sha256;
 
 use crate::identity::Identity;
 use ya_client_model::NodeId;
@@ -42,6 +43,8 @@ pub fn solve<'a, D: Digest, C: Crypto + 'a>(
         Ok(proto::ChallengeResponse {
             solution,
             signatures: signatures?,
+            session_sign: todo!(),
+            session_pub_key: todo!()
         })
     }
 }
@@ -82,34 +85,24 @@ pub fn verify<D: Digest>(
     Ok(expected.as_slice() == to_verify && zeros >= difficulty)
 }
 
-#[allow(unused)]
-pub fn recover_identities(
-    identities: &[proto::Identity],
-    remote_id: Option<NodeId>,
-) -> anyhow::Result<(NodeId, Vec<Identity>)> {
-    let default_ident = {
-        let ident = identities
-            .get(0)
-            .ok_or_else(|| anyhow::anyhow!("Missing public key"))?;
-        Identity::try_from(ident)?
-    };
 
-    let default_id = default_ident.node_id;
-    if let Some(remote_id) = remote_id {
-        if default_id != remote_id {
-            anyhow::bail!(
-                "Invalid default NodeId [{}] vs [{}] (response)",
-                remote_id,
-                default_id
-            );
-        }
+fn hash_session_key(solution : &[u8], session_pub_key : &[u8]) -> Output<Sha256> {
+    fn _hash_session_key<D: Digest>(solution: &[u8], session_pub_key: &[u8]) -> Output<D> {
+        D::new()
+            .chain(b"golem session key")
+            .chain(solution)
+            .chain(session_pub_key)
+            .finalize()
     }
 
-    let identities = std::iter::once(Ok(default_ident))
-        .chain(identities.iter().skip(1).map(Identity::try_from))
-        .collect::<anyhow::Result<_>>()?;
+    _hash_session_key::<Sha256>(solution, session_pub_key)
+}
 
-    Ok((default_id, identities))
+#[test]
+fn test_hash_session_key() {
+
+    let v = hash_session_key(&[], b"test");
+    eprintln!("v={:?}",v);
 }
 
 pub fn recover_identities_from_challenge<D: Digest>(
@@ -117,7 +110,7 @@ pub fn recover_identities_from_challenge<D: Digest>(
     difficulty: u64,
     response: Option<proto::ChallengeResponse>,
     remote_id: Option<NodeId>,
-) -> anyhow::Result<(NodeId, Vec<Identity>)> {
+) -> anyhow::Result<(NodeId, Vec<Identity>, Option<PublicKey>)> {
     let response = response.ok_or_else(|| anyhow::anyhow!("Missing ChallengeResponse"))?;
 
     if !verify::<D>(raw_challenge, difficulty, &response.solution)? {
@@ -149,7 +142,23 @@ pub fn recover_identities_from_challenge<D: Digest>(
         }))
         .collect::<anyhow::Result<_>>()?;
 
-    Ok((default_id, identities))
+    if !response.session_sign.is_empty()  {
+        let session_pub_key = PublicKey::from_slice(&response.session_pub_key)
+            .map_err(|_| anyhow!("Failed to decode session key"))?;
+
+        for (signature, identity) in response.session_sign.iter().zip(&identities) {
+            let identity : &Identity = identity;
+            let m  = hash_session_key(&response.solution, &response.session_pub_key);
+            let id_key = recover(signature, m.as_slice())?;
+            if id_key.bytes() != identity.public_key.bytes() {
+                bail!("invalid session key identity signature");
+            }
+        }
+        Ok((default_id, identities, Some(session_pub_key)))
+    }
+    else {
+        Ok((default_id, identities, None))
+    }
 }
 
 pub fn recover_default_node_id(request: &proto::request::Session) -> anyhow::Result<NodeId> {
@@ -281,7 +290,7 @@ mod tests {
         let response =
             super::solve::<ChallengeDigest, _>(challenge.clone(), DIFFICULTY, crypto_vec).await?;
 
-        let (node_id, identities) = super::recover_identities_from_challenge::<ChallengeDigest>(
+        let (node_id, identities, _) = super::recover_identities_from_challenge::<ChallengeDigest>(
             challenge.as_slice(),
             DIFFICULTY,
             Some(response),

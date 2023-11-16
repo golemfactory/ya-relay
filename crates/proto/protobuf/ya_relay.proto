@@ -80,6 +80,10 @@ message ChallengeResponse {
     bytes solution = 1;
     /* First signature by default identity */
     repeated bytes signatures = 2;
+    /* signature for session key */
+    repeated bytes session_sign = 3;
+    /* RAW public key */
+    bytes session_pub_key = 4;
 }
 
 /* Requests sent to the server by the client */
