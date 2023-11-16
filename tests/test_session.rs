@@ -1,3 +1,5 @@
+use test_log::test;
+
 mod common;
 
 use std::time::Duration;
@@ -12,7 +14,7 @@ use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_client::testing::private::SessionType;
 use ya_relay_server::testing::server::init_test_server;
 
-#[actix_rt::test]
+#[test(actix_rt::test)]
 async fn test_session_layer_happy_path() {
     let server = init_test_server().await.unwrap();
     let mut network = MockSessionNetwork::new(server).unwrap();
@@ -35,7 +37,7 @@ async fn test_session_layer_happy_path() {
     assert_eq!(session.session_type(), SessionType::P2P);
 }
 
-#[actix_rt::test]
+#[test(actix_rt::test)]
 async fn test_session_layer_p2p_send_receive() {
     let server = init_test_server().await.unwrap();
     let mut network = MockSessionNetwork::new(server).unwrap();
@@ -85,7 +87,7 @@ async fn test_session_layer_p2p_send_receive() {
     assert_eq!(forwarded.payload, packet);
 }
 
-#[actix_rt::test]
+#[test(actix_rt::test)]
 async fn test_session_layer_close_p2p_session() {
     let server = init_test_server().await.unwrap();
     let mut network = MockSessionNetwork::new(server).unwrap();
@@ -115,7 +117,7 @@ async fn test_session_layer_close_p2p_session() {
     session.connect().await.unwrap();
 }
 
-#[actix_rt::test]
+#[test(actix_rt::test)]
 async fn test_session_layer_close_relayed_routing() {
     let server = init_test_server().await.unwrap();
     let mut network = MockSessionNetwork::new(server).unwrap();
@@ -153,7 +155,7 @@ async fn test_session_layer_close_relayed_routing() {
     session.connect().await.unwrap();
 }
 
-#[actix_rt::test]
+#[test(actix_rt::test)]
 async fn test_session_layer_reverse_connection() {
     let server = init_test_server().await.unwrap();
     let mut network = MockSessionNetwork::new(server).unwrap();

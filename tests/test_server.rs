@@ -8,7 +8,7 @@ use ya_relay_server::testing::server::init_test_server;
 
 /// Server should not shutdown when receives junks (single, garbage bytes).
 /// Testing if server does not shutdown when receives junks.
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_server_junks_received() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
     let socket = UdpSocket::bind("0.0.0.0:0")?;

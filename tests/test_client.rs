@@ -9,7 +9,7 @@ use ya_relay_server::testing::server::init_test_server;
 
 /// Client should be able to use the same port after it was shutdown.
 /// If it doesn't, it means that socket wasn't dropped correctly.
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_clean_shutdown() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 

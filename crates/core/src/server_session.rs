@@ -1,12 +1,9 @@
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
-use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
-use governor::RateLimiter;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use std::convert::TryFrom;
+use std::convert::{TryFrom, TryInto};
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
@@ -24,9 +21,15 @@ pub enum TransportType {
     Transfer,
 }
 
-#[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq, Ord)]
+#[derive(Copy, Clone, PartialEq, PartialOrd, Hash, Eq, Ord, Serialize, Deserialize)]
 pub struct SessionId {
     id: [u8; SESSION_ID_SIZE],
+}
+
+impl SessionId {
+    pub fn to_array(&self) -> [u8; SESSION_ID_SIZE] {
+        self.id
+    }
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -67,20 +70,6 @@ pub struct LastSeen {
 pub struct RequestHistory {
     capacity: usize,
     ids: Arc<RwLock<VecDeque<u64>>>,
-}
-
-#[derive(Clone)]
-pub struct NodeSession {
-    pub info: NodeInfo,
-
-    /// Address from which Session was initialized
-    pub address: SocketAddr,
-    pub session: SessionId,
-    pub last_seen: LastSeen,
-    pub forwarding_limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
-
-    /// Request IDs of the last n requests
-    pub request_history: RequestHistory,
 }
 
 impl From<DateTime<Utc>> for LastSeen {
@@ -146,6 +135,16 @@ impl TryFrom<Vec<u8>> for SessionId {
     }
 }
 
+impl TryFrom<&[u8]> for SessionId {
+    type Error = anyhow::Error;
+
+    fn try_from(session: &[u8]) -> Result<Self> {
+        let id: [u8; SESSION_ID_SIZE] = session.try_into()?;
+
+        Ok(SessionId { id })
+    }
+}
+
 impl TryFrom<&str> for SessionId {
     type Error = anyhow::Error;
 
@@ -204,8 +203,10 @@ impl TryFrom<proto::Endpoint> for Endpoint {
         let address: SocketAddr = address.parse()?;
 
         Ok(Endpoint {
-            protocol: proto::Protocol::from_i32(endpoint.protocol)
-                .ok_or_else(|| anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
+            protocol: endpoint
+                .protocol
+                .try_into()
+                .map_err(|_| anyhow!("Invalid protocol enum: {}", endpoint.protocol))?,
             address,
         })
     }

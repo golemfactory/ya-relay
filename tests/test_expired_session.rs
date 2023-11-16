@@ -11,7 +11,7 @@ use ya_relay_server::testing::server::{
     init_test_server, init_test_server_with_config, test_default_config,
 };
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
@@ -109,7 +109,7 @@ async fn test_restarting_p2p_session_tcp() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;
 
@@ -206,7 +206,7 @@ async fn test_restarting_p2p_session_unreliable() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_restart_server() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
 
@@ -253,11 +253,11 @@ async fn test_restart_server() -> anyhow::Result<()> {
 /// Client should get Node information about Nodes, that were previously in it's
 /// neighborhood, but disappeared. If Relay doesn't store any information, than Node
 /// should remove session and all information about peer.
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
     let mut config = test_default_config();
-    config.session_cleaner_interval = Duration::from_secs(1);
-    config.session_timeout = chrono::Duration::seconds(8);
+    config.session_manager.session_cleaner_interval = Duration::from_secs(1);
+    config.session_manager.session_purge_timeout = Duration::from_secs(8);
 
     let wrapper = init_test_server_with_config(config).await?;
     let crypto2 = FallbackCryptoProvider::default();
@@ -342,11 +342,10 @@ async fn test_restart_after_neighborhood_changed() -> anyhow::Result<()> {
 // This causes problems, because one Node is sending packets and second is dropping them.
 // If any Nodes gets Forward packet from unknown session, it should send disconnect message.
 // This way second Node can establish new session.
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_fast_restart_unreliable() -> anyhow::Result<()> {
     let mut config = test_default_config();
-    config.session_cleaner_interval = Duration::from_secs(1);
-    config.session_timeout = chrono::Duration::seconds(15);
+    config.session_manager.session_cleaner_interval = Duration::from_secs(1);
 
     let wrapper = init_test_server_with_config(config).await?;
     let crypto2 = FallbackCryptoProvider::default();

@@ -13,7 +13,7 @@ description = "Golem relay base functionality"
 ya-relay-stack = { workspace = true }
 ya-relay-proto = { workspace = true }
 
-ya-client-model = "0.5"
+ya-client-model = { version = "0.5", default-features = false }
 
 anyhow = "1.0.56"
 chrono = "0.4"
@@ -21,11 +21,11 @@ derive_more = "0.99"
 digest = "0.9"
 ethsign = "0.8"
 futures = "0.3"
-governor = "0.3.2"
+#governor = "0.3.2"
 hex = "0.4"
 lazy_static = "1.4"
 log = "0.4"
-metrics = "0.19"
+metrics = ">=0.19,<0.22"
 rand = { version = "0.8", features = ["std"] }
 serde_json = "1.0"
 serde = "1.0"
