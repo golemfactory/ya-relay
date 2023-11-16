@@ -169,8 +169,8 @@ impl RawSession {
             .request::<proto::response::Pong>(packet.into(), self.id.to_vec(), DEFAULT_PING_TIMEOUT)
             .await
         {
-            result @ Ok(_) => (Instant::now() - ping_ts, result),
-            result @ Err(_) => (Instant::now() - self.dispatcher.last_seen(), result),
+            result @ Ok(_) => (ping_ts.elapsed(), result),
+            result @ Err(_) => (self.dispatcher.last_seen().elapsed(), result),
         };
 
         self.dispatcher.update_ping(ping);
