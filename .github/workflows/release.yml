@@ -45,15 +45,22 @@ jobs:
   build:
     name: Build Release
     needs: create-release
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.os }}-latest
     strategy:
       fail-fast: true
+      matrix:
+        os:
+          - ubuntu
+          - windows
 
     env:
+      X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows-static
       OPENSSL_STATIC: 1
     steps:
       - uses: actions/checkout@v1
+
       - name: Musl
+        if: matrix.os == 'ubuntu'
         run: |
           sudo apt-get install -y musl musl-tools cmake
 
@@ -76,48 +83,36 @@ jobs:
             console.log(release.data.upload_url);
             return release.data.upload_url
 
-      # - uses: actions-rs/toolchain@v1
-      #   if: matrix.os != 'ubuntu'
-      #   with:
-      #     toolchain: stable
       - uses: actions-rs/toolchain@v1
+        if: matrix.os == 'windows'
+        with:
+          toolchain: 1.71.1
+
+      - uses: actions-rs/toolchain@v1
+        if: matrix.os == 'ubuntu'
         with:
           toolchain: 1.71.1
           target: x86_64-unknown-linux-musl
           override: true
-      # - name: Build macos
-      #   if: matrix.os == 'macos'
-      #   run: |
-      #     cargo build --release --features static-openssl
-      #     cargo build --bin gftp -p gftp --release
-      #     cargo build --bin golemsp -p golemsp --release
-      #     cargo build --bin ya-provider -p ya-provider --release
-      #     cargo build --bin exe-unit -p ya-exe-unit --release --features openssl/vendored
-      # - name: Build windows
-      #   if: matrix.os == 'windows'
-      #   run: |
-      #     vcpkg install openssl:x64-windows-static
-      #     vcpkg integrate install
-      #
-      #     cargo build --release
-      #     cargo build --bin gftp -p gftp --release
-      #     cargo build --bin golemsp -p golemsp --release
-      #     cargo build --bin ya-provider -p ya-provider --release
-      #     cargo build --bin exe-unit -p ya-exe-unit --release
+
+      - name: Build windows
+        if: matrix.os == 'windows'
+        run: |
+          Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v25.1/protoc-25.1-win64.zip -o protoc.zip
+          Expand-Archive -Path protoc.zip -DestinationPath protoc
+          $env:PATH="$env:PATH;$(Get-Location)\protoc\bin;"
+          vcpkg install openssl:x64-windows-static
+          vcpkg integrate install
+          cargo build --bin ya-relay-server -p ya-relay-server --release 
 
       - name: Build linux
+        if: matrix.os == 'ubuntu'
         run: |
           cargo build --release --target x86_64-unknown-linux-musl -p ya-relay-server
-      # - name: Pack
-      #   id: pack
-      #   shell: bash
-      #   env:
-      #     OS_NAME: ${{ matrix.os }}
-      #     GITHUB_REF: ${{ github.ref }}
-      #   run: |
-      #     bash .ci/pack-build.sh
+  
       - name: Upload Release Asset
-        id: upload-release-asset-req
+        if: matrix.os == 'ubuntu'
+        id: upload-release-asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -126,18 +121,21 @@ jobs:
           asset_path: ./target/x86_64-unknown-linux-musl/release/ya-relay-server
           asset_name: ya-relay-server
           asset_content_type: application/octet-stream
-      # - name: Upload Release Asset [Provider]
-      #   id: upload-release-asset-prov
-      #   uses: actions/upload-release-asset@v1
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #   with:
-      #     upload_url: ${{ steps.release_upload_url.outputs.result }}
-      #     asset_path: ./releases/${{ steps.pack.outputs.providerArtifact }}
-      #     asset_name: ${{ steps.pack.outputs.providerArtifact }}
-      #     asset_content_type: ${{ steps.pack.outputs.providerMedia }}
+
+      - name: Upload Release Asset Windows
+        if: matrix.os == 'windows'
+        id: upload-release-asset-windows
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.release_upload_url.outputs.result }}
+          asset_path: ./target/release/ya-relay-server.exe
+          asset_name: ya-relay-server.exe
+          asset_content_type: application/octet-stream
+
   build-deb:
-    needs: create-release
+    needs: build
     runs-on: ubuntu-22.04
     steps:
       - name: Get upload url
