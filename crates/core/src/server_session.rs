@@ -235,8 +235,14 @@ impl TryFrom<proto::response::Node> for NodeInfo {
             .map(Identity::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let session_key =
-        if !value.session_pub_key.is_empty() && verify_session_key(&value.session_pub_key, &value.session_key_proof, &identities[0]).is_ok() {
+        let session_key = if !value.session_pub_key.is_empty()
+            && verify_session_key(
+                &value.session_pub_key,
+                &value.session_key_proof,
+                &identities[0],
+            )
+            .is_ok()
+        {
             let session_key = PublicKey::from_slice(&value.session_pub_key)
                 .map_err(|_| anyhow!("Failed to decode session key"))?;
             Some(session_key)

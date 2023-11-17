@@ -11,7 +11,6 @@ use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use metrics::{gauge, increment_counter};
-use ya_relay_core::crypto::PublicKey;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
@@ -21,6 +20,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use ya_relay_core::crypto::PublicKey;
 
 use self::expire::track_sessions_expiration;
 use self::keep_alive::keep_alive_server_session;

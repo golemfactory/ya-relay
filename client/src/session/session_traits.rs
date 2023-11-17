@@ -1,7 +1,7 @@
 use async_trait::async_trait;
-use ya_relay_core::crypto::PublicKey;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use ya_relay_core::crypto::PublicKey;
 
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::SessionId;

@@ -1,13 +1,13 @@
 use anyhow::bail;
 use chrono::Utc;
 use futures::future::{AbortHandle, Abortable};
-use ya_relay_core::crypto::PublicKey;
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
+use ya_relay_core::crypto::PublicKey;
 
 use super::session_state::{InitState, ReverseState, SessionState};
 use crate::direct_session::{DirectSession, NodeEntry};
@@ -64,13 +64,7 @@ impl NetworkView {
             return target;
         }
 
-        let target = NodeView::new(
-            node_id,
-            addrs.to_vec(),
-            vec![],
-            None,
-            self.config.clone(),
-        );
+        let target = NodeView::new(node_id, addrs.to_vec(), vec![], None, self.config.clone());
 
         state.by_node_id.insert(target.id, target.clone());
         for addr in addrs.iter() {

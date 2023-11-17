@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use ya_relay_core::crypto::{CryptoProvider, SessionCrypto, PublicKey};
+use ya_relay_core::crypto::{CryptoProvider, PublicKey, SessionCrypto};
 use ya_relay_proto::proto::Payload;
 
 use crate::error::EncryptionError;
@@ -25,7 +25,6 @@ impl Encryption {
             session_crypto,
         }
     }
-
 
     pub async fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
         Ok(packet)
