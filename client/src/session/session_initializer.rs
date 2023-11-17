@@ -25,7 +25,6 @@ use crate::raw_session::RawSession;
 use crate::session::session_state::InitState;
 use crate::session::session_traits::SessionRegistration;
 
-/// TODO: Rename to `SessionInitializer`
 #[derive(Clone)]
 pub struct SessionInitializer {
     state: Arc<Mutex<SessionInitializerState>>,
