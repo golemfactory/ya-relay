@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use ya_relay_core::crypto::PublicKey;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -20,6 +21,7 @@ pub(crate) trait SessionRegistration: 'static {
         id: SessionId,
         node_id: NodeId,
         identities: Vec<Identity>,
+        session_key: Option<PublicKey>,
     ) -> anyhow::Result<Arc<DirectSession>>;
 
     async fn register_routing(&self, routing: Arc<NodeRouting>) -> anyhow::Result<()>;

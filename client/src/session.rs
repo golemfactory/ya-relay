@@ -11,6 +11,7 @@ use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use metrics::{gauge, increment_counter};
+use ya_relay_core::crypto::PublicKey;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
@@ -130,6 +131,7 @@ impl SessionRegistration for SessionLayer {
         id: SessionId,
         node_id: NodeId,
         identities: Vec<Identity>,
+        session_key: Option<PublicKey>,
     ) -> anyhow::Result<Arc<DirectSession>> {
         log::trace!("Calling register_session {id} [{node_id}] ({addr})");
 
@@ -165,9 +167,11 @@ impl SessionRegistration for SessionLayer {
                     identities,
                 },
                 direct.clone(),
-                Encryption {
-                    crypto: self.config.crypto.clone(),
-                },
+                Encryption::new(
+                    self.config.crypto.clone(),
+                    session_key,
+                    self.config.session_crypto.clone(),
+                ),
             )),
             Err(_) if is_relay => None,
             Err(e) => bail!(e),
@@ -1025,9 +1029,11 @@ impl SessionLayer {
         let routing = NodeRouting::new(
             ids.clone(),
             server.clone(),
-            Encryption {
-                crypto: self.config.crypto.clone(),
-            },
+            Encryption::new(
+                self.config.crypto.clone(),
+                node.session_key,
+                self.config.session_crypto.clone(),
+            ),
         );
 
         self.register_routing(routing)

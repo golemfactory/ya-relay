@@ -224,7 +224,7 @@ impl NetworkViewState {
 #[derive(Clone)]
 pub struct NodeView {
     /// Node default id. Duplicates information in state, but can be accessed
-    /// without acquiring and awaiting RwLock.  
+    /// without acquiring and awaiting RwLock.
     pub id: NodeId,
 
     state: Arc<RwLock<NodeViewState>>,
@@ -430,6 +430,7 @@ impl NodeViewState {
                 })
                 .collect(),
             supported_encryption: self.supported_encryption.clone(),
+            session_key: None, // TODO get session key from config
         }
     }
 }

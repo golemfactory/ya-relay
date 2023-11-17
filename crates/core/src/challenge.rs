@@ -176,18 +176,26 @@ pub fn recover_identities_from_challenge_with_proof<D: Digest>(
 
         for (signature, identity) in response.session_sign.into_iter().zip(&identities) {
             let identity: &Identity = identity;
-
-            let m = hash_session_key(&response.session_pub_key);
-            let id_key = recover(&signature, m.as_slice())?;
-            if id_key.bytes() != identity.public_key.bytes() {
-                bail!("invalid session key identity signature");
-            }
+            verify_session_key(&response.session_pub_key, &signature, identity)?;
             proofs.insert(identity.node_id, signature);
         }
         Ok((default_id, identities, Some((session_pub_key, proofs))))
     } else {
         Ok((default_id, identities, None))
     }
+}
+
+pub fn verify_session_key(
+    session_pub_key: &[u8],
+    proof: &Proof,
+    identity: &Identity,
+) -> anyhow::Result<()> {
+    let m = hash_session_key(session_pub_key);
+    let id_key = recover(proof, m.as_slice())?;
+    if id_key.bytes() != identity.public_key.bytes() {
+        bail!("invalid session key identity signature");
+    }
+    Ok(())
 }
 
 pub fn recover_default_node_id(request: &proto::request::Session) -> anyhow::Result<NodeId> {
