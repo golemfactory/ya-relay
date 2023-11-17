@@ -7,7 +7,7 @@ use ya_relay_proto::proto::Payload;
 
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::encryption::Encryption;
-use crate::error::SessionError;
+use crate::error::{SessionError, EncryptionError};
 use crate::raw_session::SessionType;
 use crate::session::SessionLayer;
 
@@ -24,21 +24,21 @@ pub struct NodeRouting {
     pub node: NodeEntry<Identity>,
 
     /// If `NodeRouting` is relayed session, than we have Relay Server `DirectSession` here.
-    /// `DirectSession` contains all info (for example SlotID) required to send packets using this session.  
+    /// `DirectSession` contains all info (for example SlotID) required to send packets using this session.
     pub route: Weak<DirectSession>,
-    encryption: Encryption,
+    encryption: Arc<Box<dyn Encryption>>,
 }
 
 impl NodeRouting {
     pub fn new(
         node: NodeEntry<Identity>,
         session: Arc<DirectSession>,
-        encryption: Encryption,
+        encryption: Box<dyn Encryption>,
     ) -> Arc<NodeRouting> {
         Arc::new(NodeRouting {
             node,
             route: Arc::downgrade(&session),
-            encryption,
+            encryption: Arc::new(encryption),
         })
     }
 
@@ -62,11 +62,10 @@ impl NodeRouting {
             let packet = self
                 .encryption
                 .encrypt(packet)
-                .await
                 .map_err(|e| SessionError::Internal(e.to_string()))?;
 
             direct
-                .send(self.node.default_id.node_id, packet, transport, false)
+                .send(self.node.default_id.node_id, packet, transport, self.encryption.encryption_flag())
                 .await
                 .map_err(|e| {
                     SessionError::Network(format!("Sending packet to p2p routing session: {e}"))
@@ -201,6 +200,14 @@ impl RoutingSender {
             }
         }
         unimplemented!()
+    }
+
+    pub fn decrypt(&self, p: Payload) -> Result<Payload, EncryptionError> {
+        if let Some(node_routing) = self.node_routing.upgrade() {
+            node_routing.encryption.decrypt(p)
+        } else {
+            Err(EncryptionError::Generic("Routing session closed".to_string()))
+        }
     }
 }
 
