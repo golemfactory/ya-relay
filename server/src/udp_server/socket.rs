@@ -367,8 +367,6 @@ impl UdpSocket {
 
                 msg.msg_flags = MSG_ERRQUEUE;
                 msg.msg_control = ptr::addr_of_mut!(control_buffer).cast();
-                // let len = mem::size_of_val(&control_buffer) as size_t;
-                // msg.msg_controllen = u32::try_from(len).unwrap();
                 cfg_if::cfg_if! {
                     if #[cfg(target_env = "musl")] {
                         msg.msg_controllen = mem::size_of_val(&control_buffer) as socklen_t;
