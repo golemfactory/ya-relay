@@ -58,7 +58,7 @@ impl SessionInitializer {
     ) -> SessionInitializer {
         // We don't want to overwhelm CPU with challenge solving operations.
         // Leave at least 2 threads for yagna to work.
-        let max_heavy_threads = std::cmp::max(num_cpus::get() - 2, 1);
+        let max_heavy_threads = std::cmp::max(num_cpus::get(), 3) - 2;
 
         SessionInitializer {
             state: Arc::new(Mutex::new(SessionInitializerState::default())),

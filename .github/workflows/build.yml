@@ -61,12 +61,11 @@ jobs:
           sudo apt-get install -y cmake
           cmake --version
 
-      #      - name: Install openssl ( Windows only )
-      #        if: runner.os == 'Windows'
-      #        run: |
-      #          vcpkg install openssl:x64-windows openssl:x64-windows-static
-      #          vcpkg list
-      #          vcpkg integrate install
+      - name: Install Protoc
+        uses: arduino/setup-protoc@v2
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          version: "24.x"
 
       - name: Unit tests
         uses: actions-rs/cargo@v1

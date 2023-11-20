@@ -138,7 +138,7 @@ async fn test_session_protocol_disconnected_on_handshake() {}
 #[actix_rt::test]
 async fn test_session_protocol_disconnected_on_challenge_response() {}
 
-#[serial_test::serial]
+#[test_log::test(actix_rt::test)]
 async fn test_query_self_node_info() -> anyhow::Result<()> {
     let wrapper = init_test_server().await.unwrap();
     let client = ClientBuilder::from_url(wrapper.url())

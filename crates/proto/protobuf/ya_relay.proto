@@ -1,5 +1,4 @@
 syntax = "proto3";
-
 package ya_relay_proto;
 
 /*
@@ -97,10 +96,12 @@ message Request {
         Ping ping = 80;
     }
 
+    // Session initialization.
     message Session {
-        ChallengeRequest challenge_req = 1;
-        ChallengeResponse challenge_resp = 2;
-        /* Supported encryption schemes, in order of preference */
+        // Empty if
+        optional ChallengeRequest challenge_req = 1;
+        optional ChallengeResponse challenge_resp = 2;
+        // Supported encryption schemes, in order of preference
         repeated string supported_encryptions = 3;
         /* First identity is the default one.
            For non-default encryption schemes. */
@@ -175,7 +176,7 @@ message Response {
     message Node {
         repeated Identity identities = 1;
         repeated Endpoint endpoints = 2;
-        uint32 seen_ts = 3;
+        uint64 seen_ts = 3;
         uint32 slot = 4;
         repeated string supported_encryptions = 5;
     }
