@@ -4,6 +4,7 @@ mod virtual_layer;
 
 use anyhow::bail;
 use futures::StreamExt;
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -39,7 +40,7 @@ pub struct TransportLayer {
     pub session_layer: SessionLayer,
     pub virtual_tcp: TcpLayer,
 
-    state: Arc<RwLock<TransportLayerState>>,
+    state: Arc<Mutex<TransportLayerState>>,
 
     /// Shared channel with TcpLayer for sending processed packets to external layers.
     ingress_channel: Channel<Forwarded>,
@@ -85,7 +86,7 @@ impl TransportLayer {
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         let channels = {
-            let mut state = self.state.write().await;
+            let mut state = self.state.lock();
 
             let unreliable = state.forward_unreliable.drain().collect::<Vec<_>>();
             let transfer = state.forward_transfer.drain().collect::<Vec<_>>();
@@ -158,12 +159,12 @@ impl TransportLayer {
             .await
     }
 
-    async fn get_forward_channel(
+    fn get_forward_channel(
         &self,
         node_id: NodeId,
         channel: TransportType,
     ) -> Option<ForwardSender> {
-        let state = self.state.read().await;
+        let state = self.state.lock();
         match channel {
             TransportType::Reliable => state.forward_reliable.get(&node_id).cloned(),
             TransportType::Transfer => state.forward_transfer.get(&node_id).cloned(),
@@ -171,13 +172,8 @@ impl TransportLayer {
         }
     }
 
-    async fn set_forward_channel(
-        &self,
-        node_id: NodeId,
-        channel: TransportType,
-        tx: ForwardSender,
-    ) {
-        let mut state = self.state.write().await;
+    fn set_forward_channel(&self, node_id: NodeId, channel: TransportType, tx: ForwardSender) {
+        let mut state = self.state.lock();
         match channel {
             TransportType::Reliable => state.forward_reliable.insert(node_id, tx),
             TransportType::Transfer => state.forward_transfer.insert(node_id, tx),
@@ -202,7 +198,7 @@ impl TransportLayer {
         node_id: NodeId,
         channel: TransportType,
     ) -> anyhow::Result<ForwardSender> {
-        match self.get_forward_channel(node_id, channel).await {
+        match self.get_forward_channel(node_id, channel) {
             // If connection was closed in the meantime, it will be initialized on demand.
             // It will be problematic in some cases, because this can last up to a few seconds.
             // In worst case scenario initialization will fail and we will wait 5s until timeout.
@@ -216,11 +212,8 @@ impl TransportLayer {
                 // TODO: Maybe we should call `self.session_layer::session` and pass it to `connect`.
                 let info = self.session_layer.query_node_info(node_id).await?;
 
-                if let Some(tx) = self
-                    .get_forward_channel(info.default_node_id(), channel)
-                    .await
-                {
-                    self.set_forward_channel(node_id, channel, tx.clone()).await;
+                if let Some(tx) = self.get_forward_channel(info.default_node_id(), channel) {
+                    self.set_forward_channel(node_id, channel, tx.clone());
                     return Ok(tx);
                 }
 
@@ -236,8 +229,7 @@ impl TransportLayer {
                     .await?
                     .into();
 
-                self.set_forward_channel(node_id, channel, sender.clone())
-                    .await;
+                self.set_forward_channel(node_id, channel, sender.clone());
                 Ok(sender)
             }
         }
@@ -250,17 +242,14 @@ impl TransportLayer {
         // These lines are not necessary, because code below would do the job,
         // but this way we avoid querying write lock and asking session layer for `RoutingSender`
         // on every attempt to send message.
-        if let Some(tx) = self
-            .get_forward_channel(node_id, TransportType::Unreliable)
-            .await
-        {
+        if let Some(tx) = self.get_forward_channel(node_id, TransportType::Unreliable) {
             return Ok(tx);
         }
 
         let routing: ForwardSender = self.session_layer.session(node_id).await?.into();
 
         let routing = {
-            let mut state = self.state.write().await;
+            let mut state = self.state.lock();
             match state.forward_unreliable.get(&node_id) {
                 Some(tx) => return Ok(tx.clone()),
                 None => {
