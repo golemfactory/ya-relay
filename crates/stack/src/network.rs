@@ -8,11 +8,11 @@ use std::time::Duration;
 use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
+use smoltcp::iface::SocketHandle;
+use smoltcp::wire::IpEndpoint;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::spawn_local;
 use tokio::time::MissedTickBehavior;
-use ya_smoltcp::iface::SocketHandle;
-use ya_smoltcp::wire::IpEndpoint;
 
 use crate::connection::{Connection, ConnectionMeta};
 use crate::packet::{
@@ -324,7 +324,8 @@ impl Network {
         self.handles.borrow_mut().remove(&handle);
         self.sender.remove(&handle);
 
-        if !meta.remote.is_specified() {
+        let ip_endpoint = smoltcp::wire::IpListenEndpoint::from(meta.remote);
+        if !ip_endpoint.is_specified() {
             return;
         }
         self.connections.borrow_mut().remove(meta);
@@ -361,14 +362,9 @@ impl Network {
     pub fn poll(&self) {
         loop {
             let finished = match (self.stack.poll(), self.is_tun) {
-                (Ok(true), _) | (Ok(_), false) => self.process_ingress() && self.process_egress(),
-                (Ok(false), _) => true,
-                (Err(err), _) => {
-                    log::warn!("{}: stack poll error: {}", *self.name, err);
-                    false
-                }
+                (true, _) | (_, false) => self.process_ingress() && self.process_egress(),
+                (false, _) => true,
             };
-
             if finished {
                 break;
             }
@@ -661,7 +657,6 @@ impl StackSender {
                 None => self.spawn(conn.handle),
             }
         };
-
         async move { sender.send((data, conn)).map_err(Error::from).await }
     }
 
@@ -751,11 +746,11 @@ mod tests {
     use futures::channel::{mpsc, oneshot};
     use futures::{Sink, SinkExt, Stream, StreamExt};
     use sha3::Digest;
+    use smoltcp::iface::Route;
+    use smoltcp::phy::Medium;
+    use smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
     use tokio::task::spawn_local;
     use tokio_stream::wrappers::UnboundedReceiverStream;
-    use ya_smoltcp::iface::Route;
-    use ya_smoltcp::phy::Medium;
-    use ya_smoltcp::wire::{IpAddress, IpCidr, Ipv4Address};
 
     use crate::interface::{add_iface_address, add_iface_route, ip_to_mac, tap_iface, tun_iface};
     use crate::{Connection, EgressEvent, IngressEvent, Network, Protocol, Stack, StackConfig};
@@ -768,7 +763,6 @@ mod tests {
         let route = match ip {
             IpAddress::Ipv4(ipv4) => Route::new_ipv4_gateway(ipv4),
             IpAddress::Ipv6(ipv6) => Route::new_ipv6_gateway(ipv6),
-            _ => panic!("unspecified address"),
         };
 
         let mut iface = match medium {

@@ -1,6 +1,7 @@
+use std::time::Duration;
 use structopt::{clap, StructOpt};
 
-use ya_relay_client::ClientBuilder;
+use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
 use ya_relay_core::NodeId;
@@ -46,7 +47,7 @@ async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(
         "RUST_LOG",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,ya_smoltcp=info".to_string()),
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,smoltcp=info".to_string()),
     );
     env_logger::init();
 
@@ -61,24 +62,24 @@ async fn run() -> anyhow::Result<()> {
         ClientBuilder::from_url(address)
     };
 
-    let client = builder.build().await?;
+    let client = builder.connect(FailFast::No).build().await?;
 
-    log::info!("Sending to server listening on: {}", args.address);
+    log::info!(
+        "Sending to server listening on: {}, node_id={}",
+        args.address,
+        client.node_id()
+    );
 
     match args.commands {
         Commands::Init(Init {}) => {
-            let session = client.sessions.server_session().await?;
-            let endpoints = session.register_endpoints(vec![]).await?;
-
-            log::info!("Discovered public endpoints: {:?}", endpoints);
+            tokio::time::sleep(Duration::from_secs(500000)).await;
         }
         Commands::FindNode(opts) => {
-            let session = client.sessions.server_session().await?;
-            session.find_node(opts.node_id).await?;
+            let node_info = client.find_node(opts.node_id).await?;
+            log::info!("found  node: {:?}", node_info);
         }
         Commands::Ping(_) => {
-            let session = client.sessions.server_session().await?;
-            session.ping().await?;
+            client.ping_sessions().await;
         }
     };
 

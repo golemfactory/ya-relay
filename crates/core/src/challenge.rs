@@ -138,11 +138,7 @@ pub fn recover_identities_from_challenge<D: Digest>(
     let default_id = default_ident.node_id;
     if let Some(remote_id) = remote_id {
         if default_id != remote_id {
-            anyhow::bail!(
-                "Invalid default NodeId [{}] vs [{}] (response)",
-                remote_id,
-                default_id
-            );
+            anyhow::bail!("Invalid default NodeId [{remote_id}] vs [{default_id}] (response)");
         }
     }
 
@@ -214,20 +210,20 @@ fn leading_zeros(result: &[u8]) -> u64 {
     total
 }
 
-pub fn prepare_challenge() -> (proto::ChallengeRequest, RawChallenge) {
+pub fn prepare_challenge(difficulty: u64) -> (proto::ChallengeRequest, RawChallenge) {
     let raw_challenge = rand::thread_rng().gen::<RawChallenge>();
     let request = proto::ChallengeRequest {
         version: "0.0.1".to_string(),
         caps: 0,
         kind: proto::challenge_request::Kind::Sha3512LeadingZeros as i32,
-        difficulty: CHALLENGE_DIFFICULTY,
+        difficulty,
         challenge: raw_challenge.to_vec(),
     };
     (request, raw_challenge)
 }
 
-pub fn prepare_challenge_request() -> (proto::request::Session, RawChallenge) {
-    let (challenge, raw_challenge) = prepare_challenge();
+pub fn prepare_challenge_request(difficulty: u64) -> (proto::request::Session, RawChallenge) {
+    let (challenge, raw_challenge) = prepare_challenge(difficulty);
     let request = proto::request::Session {
         challenge_req: Some(challenge),
         ..Default::default()
@@ -235,8 +231,8 @@ pub fn prepare_challenge_request() -> (proto::request::Session, RawChallenge) {
     (request, raw_challenge)
 }
 
-pub fn prepare_challenge_response() -> (proto::response::Session, RawChallenge) {
-    let (challenge, raw_challenge) = prepare_challenge();
+pub fn prepare_challenge_response(difficulty: u64) -> (proto::response::Session, RawChallenge) {
+    let (challenge, raw_challenge) = prepare_challenge(difficulty);
     let response = proto::response::Session {
         challenge_req: Some(challenge),
         ..Default::default()

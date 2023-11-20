@@ -1,0 +1,48 @@
+version: "3.8"
+
+services:
+  relay_server:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.server
+      args:
+        - LATENCY=10
+    cap_add:
+    - NET_ADMIN
+    ports:
+      - "7464:7464/tcp"
+      - "7464:7464/udp"
+      - "7465:7465/tcp"
+      - "7465:7465/udp"
+    networks:
+      - relay-network
+    healthcheck:
+      test: [ "CMD", "nc", "-zv", "localhost", "7464" ]
+      interval: 1s
+      timeout: 10s
+      retries: 3
+      start_period: 1s
+    environment:
+      - RUST_LOG=trace,actix_http=warn,actix_server=warn
+
+  client:
+    build:
+      context: ../
+      dockerfile: test_env/Dockerfile.client
+      args:
+        - LATENCY=10
+    cap_add:
+    - NET_ADMIN
+    ports:
+      - "8100-8999:8081"
+      - "9100-9999:9081"
+    networks:
+      - relay-network
+    depends_on:
+      - relay_server
+    environment:
+      - RUST_LOG=trace,actix_http=warn,actix_server=warn
+
+networks:
+  relay-network:
+    driver: bridge

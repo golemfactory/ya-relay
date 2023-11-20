@@ -6,22 +6,23 @@ edition = "2018"
 homepage = "https://github.com/golemfactory/ya-relay/crates/proto"
 repository = "https://github.com/golemfactory/ya-relay"
 license = "LGPL-3.0"
-description= "Golem relay messages"
+description = "Golem relay messages"
 
 [features]
 default = ["codec"]
 codec = ["futures", "tokio", "tokio-util", "bytes", "derive_more", "thiserror"]
 
 [dependencies]
-ya-relay-util = "0.1"
+ya-relay-util = { workspace = true }
 
-prost = "0.10"
+prost = "0.12"
 rand = "0.8"
 
 anyhow = "1.0"
 bytes = { version = "1", optional = true }
 derive_more = { version = "0.99", optional = true }
 futures = { version = "0.3", optional = true }
+hex = "0.4"
 thiserror = { version = "1.0", optional = true }
 tokio = { version = "1", optional = true, features = ["sync"] }
 tokio-util = { version = "0.7", optional = true, features = ["codec"] }
@@ -30,4 +31,5 @@ tokio-util = { version = "0.7", optional = true, features = ["codec"] }
 tokio = { version = "1", features = ["macros", "sync", "time"] }
 
 [build-dependencies]
-prost-build = "0.10"
+prost-build = "0.12"
+protoc-prebuilt = "0.2.0"

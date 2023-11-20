@@ -2,10 +2,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use ya_smoltcp::iface::{Route, SocketHandle};
-use ya_smoltcp::socket::*;
-use ya_smoltcp::time::Instant;
-use ya_smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
+use smoltcp::iface::{Route, SocketHandle};
+use smoltcp::socket::*;
+use smoltcp::time::Instant;
+use smoltcp::wire::{IpAddress, IpCidr, IpEndpoint, IpProtocol, IpVersion};
 
 use crate::connection::{Connect, Connection, ConnectionMeta, Disconnect, Send};
 use crate::interface::*;
@@ -39,13 +39,13 @@ impl<'a> Stack<'a> {
     pub fn address(&self) -> Result<IpCidr> {
         {
             let iface = self.iface.borrow();
-            iface.ip_addrs().iter().next().cloned()
+            iface.inner().ip_addrs().iter().next().cloned()
         }
         .ok_or(Error::NetEmpty)
     }
 
     pub fn addresses(&self) -> Vec<IpCidr> {
-        self.iface.borrow().ip_addrs().to_vec()
+        self.iface.borrow().inner().ip_addrs().to_vec()
     }
 
     pub fn add_address(&self, address: IpCidr) {
@@ -123,7 +123,6 @@ impl<'a> Stack<'a> {
                         SocketEndpoint::Ip(ep) => match ep.addr {
                             IpAddress::Ipv4(_) => IpVersion::Ipv4,
                             IpAddress::Ipv6(_) => IpVersion::Ipv6,
-                            _ => return Err(Error::Other(format!("Invalid address: {}", ep.addr))),
                         },
                         _ => return Err(Error::Other("Expected an IP endpoint".to_string())),
                     }
@@ -148,7 +147,7 @@ impl<'a> Stack<'a> {
         endpoint: impl Into<SocketEndpoint>,
     ) -> Result<SocketHandle> {
         let endpoint = endpoint.into();
-        log::trace!("Unbinding {protocol:?} {endpoint:?}");
+        log::trace!("Unbinding {protocol:?} {endpoint}");
         let mut iface = self.iface.borrow_mut();
 
         let handle = iface
@@ -181,7 +180,7 @@ impl<'a> Stack<'a> {
         let local: IpEndpoint = (ip, port).into();
 
         match {
-            let (socket, ctx) = iface.get_socket_and_context::<TcpSocket>(handle);
+            let (socket, ctx) = iface.get_socket_and_context::<tcp::Socket>(handle);
             socket.connect(ctx, remote, local).map(|_| socket)
         } {
             Ok(socket) => socket.set_defaults(),
@@ -205,7 +204,7 @@ impl<'a> Stack<'a> {
 
     pub fn disconnect(&self, handle: SocketHandle) -> Disconnect<'a> {
         let mut iface = self.iface.borrow_mut();
-        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+        if let Ok(sock) = iface.get_socket_safe::<tcp::Socket>(handle) {
             log::trace!("Disconnecting. Socket handle: {handle}.");
             sock.close();
         }
@@ -214,7 +213,7 @@ impl<'a> Stack<'a> {
 
     pub(crate) fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
-        if let Ok(sock) = iface.get_socket_safe::<TcpSocket>(handle) {
+        if let Ok(sock) = iface.get_socket_safe::<tcp::Socket>(handle) {
             log::trace!("Aborting. Socket handle: {handle}.");
             sock.abort();
         }
@@ -254,15 +253,9 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
-    pub fn poll(&self) -> Result<bool> {
-        match {
-            let mut iface = self.iface.borrow_mut();
-            iface.poll(Instant::now())
-        } {
-            Err(ya_smoltcp::Error::Unrecognized) => self.poll(),
-            Err(err) => Err(Error::Other(err.to_string())),
-            Ok(val) => Ok(val),
-        }
+    pub fn poll(&self) -> bool {
+        let mut iface = self.iface.borrow_mut();
+        iface.poll(Instant::now())
     }
 }
 

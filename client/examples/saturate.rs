@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context};
 use chrono::Utc;
-use futures::{SinkExt, StreamExt};
+use futures::prelude::*;
 use log::LevelFilter;
 use prettytable::format::consts::FORMAT_BOX_CHARS;
 use prettytable::format::TableFormat;
@@ -18,11 +18,12 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
-use ya_relay_client::client::ForwardSender;
-use ya_relay_client::{ClientBuilder, ForwardReceiver};
+use ya_relay_client::channels::*;
+use ya_relay_client::*;
+
 use ya_relay_core::crypto::FallbackCryptoProvider;
 use ya_relay_core::key::{load_or_generate, Protected};
-use ya_relay_core::session::TransportType;
+use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 
 #[derive(StructOpt)]
@@ -195,7 +196,7 @@ fn send(
             }
 
             let mut inner = state.inner.write().await;
-            let mut node_stats = inner.entry(node_id.clone()).or_default();
+            let node_stats = inner.entry(node_id.clone()).or_default();
 
             let now = Instant::now();
             let dt = now - node_stats.started;
@@ -353,7 +354,7 @@ async fn run() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
     std::env::set_var(
         "RUST_LOG",
-        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,ya_smoltcp=info".to_string()),
+        std::env::var("RUST_LOG").unwrap_or_else(|_| "trace,mio=info,smoltcp=info".to_string()),
     );
 
     let cli: Cli = Cli::from_args();
@@ -399,7 +400,6 @@ async fn run() -> anyhow::Result<()> {
     let receiver = client.forward_receiver().await.unwrap();
     tokio::task::spawn(receive(receiver, state.clone()));
 
-    let _ = client.sessions.server_session().await?;
     println!("Client {} is listening on {}", node_id, address);
 
     match cli.command {
@@ -417,14 +417,14 @@ async fn run() -> anyhow::Result<()> {
             println!("Connecting to {}", node_id);
 
             let node_id = NodeId::from_str(node_id.as_str()).context("Invalid NodeId")?;
-            let sender = client.forward(node_id).await?;
+            let sender = client.forward_reliable(node_id).await?;
 
             tokio::task::spawn(print_state(node_id, state.clone(), cli.interval));
 
             if let Some(time) = time {
                 let _ = tokio::time::timeout(time, send(sender, node_id, state.clone())).await;
             } else {
-                tokio::task::spawn(send(sender, node_id, state.clone()));
+                tokio::task::spawn_local(send(sender, node_id, state.clone()));
                 let _ = tokio::signal::ctrl_c().await;
             }
         }

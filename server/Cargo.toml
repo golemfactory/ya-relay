@@ -1,46 +1,63 @@
 [package]
 name = "ya-relay-server"
-version = "0.2.2"
+version = "0.3.0"
 authors = ["Golem Factory <contact@golem.network>"]
-edition = "2018"
+edition = "2021"
 description = "Node discovery server for forwarding data between Golem network ndoes"
 license = "LGPL-3.0"
 repository = "https://github.com/golemfactory/ya-relay"
 
-[lib]
-name = "ya_relay_server"
-path = "src/lib.rs"
-
-[[bin]]
-name = "ya-relay-server"
-path = "src/main.rs"
-
-
 [dependencies]
-ya-relay-proto = "0.4.2"
-ya-relay-core = "0.4.0"
-ya-relay-client = "0.6"
+ya-relay-proto = { workspace = true }
+ya-relay-core = { workspace = true }
 
 actix-rt = "2.7"
+serde = { version = "1.0.192", features = ["derive"] }
+rmp-serde = "1"
+serde_bytes = "0.11.12"
 anyhow = "1.0"
 chrono = "0.4"
 dotenv = "0.15"
-env_logger = { version = "0.8", default-features = false }
+env_logger = { version = "0.10.0", default-features = false, features = ["humantime"] }
 futures = "0.3"
-governor = "0.3.2"
 humantime = "2.1"
-itertools = "0.10.1"
-log = "0.4"
-metrics = "0.19"
-metrics-exporter-prometheus = { version = "0.10", features = ["http-listener"] }
+log = {  version = "0.4", default-features = false }
+metrics = "0.21"
+metrics-exporter-prometheus = { version = "0.12", default-features = false }
 rand = { version = "0.8", features = ["std"] }
-structopt = "0.3"
-thiserror = "1.0"
-tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt"] }
+clap = { version = "4.4.6", features = ["derive", "env", "color"]}
+lazy_static = "1.4.0"
+dashmap = "4.0.2"
+
+tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt", "io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }
-url = "2.1"
+hex = "0.4.3"
+parking_lot = "0.12.1"
+bytes = "1.5.0"
+quick_cache = "0.4.0"
+
+tiny-keccak = "2"
+actix-web = { version = "4.4.0", default-features = false, features = ["macros"] }
+cfg-if = "1.0.0"
+
+[target."cfg(unix)".dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.48"
+features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock"
+]
 
 [dev-dependencies]
-serial_test = { git = "https://github.com/tworec/serial_test.git", branch = "actix_rt_test", features = ["actix-rt2"]}
+tokio = { version = "1", features = ["rt-multi-thread"] }
 tokio-stream = "0.1.8"
-test-case = "3"
+test-case = "3.1"
+ethsign = "0.8.0"
+test-log = "0.2.13"
+
+[features]
+test-utils = ["ya-relay-core/test-utils"]
+small = ["log/max_level_info"]
+

@@ -1,9 +1,13 @@
-pub mod config;
+#![allow(dead_code)]
+mod config;
 pub mod metrics;
-mod packet;
-mod public_endpoints;
-pub mod server;
+mod server;
 mod state;
+#[cfg(feature = "test-utils")]
 pub mod testing;
+pub mod udp_server;
 
-pub(crate) use ya_relay_core::error;
+pub use state::session_manager::*;
+
+pub use config::Config;
+pub use server::run;

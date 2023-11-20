@@ -1,0 +1,22 @@
+FROM tests_base:latest
+
+ARG LATENCY=0ms
+ARG RUST_LOG=info
+
+ENV LATENCY=$LATENCY
+ENV RUST_LOG=$RUST_LOG
+
+EXPOSE 7464/udp
+EXPOSE 7464/tcp
+EXPOSE 7465/tcp
+EXPOSE 7465/udp
+
+# Copy debug or release (prefered) build
+COPY ./target/debu[g]/ya-relay-serve[r] /app/
+COPY ./target/releas[e]/ya-relay-serve[r] /app/
+RUN test -f /app/ya-relay-server || err "Failed to find ya-relay-server bin"
+
+CMD tc qdisc add dev eth0 root netem delay $LATENCY \
+    && /app/ya-relay-server \
+    -a 0.0.0.0:7464 \
+    --session-purge-timeout 30sec

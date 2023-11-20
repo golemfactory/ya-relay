@@ -1,87 +1,59 @@
+use anyhow::{anyhow, bail};
+use futures::future::{join_all, AbortHandle};
+use futures::{FutureExt, TryFutureExt};
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
+use std::future::Future;
 use std::iter::zip;
 use std::net::SocketAddr;
 use std::pin::Pin;
-use std::rc::Rc;
 use std::sync::Arc;
+use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, bail};
-use derive_more::From;
-use futures::channel::mpsc;
-use futures::future::{join_all, AbortHandle};
-use futures::{Future, FutureExt, SinkExt, TryFutureExt};
-use tokio::sync::RwLock;
-use url::Url;
-
-use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
-use ya_relay_core::error::InternalError;
-use ya_relay_core::identity::Identity;
-use ya_relay_core::session::TransportType;
-use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
-use ya_relay_core::utils::{parse_udp_url, spawn_local_abortable};
+use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
-use ya_relay_proto::proto::{Forward, Payload, SlotId, MAX_TAG_SIZE};
-use ya_relay_stack::{ChannelMetrics, SocketDesc, SocketState, StackConfig};
+use ya_relay_proto::proto::Payload;
 
-use crate::session::SessionDesc;
-use crate::session_manager::SessionManager;
+use crate::metrics::register_metrics;
 
-pub type ForwardSender = mpsc::Sender<Payload>;
-pub type ForwardReceiver = tokio::sync::mpsc::UnboundedReceiver<Forwarded>;
+pub use crate::config::{ClientBuilder, ClientConfig, FailFast};
+pub use crate::error::SessionError;
+pub use crate::model::{SessionDesc, SocketDesc, SocketState};
+pub use crate::transport::transport_sender::{ForwardSender, GenericSender};
+pub use crate::transport::{ForwardReceiver, TransportLayer};
 
-#[derive(Clone)]
-pub struct ClientConfig {
-    pub node_id: NodeId,
-    pub node_pub_key: PublicKey,
-    pub crypto: Rc<dyn CryptoProvider>,
-    pub bind_url: Url,
-    pub srv_addr: SocketAddr,
-    pub auto_connect: bool,
-    pub session_expiration: Duration,
-    pub stack_config: StackConfig,
-    pub ping_measure_interval: Duration,
+use crate::direct_session::DirectSession;
+use crate::metrics::ChannelMetrics;
+pub use ya_relay_core::server_session::TransportType;
 
-    pub session_request_timeout: Duration,
-    pub challenge_request_timeout: Duration,
-
-    pub reverse_connection_tmp_timeout: Duration,
-    pub reverse_connection_real_timeout: Duration,
-    pub incoming_session_timeout: Duration,
-    pub neighbourhood_ttl: Duration,
-}
-
-pub struct ClientBuilder {
-    bind_url: Option<Url>,
-    srv_url: Url,
-    crypto: Option<Rc<dyn CryptoProvider>>,
-    auto_connect: bool,
-    session_expiration: Option<Duration>,
-    stack_config: StackConfig,
-}
-
+/// A Hybrid NET client that handles connections, sessions and relay operations.
+/// It provides high-level methods for networking tasks such as forwarding
+/// data, managing session metrics, pinging sessions, and broadcasting data.
+/// Supports unreliable transport using Udp directly or reliable transport using embedded Tcp
+/// protocol on top of Udp.
 #[derive(Clone)]
 pub struct Client {
-    pub config: Arc<ClientConfig>,
-
-    state: Arc<RwLock<ClientState>>,
-    pub sessions: SessionManager,
+    config: Arc<ClientConfig>,
+    state: Arc<Mutex<ClientState>>,
+    pub(crate) transport: TransportLayer,
 }
 
+/// The state of a Hybrid NET client, containing the address it is bound to,
+/// its current neighbours and its abort handles.
 pub(crate) struct ClientState {
     bind_addr: Option<SocketAddr>,
     neighbours: Option<Neighbourhood>,
-
     handles: Vec<AbortHandle>,
 }
 
 impl Client {
-    fn new(config: ClientConfig) -> Self {
+    pub(crate) fn new(config: ClientConfig) -> Self {
         let config = Arc::new(config);
 
-        let sessions = SessionManager::new(config.clone());
-        let state = Arc::new(RwLock::new(ClientState {
+        let transport = TransportLayer::new(config.clone());
+        let state = Arc::new(Mutex::new(ClientState {
             bind_addr: None,
             neighbours: None,
             handles: vec![],
@@ -90,10 +62,11 @@ impl Client {
         Self {
             config,
             state,
-            sessions,
+            transport,
         }
     }
 
+    /// Returns the unique identifier (`NodeId`) of the client.
     pub fn node_id(&self) -> NodeId {
         self.config.node_id
     }
@@ -103,60 +76,130 @@ impl Client {
     /// return resolved version of this address.
     pub async fn bind_addr(&self) -> anyhow::Result<SocketAddr> {
         self.state
-            .read()
-            .await
+            .lock()
             .bind_addr
             .ok_or_else(|| anyhow!("client not started"))
     }
 
+    /// Returns the public address (`SocketAddr`) of the client, as seen by
+    /// the rest of the network. This address is usually set during the
+    /// initialization process and can be used by other nodes to establish
+    /// connections with this client.
+    ///
+    /// # Returns
+    ///
+    /// * `SocketAddr`: The public address of the client. This can be either an IPv4 or an IPv6 address.
+    ///
     pub async fn public_addr(&self) -> Option<SocketAddr> {
-        self.sessions.get_public_addr().await
+        self.transport.session_layer.get_public_addr().await
     }
 
+    /// Sets the public address (`SocketAddr`) of the client, as seen by
+    /// the rest of the network. This address is used by other nodes to
+    /// establish connections with this client. This function should be
+    /// used with care as changing the public address can affect ongoing
+    /// connections and overall network functionality.
+    ///
+    /// # Arguments
+    ///
+    /// * `addr: Option<SocketAddr>` - The new public address to be set for the client.
+    ///     This can be either an IPv4 or an IPv6 address or None if node has no
+    ///     public address.
+    ///
+    pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
+        self.transport.session_layer.set_public_addr(None).await;
+    }
+
+    #[doc(hidden)]
     pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
-        self.sessions.remote_id(addr).await
+        self.transport.session_layer.remote_id(addr).await
     }
 
+    /// Returns a vector of descriptions for all currently active sessions.
+    /// A session represents an active connection with a remote node.
+    /// Each description (`SessionDesc`) contains information about the session,
+    /// such as the remote node's address, session type, and status.
+    ///
+    /// This method is asynchronous and it should be awaited to get the result.
+    ///
+    /// # Returns
+    ///
+    /// * `Vec<SessionDesc>`: A vector of session descriptions. If there are no active sessions,
+    /// the vector will be empty.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use ya_relay_client::ClientBuilder;
+    ///
+    /// #[actix_rt::main]
+    /// async fn main() {
+    ///     let client = ClientBuilder::from_url("udp://52.48.158.112:7477".parse().unwrap()).build().await.unwrap();
+    ///     let sessions = client.sessions().await;
+    ///     for session in sessions {
+    ///         println!("Session: {:?}", session);
+    ///     }
+    /// }
+    /// ```
+    ///
     pub async fn sessions(&self) -> Vec<SessionDesc> {
-        self.sessions
+        self.transport
+            .session_layer
             .sessions()
             .await
             .into_iter()
-            .map(|s| SessionDesc::from(s.as_ref()))
+            .filter_map(|s| {
+                s.upgrade()
+                    .map(|direct| SessionDesc::from(direct.raw.as_ref()))
+            })
             .collect()
     }
 
-    pub async fn find_node(
-        &self,
-        node_id: NodeId,
-    ) -> anyhow::Result<ya_relay_proto::proto::response::Node> {
-        let session = self.sessions.server_session().await?;
-        let find_node = session.find_node(node_id);
-
-        match tokio::time::timeout(Duration::from_secs(5), find_node).await {
-            Ok(result) => Ok(result?),
-            Err(_) => bail!("Node [{}] lookup timed out", node_id),
-        }
+    /// Returns information about a node given its identifier (`NodeId`).
+    /// This method uses the underlying network protocol to find the node
+    /// and collect information about it.
+    ///
+    /// # Arguments
+    ///
+    /// * `node_id: NodeId` - The identifier of the node to find.
+    ///
+    /// # Returns
+    ///
+    /// * `Option<NodeInfo>`: An option containing the `NodeInfo` if found,
+    ///     or `None` if the node was not found.
+    ///
+    pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<crate::model::Node> {
+        let session = self.transport.session_layer.server_session().await?;
+        session.raw.find_node(node_id).await
     }
 
-    #[inline]
-    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<ChannelMetrics>)> {
-        self.sessions.virtual_tcp.sockets()
+    /// Returns a vector of all currently opened sockets.
+    /// Each socket (`SocketInfo`) includes information such as its local and remote addresses,
+    /// and the current state of the socket.
+    pub fn sockets(&self) -> Vec<(SocketDesc, SocketState<crate::metrics::ChannelMetrics>)> {
+        self.transport.virtual_tcp.sockets()
     }
 
-    #[inline]
+    /// Returns a set of metrics for all currently active sessions.
+    /// Each metric (`SessionMetric`) includes information about the session,
+    /// such as the amount of data transferred, the duration of the session,
+    /// and other relevant statistics.
     pub async fn session_metrics(&self) -> HashMap<NodeId, ChannelMetrics> {
         let mut session_metrics = HashMap::new();
 
-        let sessions = self.sessions.sessions().await;
-        let sockets = self.sessions.virtual_tcp.sockets();
+        let sessions = self.transport.session_layer.sessions().await;
+        let sockets = self.transport.virtual_tcp.sockets();
         for session in sessions {
-            let node_id = match self.remote_id(&session.remote).await {
+            let session = match session.upgrade() {
+                None => continue,
+                Some(session) => session,
+            };
+            let node_id = match self.remote_id(&session.raw.remote).await {
                 Some(node_id) => node_id,
                 None => continue,
             };
 
-            let virt_node = match self.sessions.virtual_tcp.resolve_node(node_id).await {
+            let virt_node = match self.transport.virtual_tcp.resolve_node(node_id).await {
                 Ok(virt_node) => virt_node,
                 Err(_) => continue,
             };
@@ -167,7 +210,7 @@ impl Client {
                     desc.remote
                         .ip_endpoint()
                         .ok()
-                        .filter(|endpoint| endpoint.addr == virt_node.endpoint.addr)
+                        .filter(|endpoint| endpoint.addr == virt_node.address)
                         .map(|_| metrics.clone().inner_mut().clone())
                 })
                 .reduce(|acc, item| acc + item)
@@ -178,25 +221,36 @@ impl Client {
 
     #[inline]
     pub fn metrics(&self) -> ChannelMetrics {
-        self.sessions.virtual_tcp.metrics()
+        self.transport.virtual_tcp.metrics()
     }
 
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
-        self.sessions.virtual_tcp.receiver().await
+        self.transport.forward_receiver()
     }
 
-    async fn spawn(&mut self) -> anyhow::Result<()> {
+    pub(crate) async fn spawn(&mut self) -> anyhow::Result<()> {
+        register_metrics();
+
         log::debug!("[{}] starting...", self.node_id());
 
-        let bind_addr = self.sessions.spawn().await?;
+        let bind_addr = self.transport.spawn().await?;
 
         {
-            let mut state = self.state.write().await;
-            state.bind_addr = Some(bind_addr);
+            let mut g = self.state.lock();
+            g.bind_addr = Some(bind_addr);
+            drop(g);
         }
 
         if self.config.auto_connect {
-            self.sessions.server_session().await?;
+            // We don't want to exit here, since yagna probably will be able to connect to relay
+            // later, so it is very inconvenient for users to exit early.
+            if let Err(e) = self.transport.session_layer.server_session().await {
+                if self.config.auto_connect_fail_fast {
+                    return Err(e.into());
+                } else {
+                    log::warn!("Auto-connecting to relay on startup failed: {e}");
+                }
+            }
         }
 
         // Measure ping from time to time
@@ -209,79 +263,156 @@ impl Client {
         });
 
         {
-            let mut state = self.state.write().await;
-            state.handles.push(ping_handle);
+            let mut g = self.state.lock();
+            g.handles.push(ping_handle);
         }
 
         log::debug!("[{}] started", self.node_id());
         Ok(())
     }
 
-    pub async fn forward(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        let node_id = match self.sessions.alias(&node_id).await {
-            Some(target_id) => {
-                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
-                target_id
-            }
-            None => node_id,
-        };
-
+    pub async fn forward_reliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         log::trace!(
             "Forward reliable from [{}] to [{}]",
             self.config.node_id,
             node_id
         );
-
-        // Establish session here, if it didn't existed.
-        let session = self.sessions.optimal_session(node_id).await?;
-        self.sessions.forward(session, node_id).await
+        self.transport.forward_reliable(node_id).await
     }
 
     pub async fn forward_transfer(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        let node_id = match self.sessions.alias(&node_id).await {
-            Some(target_id) => {
-                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
-                target_id
-            }
-            None => node_id,
-        };
-
         log::trace!(
             "Forward transfer channel from [{}] to [{}]",
             self.config.node_id,
             node_id
         );
 
-        // Establish session here, if it didn't existed.
-        let session = self.sessions.optimal_session(node_id).await?;
-        self.sessions.forward_transfer(session, node_id).await
+        self.transport.forward_transfer(node_id).await
     }
 
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
-        let node_id = match self.sessions.alias(&node_id).await {
-            Some(target_id) => {
-                log::trace!("Resolved id [{}] as an alias of [{}]", node_id, target_id);
-                target_id
-            }
-            None => node_id,
-        };
-
         log::trace!(
             "Forward unreliable from [{}] to [{}]",
             self.config.node_id,
             node_id
         );
-
-        // Establish session here, if it didn't existed.
-        let session = self.sessions.optimal_session(node_id).await?;
-        self.sessions.forward_unreliable(session, node_id).await
+        self.transport.forward_unreliable(node_id).await
     }
 
+    /// TODO: Remove this.
+    pub async fn ping_sessions(&self) {
+        let sessions = self.transport.session_layer.sessions().await;
+        let ping_futures = sessions
+            .iter()
+            .filter_map(|session| {
+                session
+                    .upgrade()
+                    .map(|session| async move { session.raw.ping().await.ok() })
+            })
+            .collect::<Vec<_>>();
+
+        futures::future::join_all(ping_futures).await;
+    }
+
+    // Returns connected NodeIds. Single Node can have many identities, so the second
+    // tuple element contains main NodeId (default Id).
+    pub async fn connected_nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
+        let ids = self.transport.session_layer.list_connected().await;
+        let aliases = join_all(
+            ids.iter()
+                .map(|id| self.transport.session_layer.default_id(*id))
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .into_iter();
+        zip(ids.into_iter(), aliases).collect()
+    }
+
+    pub async fn reconnect_server(&self) {
+        if self.transport.session_layer.close_server_session().await {
+            log::info!("Reconnecting to Hybrid NET relay server");
+            let _ = self.transport.session_layer.server_session().await;
+        }
+    }
+
+    /// Disconnects from provided Node and all secondary identities.
+    /// If we had p2p session with Node, it will be closed.
+    pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
+        self.transport.session_layer.disconnect(node_id).await
+    }
+
+    pub async fn is_p2p(&self, node_id: NodeId) -> bool {
+        self.transport.session_layer.is_p2p(node_id).await
+    }
+
+    pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
+        self.transport.session_layer.default_id(node_id).await
+    }
+
+    /// Broadcasts a byte array to a certain number of neighbours in the network.
+    /// This method sends the same byte array to the specified number of neighbour nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `data: Vec<u8>` - The data to be broadcasted
+    /// * `count: u32` - The number of neighbour nodes to broadcast the data to.
+    ///
+    /// # Returns
+    ///
+    /// * `anyhow::Result<()>`: A Result object indicating the success or failure of the broadcast operation.
+    ///
+    pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
+        let node_ids = self
+            .neighbours(count)
+            .await
+            .map_err(|e| anyhow!("Unable to query neighbors: {e}"))?;
+
+        log::debug!("Broadcasting message to {} node(s)", node_ids.len());
+
+        let broadcast_futures = node_ids
+            .iter()
+            .map(|node_id| {
+                let data = data.clone();
+                let node_id = *node_id;
+
+                async move {
+                    log::trace!("Broadcasting message to [{node_id}]");
+
+                    match self.forward_unreliable(node_id).await {
+                        Ok(mut forward) => {
+                            if forward.send(data.into()).await.is_err() {
+                                bail!("Cannot broadcast to {node_id}: channel closed");
+                            }
+                        }
+                        Err(e) => {
+                            bail!("Cannot broadcast to {node_id}: {e}");
+                        }
+                    };
+                    anyhow::Result::<()>::Ok(())
+                }
+                .map_err(|e| log::debug!("Failed to broadcast: {e}"))
+                .map(|_| ())
+                .boxed_local()
+            })
+            .collect::<Vec<Pin<Box<dyn Future<Output = ()>>>>>();
+
+        futures::future::join_all(broadcast_futures).await;
+        Ok(())
+    }
+
+    /// Retrieves a certain number of neighbour nodes in the network.
+    /// This method returns a vector of NodeId objects representing neighbour nodes.
+    ///
+    /// # Arguments
+    ///
+    /// * `count: u32` - The number of neighbour nodes to be returned.
+    ///
+    /// # Returns
+    ///
+    /// * `anyhow::Result<Vec<NodeId>>`: A Result object containing a vector of neighbour NodeIds or an error.
+    ///
     pub async fn neighbours(&self, count: u32) -> anyhow::Result<Vec<NodeId>> {
-        if let Some(neighbours) = {
-            let state = self.state.read().await;
-            state.neighbours.clone()
-        } {
+        if let Some(neighbours) = { self.state.lock().neighbours.clone() } {
             if neighbours.nodes.len() as u32 >= count
                 && neighbours.updated + self.config.neighbourhood_ttl > Instant::now()
             {
@@ -289,25 +420,31 @@ impl Client {
             }
         }
 
-        log::debug!("Asking NET relay Server for neighborhood ({}).", count);
+        log::debug!("Asking NET relay Server for neighborhood ({count}).");
 
         let neighbours = self
-            .sessions
+            .transport
+            .session_layer
             .server_session()
             .await
             .map_err(|e| anyhow!("Error establishing session with relay: {e}"))?
-            .neighbours(count)
+            .raw
+            .neighbours(count, true)
             .await?;
 
         let nodes = neighbours
             .nodes
             .into_iter()
-            .filter_map(|n| Identity::try_from(&n).map(|ident| ident.node_id).ok())
+            .filter_map(|n| {
+                n.identities
+                    .get(0)
+                    .and_then(|ident| NodeId::try_from(&ident.node_id).ok())
+            })
             .collect::<Vec<_>>();
 
         let prev_neighborhood = {
-            let mut state = self.state.write().await;
-            state.neighbours.replace(Neighbourhood {
+            let mut g = self.state.lock();
+            g.neighbours.replace(Neighbourhood {
                 updated: Instant::now(),
                 nodes: nodes.clone(),
             })
@@ -318,7 +455,7 @@ impl Client {
             tokio::task::spawn_local(
                 self.clone()
                     .check_nodes_connection(prev_neighbors, nodes.clone())
-                    .map_err(|e| log::debug!("Checking disappeared neighbors failed. {}", e)),
+                    .map_err(|e| log::debug!("Checking disappeared neighbors failed. {e}")),
             );
         }
 
@@ -326,7 +463,7 @@ impl Client {
     }
 
     pub async fn invalidate_neighbourhood_cache(&self) {
-        self.state.write().await.neighbours = None;
+        self.state.lock().neighbours = None;
     }
 
     async fn check_nodes_connection(
@@ -346,9 +483,9 @@ impl Client {
             return Ok(());
         }
 
-        let server = self.sessions.server_session().await?;
+        let server = self.transport.session_layer.server_session().await?;
         for neighbor in lost_neighbors {
-            if self.sessions.is_p2p(&neighbor).await {
+            if self.transport.session_layer.is_p2p(neighbor).await {
                 continue;
             }
 
@@ -360,207 +497,30 @@ impl Client {
             // If we can't find node on relay, most probably it lost connection.
             // We remove this Node, otherwise we will have problems to connect to it later,
             // because we will have outdated entry in our registry.
-            if server.find_node(neighbor).await.is_err() {
+            if server.raw.find_node(neighbor).await.is_err() {
                 log::info!(
-                    "Node [{}], which was earlier in our neighborhood, disconnected.",
-                    neighbor
+                    "Node [{neighbor}], which was earlier in our neighborhood, disconnected."
                 );
-                self.sessions.remove_node(neighbor).await;
+                self.transport.session_layer.disconnect(neighbor).await.ok();
             }
         }
 
         Ok(())
     }
 
-    pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
-        let node_ids = self
-            .neighbours(count)
-            .await
-            .map_err(|e| anyhow!("Unable to query neighbors: {e}"))?;
-
-        log::debug!("Broadcasting message to {} node(s)", node_ids.len());
-
-        let broadcast_futures = node_ids
-            .iter()
-            .map(|node_id| {
-                let data = data.clone();
-                let node_id = *node_id;
-
-                async move {
-                    log::trace!("Broadcasting message to [{}]", node_id);
-
-                    match self.forward_unreliable(node_id).await {
-                        Ok(mut forward) => {
-                            if forward.send(data.into()).await.is_err() {
-                                bail!("Cannot broadcast to {}: channel closed", node_id);
-                            }
-                        }
-                        Err(e) => {
-                            bail!("Cannot broadcast to {}: {}", node_id, e);
-                        }
-                    };
-                    anyhow::Result::<()>::Ok(())
-                }
-                .map_err(|e| log::debug!("Failed to broadcast: {}", e))
-                .map(|_| ())
-                .boxed_local()
-            })
-            .collect::<Vec<Pin<Box<dyn Future<Output = ()>>>>>();
-
-        futures::future::join_all(broadcast_futures).await;
-        Ok(())
-    }
-
-    pub async fn ping_sessions(&self) {
-        let sessions = self.sessions.sessions().await;
-        let ping_futures = sessions
-            .iter()
-            .map(|session| async move { session.ping().await.ok() })
-            .collect::<Vec<_>>();
-
-        futures::future::join_all(ping_futures).await;
-    }
-
-    // Returns connected NodeIds. Single Node can have many identities, so the second
-    // tuple element contains main NodeId (default Id).
-    pub async fn connected_nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
-        let ids = self.sessions.list_identities().await;
-        let aliases = join_all(
-            ids.iter()
-                .map(|id| self.sessions.alias(id))
-                .collect::<Vec<_>>(),
-        )
-        .await
-        .into_iter();
-        zip(ids.into_iter(), aliases).collect()
-    }
-
-    pub async fn reconnect_server(&self) {
-        if self.sessions.drop_server_session().await {
-            log::info!("Reconnecting to Hybrid NET relay server");
-            let _ = self.sessions.server_session().await;
-        }
-    }
-
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         log::info!("Shutting down Hybrid NET client.");
 
         let handles = {
-            let mut state = self.state.write().await;
-            std::mem::take(&mut state.handles)
+            let mut g = self.state.lock();
+            std::mem::take(&mut g.handles)
         };
 
         for handle in handles {
             handle.abort();
         }
 
-        self.sessions.shutdown().await
-    }
-}
-
-impl ClientBuilder {
-    pub fn from_url(url: Url) -> ClientBuilder {
-        ClientBuilder {
-            bind_url: None,
-            srv_url: url,
-            crypto: None,
-            auto_connect: false,
-            session_expiration: None,
-            stack_config: Default::default(),
-        }
-    }
-
-    pub fn crypto(mut self, provider: impl CryptoProvider + 'static) -> ClientBuilder {
-        self.crypto = Some(Rc::new(provider));
-        self
-    }
-
-    pub fn connect(mut self) -> ClientBuilder {
-        self.auto_connect = true;
-        self
-    }
-
-    pub fn listen(mut self, url: Url) -> ClientBuilder {
-        self.bind_url = Some(url);
-        self
-    }
-
-    pub fn expire_session_after(mut self, expiration: Duration) -> Self {
-        self.session_expiration = Some(expiration);
-        self
-    }
-
-    pub fn tcp_max_recv_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
-        self.stack_config.tcp_mem.rx.set_max(max)?;
-        Ok(self)
-    }
-
-    pub fn tcp_max_send_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
-        self.stack_config.tcp_mem.tx.set_max(max)?;
-        Ok(self)
-    }
-
-    pub fn udp_max_recv_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
-        self.stack_config.udp_mem.rx.set_max(max)?;
-        Ok(self)
-    }
-
-    pub fn udp_max_send_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
-        self.stack_config.udp_mem.tx.set_max(max)?;
-        Ok(self)
-    }
-
-    pub async fn build(mut self) -> anyhow::Result<Client> {
-        let bind_url = self
-            .bind_url
-            .unwrap_or_else(|| Url::parse("udp://0.0.0.0:0").unwrap());
-        let crypto = self
-            .crypto
-            .unwrap_or_else(|| Rc::new(FallbackCryptoProvider::default()));
-
-        let default_id = crypto.default_id().await?;
-        let default_pub_key = crypto.get(default_id).await?.public_key().await?;
-
-        self.stack_config.max_transmission_unit =
-            resolve_max_payload_overhead_size(MAX_TAG_SIZE + Forward::header_size()).await?;
-
-        let mut client = Client::new(ClientConfig {
-            node_id: default_id,
-            node_pub_key: default_pub_key,
-            crypto,
-            bind_url,
-            srv_addr: parse_udp_url(&self.srv_url)?.parse()?,
-            auto_connect: self.auto_connect,
-            session_expiration: self
-                .session_expiration
-                .unwrap_or_else(|| Duration::from_secs(25)),
-            stack_config: self.stack_config,
-            ping_measure_interval: Duration::from_secs(300),
-            session_request_timeout: Duration::from_millis(3000),
-            challenge_request_timeout: Duration::from_millis(8000),
-            reverse_connection_tmp_timeout: Duration::from_secs(3),
-            reverse_connection_real_timeout: Duration::from_secs(13),
-            incoming_session_timeout: Duration::from_secs(16),
-            neighbourhood_ttl: Duration::from_secs(300),
-        });
-
-        client.spawn().await?;
-
-        Ok(client)
-    }
-}
-
-impl ClientConfig {
-    pub async fn public_key(&self) -> Result<PublicKey, InternalError> {
-        let crypto = self
-            .crypto
-            .get(self.node_id)
-            .await
-            .map_err(|e| InternalError::Generic(e.to_string()))?;
-        crypto
-            .public_key()
-            .await
-            .map_err(|e| InternalError::Generic(e.to_string()))
+        self.transport.shutdown().await
     }
 }
 
@@ -575,10 +535,4 @@ pub struct Forwarded {
     pub transport: TransportType,
     pub node_id: NodeId,
     pub payload: Payload,
-}
-
-#[derive(From, Clone)]
-pub enum ForwardId {
-    SlotId(SlotId),
-    NodeId(NodeId),
 }

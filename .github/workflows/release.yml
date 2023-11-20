@@ -8,7 +8,7 @@ on:
 jobs:
   create-release:
     name: "Create Release"
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Create Release
         uses: actions/github-script@v3.0
@@ -45,23 +45,20 @@ jobs:
   build:
     name: Build Release
     needs: create-release
-    runs-on: ${{ matrix.os }}-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: true
-      matrix:
-        os:
-          - ubuntu
 
     env:
       OPENSSL_STATIC: 1
     steps:
       - uses: actions/checkout@v1
       - name: Musl
-        if: matrix.os == 'ubuntu'
         run: |
-          sudo apt-get install musl musl-tools
+          sudo apt-get install -y musl musl-tools cmake
 
           musl-gcc -v
+          cmake --version
 
       - name: Get upload url
         id: release_upload_url
@@ -84,9 +81,8 @@ jobs:
       #   with:
       #     toolchain: stable
       - uses: actions-rs/toolchain@v1
-        if: matrix.os == 'ubuntu'
         with:
-          toolchain: stable
+          toolchain: 1.71.1
           target: x86_64-unknown-linux-musl
           override: true
       # - name: Build macos
@@ -110,9 +106,8 @@ jobs:
       #     cargo build --bin exe-unit -p ya-exe-unit --release
 
       - name: Build linux
-        if: matrix.os == 'ubuntu'
         run: |
-          cargo build --release --target x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl -p ya-relay-server
       # - name: Pack
       #   id: pack
       #   shell: bash
@@ -143,7 +138,7 @@ jobs:
       #     asset_content_type: ${{ steps.pack.outputs.providerMedia }}
   build-deb:
     needs: create-release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Get upload url
         id: release_upload_url

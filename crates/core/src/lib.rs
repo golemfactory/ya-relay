@@ -1,10 +1,14 @@
 pub mod challenge;
 pub mod crypto;
+pub mod dispatch;
 pub mod error;
 pub mod identity;
 pub mod key;
+pub mod server_session;
 pub mod session;
 pub mod sync;
+#[cfg(feature = "test-utils")]
+pub mod testing;
 pub mod udp_stream;
 pub mod utils;
 

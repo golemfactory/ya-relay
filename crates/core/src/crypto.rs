@@ -57,6 +57,7 @@ impl<C: Crypto + ?Sized> Crypto for Rc<C> {
     }
 }
 
+#[derive(Clone)]
 pub struct FallbackCryptoProvider {
     default_id: NodeId,
     inner: HashMap<NodeId, FallbackCrypto>,
@@ -74,6 +75,10 @@ impl FallbackCryptoProvider {
     pub fn add(&mut self, secret: SecretKey) {
         let crypto: FallbackCrypto = secret.into();
         self.inner.insert(crypto.id, crypto);
+    }
+
+    pub fn default_node_id(&self) -> NodeId {
+        self.default_id
     }
 }
 

@@ -11,6 +11,8 @@ use prost::encoding::{decode_key, encode_key, WireType};
 
 use crate::codec::DecodeError;
 
+use crate::proto::request::{Kind, Session};
+pub use prost::Message;
 pub use ya_relay_util::Payload;
 
 include!(concat!(env!("OUT_DIR"), "/ya_relay_proto.rs"));
@@ -27,6 +29,10 @@ static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
 pub type RequestId = u64;
 pub type SlotId = u32;
+
+pub fn is_direct_message(slot: SlotId) -> bool {
+    slot == FORWARD_SLOT_ID
+}
 
 #[derive(Clone, Default, PartialEq)]
 #[repr(C)]
@@ -72,6 +78,14 @@ impl Forward {
     #[inline]
     pub fn is_reliable(&self) -> bool {
         self.flags & UNRELIABLE_FLAG != UNRELIABLE_FLAG
+    }
+
+    pub fn is_encrypted(&self) -> bool {
+        self.flags & ENCRYPTED_FLAG != ENCRYPTED_FLAG
+    }
+
+    pub fn set_encrypted(&mut self) {
+        self.flags &= ENCRYPTED_FLAG
     }
 
     #[inline]
@@ -127,6 +141,110 @@ impl std::fmt::Debug for Forward {
         )?;
         write_payload_fmt(f, &self.payload)?;
         write!(f, " )")
+    }
+}
+
+/// Implements Display for important parts of Request and prints the rest as Debug.
+/// You can extend this implementation according to your needs to make logs more
+/// readable.
+impl std::fmt::Display for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Request ( ")?;
+        write!(f, "request_id: {}, ", self.request_id)?;
+        match &self.kind {
+            None => write!(f, "kind: None")?,
+            Some(kind) => write!(f, "kind: {kind}")?,
+        }
+        write!(f, " )")
+    }
+}
+
+impl std::fmt::Display for Kind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            Kind::Session(session) => write!(f, "{session}")?,
+            kind => write!(f, "{kind:?}")?,
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for Session {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let challenge_req = match &self.challenge_req {
+            None => "None".to_string(),
+            Some(challenge_req) => format!("{}", challenge_req),
+        };
+
+        let challenge_resp = match &self.challenge_resp {
+            None => "None".to_string(),
+            Some(challenge_resp) => format!("{}", challenge_resp),
+        };
+
+        write!(f, "Session {{ ")?;
+        write!(f, "challenge_req: {}, ", challenge_req)?;
+        write!(f, "challenge_resp: {}, ", challenge_resp)?;
+        write!(
+            f,
+            "supported_encryptions: {:?}, ",
+            self.supported_encryptions
+        )?;
+        write!(
+            f,
+            "identities: [ {}",
+            self.identities
+                .iter()
+                .map(|id| format!("{id}, "))
+                .collect::<String>()
+                .trim_end_matches(", ")
+        )?;
+
+        write!(f, "] }}")
+    }
+}
+
+impl std::fmt::Display for ChallengeRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChallengeRequest {{ ")?;
+        write!(f, "version: {:2x?}, ", self.version)?;
+        write!(
+            f,
+            "version: {}, difficulty: {}, kind: {}, caps: {}, challenge: {}",
+            self.version,
+            self.difficulty,
+            self.kind,
+            self.caps,
+            hex::encode(&self.challenge)
+        )?;
+        write!(f, " }}")
+    }
+}
+
+impl std::fmt::Display for ChallengeResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ChallengeResponse {{ ")?;
+        write!(f, "solution: {}, ", hex::encode(&self.solution))?;
+        write!(
+            f,
+            "signatures: [ {} ]",
+            hex::encode(
+                self.signatures
+                    .iter()
+                    .map(|sig| format!("{}, ", hex::encode(sig)))
+                    .collect::<String>()
+                    .trim_end_matches(", ")
+            )
+        )?;
+        write!(f, " }}")
+    }
+}
+
+impl std::fmt::Display for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Identity {{ ")?;
+        write!(f, "public_key: {}", hex::encode(&self.public_key))?;
+        write!(f, ", node_id: {}", hex::encode(&self.node_id))?;
+        write!(f, " }}")
     }
 }
 

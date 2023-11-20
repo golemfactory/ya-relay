@@ -40,7 +40,7 @@ pub fn udp_stream(
     stream::unfold(socket, |socket| async {
         const MAX_SIZE: usize = MAX_PACKET_SIZE as usize;
 
-        let mut codec = Codec::default();
+        let mut codec = Codec;
         let mut buf = BytesMut::with_capacity(MAX_SIZE);
         // looping till Some is returned to avoid server shutdown (as None triggers server shutdown)
         loop {
@@ -78,7 +78,7 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
     let (tx, mut rx) = mpsc::channel(100);
 
     tokio::task::spawn_local(async move {
-        let mut codec = Codec::default();
+        let mut codec = Codec;
         let mut buf = BytesMut::with_capacity(MAX_PACKET_SIZE as usize);
         let max_size = resolve_max_payload_size().await.unwrap();
 
@@ -102,6 +102,14 @@ pub fn udp_sink(socket: Arc<UdpSocket>) -> anyhow::Result<mpsc::Sender<(PacketKi
                 log::warn!("Error sending packet: {e}");
             }
         }
+
+        log::debug!(
+            "Udp socket ({}) closed",
+            socket
+                .local_addr()
+                .map(|addr| addr.to_string())
+                .unwrap_or("None".to_string())
+        )
     });
 
     Ok(tx)

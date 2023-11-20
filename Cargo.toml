@@ -1,7 +1,18 @@
+[package]
+name = "ya-relay"
+version = "0.1.0"
+authors = ["Golem Factory <contact@golem.network>"]
+edition = "2021"
+description = "Parent package"
+license = "LGPL-3.0"
+repository = "https://github.com/golemfactory/ya-relay"
+
 [workspace]
-members = [ "client", "crates/*", "server" ]
+members = ["client", "crates/*", "server"]
 
 [profile.release]
+codegen-units = 1
+strip = true
 opt-level = 3
 lto = "thin"
 
@@ -9,10 +20,46 @@ lto = "thin"
 opt-level = 3
 lto = "thin"
 
-[patch.crates-io]
-ya-relay-client = { path = "client" }
-ya-relay-core = { path = "crates/core" }
-ya-relay-proto = { path = "crates/proto" }
-ya-relay-stack = { path = "crates/stack" }
-ya-relay-util = { path = "crates/util" }
-ya-relay-server = { path = "server" }
+[workspace.dependencies]
+ya-relay-client = { path = "client", version = "0.6.0" }
+ya-relay-server = { path = "server", version = "0.3.0" }
+ya-relay-stack = { path = "crates/stack", version = "0.5.0" }
+ya-relay-proto = { path = "crates/proto", version = "0.4.2" }
+ya-relay-core = { path = "crates/core", version = "0.4.0" }
+ya-relay-util = { path = "crates/util", version = "0.1" }
+
+[dev-dependencies]
+ya-relay-client = { workspace = true, features = ["test-utils"] }
+ya-relay-server = { workspace = true, features = ["test-utils"] }
+ya-relay-core = { workspace = true, features = ["test-utils"] }
+ya-relay-proto = { workspace = true }
+
+anyhow = "1.0"
+async-trait = "0.1"
+url = "2.1"
+actix-rt = "2.7"
+actix-web = "4.3"
+bytesize = "1.1"
+chrono = "0.4"
+dotenv = "0.15"
+csv = "1"
+bytes = "1"
+itertools = "0.10"
+log = "0.4"
+humantime = "2.1"
+futures = "0.3"
+lazy_static = "1.4"
+prettytable-rs = "0.8"
+rand = "0.8.5"
+serde = "1.0"
+serde_json = "1.0"
+serde_with = "3.2"
+simple-logging = "2.0"
+structopt = "0.3"
+clap = "4.3.19"
+tokio = { version = "1", features = ["fs", "io-util", "signal"] }
+thiserror = "1.0.44"
+env_logger = "0.10.0"
+test-case = "3.1"
+tokio-stream = "0.1"
+test-log = "0.2.13"
