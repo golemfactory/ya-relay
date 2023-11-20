@@ -367,8 +367,13 @@ impl UdpSocket {
 
                 msg.msg_flags = MSG_ERRQUEUE;
                 msg.msg_control = ptr::addr_of_mut!(control_buffer).cast();
-                msg.msg_controllen = mem::size_of_val(&control_buffer);
-
+                cfg_if::cfg_if! {
+                    if #[cfg(target_env = "musl")] {
+                        msg.msg_controllen = mem::size_of_val(&control_buffer) as socklen_t;
+                    } else {
+                        msg.msg_controllen = mem::size_of_val(&control_buffer) as size_t;
+                    }
+                }
                 let mut res = recvmsg(self.inner.as_raw_fd(), ptr::addr_of_mut!(msg), MSG_DONTWAIT);
                 if res == -1 {
                     let err = std::io::Error::last_os_error();
