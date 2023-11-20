@@ -22,22 +22,20 @@ pub async fn test_default_config(server: Url) -> anyhow::Result<ClientConfig> {
 }
 
 impl SessionLayerPrivate for SessionLayer {
-    fn get_protocol(&self) -> LocalBoxFuture<anyhow::Result<SessionInitializer>> {
+    fn get_protocol(&self) -> anyhow::Result<SessionInitializer> {
         let myself = self.clone();
-        async move { Ok(SessionLayer::get_protocol(&myself).await?) }.boxed_local()
+        Ok(SessionLayer::get_protocol(&myself)?)
     }
 
-    fn get_test_socket_addr(&self) -> LocalBoxFuture<anyhow::Result<SocketAddr>> {
+    fn get_test_socket_addr(&self) -> anyhow::Result<SocketAddr> {
         let myself = self.clone();
-        async move {
-            if let Some(addr) = myself.get_local_addr().await {
-                let port = addr.port();
-                Ok(format!("127.0.0.1:{port}").parse()?)
-            } else {
-                bail!("Can't get local address.")
-            }
+
+        if let Some(addr) = myself.get_local_addr() {
+            let port = addr.port();
+            Ok(format!("127.0.0.1:{port}").parse()?)
+        } else {
+            bail!("Can't get local address.")
         }
-        .boxed_local()
     }
 }
 
@@ -109,8 +107,8 @@ pub async fn spawn_session_layer(url: Url) -> anyhow::Result<SessionLayerWrapper
     layer.spawn_with_dispatcher(capturer.clone()).await?;
 
     let node_id = layer.config.node_id;
-    let addr = layer.get_test_socket_addr().await?;
-    let protocol = layer.get_protocol().await?;
+    let addr = layer.get_test_socket_addr()?;
+    let protocol = layer.get_protocol()?;
     let guards = layer.registry.clone();
 
     log::info!("Spawned `SessionLayer` for [{node_id}] ({addr})");
