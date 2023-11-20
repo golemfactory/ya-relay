@@ -109,11 +109,11 @@ impl MockHandler {
 }
 
 impl Handler for MockHandler {
-    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<RawSession>>> {
+    fn dispatcher(&self, from: SocketAddr) -> Option<Arc<RawSession>> {
         self.layer.dispatcher(from)
     }
 
-    fn session(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<DirectSession>>> {
+    fn session(&self, from: SocketAddr) -> Option<Arc<DirectSession>> {
         Handler::session(&self.layer, from)
     }
 

@@ -11,12 +11,13 @@ use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use metrics::{gauge, increment_counter};
+use parking_lot::Mutex;
 use std::cmp::{max, min};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::convert::{TryFrom, TryInto};
 use std::iter::FromIterator;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Weak};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
@@ -93,7 +94,7 @@ pub struct SessionLayer {
     /// when we are copying `SessionLayer`, what prevents clean shutdown.
     sink: Arc<Mutex<Option<OutStream>>>,
 
-    pub(crate) state: Arc<RwLock<SessionLayerState>>,
+    pub(crate) state: Arc<Mutex<SessionLayerState>>,
 
     pub(crate) registry: NetworkView,
     ingress_channel: Channel<Forwarded>,
@@ -174,7 +175,7 @@ impl SessionRegistration for SessionLayer {
         };
 
         {
-            let mut state = self.state.write().await;
+            let mut state = self.state.lock();
             state.p2p_sessions.insert(session.remote, direct.clone());
 
             for id in &direct.owner.identities {
@@ -204,7 +205,7 @@ impl SessionRegistration for SessionLayer {
         let server_id = route.owner.default_id;
         let addr = route.raw.remote;
 
-        let mut state = self.state.write().await;
+        let mut state = self.state.lock();
         for id in &routing.node.identities {
             let node_id = id.node_id;
             state.nodes.insert(node_id, routing.clone());
@@ -223,46 +224,50 @@ impl SessionDeregistration for SessionLayer {
         log::debug!("[unregister]: Unregistering Node [{node_id}]");
 
         let direct = {
-            let mut state = self.state.write().await;
+            let direct = {
+                let mut state = self.state.lock();
 
-            let mut ids: HashSet<NodeId> = HashSet::from_iter(vec![node_id]);
+                let mut ids: HashSet<NodeId> = HashSet::from_iter(vec![node_id]);
 
-            let routing = state.nodes.get(&node_id).cloned();
-            let direct = state.p2p_nodes.get(&node_id).cloned();
+                let routing = state.nodes.get(&node_id).cloned();
+                let direct = state.p2p_nodes.get(&node_id).cloned();
 
-            if let Some(routing) = &routing {
-                ids.extend(routing.node.identities.iter().map(|entry| entry.node_id))
-            }
-
-            if let Some(direct) = &direct {
-                log::debug!(
-                    "Disconnecting [{node_id}] - removing session: {} ({})",
-                    direct.raw.id,
-                    direct.raw.remote
-                );
-
-                state.p2p_sessions.remove(&direct.raw.remote);
-
-                // List of ids should be the same in `NodeRouting` and `DirectSession`
-                // we are using both to make sure we removed everything.
-                ids.extend(direct.owner.identities.iter())
-            }
-
-            for id in ids {
-                log::debug!("Disconnecting [{node_id}] - removing entries for identity: {id}");
-
-                state.p2p_nodes.remove(&id);
-                // `NodeRouting` will be dropped here and all `RoutingSender` containing `Weak<NodeRouting>`
-                // pointing to this Node will lose connection.
-                if let Some(direct) = state
-                    .nodes
-                    .remove(&id)
-                    .and_then(|routing| routing.route.upgrade())
-                {
-                    // In case we had relayed connection, we remove entry from session used for this.
-                    direct.remove(&id).ok();
+                if let Some(routing) = &routing {
+                    ids.extend(routing.node.identities.iter().map(|entry| entry.node_id))
                 }
-            }
+
+                if let Some(direct) = &direct {
+                    log::debug!(
+                        "Disconnecting [{node_id}] - removing session: {} ({})",
+                        direct.raw.id,
+                        direct.raw.remote
+                    );
+
+                    state.p2p_sessions.remove(&direct.raw.remote);
+
+                    // List of ids should be the same in `NodeRouting` and `DirectSession`
+                    // we are using both to make sure we removed everything.
+                    ids.extend(direct.owner.identities.iter())
+                }
+
+                for id in ids {
+                    log::debug!("Disconnecting [{node_id}] - removing entries for identity: {id}");
+
+                    state.p2p_nodes.remove(&id);
+                    // `NodeRouting` will be dropped here and all `RoutingSender` containing `Weak<NodeRouting>`
+                    // pointing to this Node will lose connection.
+                    if let Some(direct) = state
+                        .nodes
+                        .remove(&id)
+                        .and_then(|routing| routing.route.upgrade())
+                    {
+                        // In case we had relayed connection, we remove entry from session used for this.
+                        direct.remove(&id).ok();
+                    }
+                }
+                drop(state);
+                direct
+            };
 
             if let Some(entry) = self.registry.get_entry(node_id).await {
                 log::trace!("[unregister]: found entry for {node_id}, removing...",);
@@ -314,7 +319,7 @@ impl SessionDeregistration for SessionLayer {
 
         let forwards = session.list();
         {
-            let mut state = self.state.write().await;
+            let mut state = self.state.lock();
             for id in &session.owner.identities {
                 state.p2p_nodes.remove(id);
                 state.nodes.remove(id);
@@ -353,7 +358,7 @@ impl SessionDeregistration for SessionLayer {
 
         entry.abort_initialization().await;
 
-        let protocol = self.get_protocol().await?;
+        let protocol = self.get_protocol()?;
         if let Some(session) = protocol.get_temporary_session(&remote) {
             session.disconnect().await.ok();
             protocol.cleanup_initialization(&session.id).await;
@@ -369,7 +374,7 @@ impl SessionLayer {
         SessionLayer {
             sink: Arc::new(Mutex::new(None)),
             config,
-            state: Arc::new(RwLock::new(state)),
+            state: Arc::new(Mutex::new(state)),
             registry: Default::default(),
             ingress_channel: Default::default(),
             processed_requests: Arc::new(Mutex::new(VecDeque::new())),
@@ -388,7 +393,7 @@ impl SessionLayer {
         let (stream, sink, bind_addr) = udp_bind(&self.config.bind_url).await?;
 
         {
-            *self.sink.lock().unwrap() = Some(sink.clone());
+            *self.sink.lock() = Some(sink.clone());
         }
 
         let mut handles: Vec<AbortHandle> = Vec::from([
@@ -405,7 +410,7 @@ impl SessionLayer {
         };
 
         {
-            let mut state = self.state.write().await;
+            let mut state = self.state.lock();
 
             state.bind_addr.replace(bind_addr);
             for h in handles {
@@ -424,7 +429,7 @@ impl SessionLayer {
 
     pub async fn shutdown(&mut self) -> anyhow::Result<()> {
         let (starting, abort_handles) = {
-            let mut state = self.state.write().await;
+            let mut state = self.state.lock();
             let starting = state.init_protocol.take();
             let handles = std::mem::take(&mut state.handles);
             (starting, handles)
@@ -448,7 +453,7 @@ impl SessionLayer {
         )
         .await;
 
-        let out_stream = { self.sink.lock().unwrap().take() };
+        let out_stream = { self.sink.lock().take() };
         if let Some(mut out_stream) = out_stream {
             if let Err(e) = out_stream.close().await {
                 log::warn!("Error closing socket (output stream). {e}");
@@ -467,15 +472,16 @@ impl SessionLayer {
     }
 
     pub async fn remote_id(&self, addr: &SocketAddr) -> Option<NodeId> {
-        let state = self.state.read().await;
-        state
-            .p2p_sessions
-            .get(addr)
-            .map(|direct| direct.owner.default_id)
+        let session = {
+            let g = self.state.lock();
+            g.p2p_sessions.get(addr).cloned()
+        };
+
+        session.map(|session| session.owner.default_id)
     }
 
     pub async fn list_connected(&self) -> Vec<NodeId> {
-        let state = self.state.read().await;
+        let state = self.state.lock();
         state.nodes.keys().cloned().collect()
     }
 
@@ -484,15 +490,15 @@ impl SessionLayer {
     }
 
     pub async fn get_public_addr(&self) -> Option<SocketAddr> {
-        self.state.read().await.public_addr
+        self.state.lock().public_addr
     }
 
     pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
-        self.state.write().await.public_addr = addr;
+        self.state.lock().public_addr = addr;
     }
 
-    pub async fn get_local_addr(&self) -> Option<SocketAddr> {
-        self.state.read().await.bind_addr
+    pub fn get_local_addr(&self) -> Option<SocketAddr> {
+        self.state.lock().bind_addr
     }
 
     pub fn receiver(&self) -> Option<ForwardReceiver> {
@@ -501,7 +507,7 @@ impl SessionLayer {
 
     /// Doesn't try to initialize session. `None` if session didn't exist.
     pub async fn get_node_routing(&self, node_id: NodeId) -> Option<RoutingSender> {
-        let state = self.state.read().await;
+        let state = self.state.lock();
         state
             .nodes
             .get(&node_id)
@@ -510,12 +516,12 @@ impl SessionLayer {
     }
 
     pub async fn sessions(&self) -> Vec<Weak<DirectSession>> {
-        let state = self.state.read().await;
+        let state = self.state.lock();
         state.p2p_sessions.values().map(Arc::downgrade).collect()
     }
 
     pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<DirectSession>> {
-        let state = self.state.read().await;
+        let state = self.state.lock();
         state.p2p_sessions.get(&addr).cloned()
     }
 
@@ -656,7 +662,7 @@ impl SessionLayer {
 
         // TODO: Should we filter addresses or reject attempt to connect?
         //       In previous implementation we were filtering, but rationale is unknown.
-        let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints).await;
+        let addrs: Vec<SocketAddr> = self.filter_own_addresses(&info.endpoints);
         let this = self.clone();
 
         let session = match self.registry.lock_outgoing(remote_id, &addrs, this).await {
@@ -720,7 +726,7 @@ impl SessionLayer {
 
         log::trace!("Requested Relay server session with [{remote_id}] ({addr}).");
 
-        if let Some(session) = { self.state.read().await.p2p_sessions.get(&addr).cloned() } {
+        if let Some(session) = { self.state.lock().p2p_sessions.get(&addr).cloned() } {
             log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
             return Ok(session);
         }
@@ -859,7 +865,7 @@ impl SessionLayer {
         addr: SocketAddr,
         permit: &SessionPermit,
     ) -> SessionResult<Arc<DirectSession>> {
-        let protocol = self.get_protocol().await?;
+        let protocol = self.get_protocol()?;
         let session = match protocol.init_server_session(addr, permit).await {
             Ok(session) => session,
             Err(SessionInitError::Relay(_, e)) | Err(SessionInitError::P2P(_, e)) => return Err(e),
@@ -887,7 +893,7 @@ impl SessionLayer {
         node_id: NodeId,
         permit: &SessionPermit,
     ) -> SessionResult<Arc<DirectSession>> {
-        let protocol = self.get_protocol().await?;
+        let protocol = self.get_protocol()?;
         let addrs = permit.registry.public_addresses().await;
         if addrs.is_empty() {
             return Err(SessionError::NotApplicable(format!(
@@ -1071,7 +1077,7 @@ impl SessionLayer {
             hex::encode(&session_id)
         );
 
-        let protocol = self.get_protocol().await?;
+        let protocol = self.get_protocol()?;
         let this = self.clone();
 
         if session_id.is_empty() {
@@ -1217,16 +1223,14 @@ impl SessionLayer {
             bail!("Got ReverseConnection for Node [{node_id}] from {from} with no endpoints to connect to.")
         }
 
-        let endpoints = self
-            .filter_own_addresses(
-                &message
-                    .endpoints
-                    .iter()
-                    .cloned()
-                    .filter_map(|e| e.try_into().ok())
-                    .collect::<Vec<_>>(),
-            )
-            .await;
+        let endpoints = self.filter_own_addresses(
+            &message
+                .endpoints
+                .iter()
+                .cloned()
+                .filter_map(|e| e.try_into().ok())
+                .collect::<Vec<_>>(),
+        );
 
         log::info!(
             "Got ReverseConnection message from {from}. node={node_id}, endpoints={:?}",
@@ -1267,7 +1271,7 @@ impl SessionLayer {
     pub(crate) fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
         const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
 
-        let mut processed_requests = self.processed_requests.lock().unwrap();
+        let mut processed_requests = self.processed_requests.lock();
         processed_requests.push_back((session_id, request_id));
         if processed_requests.len() > REQ_DEDUPLICATE_BUF_SIZE {
             processed_requests.pop_front();
@@ -1277,13 +1281,12 @@ impl SessionLayer {
     pub(crate) fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
         self.processed_requests
             .lock()
-            .unwrap()
             .iter()
             .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
     }
 
-    pub(crate) async fn get_protocol(&self) -> Result<SessionInitializer, SessionError> {
-        match self.state.read().await.init_protocol.clone() {
+    pub(crate) fn get_protocol(&self) -> Result<SessionInitializer, SessionError> {
+        match self.state.lock().init_protocol.clone() {
             None => Err(SessionError::Internal(
                 "`SessionProtocol` empty (not initialized?)".to_string(),
             )),
@@ -1301,14 +1304,13 @@ impl SessionLayer {
     pub fn out_stream(&self) -> anyhow::Result<OutStream> {
         self.sink
             .lock()
-            .unwrap()
             .clone()
             .ok_or_else(|| anyhow!("Network sink not initialized"))
     }
 
-    async fn filter_own_addresses(&self, endpoints: &[Endpoint]) -> Vec<SocketAddr> {
+    fn filter_own_addresses(&self, endpoints: &[Endpoint]) -> Vec<SocketAddr> {
         let own_addrs: Vec<_> = {
-            let state = self.state.read().await;
+            let state = self.state.lock();
             vec![state.bind_addr, state.public_addr]
                 .into_iter()
                 .flatten()
@@ -1324,24 +1326,15 @@ impl SessionLayer {
 }
 
 impl Handler for SessionLayer {
-    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<RawSession>>> {
-        async move {
-            if let Ok(protocol) = self.get_protocol().await {
-                protocol.get_temporary_session(&from)
-            } else {
-                None
-            }
-        }
-        .boxed_local()
+    fn dispatcher(&self, from: SocketAddr) -> Option<Arc<RawSession>> {
+        self.get_protocol()
+            .ok()
+            .and_then(|protocol| protocol.get_temporary_session(&from))
     }
 
-    fn session(&self, from: SocketAddr) -> LocalBoxFuture<Option<Arc<DirectSession>>> {
-        let handler = self.clone();
-        async move {
-            let state = handler.state.read().await;
-            state.p2p_sessions.get(&from).cloned()
-        }
-        .boxed_local()
+    fn session(&self, from: SocketAddr) -> Option<Arc<DirectSession>> {
+        let g = self.state.lock();
+        g.p2p_sessions.get(&from).cloned()
     }
 
     fn on_control(

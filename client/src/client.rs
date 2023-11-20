@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail};
 use futures::future::{join_all, AbortHandle};
 use futures::{FutureExt, TryFutureExt};
+use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::future::Future;
@@ -10,7 +11,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
 
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
@@ -36,7 +36,7 @@ pub use ya_relay_core::server_session::TransportType;
 #[derive(Clone)]
 pub struct Client {
     config: Arc<ClientConfig>,
-    state: Arc<RwLock<ClientState>>,
+    state: Arc<Mutex<ClientState>>,
     pub(crate) transport: TransportLayer,
 }
 
@@ -53,7 +53,7 @@ impl Client {
         let config = Arc::new(config);
 
         let transport = TransportLayer::new(config.clone());
-        let state = Arc::new(RwLock::new(ClientState {
+        let state = Arc::new(Mutex::new(ClientState {
             bind_addr: None,
             neighbours: None,
             handles: vec![],
@@ -76,8 +76,7 @@ impl Client {
     /// return resolved version of this address.
     pub async fn bind_addr(&self) -> anyhow::Result<SocketAddr> {
         self.state
-            .read()
-            .await
+            .lock()
             .bind_addr
             .ok_or_else(|| anyhow!("client not started"))
     }
@@ -237,8 +236,9 @@ impl Client {
         let bind_addr = self.transport.spawn().await?;
 
         {
-            let mut state = self.state.write().await;
-            state.bind_addr = Some(bind_addr);
+            let mut g = self.state.lock();
+            g.bind_addr = Some(bind_addr);
+            drop(g);
         }
 
         if self.config.auto_connect {
@@ -263,8 +263,8 @@ impl Client {
         });
 
         {
-            let mut state = self.state.write().await;
-            state.handles.push(ping_handle);
+            let mut g = self.state.lock();
+            g.handles.push(ping_handle);
         }
 
         log::debug!("[{}] started", self.node_id());
@@ -412,10 +412,7 @@ impl Client {
     /// * `anyhow::Result<Vec<NodeId>>`: A Result object containing a vector of neighbour NodeIds or an error.
     ///
     pub async fn neighbours(&self, count: u32) -> anyhow::Result<Vec<NodeId>> {
-        if let Some(neighbours) = {
-            let state = self.state.read().await;
-            state.neighbours.clone()
-        } {
+        if let Some(neighbours) = { self.state.lock().neighbours.clone() } {
             if neighbours.nodes.len() as u32 >= count
                 && neighbours.updated + self.config.neighbourhood_ttl > Instant::now()
             {
@@ -446,8 +443,8 @@ impl Client {
             .collect::<Vec<_>>();
 
         let prev_neighborhood = {
-            let mut state = self.state.write().await;
-            state.neighbours.replace(Neighbourhood {
+            let mut g = self.state.lock();
+            g.neighbours.replace(Neighbourhood {
                 updated: Instant::now(),
                 nodes: nodes.clone(),
             })
@@ -466,7 +463,7 @@ impl Client {
     }
 
     pub async fn invalidate_neighbourhood_cache(&self) {
-        self.state.write().await.neighbours = None;
+        self.state.lock().neighbours = None;
     }
 
     async fn check_nodes_connection(
@@ -515,8 +512,8 @@ impl Client {
         log::info!("Shutting down Hybrid NET client.");
 
         let handles = {
-            let mut state = self.state.write().await;
-            std::mem::take(&mut state.handles)
+            let mut g = self.state.lock();
+            std::mem::take(&mut g.handles)
         };
 
         for handle in handles {
