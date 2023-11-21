@@ -1,6 +1,10 @@
 use std::rc::Rc;
 
-use libaes::Cipher;
+use aes_gcm_siv::{
+    aead::{Aead, KeyInit},
+    Aes128GcmSiv,
+};
+use rand::{Rng, rngs::OsRng};
 use ya_relay_core::crypto::{CryptoProvider, PublicKey, SessionCrypto};
 use ya_relay_proto::proto::Payload;
 
@@ -18,7 +22,8 @@ pub fn new(
     session_crypto: SessionCrypto,
 ) -> Box<dyn Encryption> {
     if let Some(key) = remote_session_key {
-        Box::new(Aes128CbcEncryption::new(key, session_crypto))
+        let shared_secret = session_crypto.secret_with(&key);
+        Box::new(Aes128GcmSivEncryption::new(shared_secret))
     } else {
         Box::new(NullEncryption {})
     }
@@ -40,35 +45,40 @@ impl Encryption for NullEncryption {
     }
 }
 
-pub struct Aes128CbcEncryption {
-    cipher: Cipher,
-    iv: [u8; 16],
+pub struct Aes128GcmSivEncryption {
+    cipher: Aes128GcmSiv,
 }
 
-impl Aes128CbcEncryption {
-    pub fn new(
-        remote_session_key: PublicKey,
-        session_crypto: SessionCrypto,
-    ) -> Self {
-        let shared_secret = session_crypto.secret_with(&remote_session_key);
-        let mut key: [u8; 16] = [0; 16];
+impl Aes128GcmSivEncryption {
+    pub fn new(shared_secret: [u8; 32]) -> Self {
+        let mut key = [0; 16];
         key.copy_from_slice(&shared_secret[..16]);
-        let mut iv: [u8; 16] = [0; 16];
-        iv.copy_from_slice(&shared_secret[16..]);
+        Aes128GcmSiv::new(&key.into());
         Self {
-            cipher: Cipher::new_128(&key),
-            iv,
+            cipher: Aes128GcmSiv::new(&key.into()),
         }
     }
 }
 
-impl Encryption for Aes128CbcEncryption {
+impl Encryption for Aes128GcmSivEncryption {
     fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
-        Ok(Payload::from(self.cipher.cbc_encrypt(&self.iv, packet.as_ref())))
+        let nonce = OsRng.gen::<[u8; 12]>();
+        self.cipher.encrypt(&nonce.into(), packet.as_ref())
+            .map_err(|e| EncryptionError::Generic(e.to_string()))
+            .map(|mut ciphertext| {
+                ciphertext.splice(0..0, nonce.iter().cloned());
+                Payload::from(ciphertext)
+            })
     }
 
     fn decrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
-        Ok(Payload::from(self.cipher.cbc_decrypt(&self.iv, packet.as_ref())))
+        let mut packet = packet.into_vec();
+        let nonce = packet.drain(0..12).collect::<Vec<_>>();
+        self.cipher.decrypt(nonce.as_slice().into(), packet.as_slice())
+            .map_err(|e| EncryptionError::Generic(e.to_string()))
+            .map(|plaintext| {
+                Payload::from(plaintext)
+            })
     }
 
     fn encryption_flag(&self) -> bool {
