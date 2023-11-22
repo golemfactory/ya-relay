@@ -2,9 +2,9 @@ use std::rc::Rc;
 
 use aes_gcm_siv::{
     aead::{Aead, KeyInit},
-    Aes128GcmSiv,
+    Aes256GcmSiv, Nonce,
 };
-use rand::{Rng, rngs::OsRng};
+use rand::{rngs::OsRng, thread_rng, Rng};
 use strum_macros::{Display, EnumString};
 use ya_relay_core::crypto::{CryptoProvider, PublicKey, SessionCrypto};
 use ya_relay_proto::proto::Payload;
@@ -13,7 +13,7 @@ use crate::error::EncryptionError;
 
 #[derive(Display, EnumString, PartialEq)]
 enum EncryptionType {
-    Aes128GcmSiv,
+    Aes256GcmSiv,
 }
 
 pub trait Encryption {
@@ -27,10 +27,11 @@ pub fn new(
     remote_session_key: Option<PublicKey>,
     session_crypto: SessionCrypto,
 ) -> Box<dyn Encryption> {
+    // TODO: Define who new encryptions will negotiated in the future.
     if let Some(key) = remote_session_key {
-        if supported_encryption.contains(&EncryptionType::Aes128GcmSiv.to_string()) {
+        if supported_encryption.contains(&EncryptionType::Aes256GcmSiv.to_string()) {
             let shared_secret = session_crypto.secret_with(&key);
-            Box::new(Aes128GcmSivEncryption::new(shared_secret))
+            Box::new(Aes256GcmSivEncryption::new(shared_secret))
         } else {
             log::warn!("Could not negotiate encryption type");
             Box::new(NullEncryption {})
@@ -41,7 +42,7 @@ pub fn new(
 }
 
 pub fn supported_encryptions() -> Vec<String> {
-    vec![EncryptionType::Aes128GcmSiv.to_string()]
+    vec![EncryptionType::Aes256GcmSiv.to_string()]
 }
 
 struct NullEncryption;
@@ -60,25 +61,23 @@ impl Encryption for NullEncryption {
     }
 }
 
-pub struct Aes128GcmSivEncryption {
-    cipher: Aes128GcmSiv,
+pub struct Aes256GcmSivEncryption {
+    cipher: Aes256GcmSiv,
 }
 
-impl Aes128GcmSivEncryption {
+impl Aes256GcmSivEncryption {
     pub fn new(shared_secret: [u8; 32]) -> Self {
-        let mut key = [0; 16];
-        key.copy_from_slice(&shared_secret[..16]);
-        Aes128GcmSiv::new(&key.into());
         Self {
-            cipher: Aes128GcmSiv::new(&key.into()),
+            cipher: Aes256GcmSiv::new(&shared_secret.into()),
         }
     }
 }
 
-impl Encryption for Aes128GcmSivEncryption {
+impl Encryption for Aes256GcmSivEncryption {
     fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
-        let nonce = OsRng.gen::<[u8; 12]>();
-        self.cipher.encrypt(&nonce.into(), packet.as_ref())
+        let nonce = thread_rng().gen::<[u8; 12]>();
+        self.cipher
+            .encrypt(&Nonce::from_slice(&nonce), packet.as_ref())
             .map_err(|e| EncryptionError::Generic(e.to_string()))
             .map(|mut ciphertext| {
                 ciphertext.splice(0..0, nonce.iter().cloned());
@@ -88,12 +87,11 @@ impl Encryption for Aes128GcmSivEncryption {
 
     fn decrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
         let mut packet = packet.into_vec();
-        let nonce = packet.drain(0..12).collect::<Vec<_>>();
-        self.cipher.decrypt(nonce.as_slice().into(), packet.as_slice())
+        let nonce = Nonce::from_slice(&packet[0..12]);
+        self.cipher
+            .decrypt(&nonce, &packet[12..])
             .map_err(|e| EncryptionError::Generic(e.to_string()))
-            .map(|plaintext| {
-                Payload::from(plaintext)
-            })
+            .map(|plaintext| Payload::from(plaintext))
     }
 
     fn encryption_flag(&self) -> bool {

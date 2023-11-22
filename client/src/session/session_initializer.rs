@@ -212,7 +212,14 @@ impl SessionInitializer {
         // after we send ResumeForwarding. That's why we register session before.
         let session = self
             .layer
-            .register_session(addr, session_id, remote_id, identities, response.packet.supported_encryptions, session_key)
+            .register_session(
+                addr,
+                session_id,
+                remote_id,
+                identities,
+                response.packet.supported_encryptions,
+                session_key,
+            )
             .await
             .map_err(|e| {
                 SessionError::Internal(format!("Failed to register session. Error: {e}"))
@@ -469,7 +476,14 @@ impl SessionInitializer {
             // to immediately send us Forward packet.
             let session = self
                 .layer
-                .register_session(with, session_id, node_id, identities, session.supported_encryptions, session_key)
+                .register_session(
+                    with,
+                    session_id,
+                    node_id,
+                    identities,
+                    session.supported_encryptions,
+                    session_key,
+                )
                 .await
                 .map_err(|e| {
                     SessionError::Internal(format!("Failed to register session. Error: {e}"))

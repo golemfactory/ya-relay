@@ -7,7 +7,7 @@ use ya_relay_proto::proto::Payload;
 
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::encryption::Encryption;
-use crate::error::{SessionError, EncryptionError};
+use crate::error::{EncryptionError, SessionError};
 use crate::raw_session::SessionType;
 use crate::session::SessionLayer;
 
@@ -65,7 +65,12 @@ impl NodeRouting {
                 .map_err(|e| SessionError::Internal(e.to_string()))?;
 
             direct
-                .send(self.node.default_id.node_id, packet, transport, self.encryption.encryption_flag())
+                .send(
+                    self.node.default_id.node_id,
+                    packet,
+                    transport,
+                    self.encryption.encryption_flag(),
+                )
                 .await
                 .map_err(|e| {
                     SessionError::Network(format!("Sending packet to p2p routing session: {e}"))
@@ -206,7 +211,9 @@ impl RoutingSender {
         if let Some(node_routing) = self.node_routing.upgrade() {
             node_routing.encryption.decrypt(p)
         } else {
-            Err(EncryptionError::Generic("Routing session closed".to_string()))
+            Err(EncryptionError::Generic(
+                "Routing session closed".to_string(),
+            ))
         }
     }
 }
