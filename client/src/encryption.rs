@@ -5,10 +5,16 @@ use aes_gcm_siv::{
     Aes128GcmSiv,
 };
 use rand::{Rng, rngs::OsRng};
+use strum_macros::{Display, EnumString};
 use ya_relay_core::crypto::{CryptoProvider, PublicKey, SessionCrypto};
 use ya_relay_proto::proto::Payload;
 
 use crate::error::EncryptionError;
+
+#[derive(Display, EnumString, PartialEq)]
+enum EncryptionType {
+    Aes128GcmSiv,
+}
 
 pub trait Encryption {
     fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError>;
@@ -17,16 +23,25 @@ pub trait Encryption {
 }
 
 pub fn new(
-    _crypto: Rc<dyn CryptoProvider>,
+    supported_encryption: Vec<String>,
     remote_session_key: Option<PublicKey>,
     session_crypto: SessionCrypto,
 ) -> Box<dyn Encryption> {
     if let Some(key) = remote_session_key {
-        let shared_secret = session_crypto.secret_with(&key);
-        Box::new(Aes128GcmSivEncryption::new(shared_secret))
+        if supported_encryption.contains(&EncryptionType::Aes128GcmSiv.to_string()) {
+            let shared_secret = session_crypto.secret_with(&key);
+            Box::new(Aes128GcmSivEncryption::new(shared_secret))
+        } else {
+            log::warn!("Could not negotiate encryption type");
+            Box::new(NullEncryption {})
+        }
     } else {
         Box::new(NullEncryption {})
     }
+}
+
+pub fn supported_encryptions() -> Vec<String> {
+    vec![EncryptionType::Aes128GcmSiv.to_string()]
 }
 
 struct NullEncryption;

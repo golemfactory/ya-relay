@@ -20,6 +20,7 @@ use ya_relay_proto::proto::RequestId;
 use super::network_view::SessionPermit;
 use crate::client::ClientConfig;
 use crate::direct_session::DirectSession;
+use crate::encryption;
 use crate::error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::raw_session::RawSession;
 use crate::session::session_state::InitState;
@@ -148,6 +149,7 @@ impl SessionInitializer {
                     .await
                     .map_err(|e| SessionError::Internal(e.to_string()))?,
             ),
+            supported_encryptions: encryption::supported_encryptions(),
             ..Default::default()
         };
 
@@ -210,7 +212,7 @@ impl SessionInitializer {
         // after we send ResumeForwarding. That's why we register session before.
         let session = self
             .layer
-            .register_session(addr, session_id, remote_id, identities, session_key)
+            .register_session(addr, session_id, remote_id, identities, response.packet.supported_encryptions, session_key)
             .await
             .map_err(|e| {
                 SessionError::Internal(format!("Failed to register session. Error: {e}"))
@@ -458,6 +460,7 @@ impl SessionInitializer {
 
             let packet = proto::response::Session {
                 challenge_resp: Some(challenge),
+                supported_encryptions: encryption::supported_encryptions(),
                 ..Default::default()
             };
 
@@ -466,7 +469,7 @@ impl SessionInitializer {
             // to immediately send us Forward packet.
             let session = self
                 .layer
-                .register_session(with, session_id, node_id, identities, session_key)
+                .register_session(with, session_id, node_id, identities, session.supported_encryptions, session_key)
                 .await
                 .map_err(|e| {
                     SessionError::Internal(format!("Failed to register session. Error: {e}"))

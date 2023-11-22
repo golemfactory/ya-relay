@@ -132,6 +132,7 @@ impl SessionRegistration for SessionLayer {
         id: SessionId,
         node_id: NodeId,
         identities: Vec<Identity>,
+        supported_encryptions: Vec<String>,
         session_key: Option<PublicKey>,
     ) -> anyhow::Result<Arc<DirectSession>> {
         log::trace!("Calling register_session {id} [{node_id}] ({addr})");
@@ -169,7 +170,7 @@ impl SessionRegistration for SessionLayer {
                 },
                 direct.clone(),
                 encryption::new(
-                    self.config.crypto.clone(),
+                    supported_encryptions,
                     session_key,
                     self.config.session_crypto.clone(),
                 ),
@@ -1036,7 +1037,7 @@ impl SessionLayer {
             ids.clone(),
             server.clone(),
             encryption::new(
-                self.config.crypto.clone(),
+                node.supported_encryption,
                 node.session_key,
                 self.config.session_crypto.clone(),
             ),

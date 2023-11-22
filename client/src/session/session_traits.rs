@@ -21,6 +21,7 @@ pub(crate) trait SessionRegistration: 'static {
         id: SessionId,
         node_id: NodeId,
         identities: Vec<Identity>,
+        supported_encryptions: Vec<String>,
         session_key: Option<PublicKey>,
     ) -> anyhow::Result<Arc<DirectSession>>;
 
