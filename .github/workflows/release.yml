@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - name: Create Release
-        uses: actions/github-script@v3.0
+        uses: actions/github-script@v4
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
@@ -172,7 +172,7 @@ jobs:
           echo "::set-output name=tagv::${TAG_NAME}"
           echo "::set-output name=version::${VERSION}"
 
-      - uses: golemfactory/build-deb-action@v3
+      - uses: golemfactory/build-deb-action@v4
         id: deb
         with:
           debVersion: ${{ steps.version.outputs.version }}
