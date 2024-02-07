@@ -3,7 +3,7 @@ use std::rc::Rc;
 use std::time::Duration;
 use url::Url;
 
-use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey};
+use ya_relay_core::crypto::{CryptoProvider, FallbackCryptoProvider, PublicKey, SessionCrypto};
 use ya_relay_core::error::InternalError;
 use ya_relay_core::udp_stream::resolve_max_payload_overhead_size;
 use ya_relay_core::utils::parse_udp_url;
@@ -24,6 +24,7 @@ pub enum FailFast {
 pub struct ClientConfig {
     pub node_id: NodeId,
     pub node_pub_key: PublicKey,
+    pub session_crypto: SessionCrypto,
     pub crypto: Rc<dyn CryptoProvider>,
     pub challenge_difficulty: u64,
 
@@ -171,6 +172,7 @@ impl ClientBuilder {
         Ok(ClientConfig {
             node_id: default_id,
             node_pub_key: default_pub_key,
+            session_crypto: SessionCrypto::generate()?,
             crypto,
             challenge_difficulty: 1,
             bind_url,

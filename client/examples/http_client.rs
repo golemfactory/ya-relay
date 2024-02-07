@@ -414,6 +414,7 @@ async fn handle_forward_message(
             if data.len() != bytes_transferred {
                 anyhow::bail!("Expected {} bytes, got {}", bytes_transferred, data.len());
             }
+            log::debug!("Message received: |{data}|");
 
             sender
                 .send(

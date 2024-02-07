@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
+use ya_relay_core::crypto::PublicKey;
 
 use super::session_state::{InitState, ReverseState, SessionState};
 use crate::direct_session::{DirectSession, NodeEntry};
@@ -63,7 +64,7 @@ impl NetworkView {
             return target;
         }
 
-        let target = NodeView::new(node_id, addrs.to_vec(), self.config.clone());
+        let target = NodeView::new(node_id, addrs.to_vec(), vec![], None, self.config.clone());
 
         state.by_node_id.insert(target.id, target.clone());
         for addr in addrs.iter() {
@@ -121,7 +122,13 @@ impl NetworkView {
             }
             entries[0].clone()
         } else {
-            NodeView::new(info.default_node_id(), addrs.clone(), self.config.clone())
+            NodeView::new(
+                info.default_node_id(),
+                addrs.clone(),
+                info.supported_encryption.clone(),
+                info.session_key.clone(),
+                self.config.clone(),
+            )
         };
 
         for id in &info.identities {
@@ -224,7 +231,7 @@ impl NetworkViewState {
 #[derive(Clone)]
 pub struct NodeView {
     /// Node default id. Duplicates information in state, but can be accessed
-    /// without acquiring and awaiting RwLock.  
+    /// without acquiring and awaiting RwLock.
     pub id: NodeId,
 
     state: Arc<RwLock<NodeViewState>>,
@@ -254,6 +261,7 @@ pub struct NodeViewState {
     /// Assumes only UDP addresses.
     addresses: Vec<SocketAddr>,
     supported_encryption: Vec<String>,
+    session_key: Option<PublicKey>,
     state: SessionState,
     /// Currently we are storing slot of Node on relay server. This assumes, that there is only
     /// one relay server, what we hope that it will not be true forever.
@@ -359,6 +367,7 @@ impl NodeView {
 
         state.slot = info.slot;
         state.supported_encryption = info.supported_encryption;
+        state.session_key = info.session_key;
         // TODO: What should we do if identity lists differ? Is new list always better?
         state.node = info.identities;
         // TODO: We should distinguish between public IPs and addresses assigned temporarily
@@ -430,12 +439,19 @@ impl NodeViewState {
                 })
                 .collect(),
             supported_encryption: self.supported_encryption.clone(),
+            session_key: self.session_key.clone(),
         }
     }
 }
 
 impl NodeView {
-    fn new(node_id: NodeId, addresses: Vec<SocketAddr>, config: Arc<NetworkViewConfig>) -> Self {
+    fn new(
+        node_id: NodeId,
+        addresses: Vec<SocketAddr>,
+        supported_encryption: Vec<String>,
+        remote_session_key: Option<PublicKey>,
+        config: Arc<NetworkViewConfig>,
+    ) -> Self {
         let (notify_msg, _) = broadcast::channel(10);
 
         Self {
@@ -444,7 +460,8 @@ impl NodeView {
             state: Arc::new(RwLock::new(NodeViewState {
                 node: vec![],
                 addresses,
-                supported_encryption: vec![],
+                supported_encryption,
+                session_key: remote_session_key,
                 state: SessionState::Closed,
                 slot: FORWARD_SLOT_ID,
                 abort_handle: vec![],

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
+use ethsign::PublicKey;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -8,6 +9,7 @@ use std::fmt;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex, RwLock};
 
+use crate::challenge::verify_session_key;
 use crate::identity::Identity;
 use ya_client_model::NodeId;
 use ya_relay_proto::proto;
@@ -46,6 +48,7 @@ pub struct NodeInfo {
     /// Endpoints registered by Node.
     pub endpoints: Vec<Endpoint>,
     pub supported_encryption: Vec<String>,
+    pub session_key: Option<PublicKey>,
 }
 
 impl NodeInfo {
@@ -232,6 +235,21 @@ impl TryFrom<proto::response::Node> for NodeInfo {
             .map(Identity::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
+        let session_key = if !value.session_pub_key.is_empty()
+            && verify_session_key(
+                &value.session_pub_key,
+                &value.session_key_proof,
+                &identities[0],
+            )
+            .is_ok()
+        {
+            let session_key = PublicKey::from_slice(&value.session_pub_key)
+                .map_err(|_| anyhow!("Failed to decode session key"))?;
+            Some(session_key)
+        } else {
+            None
+        };
+
         Ok(NodeInfo {
             identities,
             slot: value.slot,
@@ -241,6 +259,7 @@ impl TryFrom<proto::response::Node> for NodeInfo {
                 .map(Endpoint::try_from)
                 .collect::<anyhow::Result<Vec<_>>>()?,
             supported_encryption: value.supported_encryptions,
+            session_key,
         })
     }
 }

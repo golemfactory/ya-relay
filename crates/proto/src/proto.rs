@@ -81,11 +81,11 @@ impl Forward {
     }
 
     pub fn is_encrypted(&self) -> bool {
-        self.flags & ENCRYPTED_FLAG != ENCRYPTED_FLAG
+        self.flags & ENCRYPTED_FLAG == ENCRYPTED_FLAG
     }
 
     pub fn set_encrypted(&mut self) {
-        self.flags &= ENCRYPTED_FLAG
+        self.flags |= ENCRYPTED_FLAG
     }
 
     #[inline]
@@ -134,7 +134,7 @@ impl std::fmt::Debug for Forward {
         write!(f, "session_id: {:2x?}, ", self.session_id)?;
         write!(
             f,
-            "slot: {}, flags: {:16b}, payload: ({} B) ",
+            "slot: {}, flags: {:016b}, payload: ({} B) ",
             self.slot,
             self.flags,
             self.payload.len()

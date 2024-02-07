@@ -4,10 +4,66 @@ use std::rc::Rc;
 pub use ethsign::{PublicKey, SecretKey, Signature};
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
+use secp256k1::rand;
+use secp256k1::Secp256k1;
 
 use ya_client_model::NodeId;
 
 use crate::key::generate;
+
+#[derive(Clone)]
+pub struct SessionCrypto {
+    secret: secp256k1::SecretKey,
+    public_key: secp256k1::PublicKey,
+}
+
+impl SessionCrypto {
+    pub fn generate() -> anyhow::Result<Self> {
+        let secp = Secp256k1::new();
+        let mut rng = rand::rngs::OsRng::new()?;
+
+        let (secret, public_key) = secp.generate_keypair(&mut rng);
+        Ok(SessionCrypto { secret, public_key })
+    }
+
+    pub fn pub_key(&self) -> PublicKey {
+        let bytes = &self.public_key.serialize_uncompressed();
+        ethsign::PublicKey::from_slice(&bytes[1..]).unwrap()
+    }
+
+    pub fn secret_with(&self, pk: &PublicKey) -> [u8; 32] {
+        let mut pk_bytes = [0u8; 65];
+        pk_bytes[1..].copy_from_slice(pk.bytes());
+        pk_bytes[0] = 4;
+        let mut output = [0u8; 32];
+        let pk = secp256k1::key::PublicKey::from_slice(&pk_bytes).unwrap();
+        let ss = secp256k1::ecdh::SharedSecret::new(&pk, &self.secret);
+        output.copy_from_slice(ss.as_ref());
+        output
+    }
+}
+
+#[test]
+fn test_session_crypto() -> anyhow::Result<()> {
+    use tiny_keccak::Hasher;
+
+    let sc = SessionCrypto::generate()?;
+    let pkb = sc.public_key.serialize_uncompressed();
+    let mut k = tiny_keccak::Keccak::v256();
+    k.update(&pkb[1..]);
+    eprintln!("65={:x}", pkb[0]);
+    let mut output = [0u8; 32];
+    k.finalize(&mut output);
+    assert_eq!(sc.pub_key().address(), &output[12..]);
+    let sc2 = SessionCrypto::generate()?;
+
+    let secret = sc.secret_with(&sc2.pub_key());
+    let secret2 = sc2.secret_with(&sc.pub_key());
+    eprintln!("{:?}", secret);
+    assert_eq!(secret, secret2);
+
+    Ok(())
+}
 
 pub trait CryptoProvider {
     fn default_id<'a>(&self) -> LocalBoxFuture<'a, anyhow::Result<NodeId>>;

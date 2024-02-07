@@ -21,6 +21,7 @@ use std::sync::{Arc, Weak};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use ya_relay_core::crypto::PublicKey;
 
 use self::expire::track_sessions_expiration;
 use self::keep_alive::keep_alive_server_session;
@@ -29,7 +30,7 @@ use self::session_state::{RelayedState, ReverseState, SessionState};
 use crate::client::{ClientConfig, Forwarded};
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::dispatch::{dispatch, Handler};
-use crate::encryption::Encryption;
+use crate::encryption;
 use crate::error::{
     ProtocolError, ResultExt, SessionError, SessionInitError, SessionResult, TransitionError,
 };
@@ -131,6 +132,8 @@ impl SessionRegistration for SessionLayer {
         id: SessionId,
         node_id: NodeId,
         identities: Vec<Identity>,
+        supported_encryptions: Vec<String>,
+        session_key: Option<PublicKey>,
     ) -> anyhow::Result<Arc<DirectSession>> {
         log::trace!("Calling register_session {id} [{node_id}] ({addr})");
 
@@ -166,9 +169,11 @@ impl SessionRegistration for SessionLayer {
                     identities,
                 },
                 direct.clone(),
-                Encryption {
-                    crypto: self.config.crypto.clone(),
-                },
+                encryption::new(
+                    supported_encryptions,
+                    session_key,
+                    self.config.session_crypto.clone(),
+                ),
             )),
             Err(_) if is_relay => None,
             Err(e) => bail!(e),
@@ -1031,9 +1036,11 @@ impl SessionLayer {
         let routing = NodeRouting::new(
             ids.clone(),
             server.clone(),
-            Encryption {
-                crypto: self.config.crypto.clone(),
-            },
+            encryption::new(
+                node.supported_encryption,
+                node.session_key,
+                self.config.session_crypto.clone(),
+            ),
         );
 
         self.register_routing(routing)
@@ -1456,7 +1463,7 @@ impl Handler for SessionLayer {
         session: Option<Arc<DirectSession>>,
     ) -> Option<LocalBoxFuture<'static, ()>> {
         let reliable = forward.is_reliable();
-        let _encrypted = forward.is_encrypted();
+        let encrypted = forward.is_encrypted();
         let slot = forward.slot;
         let channel = self.ingress_channel.clone();
 
@@ -1516,16 +1523,26 @@ impl Handler for SessionLayer {
                 true => TransportType::Reliable,
                 false => TransportType::Unreliable,
             };
+            let payload =
+                if encrypted {
+                    if let Some(routing) = myself.get_node_routing(sender).await {
+                        routing.decrypt(forward.payload)?
+                    } else {
+                        Err(anyhow!("Received encrypted packet from unknown Node: {sender}. Dropping.."))?
+                    }
+                } else {
+                    forward.payload
+                };
             let packet = Forwarded {
                 transport,
                 node_id: sender,
-                payload: forward.payload,
+                payload,
             };
 
             channel.tx.send(packet).map_err(|e| anyhow!("SessionLayer can't pass packet to other layers: {e}"))?;
 
             session.record_incoming(sender, transport, size);
-            anyhow::Result::<()>::Ok(())
+            Ok(())
         }
         .map_err(move |e| log::debug!("Forward from {from} failed: {e}"))
         .map(|_| ());

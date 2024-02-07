@@ -17,6 +17,7 @@ use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use std::{cmp, fs, io, iter, thread};
 use tokio::time;
+use ya_relay_core::challenge::Proof;
 use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::SessionId;
@@ -137,6 +138,7 @@ pub struct Session {
     pub keys: Vec<Identity>,
     pub supported_encryptions: Vec<String>,
     pub addr_status: Mutex<AddrStatus>,
+    pub session_key: Option<(PublicKey, HashMap<NodeId, Vec<u8>>)>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -442,6 +444,7 @@ impl SessionManager {
         node_id: NodeId,
         keys: Vec<Identity>,
         supported_encryptions: Vec<String>,
+        session_key: Option<(PublicKey, HashMap<NodeId, Proof>)>,
     ) -> Result<SessionRef, SessionRef> {
         let addr_status = Mutex::new(AddrStatus::Unknown);
         let ts = clock.last_seen();
@@ -453,6 +456,7 @@ impl SessionManager {
             keys,
             supported_encryptions,
             addr_status,
+            session_key,
         });
 
         let mut g = self.session_slot(&session_id).lock();
@@ -481,6 +485,7 @@ impl SessionManager {
             keys: vec![],
             supported_encryptions: vec![],
             addr_status: Mutex::new(AddrStatus::Unknown),
+            session_key: None,
         });
         self.session_slot(&session_id)
             .lock()
@@ -501,6 +506,7 @@ impl SessionManager {
             keys: Default::default(),
             supported_encryptions: Default::default(),
             addr_status: Mutex::new(AddrStatus::Unknown),
+            session_key: None,
         });
         self.session_slot(&session_id)
             .lock()
@@ -589,6 +595,7 @@ impl SessionManager {
                 keys,
                 supported_encryptions: node_info.supported_encryptions,
                 addr_status: Mutex::new(addr_status),
+                session_key: None,
             });
             me.session_slot(&session.session_id)
                 .lock()

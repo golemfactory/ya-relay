@@ -114,7 +114,7 @@ impl NeighboursHandler {
 
         let nodes = neighbours
             .into_iter()
-            .map(|session_ref| decoder.to_node_info(&session_ref))
+            .map(|session_ref| decoder.to_node_info(&session_ref, session_ref.node_id))
             .collect();
 
         let response = Packet::response(
