@@ -2,17 +2,19 @@
 name = "ya-relay-client"
 version = "0.6.0"
 authors = ["Golem Factory <contact@golem.network>"]
-edition = "2018"
+edition = "2021"
 license = "LGPL-3.0"
 description = "Client for hybrid Net communication protocol"
 repository = "https://github.com/golemfactory/ya-relay"
+rust-version = "1.75"
+
 
 [dependencies]
 ya-relay-stack = { workspace = true }
 ya-relay-proto = { workspace = true }
 ya-relay-core = { workspace = true }
 
-ya-packet-trace = "0.1.0"
+bytes = { workspace = true }
 
 aes-gcm-siv = "0.11.1"
 anyhow = "1.0"
@@ -59,7 +61,12 @@ tokio = { version = "1", features = ["fs", "io-util", "signal"] }
 thiserror = "1.0.44"
 env_logger = "0.10.0"
 
+
 [features]
 default = []
-packet-trace-enable = ["ya-packet-trace/enable"]
 test-utils = []
+
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"

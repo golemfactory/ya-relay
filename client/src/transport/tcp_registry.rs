@@ -420,7 +420,7 @@ impl TcpSender {
     /// Creates connection if it doesn't exist or was closed.
     /// TODO: We should use channel-like error where you can recover your payload
     ///       from error message.
-    pub async fn send(&mut self, packet: Payload) -> Result<(), TcpError> {
+    pub async fn send(&mut self, packet: bytes::Bytes) -> Result<(), TcpError> {
         let routing = match self.connection.upgrade() {
             Some(conn) => conn,
             None => match self

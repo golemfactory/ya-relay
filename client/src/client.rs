@@ -1,5 +1,7 @@
+#![deny(missing_docs)]
+
 use anyhow::{anyhow, bail};
-use futures::future::{join_all, AbortHandle};
+use futures::future::{join_all};
 use futures::{FutureExt, TryFutureExt};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
@@ -10,7 +12,9 @@ use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::thread::sleep;
+use bytes::Bytes;
 use std::time::{Duration, Instant};
+use tokio::task::AbortHandle;
 
 use ya_relay_core::utils::spawn_local_abortable;
 use ya_relay_core::NodeId;
@@ -21,7 +25,7 @@ use crate::metrics::register_metrics;
 pub use crate::config::{ClientBuilder, ClientConfig, FailFast};
 pub use crate::error::SessionError;
 pub use crate::model::{SessionDesc, SocketDesc, SocketState};
-pub use crate::transport::transport_sender::{ForwardSender, GenericSender};
+pub use crate::transport::transport_sender::{ForwardSender};
 pub use crate::transport::{ForwardReceiver, TransportLayer};
 
 use crate::direct_session::DirectSession;
@@ -146,7 +150,6 @@ impl Client {
         self.transport
             .session_layer
             .sessions()
-            .await
             .into_iter()
             .filter_map(|s| {
                 s.upgrade()
@@ -187,7 +190,7 @@ impl Client {
     pub async fn session_metrics(&self) -> HashMap<NodeId, ChannelMetrics> {
         let mut session_metrics = HashMap::new();
 
-        let sessions = self.transport.session_layer.sessions().await;
+        let sessions = self.transport.session_layer.sessions();
         let sockets = self.transport.virtual_tcp.sockets();
         for session in sessions {
             let session = match session.upgrade() {
@@ -220,10 +223,13 @@ impl Client {
     }
 
     #[inline]
+    #[doc(hidden)]
     pub fn metrics(&self) -> ChannelMetrics {
         self.transport.virtual_tcp.metrics()
     }
 
+    /// Returns channel for receiving packets.
+    /// TODO: remove this.
     pub async fn forward_receiver(&self) -> Option<ForwardReceiver> {
         self.transport.forward_receiver()
     }
@@ -271,6 +277,7 @@ impl Client {
         Ok(())
     }
 
+    /// Creates communication channel to given node.
     pub async fn forward_reliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         log::trace!(
             "Forward reliable from [{}] to [{}]",
@@ -280,6 +287,7 @@ impl Client {
         self.transport.forward_reliable(node_id).await
     }
 
+    /// Creates communication channel to given node.
     pub async fn forward_transfer(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         log::trace!(
             "Forward transfer channel from [{}] to [{}]",
@@ -290,6 +298,7 @@ impl Client {
         self.transport.forward_transfer(node_id).await
     }
 
+    /// Creates unreliable packet channel to given node.
     pub async fn forward_unreliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         log::trace!(
             "Forward unreliable from [{}] to [{}]",
@@ -301,7 +310,7 @@ impl Client {
 
     /// TODO: Remove this.
     pub async fn ping_sessions(&self) {
-        let sessions = self.transport.session_layer.sessions().await;
+        let sessions = self.transport.session_layer.sessions();
         let ping_futures = sessions
             .iter()
             .filter_map(|session| {
@@ -314,8 +323,8 @@ impl Client {
         futures::future::join_all(ping_futures).await;
     }
 
-    // Returns connected NodeIds. Single Node can have many identities, so the second
-    // tuple element contains main NodeId (default Id).
+    /// Returns connected NodeIds. Single Node can have many identities, so the second
+    /// tuple element contains main NodeId (default Id).
     pub async fn connected_nodes(&self) -> Vec<(NodeId, Option<NodeId>)> {
         let ids = self.transport.session_layer.list_connected().await;
         let aliases = join_all(
@@ -328,25 +337,15 @@ impl Client {
         zip(ids.into_iter(), aliases).collect()
     }
 
-    pub async fn reconnect_server(&self) {
-        if self.transport.session_layer.close_server_session().await {
-            log::info!("Reconnecting to Hybrid NET relay server");
-            let _ = self.transport.session_layer.server_session().await;
-        }
-    }
-
     /// Disconnects from provided Node and all secondary identities.
     /// If we had p2p session with Node, it will be closed.
     pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
         self.transport.session_layer.disconnect(node_id).await
     }
 
-    pub async fn is_p2p(&self, node_id: NodeId) -> bool {
+    /// Returns true if connection with node is direct connection.
+    pub async fn is_direct(&self, node_id: NodeId) -> bool {
         self.transport.session_layer.is_p2p(node_id).await
-    }
-
-    pub async fn default_id(&self, node_id: NodeId) -> Option<NodeId> {
-        self.transport.session_layer.default_id(node_id).await
     }
 
     /// Broadcasts a byte array to a certain number of neighbours in the network.
@@ -354,14 +353,14 @@ impl Client {
     ///
     /// # Arguments
     ///
-    /// * `data: Vec<u8>` - The data to be broadcasted
-    /// * `count: u32` - The number of neighbour nodes to broadcast the data to.
+    /// * `data` - The data to be broadcasted
+    /// * `count` - The number of neighbour nodes to broadcast the data to.
     ///
     /// # Returns
     ///
     /// * `anyhow::Result<()>`: A Result object indicating the success or failure of the broadcast operation.
     ///
-    pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
+    pub async fn broadcast(&self, data: Bytes, count: u32) -> anyhow::Result<()> {
         let node_ids = self
             .neighbours(count)
             .await
@@ -380,7 +379,7 @@ impl Client {
 
                     match self.forward_unreliable(node_id).await {
                         Ok(mut forward) => {
-                            if forward.send(data.into()).await.is_err() {
+                            if forward.send(data).await.is_err() {
                                 bail!("Cannot broadcast to {node_id}: channel closed");
                             }
                         }
@@ -462,10 +461,6 @@ impl Client {
         Ok(nodes)
     }
 
-    pub async fn invalidate_neighbourhood_cache(&self) {
-        self.state.lock().neighbours = None;
-    }
-
     async fn check_nodes_connection(
         self,
         prev_neighbors: Neighbourhood,
@@ -508,7 +503,7 @@ impl Client {
         Ok(())
     }
 
-    pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+    async fn shutdown(&mut self) -> anyhow::Result<()> {
         log::info!("Shutting down Hybrid NET client.");
 
         let handles = {
@@ -530,9 +525,13 @@ pub(crate) struct Neighbourhood {
     nodes: Vec<NodeId>,
 }
 
+/// Event for incoming data chunk
 #[derive(Clone, Debug)]
 pub struct Forwarded {
+    /// Channel type.
     pub transport: TransportType,
+    /// Src node-id
     pub node_id: NodeId,
+    /// bytes
     pub payload: Payload,
 }

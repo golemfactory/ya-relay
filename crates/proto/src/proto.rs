@@ -6,7 +6,7 @@ use std::str::FromStr;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering::SeqCst;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use prost::encoding::{decode_key, encode_key, WireType};
 
 use crate::codec::DecodeError;
@@ -40,7 +40,7 @@ pub struct Forward {
     pub session_id: [u8; SESSION_ID_SIZE],
     pub slot: u32,
     pub flags: u16,
-    pub payload: Payload,
+    pub payload: Bytes,
 }
 
 impl Forward {
@@ -52,7 +52,7 @@ impl Forward {
     pub fn new(
         session_id: impl Into<[u8; SESSION_ID_SIZE]>,
         slot: u32,
-        payload: impl Into<Payload>,
+        payload: impl Into<Bytes>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
@@ -65,7 +65,7 @@ impl Forward {
     pub fn unreliable(
         session_id: impl Into<[u8; SESSION_ID_SIZE]>,
         slot: u32,
-        payload: impl Into<Payload>,
+        payload: impl Into<Bytes>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
@@ -371,3 +371,17 @@ impl_convert_kind!(control, PauseForwarding);
 impl_convert_kind!(control, ResumeForwarding);
 impl_convert_kind!(control, StopForwarding);
 impl_convert_kind!(control, Disconnected);
+
+#[cfg(test)]
+mod test {
+    use prost::Message;
+
+    #[test]
+    fn test_decode() {
+        let bytes : [u8; _] = [ 0x12, 0x10, 0xbc, 0x66, 0x31, 0xd8, 0xe5, 0x28, 0x53, 0x04, 0x88,
+            0xb1, 0xbf, 0xeb, 0xb1, 0x38, 0xd2, 0xed, 0x1a, 0x06, 0x08, 0x81, 0x04, 0x82, 0x05, 0x00];
+        let p = super::Packet::decode(bytes.as_slice()).unwrap();
+        eprintln!("p={:?}", p);
+    }
+
+}

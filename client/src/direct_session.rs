@@ -2,6 +2,7 @@ use anyhow::anyhow;
 use metrics::{counter, increment_counter};
 use std::collections::HashMap;
 use std::sync::Arc;
+use bytes::Bytes;
 
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::TransportType;
@@ -161,7 +162,7 @@ impl DirectSession {
     pub async fn send(
         &self,
         target: NodeId,
-        packet: Payload,
+        packet: Bytes,
         transport: TransportType,
         encrypted: bool,
     ) -> anyhow::Result<()> {

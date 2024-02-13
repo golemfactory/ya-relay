@@ -335,10 +335,10 @@ impl Network {
     #[inline(always)]
     pub fn send<'a>(
         &self,
-        data: impl Into<Payload>,
+        data: bytes::Bytes,
         connection: Connection,
     ) -> impl Future<Output = Result<()>> + 'a {
-        self.sender.send(data.into(), connection)
+        self.sender.send(data, connection)
     }
 
     /// Inject received data into the stack
@@ -645,7 +645,7 @@ impl StackSender {
     #[inline]
     pub fn send<'a>(
         &self,
-        data: Payload,
+        data: bytes::Bytes,
         conn: Connection,
     ) -> impl Future<Output = Result<()>> + 'a {
         let mut sender = {
@@ -660,7 +660,7 @@ impl StackSender {
         async move { sender.send((data, conn)).map_err(Error::from).await }
     }
 
-    fn spawn(&self, handle: SocketHandle) -> mpsc::Sender<(Payload, Connection)> {
+    fn spawn(&self, handle: SocketHandle) -> mpsc::Sender<(bytes::Bytes, Connection)> {
         let net = self.net.borrow().clone().expect("Network not initialized");
         let (tx, rx) = mpsc::channel(1);
 
@@ -693,7 +693,7 @@ impl StackSender {
 
 #[derive(Default)]
 struct StackSenderInner {
-    map: HashMap<SocketHandle, mpsc::Sender<(Payload, Connection)>>,
+    map: HashMap<SocketHandle, mpsc::Sender<(bytes::Bytes, Connection)>>,
 }
 
 #[derive(Clone, Default)]

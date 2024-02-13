@@ -1,12 +1,13 @@
 use std::iter::FromIterator;
 
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use derive_more::From;
 
 #[derive(Debug, Clone, From)]
 pub enum Payload {
     BytesMut(BytesMut),
     Vec(Vec<u8>),
+    Bytes(Bytes)
 }
 
 impl Payload {
@@ -15,6 +16,7 @@ impl Payload {
         match self {
             Self::BytesMut(b) => b.len(),
             Self::Vec(b) => b.len(),
+            Self::Bytes(b) => b.len(),
         }
     }
 
@@ -22,15 +24,29 @@ impl Payload {
     pub fn is_empty(&self) -> bool {
         match self {
             Self::BytesMut(b) => b.is_empty(),
+            Self::Bytes(b) => b.is_empty(),
             Self::Vec(b) => b.is_empty(),
         }
     }
 
     #[inline]
+    fn make_mutable(&mut self) {
+        if let Self::Bytes(b) = self {
+            let bm = b.to_vec();
+            *self = Self::Vec(bm);
+        }
+    }
+
+    #[inline]
     pub fn reserve(&mut self, additional: usize) {
+        self.make_mutable();
+
         match self {
             Self::BytesMut(b) => b.reserve(additional),
             Self::Vec(b) => b.reserve(additional),
+            _ => {
+                unreachable!()
+            }
         }
     }
 
@@ -44,6 +60,11 @@ impl Payload {
                 v.extend(bytes.into_iter());
                 *self = Self::Vec(v);
             }
+            Self::Bytes(b) => {
+                let mut bm = b.to_vec();
+                bm.extend(bytes.as_ref());
+                *self = Self::Vec(bm);
+            }
         }
     }
 
@@ -51,6 +72,8 @@ impl Payload {
         if with.is_empty() {
             return;
         }
+
+        self.make_mutable();
 
         match self {
             Self::BytesMut(b) => {
@@ -68,6 +91,7 @@ impl Payload {
             Self::Vec(b) => {
                 b.splice(0..0, with.iter().copied());
             }
+            _ => unreachable!()
         }
     }
 
@@ -76,6 +100,7 @@ impl Payload {
         match self {
             Self::BytesMut(b) => Vec::from_iter(b.into_iter()),
             Self::Vec(b) => b,
+            Self::Bytes(b) => b.to_vec()
         }
     }
 
@@ -83,6 +108,7 @@ impl Payload {
     pub fn into_bytes(self) -> BytesMut {
         match self {
             Self::BytesMut(b) => b,
+            Self::Bytes(b) => BytesMut::from(b.as_ref()),
             Self::Vec(b) => BytesMut::from_iter(b),
         }
     }
@@ -105,6 +131,7 @@ impl AsRef<[u8]> for Payload {
     fn as_ref(&self) -> &[u8] {
         match self {
             Self::BytesMut(b) => b.as_ref(),
+            Self::Bytes(b) => b.as_ref(),
             Self::Vec(b) => b.as_slice(),
         }
     }
@@ -113,9 +140,12 @@ impl AsRef<[u8]> for Payload {
 impl AsMut<[u8]> for Payload {
     #[inline]
     fn as_mut(&mut self) -> &mut [u8] {
+        self.make_mutable();
+
         match self {
             Self::BytesMut(b) => b.as_mut(),
             Self::Vec(b) => b.as_mut(),
+            _ => unreachable!()
         }
     }
 }
@@ -153,6 +183,7 @@ impl IntoIterator for Payload {
     fn into_iter(self) -> Self::IntoIter {
         match self {
             Self::BytesMut(b) => IntoIter::BytesMut(b.into_iter()),
+            Self::Bytes(b) => IntoIter::Bytes(b.into_iter()),
             Self::Vec(v) => IntoIter::Vec(v.into_iter()),
         }
     }
@@ -160,6 +191,7 @@ impl IntoIterator for Payload {
 
 pub enum IntoIter {
     BytesMut(bytes::buf::IntoIter<BytesMut>),
+    Bytes(bytes::buf::IntoIter<Bytes>),
     Vec(std::vec::IntoIter<u8>),
 }
 
@@ -170,6 +202,7 @@ impl Iterator for IntoIter {
     fn next(&mut self) -> Option<Self::Item> {
         match self {
             Self::BytesMut(ref mut i) => i.next(),
+            Self::Bytes(ref mut i) => i.next(),
             Self::Vec(ref mut i) => i.next(),
         }
     }

@@ -2,7 +2,7 @@ use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::Context;
-use futures::future::{AbortHandle, Abortable};
+use tokio::task::AbortHandle;
 
 pub use url::Url;
 
@@ -33,10 +33,9 @@ where
     F: Future + 'static,
     F::Output: 'static,
 {
-    let (abort_handle, abort_registration) = AbortHandle::new_pair();
 
-    tokio::task::spawn_local(Abortable::new(future, abort_registration));
-    abort_handle
+    let handle = tokio::task::spawn_local(future);
+    handle.abort_handle()
 }
 
 pub trait ResultExt<T, E>: Sized {

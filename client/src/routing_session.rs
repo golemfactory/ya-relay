@@ -1,4 +1,5 @@
 use std::sync::{Arc, Weak};
+use bytes::Bytes;
 
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{SessionId, TransportType};
@@ -46,7 +47,7 @@ impl NodeRouting {
     /// `Forward` packet.
     pub async fn send(
         &self,
-        packet: Payload,
+        packet: Bytes,
         transport: TransportType,
     ) -> Result<(), SessionError> {
         if let Some(direct) = self.route.upgrade() {
@@ -129,7 +130,7 @@ impl RoutingSender {
     ///       from error message.
     pub async fn send(
         &mut self,
-        packet: Payload,
+        packet: Bytes,
         transport: TransportType,
     ) -> Result<(), SessionError> {
         let routing = match self.node_routing.upgrade() {
@@ -207,7 +208,7 @@ impl RoutingSender {
         unimplemented!()
     }
 
-    pub fn decrypt(&self, p: Payload) -> Result<Payload, EncryptionError> {
+    pub fn decrypt(&self, p: Bytes) -> Result<Bytes, EncryptionError> {
         if let Some(node_routing) = self.node_routing.upgrade() {
             node_routing.encryption.decrypt(p)
         } else {

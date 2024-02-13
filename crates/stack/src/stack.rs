@@ -238,9 +238,9 @@ impl<'a> Stack<'a> {
     }
 
     #[inline]
-    pub fn send<B: Into<Payload>, F: Fn() + 'static>(
+    pub fn send<F: Fn() + 'static>(
         &self,
-        data: B,
+        data: bytes::Bytes,
         conn: Connection,
         f: F,
     ) -> Send<'a> {

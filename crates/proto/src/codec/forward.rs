@@ -2,120 +2,15 @@ use std::mem::size_of;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use bytes::{Buf, BytesMut};
-use derive_more::From;
-use futures::{Sink, Stream};
+use bytes::{Buf, BufMut, Bytes, BytesMut};
+use futures::{future, Sink, SinkExt, Stream};
 
 use crate::codec::Error;
 use crate::proto::Payload;
 
-#[derive(From)]
-pub enum SinkKind<S, E>
-where
-    S: Sink<Payload, Error = E> + Unpin,
-{
-    Sink(S),
-    Prefixed(PrefixedSink<S, E>),
-}
 
-impl<S, E> Clone for SinkKind<S, E>
-where
-    S: Sink<Payload, Error = E> + Clone + Unpin,
-{
-    fn clone(&self) -> Self {
-        match self {
-            Self::Sink(s) => Self::Sink(s.clone()),
-            Self::Prefixed(s) => Self::Prefixed(s.clone()),
-        }
-    }
-}
-
-impl<S, E, P> Sink<P> for SinkKind<S, E>
-where
-    S: Sink<Payload, Error = E> + Unpin,
-    Payload: From<P>,
-{
-    type Error = E;
-
-    fn poll_ready(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.get_mut() {
-            SinkKind::Sink(ref mut s) => Pin::new(s).poll_ready(cx),
-            SinkKind::Prefixed(ref mut s) => Pin::new(s).poll_ready(cx),
-        }
-    }
-
-    fn start_send(self: Pin<&mut Self>, item: P) -> Result<(), Self::Error> {
-        match self.get_mut() {
-            SinkKind::Sink(ref mut s) => Pin::new(s).start_send(item.into()),
-            SinkKind::Prefixed(ref mut s) => Pin::new(s).start_send(item),
-        }
-    }
-
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.get_mut() {
-            SinkKind::Sink(ref mut s) => Pin::new(s).poll_flush(cx),
-            SinkKind::Prefixed(ref mut s) => Pin::new(s).poll_flush(cx),
-        }
-    }
-
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        match self.get_mut() {
-            SinkKind::Sink(s) => Pin::new(s).poll_close(cx),
-            SinkKind::Prefixed(s) => Pin::new(s).poll_close(cx),
-        }
-    }
-}
-
-pub struct PrefixedSink<S, E>
-where
-    S: Sink<Payload, Error = E> + Unpin,
-{
-    sink: S,
-}
-
-impl<S, E> PrefixedSink<S, E>
-where
-    S: Sink<Payload, Error = E> + Unpin,
-{
-    pub fn new(sink: S) -> Self {
-        Self { sink }
-    }
-}
-
-impl<S, E> Clone for PrefixedSink<S, E>
-where
-    S: Sink<Payload, Error = E> + Clone + Unpin,
-{
-    fn clone(&self) -> Self {
-        Self {
-            sink: self.sink.clone(),
-        }
-    }
-}
-
-impl<S, E, P> Sink<P> for PrefixedSink<S, E>
-where
-    S: Sink<Payload, Error = E> + Unpin,
-    Payload: From<P>,
-{
-    type Error = E;
-
-    fn poll_ready(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_ready(cx)
-    }
-
-    fn start_send(mut self: Pin<&mut Self>, item: P) -> Result<(), Self::Error> {
-        let dst = encode(item);
-        Pin::new(&mut self.sink).start_send(dst)
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_flush(cx)
-    }
-
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        Pin::new(&mut self.sink).poll_close(cx)
-    }
+pub fn prefixed_sink<S, E>(sink : S) -> impl Sink<Bytes> where S: Sink<Bytes, Error = E> + Unpin {
+    sink.with(|it| future::ok::<_, E>(encode(it)))
 }
 
 pub struct PrefixedStream<S>
@@ -180,13 +75,14 @@ where
 
 const PREFIX_SIZE: usize = size_of::<u32>();
 
-pub fn encode(data: impl Into<Payload>) -> Payload {
-    // FIXME: handle Payload variants instead of converting to vec
-    let mut payload = data.into();
-    let len = payload.len() as u32;
-    payload.reserve(PREFIX_SIZE);
-    payload.prepend(&len.to_be_bytes());
-    payload
+pub fn encode(data: bytes::Bytes) -> bytes::Bytes {
+    let len = data.len() as u32;
+    let mut output = bytes::BytesMut::with_capacity(PREFIX_SIZE + data.len());
+
+    output.put_u32(len);
+    output.put_slice(&data);
+
+    output.freeze()
 }
 
 #[allow(clippy::result_unit_err)]

@@ -8,7 +8,7 @@ pub mod session_traits;
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
 use derive_more::Display;
-use futures::future::{AbortHandle, LocalBoxFuture};
+use futures::future::{LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
 use metrics::{gauge, increment_counter};
 use parking_lot::Mutex;
@@ -21,6 +21,7 @@ use std::sync::{Arc, Weak};
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
+use tokio::task::AbortHandle;
 use ya_relay_core::crypto::PublicKey;
 
 use self::expire::track_sessions_expiration;
@@ -449,7 +450,7 @@ impl SessionLayer {
         }
 
         // Close sessions simultaneously, otherwise shutdown could last too long.
-        let sessions = self.sessions().await;
+        let sessions = self.sessions();
         futures::future::join_all(
             sessions
                 .into_iter()
@@ -520,12 +521,12 @@ impl SessionLayer {
             .map(|routing| RoutingSender::from_node_routing(node_id, routing, self.clone()))
     }
 
-    pub async fn sessions(&self) -> Vec<Weak<DirectSession>> {
+    pub fn sessions(&self) -> Vec<Weak<DirectSession>> {
         let state = self.state.lock();
         state.p2p_sessions.values().map(Arc::downgrade).collect()
     }
 
-    pub async fn find_session(&self, addr: SocketAddr) -> Option<Arc<DirectSession>> {
+    pub fn find_session(&self, addr: SocketAddr) -> Option<Arc<DirectSession>> {
         let state = self.state.lock();
         state.p2p_sessions.get(&addr).cloned()
     }
@@ -1175,7 +1176,7 @@ impl SessionLayer {
         let session_id = SessionId::try_from(session_id)?;
 
         if let Ok(node) = match by {
-            By::Slot(id) => match self.find_session(from).await {
+            By::Slot(id) => match self.find_session(from) {
                 // TODO: It's necessary to unregister routing as well.
                 Some(session) => session.remove_by_slot(id),
                 None => Err(anyhow!("Session with {from} not found")),
@@ -1189,7 +1190,7 @@ impl SessionLayer {
                     bail!("Session id mismatch. Sender: {session_id}, session to close: {to_close}. Might be exploit attempt..")
                 }
 
-                return match self.find_session(from).await {
+                return match self.find_session(from) {
                     Some(session) => {
                         if session.raw.id != session_id {
                             bail!("Unexpected Session id: {session_id}")
@@ -1364,7 +1365,7 @@ impl Handler for SessionLayer {
                     return None;
                 }
                 ya_relay_proto::proto::control::Kind::PauseForwarding(_) => async move {
-                    match self.find_session(from).await {
+                    match self.find_session(from) {
                         Some(session) => {
                             log::debug!(
                                 "Forwarding paused for session {} ({from})",
@@ -1379,7 +1380,7 @@ impl Handler for SessionLayer {
                 }
                 .boxed_local(),
                 ya_relay_proto::proto::control::Kind::ResumeForwarding(_) => async move {
-                    match self.find_session(from).await {
+                    match self.find_session(from) {
                         Some(session) => {
                             log::debug!("Forwarding resumed for session {}", session.raw.id);
                             session.resume_forwarding().await;
@@ -1536,7 +1537,7 @@ impl Handler for SessionLayer {
             let packet = Forwarded {
                 transport,
                 node_id: sender,
-                payload,
+                payload: payload.into(),
             };
 
             channel.tx.send(packet).map_err(|e| anyhow!("SessionLayer can't pass packet to other layers: {e}"))?;

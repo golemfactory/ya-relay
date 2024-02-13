@@ -24,7 +24,6 @@ pub async fn track_sessions_expiration(layer: SessionLayer) {
 
         let sessions = layer
             .sessions()
-            .await
             .into_iter()
             .filter_map(|session| session.upgrade())
             .collect::<Vec<_>>();

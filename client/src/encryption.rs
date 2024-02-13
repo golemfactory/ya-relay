@@ -8,6 +8,7 @@ use rand::{rngs::OsRng, thread_rng, Rng};
 use strum_macros::{Display, EnumString};
 use ya_relay_core::crypto::{CryptoProvider, PublicKey, SessionCrypto};
 use ya_relay_proto::proto::Payload;
+use bytes::Bytes;
 
 use crate::error::EncryptionError;
 
@@ -17,8 +18,8 @@ enum EncryptionType {
 }
 
 pub trait Encryption {
-    fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError>;
-    fn decrypt(&self, packet: Payload) -> Result<Payload, EncryptionError>;
+    fn encrypt(&self, packet: Bytes) -> Result<Bytes, EncryptionError>;
+    fn decrypt(&self, packet: Bytes) -> Result<Bytes, EncryptionError>;
     fn encryption_flag(&self) -> bool;
 }
 
@@ -48,11 +49,11 @@ pub fn supported_encryptions() -> Vec<String> {
 struct NullEncryption;
 
 impl Encryption for NullEncryption {
-    fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
+    fn encrypt(&self, packet: Bytes) -> Result<Bytes, EncryptionError> {
         Ok(packet)
     }
 
-    fn decrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
+    fn decrypt(&self, packet: Bytes) -> Result<Bytes, EncryptionError> {
         Ok(packet)
     }
 
@@ -74,24 +75,24 @@ impl Aes256GcmSivEncryption {
 }
 
 impl Encryption for Aes256GcmSivEncryption {
-    fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
+    fn encrypt(&self, packet: Bytes) -> Result<Bytes, EncryptionError> {
         let nonce = thread_rng().gen::<[u8; 12]>();
         self.cipher
             .encrypt(&Nonce::from_slice(&nonce), packet.as_ref())
             .map_err(|e| EncryptionError::Generic(e.to_string()))
             .map(|mut ciphertext| {
                 ciphertext.splice(0..0, nonce.iter().cloned());
-                Payload::from(ciphertext)
+                ciphertext.into()
             })
     }
 
-    fn decrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
-        let mut packet = packet.into_vec();
+    fn decrypt(&self, packet: Bytes) -> Result<Bytes, EncryptionError> {
+        let packet = packet.as_ref();
         let nonce = Nonce::from_slice(&packet[0..12]);
         self.cipher
             .decrypt(&nonce, &packet[12..])
             .map_err(|e| EncryptionError::Generic(e.to_string()))
-            .map(|plaintext| Payload::from(plaintext))
+            .map(|plaintext| Bytes::from(plaintext))
     }
 
     fn encryption_flag(&self) -> bool {

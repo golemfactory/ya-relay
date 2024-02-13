@@ -2,7 +2,7 @@ use crate::server::CompletionHandler;
 use crate::state::slot_manager::{SlotId, SlotManager};
 use crate::state::Clock;
 use crate::SessionManager;
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 
 use crate::udp_server::UdpSocket;
 use std::net::SocketAddr;
@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use ya_relay_core::server_session::SessionId;
 
-use ya_relay_proto::proto::{control, Forward, Packet, Payload};
+use ya_relay_proto::proto::{control, Forward, Packet};
 
 mod metric {
     use crate::server::DoneAck;
@@ -96,7 +96,7 @@ impl ForwardHandler {
         session_id: SessionId,
         slot: SlotId,
         flags: u16,
-        payload: Payload,
+        payload: Bytes,
     ) -> Option<(CompletionHandler, Packet)> {
         self.metrics.start.increment(1);
         self.metrics.in_bytes.increment(payload.len() as u64);

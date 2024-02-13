@@ -1,7 +1,6 @@
 use crate::state::slot_manager::SlotManager;
 use crate::state::TsDecoder;
 use crate::{Session, SessionManager};
-use futures::StreamExt;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::response::Node as NodeInfo;
 

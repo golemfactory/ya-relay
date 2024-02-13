@@ -17,7 +17,7 @@ use std::{
 use std::{collections::VecDeque, time::Duration};
 use structopt::StructOpt;
 use tokio::sync::oneshot;
-use ya_relay_client::{channels::ForwardSender, Client, ClientBuilder, FailFast, GenericSender};
+use ya_relay_client::{channels::ForwardSender, Client, ClientBuilder, FailFast};
 use ya_relay_core::{
     crypto::FallbackCryptoProvider,
     key::{load_or_generate, Protected},

@@ -185,15 +185,9 @@ impl TcpLayer {
     #[inline(always)]
     pub async fn send(
         &self,
-        data: impl Into<Payload>,
+        data: bytes::Bytes,
         connection: Connection,
     ) -> anyhow::Result<()> {
-        let data: Payload = data.into();
-
-        ya_packet_trace::packet_trace_maybe!("TcpLayer::Send", {
-            &ya_packet_trace::try_extract_from_ip_frame(data.as_ref())
-        });
-
         Ok(self.net.send(data, connection).await?)
     }
 
@@ -217,10 +211,6 @@ impl TcpLayer {
 
     pub async fn receive(&self, node: NodeId, payload: Payload) {
         log::trace!("[receive]: from {}", node);
-        ya_packet_trace::packet_trace_maybe!("TcpLayer::Receive", {
-            &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
-        });
-
         // TODO: Since we distinguish between outgoing and incoming connections
         //       We should change incoming connection state to Established. Current code doesn't handle
         //       this correctly.
@@ -331,9 +321,6 @@ impl TcpLayer {
                             return;
                         }
                         IngressEvent::Packet { desc, payload, .. } => {
-                            ya_packet_trace::packet_trace_maybe!("TcpLayer::ingress_router", {
-                                &ya_packet_trace::try_extract_from_ip_frame(&payload)
-                            });
 
                             (desc, payload)
                         }

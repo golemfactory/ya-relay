@@ -1,7 +1,7 @@
-#![allow(unused)]
+//! Client for hybrid Net communication protocol
+//!
+//!
 #![cfg_attr(not(test), deny(unused_crate_dependencies))]
-//#![deny(missing_docs)]
-
 mod client;
 mod config;
 mod direct_session;
@@ -14,7 +14,7 @@ mod routing_session;
 mod session;
 mod transport;
 
-pub use client::{Client, ClientBuilder, FailFast, GenericSender, SessionError};
+pub use client::{Client, ClientBuilder, FailFast, SessionError};
 
 /// This module is a public re-export cryptographic abstractions.
 pub use ya_relay_core::crypto;

@@ -19,7 +19,7 @@ prost = "0.12"
 rand = "0.8"
 
 anyhow = "1.0"
-bytes = { version = "1", optional = true }
+bytes = { workspace = true , optional = true }
 derive_more = { version = "0.99", optional = true }
 futures = { version = "0.3", optional = true }
 hex = "0.4"

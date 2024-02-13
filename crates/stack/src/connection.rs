@@ -15,8 +15,6 @@ use crate::patch_smoltcp::GetSocketSafe;
 use crate::socket::{SocketDesc, SocketEndpoint};
 use crate::{Error, Protocol, Result};
 
-use ya_relay_util::Payload;
-
 /// Virtual connection teardown reason
 #[derive(Copy, Clone, Debug)]
 pub enum DisconnectReason {
@@ -221,7 +219,7 @@ impl<'a> Future for Disconnect<'a> {
 
 /// Packet send future
 pub struct Send<'a> {
-    data: Payload,
+    data: bytes::Bytes,
     offset: usize,
     connection: Connection,
     iface: Rc<RefCell<CaptureInterface<'a>>>,
@@ -231,7 +229,7 @@ pub struct Send<'a> {
 
 impl<'a> Send<'a> {
     pub fn new<F: Fn() + 'static>(
-        data: Payload,
+        data: bytes::Bytes,
         connection: Connection,
         iface: Rc<RefCell<CaptureInterface<'a>>>,
         sent: F,
