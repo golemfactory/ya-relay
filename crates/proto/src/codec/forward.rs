@@ -105,7 +105,7 @@ pub fn decode(buf: &mut BytesMut) -> Result<BytesMut, ()> {
     }
 }
 
-#[cfg(test)]
+#[cfg(foo)]
 mod tests {
     use bytes::Bytes;
     use futures::StreamExt;

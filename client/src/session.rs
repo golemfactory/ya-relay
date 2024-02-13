@@ -966,8 +966,8 @@ impl SessionLayer {
         .await
         .map_err(|e| {
             SessionError::Timeout(format!(
-                "Timeout ({}) elapsed when waiting for `ReverseConnection` handshake. {e}",
-                humantime::format_duration(self.config.reverse_connection_tmp_timeout)
+                "Timeout ({:?}) elapsed when waiting for `ReverseConnection` handshake. {e}",
+                self.config.reverse_connection_tmp_timeout
             ))
         })??;
 
@@ -990,8 +990,8 @@ impl SessionLayer {
             }
             Err(_) => {
                 log::info!(
-                    "ReverseConnection - waiting for session timed out ({}). Node: [{node_id}]",
-                    humantime::format_duration(self.config.reverse_connection_real_timeout)
+                    "ReverseConnection - waiting for session timed out ({:?}). Node: [{node_id}]",
+                    self.config.reverse_connection_real_timeout
                 );
                 Err(SessionError::Timeout(format!(
                     "Not able to setup ReverseConnection within timeout with node: [{node_id}]"

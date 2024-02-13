@@ -14,7 +14,7 @@ mod routing_session;
 mod session;
 mod transport;
 
-pub use client::{Client, ClientBuilder, FailFast, SessionError};
+pub use client::{Client, ClientBuilder, SessionError};
 
 /// This module is a public re-export cryptographic abstractions.
 pub use ya_relay_core::crypto;
@@ -50,7 +50,7 @@ pub mod model {
 /// Re-exports several channel related items from the client module and proto.
 pub mod channels {
     #[doc(inline)]
-    pub use crate::client::{ForwardReceiver, ForwardSender, Forwarded};
+    pub use crate::client::{ForwardReceiver, Forwarded};
 
     #[doc(inline)]
     pub use ya_relay_proto::codec::forward::PrefixedStream;

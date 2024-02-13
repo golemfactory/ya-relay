@@ -30,6 +30,7 @@ pub enum SenderError {
 ///         testing other public addresses.
 ///       - Library user should decide if he wants to try send message again    
 #[derive(thiserror::Error, Clone, Debug, PartialEq)]
+#[allow(missing_docs)]
 pub enum SessionError {
     #[error("Internal error: {0}")]
     Internal(String),

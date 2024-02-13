@@ -6,6 +6,7 @@ use std::net::SocketAddr;
 use std::process::id;
 use std::sync::{Arc, Mutex};
 use tokio::time::{Duration, Instant};
+use std::time;
 
 use crate::dispatch::{Dispatched, Dispatcher};
 use crate::error::RequestError;
@@ -44,13 +45,19 @@ pub struct RawSession {
     pub(crate) drop_handler: Arc<Mutex<Option<DropHandler>>>,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+/// p2p session info.
+#[derive(Clone, Debug)]
 pub struct SessionDesc {
+    /// peer address
     pub remote: SocketAddr,
+    /// current session id
     pub id: SessionId,
-    pub last_seen: std::time::Instant,
-    pub last_ping: std::time::Duration,
-    pub created: std::time::Instant,
+    /// when last packet from given node was seen
+    pub last_seen: time::Instant,
+    /// time since last ping.
+    pub last_ping: Duration,
+    /// when session was created.
+    pub created: time::Instant,
 }
 
 impl<'a> From<&'a RawSession> for SessionDesc {

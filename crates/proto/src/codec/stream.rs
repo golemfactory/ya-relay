@@ -325,7 +325,9 @@ mod tests {
                 }
                 // reassemble chunks
                 PacketKind::ForwardCtd(bytes) => match collected.last_mut().unwrap() {
-                    PacketKind::Forward(f) => f.payload.extend(bytes),
+                    PacketKind::Forward(f) => {
+                        f.payload = f.payload.clone().chain(bytes).into_iter().collect();
+                    },
                     _ => panic!("Misplaced `Forward` continuation"),
                 },
             }
@@ -346,6 +348,9 @@ mod tests {
                             vec![0x0b, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
                             vec![0x0c, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
                         ],
+                        session_pub_key: Default::default(),
+                        session_sign: Default::default()
+
                     }),
                     identities: vec![Identity {
                         node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],
@@ -416,6 +421,9 @@ mod tests {
                         challenge_resp: Some(ChallengeResponse {
                             solution: vec![0u8; MAX_PACKET_SIZE as usize - 128],
                             signatures: vec![],
+                            session_pub_key: Default::default(),
+                            session_sign: Default::default()
+
                         }),
                         identities: vec![Identity {
                             node_id: vec![0x0c, 0x00, 0x0f, 0x0f, 0x0e, 0x0e],

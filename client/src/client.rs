@@ -2,18 +2,21 @@
 
 use anyhow::{anyhow, bail};
 use futures::future::{join_all};
-use futures::{FutureExt, TryFutureExt};
+use futures::{FutureExt, Stream, TryFutureExt};
 use parking_lot::Mutex;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::future::Future;
+use std::io::Error;
 use std::iter::zip;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::thread::sleep;
 use bytes::Bytes;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::task::AbortHandle;
 
 use ya_relay_core::utils::spawn_local_abortable;
@@ -22,10 +25,9 @@ use ya_relay_proto::proto::Payload;
 
 use crate::metrics::register_metrics;
 
-pub use crate::config::{ClientBuilder, ClientConfig, FailFast};
+pub use crate::config::{ClientBuilder, ClientConfig};
 pub use crate::error::SessionError;
 pub use crate::model::{SessionDesc, SocketDesc, SocketState};
-pub use crate::transport::transport_sender::{ForwardSender};
 pub use crate::transport::{ForwardReceiver, TransportLayer};
 
 use crate::direct_session::DirectSession;
@@ -275,6 +277,14 @@ impl Client {
 
         log::debug!("[{}] started", self.node_id());
         Ok(())
+    }
+
+    pub async fn connect(&self, node_id : NodeId, port : u16) -> anyhow::Result<Connection> {
+        todo!()
+    }
+
+    pub async fn listen(&self, port : u16) -> impl Stream<Connection> {
+        todo!()
     }
 
     /// Creates communication channel to given node.
@@ -534,4 +544,40 @@ pub struct Forwarded {
     pub node_id: NodeId,
     /// bytes
     pub payload: Payload,
+}
+
+pub struct Connection {
+
+}
+
+impl Connection {
+
+    pub fn peer(&self) -> NodeId {
+        todo!()
+    }
+
+    pub fn port(&self) -> u16 {
+        todo!()
+    }
+
+}
+
+impl AsyncRead for Connection {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+        todo!()
+    }
+}
+
+impl AsyncWrite for Connection {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<Result<usize, Error>> {
+        todo!()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        todo!()
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+        todo!()
+    }
 }

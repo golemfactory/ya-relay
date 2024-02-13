@@ -14,12 +14,6 @@ use ya_relay_stack::StackConfig;
 use crate::client::Client;
 use crate::session::network_view::NetworkViewConfig;
 
-#[derive(Clone, Copy)]
-pub enum FailFast {
-    Yes,
-    No,
-}
-
 #[derive(Clone)]
 pub struct ClientConfig {
     pub node_id: NodeId,
@@ -87,6 +81,8 @@ pub struct ClientBuilder {
 }
 
 impl ClientBuilder {
+
+    /// New configuration builder with giver relay URL.
     pub fn from_url(url: Url) -> ClientBuilder {
         ClientBuilder {
             bind_url: None,
@@ -100,6 +96,7 @@ impl ClientBuilder {
         }
     }
 
+    /// Sets client crypto provider.
     pub fn crypto(mut self, provider: impl CryptoProvider + 'static) -> ClientBuilder {
         self.crypto = Some(Rc::new(provider));
         self
@@ -110,51 +107,58 @@ impl ClientBuilder {
     /// `fail_fast` argument determines whether to early return with an error when encountering
     /// issues during auto-connection to a relay on startup.
     /// If fail_fast is set to true then we do not reinitialize session with relay server if it gets lost.
-    pub fn connect(mut self, fail_fast: FailFast) -> ClientBuilder {
+    pub fn connect(mut self, fail_fast: bool) -> ClientBuilder {
         self.auto_connect = true;
-        match fail_fast {
-            FailFast::Yes => self.auto_connect_fail_fast = true,
-            FailFast::No => self.auto_connect_fail_fast = false,
-        }
+        self.auto_connect_fail_fast = fail_fast;
 
         self
     }
 
+    /// Sets address to listen on.
     pub fn listen(mut self, url: Url) -> ClientBuilder {
         self.bind_url = Some(url);
         self
     }
 
+    /// Sets session expiration.
+    ///
+    /// **Warn** do not change this.
     pub fn expire_session_after(mut self, expiration: Duration) -> Self {
         self.session_expiration = Some(expiration);
         self
     }
 
+    /// **Warn** do not change this.
     pub fn session_request_timeout(mut self, timeout: Duration) -> Self {
         self.session_request_timeout = Some(timeout);
         self
     }
 
+    #[allow(missing_docs)]
     pub fn tcp_max_recv_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
         self.stack_config.tcp_mem.rx.set_max(max)?;
         Ok(self)
     }
 
+    #[allow(missing_docs)]
     pub fn tcp_max_send_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
         self.stack_config.tcp_mem.tx.set_max(max)?;
         Ok(self)
     }
 
+    #[allow(missing_docs)]
     pub fn udp_max_recv_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
         self.stack_config.udp_mem.rx.set_max(max)?;
         Ok(self)
     }
 
+    #[allow(missing_docs)]
     pub fn udp_max_send_buffer_size(mut self, max: usize) -> anyhow::Result<Self> {
         self.stack_config.udp_mem.tx.set_max(max)?;
         Ok(self)
     }
 
+    #[allow(missing_docs)]
     pub async fn build_config(mut self) -> anyhow::Result<ClientConfig> {
         let bind_url = self
             .bind_url
@@ -197,6 +201,7 @@ impl ClientBuilder {
         })
     }
 
+    /// Builds client from configuration.
     pub async fn build(self) -> anyhow::Result<Client> {
         let mut client = Client::new(self.build_config().await?);
 

@@ -18,7 +18,7 @@ use ya_relay_stack::Channel;
 
 use self::tcp_registry::ChannelType;
 use self::virtual_layer::TcpLayer;
-use crate::client::{ClientConfig, ForwardSender, Forwarded};
+use crate::client::{ClientConfig, Forwarded};
 use crate::session::SessionLayer;
 
 /// TODO: Consider using bounded channel. Tcp could have impression that we are receiving

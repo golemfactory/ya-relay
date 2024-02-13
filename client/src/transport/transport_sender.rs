@@ -19,7 +19,7 @@ pub struct FramedSender {
 
 /// Wraps different kinds of senders exposing common interface.
 #[derive(From, Clone)]
-pub enum ForwardSender {
+enum ForwardSender {
     Unreliable(RoutingSender),
     Reliable(TcpSender),
     Framed(FramedSender),
