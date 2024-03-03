@@ -23,14 +23,14 @@ pub trait Encryption {
 }
 
 pub fn new(
-    supported_encryption: Vec<String>,
-    remote_session_key: Option<PublicKey>,
-    session_crypto: SessionCrypto,
+    supported_encryptions: &Vec<String>,
+    remote_session_key: &Option<PublicKey>,
+    session_crypto: &SessionCrypto,
 ) -> Box<dyn Encryption> {
     // TODO: Define who new encryptions will negotiated in the future.
     if let Some(key) = remote_session_key {
-        if supported_encryption.contains(&EncryptionType::Aes256GcmSiv.to_string()) {
-            let shared_secret = session_crypto.secret_with(&key);
+        if supported_encryptions.contains(&EncryptionType::Aes256GcmSiv.to_string()) {
+            let shared_secret = session_crypto.secret_with(key);
             Box::new(Aes256GcmSivEncryption::new(shared_secret))
         } else {
             log::warn!("Could not negotiate encryption type");
@@ -96,5 +96,51 @@ impl Encryption for Aes256GcmSivEncryption {
 
     fn encryption_flag(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_encryption_negotiation() {
+        let session_crypto = SessionCrypto::generate().unwrap();
+        let remote_session_key = Some(session_crypto.pub_key());
+        let supported_encryption = supported_encryptions();
+
+        assert_eq!(new(&supported_encryption, &None, &session_crypto).encryption_flag(), false);
+        assert_eq!(new(&vec!["other_cipher".to_string()], &remote_session_key, &session_crypto).encryption_flag(), false);
+        assert_eq!(new(&supported_encryption, &remote_session_key, &session_crypto).encryption_flag(), true);
+    }
+
+    #[test]
+    fn test_encryption() {
+        let node_a_session_crypto = SessionCrypto::generate().unwrap();
+        let node_a_session_key = Some(node_a_session_crypto.pub_key());
+        let node_b_session_crypto = SessionCrypto::generate().unwrap();
+        let node_b_session_key = Some(node_b_session_crypto.pub_key());
+        let supported_encryptions = supported_encryptions();
+
+        let node_a_encryption = new(&supported_encryptions, &node_b_session_key, &node_a_session_crypto);
+        let node_b_encryption = new(&supported_encryptions, &node_a_session_key, &node_b_session_crypto);
+
+        let plaintext = b"Lorem ipsum dolor sit amet, consectetur adipiscing elit. Duis quis nisi vel sem iaculis maximus.";
+        let payload = Payload::from(plaintext.to_vec());
+
+        let ciphertext_a_to_b = node_a_encryption.encrypt(payload.clone()).unwrap();
+        let recovered_payload_at_b = node_b_encryption.decrypt(ciphertext_a_to_b.clone()).unwrap();
+
+        assert_eq!(recovered_payload_at_b.as_ref(), plaintext);
+
+        let ciphertext_b_to_a = node_b_encryption.encrypt(payload.clone()).unwrap();
+        assert_ne!(ciphertext_a_to_b.as_ref(), ciphertext_b_to_a.as_ref());
+
+        let recovered_payload_at_a = node_a_encryption.decrypt(ciphertext_b_to_a).unwrap();
+
+        assert_eq!(recovered_payload_at_a.as_ref(), plaintext);
+
+        let ciphertext_a_to_b_2 = node_a_encryption.encrypt(payload.clone()).unwrap();
+        assert_ne!(ciphertext_a_to_b.as_ref(), ciphertext_a_to_b_2.as_ref());
     }
 }

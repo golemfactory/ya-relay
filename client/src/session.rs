@@ -170,9 +170,9 @@ impl SessionRegistration for SessionLayer {
                 },
                 direct.clone(),
                 encryption::new(
-                    supported_encryptions,
-                    session_key,
-                    self.config.session_crypto.clone(),
+                    &supported_encryptions,
+                    &session_key,
+                    &self.config.session_crypto,
                 ),
             )),
             Err(_) if is_relay => None,
@@ -1037,9 +1037,9 @@ impl SessionLayer {
             ids.clone(),
             server.clone(),
             encryption::new(
-                node.supported_encryption,
-                node.session_key,
-                self.config.session_crypto.clone(),
+                &node.supported_encryption,
+                &node.session_key,
+                &self.config.session_crypto,
             ),
         );
 
