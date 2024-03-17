@@ -48,7 +48,7 @@ pub struct RegisterHandler {
     slot_manager: Arc<SlotManager>,
     metrics: metric::RegisterMetric,
     ack: CompletionHandler,
-    ip_checker: IpChecker,
+    ip_checker: Rc<IpChecker>,
     cache: Arc<Cache<SocketAddr, (Instant, bool)>>,
     reply_socket: Weak<UdpSocket>,
 }
@@ -57,7 +57,7 @@ impl RegisterHandler {
     pub fn new(
         session_manager: &Arc<SessionManager>,
         slot_manager: &Arc<SlotManager>,
-        ip_checker: IpChecker,
+        ip_checker: Rc<IpChecker>,
         reply_socket: &Rc<UdpSocket>,
         cache: IpCache,
     ) -> Self {

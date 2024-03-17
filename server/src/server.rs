@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -6,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use metrics::Counter;
 use quick_cache::sync::Cache;
+use quick_cache::OptionsBuilder;
 use rand::{thread_rng, Rng};
 use tokio_util::codec::Decoder;
 
@@ -20,9 +22,9 @@ use ya_relay_proto::proto::{
 };
 
 use crate::state::slot_manager::SlotManager;
-use crate::state::Clock;
+use crate::state::{Clock, LastSeen};
 use crate::udp_server::{worker_err_fn, PacketType, UdpServer, UdpServerBuilder, UdpSocket};
-use crate::{Config, SessionManager};
+use crate::{Config, ServerControl, SessionManager};
 
 mod neighbours;
 mod session;
@@ -41,6 +43,7 @@ mod state_decoder;
 
 mod ip_checker;
 
+pub(crate) use ip_checker::IpChecker;
 pub use ip_checker::IpCheckerConfig;
 pub use session::SessionHandlerConfig;
 
@@ -72,6 +75,7 @@ pub struct Server {
     udp_server: UdpServer,
     pub(crate) session_manager: Arc<SessionManager>,
     slot_manager: Arc<SlotManager>,
+    control: ServerControl,
 }
 
 #[inline]
@@ -97,6 +101,10 @@ impl Server {
 
     pub fn sessions(&self) -> Arc<SessionManager> {
         self.session_manager.clone()
+    }
+
+    pub fn control(&self) -> ServerControl {
+        self.control.clone()
     }
 
     #[cfg(feature = "test-utils")]
@@ -156,6 +164,8 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
     let ip_test_cache: IpCache =
         Arc::new(quick_cache::sync::Cache::<SocketAddr, (Instant, bool)>::new(128));
 
+    let (control, control_handle) = crate::state::control::create();
+
     let server = {
         let session_manager = session_manager.clone();
         let slot_manager = slot_manager.clone();
@@ -164,15 +174,18 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
             let session_manager = session_manager.clone();
             let slot_manager = slot_manager.clone();
             let checker_ip = reply.local_addr()?.ip();
+            let ip_checker = Rc::new(ip_check_config.build(checker_ip)?);
+
+            control_handle.spawn(&session_manager, &reply, &ip_checker);
 
             let session_handler = session::SessionHandler::new(&session_manager, &session_handler_config);
-            let ip_checker = ip_check_config.build(checker_ip)?;
             let register_handler = register::RegisterHandler::new(&session_manager, &slot_manager, ip_checker, &reply, ip_test_cache.clone());
             let neighbours_handler = neighbours::NeighboursHandler::new(&session_manager, &slot_manager);
             let node_handler = node::NodeHandler::new(&session_manager, &slot_manager);
             let slot_handler = slot::SlotHandler::new(&session_manager, &slot_manager);
             let forward_handler = forward::ForwardHandler::new(&session_manager, &slot_manager, &reply);
             let rc_handler = reverse_connection::RcHandler::new(&session_manager, &reply);
+            let mut disconnect_cache = DisconnectCache::new();
 
             worker_err_fn(move |pt, mut packet: BytesMut, src| {
                 let mut codec = Codec;
@@ -225,7 +238,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                                         session_handler.handle(&clock, src, request_id, session_id, &session)
                                     }
                                     request::Kind::Ping(_) => {
-                                        session_id.and_then(|session_id| handle_ping(&clock, src, request_id, session_id, &session_manager))
+                                        session_id.and_then(|session_id| handle_ping(&clock, src, request_id, session_id, &session_manager, &mut disconnect_cache))
                                     }
                                     request::Kind::Neighbours(neighbours) => {
                                         session_id.and_then(|session_id|
@@ -300,6 +313,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
         udp_server: server,
         session_manager,
         slot_manager,
+        control,
     })
 }
 
@@ -309,6 +323,7 @@ fn handle_ping(
     request_id: u64,
     session_id: SessionId,
     session_manager: &SessionManager,
+    disconnect_cache: &mut DisconnectCache,
 ) -> Option<(CompletionHandler, Packet)> {
     let is_ok = session_manager
         .with_session(&session_id, |session| {
@@ -335,8 +350,23 @@ fn handle_ping(
             },
         ))
     } else {
-        log::warn!(target: "request::ping", "[{src}] ping for unknown session");
-        None
+        if disconnect_cache.mark_session(clock, session_id) {
+            log::warn!(target: "request::ping", "[{src}] ping for unknown session, sending disconnect");
+            Some((
+                noop_ack(),
+                Packet {
+                    session_id: session_id.to_vec(),
+                    kind: Some(packet::Kind::Control(Control {
+                        kind: Some(control::Kind::Disconnected(control::Disconnected {
+                            by: Some(control::disconnected::By::SessionId(session_id.to_vec())),
+                        })),
+                    })),
+                },
+            ))
+        } else {
+            log::warn!(target: "request::ping", "[{src}] ping for unknown session");
+            None
+        }
     }
 }
 
@@ -374,4 +404,31 @@ fn counter_ack(success: &Counter, error: &Counter) -> CompletionHandler {
     }
 
     Rc::new(CounterAck(success.clone(), error.clone()))
+}
+
+struct DisconnectCache {
+    min_age: Duration,
+    sessions: quick_cache::unsync::Cache<SessionId, LastSeen>,
+}
+
+impl DisconnectCache {
+    fn new() -> Self {
+        let min_age = Duration::from_secs(60);
+        let sessions = quick_cache::unsync::Cache::new(128);
+
+        Self { sessions, min_age }
+    }
+
+    fn mark_session(&mut self, clock: &Clock, session_id: SessionId) -> bool {
+        if let Some(mut it) = self.sessions.get_mut(&session_id) {
+            return if it.age() > self.min_age {
+                *it = clock.last_seen();
+                true
+            } else {
+                false
+            };
+        }
+        let _ = self.sessions.insert(session_id, clock.last_seen());
+        true
+    }
 }

@@ -154,6 +154,13 @@ impl<'a> From<&'a Identity> for PubKey {
     }
 }
 
+impl From<PublicKey> for PubKey {
+    fn from(value: PublicKey) -> Self {
+        let inner = value.bytes().clone();
+        Self { inner }
+    }
+}
+
 impl PubKey {
     fn decode(&self) -> Identity {
         let public_key = PublicKey::from_slice(&self.inner).unwrap();
@@ -199,7 +206,7 @@ mod serde_bytes_array {
 struct SessionData {
     session_id: SessionId,
     peer: SocketAddr,
-    session_key: Option<PubKey>,
+    session_key: Option<(PubKey, HashMap<NodeId, Vec<u8>>)>,
     keys: Vec<PubKey>,
     supported_encryptions: Vec<String>,
     addr_valid: bool,
@@ -278,6 +285,10 @@ impl SessionManager {
 
     pub fn num_sessions(&self) -> usize {
         self.sessions.iter().map(|s| s.lock().len()).sum()
+    }
+
+    pub fn num_nodes(&self) -> usize {
+        self.node_sessions.len()
     }
 
     pub fn nodes_for(
@@ -558,7 +569,10 @@ impl SessionManager {
                 let session_data = SessionData {
                     session_id: s.session_id,
                     peer: s.peer,
-                    session_key: None,
+                    session_key: s
+                        .session_key
+                        .clone()
+                        .map(|(pk, proofs)| (pk.into(), proofs)),
                     flags: 0,
                     supported_encryptions: s.supported_encryptions.clone(),
                     keys: s.keys.iter().map(Into::into).collect(),

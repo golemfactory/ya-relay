@@ -11,9 +11,19 @@ use ya_relay_proto::proto::Payload;
 
 use crate::error::EncryptionError;
 
-#[derive(Display, EnumString, PartialEq)]
+#[derive(Display, PartialEq)]
 enum EncryptionType {
     Aes256GcmSiv,
+}
+
+impl EncryptionType {
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Aes256GcmSiv => "Aes256GcmSiv"
+        }
+    }
+
 }
 
 pub trait Encryption {
@@ -27,9 +37,9 @@ pub fn new(
     remote_session_key: Option<PublicKey>,
     session_crypto: SessionCrypto,
 ) -> Box<dyn Encryption> {
-    // TODO: Define who new encryptions will negotiated in the future.
+    //
     if let Some(key) = remote_session_key {
-        if supported_encryption.contains(&EncryptionType::Aes256GcmSiv.to_string()) {
+        if supported_encryption.iter().any(|enc| enc == EncryptionType::Aes256GcmSiv.as_str()) {
             let shared_secret = session_crypto.secret_with(&key);
             Box::new(Aes256GcmSivEncryption::new(shared_secret))
         } else {

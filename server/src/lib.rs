@@ -7,6 +7,7 @@ mod state;
 pub mod testing;
 pub mod udp_server;
 
+pub use state::control::ServerControl;
 pub use state::session_manager::*;
 
 pub use config::Config;
