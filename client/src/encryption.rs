@@ -17,13 +17,11 @@ enum EncryptionType {
 }
 
 impl EncryptionType {
-
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::Aes256GcmSiv => "Aes256GcmSiv"
+            Self::Aes256GcmSiv => "Aes256GcmSiv",
         }
     }
-
 }
 
 pub trait Encryption {
@@ -39,7 +37,10 @@ pub fn new(
 ) -> Box<dyn Encryption> {
     //
     if let Some(key) = remote_session_key {
-        if supported_encryption.iter().any(|enc| enc == EncryptionType::Aes256GcmSiv.as_str()) {
+        if supported_encryption
+            .iter()
+            .any(|enc| enc == EncryptionType::Aes256GcmSiv.as_str())
+        {
             let shared_secret = session_crypto.secret_with(&key);
             Box::new(Aes256GcmSivEncryption::new(shared_secret))
         } else {

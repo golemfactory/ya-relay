@@ -126,6 +126,9 @@ impl RegisterHandler {
                         response::Register { endpoints },
                     ),
                 ));
+            },
+            Some((ts, v)) => {
+                log::debug!(target: "request::register", "[{src}] cache {v:?} timeout: {:?}", ts.elapsed());
             }
             _ => (),
         }
@@ -135,6 +138,7 @@ impl RegisterHandler {
             let ack = self.ack.clone();
             let sm = self.session_manager.clone();
             log::debug!(target: "request::register", "[{src}] resolving from ip_checker {session_id}");
+            let cache = self.cache.clone();
             self.ip_checker.check_ip_status(clock.time(), session_ref, move |status, session_ref| {
                 let reply_socket = match reply_socket.upgrade() {
                     Some(v) => v,
@@ -144,6 +148,7 @@ impl RegisterHandler {
                 g.set_valid(status);
                 drop(g);
                 log::debug!(target: "request::register", "[{src}] set_valid {session_id} {status}");
+                cache.insert(session_ref.peer, (Instant::now(), status));
                 let endpoints = session_ref.endpoint().into_iter().collect();
                 let session_id = session_ref.session_id;
                 let peer = session_ref.peer;

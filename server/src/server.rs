@@ -1,4 +1,3 @@
-use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -7,7 +6,6 @@ use std::time::{Duration, Instant};
 
 use metrics::Counter;
 use quick_cache::sync::Cache;
-use quick_cache::OptionsBuilder;
 use rand::{thread_rng, Rng};
 use tokio_util::codec::Decoder;
 

@@ -1,12 +1,11 @@
 use anyhow::Result;
-use brotli2::read::{BrotliDecoder, BrotliEncoder};
-use std::collections::BTreeSet;
+use brotli2::read::BrotliEncoder;
+use std::borrow::Cow;
+use std::ffi::OsStr;
 use std::fs::DirEntry;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::{env, fs, io, iter, mem, path};
-use std::borrow::Cow;
-use std::ffi::OsStr;
 use tiny_keccak::Hasher;
 
 macro_rules! try_iter {
@@ -18,20 +17,24 @@ macro_rules! try_iter {
     };
 }
 
-fn normalize_path_into_url(base: &Path, path : &Path) -> String {
-    path.strip_prefix(base).unwrap().components().map(|c| {
-        c.as_os_str().to_str().unwrap()
-    }).fold(String::new(), |mut s, it| {
-        s.push('/');
-        s.push_str(it);
-        s
-    })
+fn normalize_path_into_url(base: &Path, path: &Path) -> String {
+    path.strip_prefix(base)
+        .unwrap()
+        .components()
+        .map(|c| c.as_os_str().to_str().unwrap())
+        .fold(String::new(), |mut s, it| {
+            s.push('/');
+            s.push_str(it);
+            s
+        })
 }
 
 #[test]
 fn test_path() {
-    assert_eq!(normalize_path_into_url("./ui".as_ref(), "./ui/elements/info-box.js".as_ref()),
-        "/elements/info-box.js");
+    assert_eq!(
+        normalize_path_into_url("./ui".as_ref(), "./ui/elements/info-box.js".as_ref()),
+        "/elements/info-box.js"
+    );
 }
 
 fn read_dir_recursive<P: AsRef<Path>>(path: P) -> Result<impl Iterator<Item = Result<DirEntry>>> {
@@ -59,34 +62,6 @@ fn read_dir_recursive<P: AsRef<Path>>(path: P) -> Result<impl Iterator<Item = Re
     }))
 }
 
-struct FileEntry {
-    path: String,
-    data: Vec<u8>,
-}
-
-fn collect_files(base: &Path) -> Result<Vec<String>> {
-    let files: Vec<_> = base
-        .read_dir()?
-        .map(|it| {
-            let it = it?;
-            let name = it.file_name().to_str().map(|f| f.to_owned()).unwrap();
-
-            if it.file_type()?.is_dir() {
-                Ok(collect_files(&it.path())?
-                    .into_iter()
-                    .map(|f| format!("{name}/{f}"))
-                    .collect())
-            } else if it.file_type()?.is_file() {
-                Ok(vec![name])
-            } else {
-                Ok(Default::default())
-            }
-        })
-        .collect::<Result<_>>()?;
-
-    Ok(files.into_iter().flatten().collect())
-}
-
 fn main() -> Result<()> {
     let out_dir: path::PathBuf = env::var_os("OUT_DIR").unwrap().into();
     let output = fs::OpenOptions::new()
@@ -96,12 +71,15 @@ fn main() -> Result<()> {
         .open(out_dir.join("ui.rs"))?;
     let mut output = io::BufWriter::new(output);
 
-    writeln!(&mut output, r#"
+    writeln!(
+        &mut output,
+        r#"
         pub fn scope() -> Scope {{
             Scope::new("/ui")
 
-    "#)?;
-    let base:&Path = "ui".as_ref();
+    "#
+    )?;
+    let base: &Path = "ui".as_ref();
 
     for file in read_dir_recursive("ui")? {
         let file = file?.path();
@@ -130,17 +108,21 @@ fn main() -> Result<()> {
         fs::write(out_dir.join(&fname), buffer)?;
         println!("cargo:warning=generated {:?}", out_dir.join(&fname));
         writeln!(&mut output, "// {:?}", file)?;
-        let fnx : &str = file.file_name().unwrap().to_str().unwrap();
+        let fnx: &str = file.file_name().unwrap().to_str().unwrap();
         let content_type = match file.extension().and_then(OsStr::to_str) {
             Some("html") => "text/html",
             Some("js") => "application/javascript",
-            _ => "application/octet-stream"
+            _ => "application/octet-stream",
         };
-        let path: Cow<'static, str> = if fnx == "index.html" { "/".into() } else {
+        let path: Cow<'static, str> = if fnx == "index.html" {
+            "/".into()
+        } else {
             normalize_path_into_url(base, &file).into()
         };
 
-        writeln!(&mut output, r#"
+        writeln!(
+            &mut output,
+            r#"
         .route("{path}", web::get().to(move || {{
             let body : &[u8]= include_bytes!("{fname}");
             future::ready(
@@ -151,13 +133,17 @@ fn main() -> Result<()> {
                 )
             }})
          )
-        "#)?;
+        "#
+        )?;
         //writeln!(&mut output, "static {}: &'static [u8] = include_bytes!(\"{}\");", fnx.replace(".", "_").replace("-", "_"), fname)?;
     }
 
-    writeln!(&mut output, r#"
+    writeln!(
+        &mut output,
+        r#"
         }}
-    "#)?;
+    "#
+    )?;
 
     Ok(())
 }

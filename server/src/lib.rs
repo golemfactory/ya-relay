@@ -11,4 +11,4 @@ pub use state::control::ServerControl;
 pub use state::session_manager::*;
 
 pub use config::Config;
-pub use server::run;
+pub use server::{run, Server};

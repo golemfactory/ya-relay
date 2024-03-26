@@ -3,16 +3,13 @@ use crate::udp_server::UdpSocket;
 use crate::SessionManager;
 use anyhow::{anyhow, bail, Context};
 use parking_lot::Mutex;
-use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::spawn_local;
 use ya_relay_core::server_session::SessionId;
-use ya_relay_proto::proto::{
-    control, packet, response, Control, Message, Packet, Response, StatusCode,
-};
+use ya_relay_proto::proto::{control, packet, Control, Message, Packet};
 
 enum ControlCommand {
     DropSession {
@@ -32,7 +29,7 @@ pub struct ServerControl {
 
 impl ServerControl {
     pub async fn disconnect(&self, session_id: SessionId, silent: bool) -> anyhow::Result<()> {
-        if let Err(e) = self
+        if let Err(_e) = self
             .tx
             .send(ControlCommand::DropSession { session_id, silent })
             .await
@@ -96,7 +93,7 @@ impl Handle {
                                         })),
                                     };
                                     let b = p.encode_to_vec();
-                                    let r = socket.send_to(&b, peer).await;
+                                    socket.send_to(&b, peer).await.ok();
                                     log::info!("[{:?}] send drop session {}", peer, session_id)
                                 }
                             }
@@ -110,7 +107,7 @@ impl Handle {
                                 let _ = ip_checker.check_ip_status(
                                     Instant::now(),
                                     s,
-                                    |result, session_ref| {
+                                    |result, _session_ref| {
                                         reply_tx.send(result).ok();
                                     },
                                 );
