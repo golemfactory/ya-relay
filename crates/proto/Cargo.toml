@@ -1,6 +1,6 @@
 [package]
 name = "ya-relay-proto"
-version = "0.4.2"
+version = "0.4.3"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
 homepage = "https://github.com/golemfactory/ya-relay/crates/proto"
@@ -32,4 +32,4 @@ tokio = { version = "1", features = ["macros", "sync", "time"] }
 
 [build-dependencies]
 prost-build = "0.12"
-protoc-prebuilt = "0.2.0"
+protoc-prebuilt = "0.3.0"
