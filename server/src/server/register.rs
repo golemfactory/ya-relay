@@ -126,7 +126,7 @@ impl RegisterHandler {
                         response::Register { endpoints },
                     ),
                 ));
-            },
+            }
             Some((ts, v)) => {
                 log::debug!(target: "request::register", "[{src}] cache {v:?} timeout: {:?}", ts.elapsed());
             }

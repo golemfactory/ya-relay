@@ -1,22 +1,22 @@
-use crate::state::hamming_distance;
-use crate::state::last_seen::{Clock, LastSeen};
-use crate::state::session_manager::metrics::SessionManagerMetrics;
-use anyhow::{anyhow, Context};
-use dashmap::DashMap;
-use parking_lot::Mutex;
-use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
-use std::io::{BufRead, Write};
+use std::io::{BufRead, Cursor, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicI8, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 use std::{cmp, fs, io, iter, thread};
+
+use anyhow::{anyhow, bail, Context};
+use dashmap::{DashMap, DashSet};
+use parking_lot::Mutex;
+use serde::{Deserialize, Serialize};
 use tokio::time;
+
 use ya_relay_core::challenge::Proof;
 use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::identity::Identity;
@@ -25,6 +25,10 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Endpoint;
 use ya_relay_proto::proto::Protocol::Udp;
 
+use crate::state::hamming_distance;
+use crate::state::last_seen::{Clock, LastSeen};
+use crate::state::session_manager::metrics::SessionManagerMetrics;
+
 #[derive(clap::Args)]
 #[command(next_help_heading = "Session manager options")]
 pub struct SessionManagerConfig {
@@ -32,6 +36,9 @@ pub struct SessionManagerConfig {
     pub session_cleaner_interval: Duration,
     #[arg(long, env, value_parser = humantime::parse_duration, default_value = "10min")]
     pub session_purge_timeout: Duration,
+
+    #[arg(long, env, default_value = "humming")]
+    pub list_mode: ListMode,
 }
 
 mod metrics {
@@ -82,17 +89,42 @@ pub type SessionRef = Arc<Session>;
 
 pub type SessionWeakRef = Weak<Session>;
 
-pub enum Selector {
+#[cfg_attr(test, derive(Debug))]
+pub enum Selector<const N: usize> {
     All,
     Prefix { value: u32, mask: u32 },
+    Exact { bytes: [u8; N] },
 }
 
-impl FromStr for Selector {
+pub type NodeSelector = Selector<20>;
+
+impl<const N: usize> FromStr for Selector<N> {
     type Err = anyhow::Error;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s == "all" {
-            return Ok(Selector::All);
+            return Ok(Self::All);
+        }
+
+        if s.len() == N * 2 {
+            let mut it = s.chars();
+            let mut bytes = Cursor::new([0u8; N]);
+
+            while let Some(ch) = it.next() {
+                let d1 = ch
+                    .to_digit(16)
+                    .ok_or_else(|| anyhow!("invalid char {ch}"))?;
+                let d2 = it
+                    .next()
+                    .ok_or_else(|| anyhow!("odd number of digits"))?
+                    .to_digit(16)
+                    .ok_or_else(|| anyhow!("invalid char"))?;
+
+                bytes.write(&[(d1 << 4 | d2) as u8])?;
+            }
+
+            let bytes = bytes.into_inner();
+            return Ok(Self::Exact { bytes });
         }
 
         let v = u32::from_str_radix(s, 16)?;
@@ -105,12 +137,18 @@ impl FromStr for Selector {
 
 trait PrefixExt {
     fn extract_prefix(&self) -> u32;
+
+    fn exact(&self) -> &[u8];
 }
 
 impl PrefixExt for SessionId {
     fn extract_prefix(&self) -> u32 {
         let a = self.to_array();
         u32::from_be_bytes(a[0..4].try_into().unwrap())
+    }
+
+    fn exact(&self) -> &[u8] {
+        self.as_ref()
     }
 }
 
@@ -119,13 +157,18 @@ impl PrefixExt for NodeId {
         let a = self.into_array();
         u32::from_be_bytes(a[0..4].try_into().unwrap())
     }
+
+    fn exact(&self) -> &[u8] {
+        self.as_ref()
+    }
 }
 
-impl Selector {
+impl<const N: usize> Selector<N> {
     fn match_prefix<T: PrefixExt>(&self, v: T) -> bool {
         match self {
             Self::All => true,
             Self::Prefix { value, mask } => (v.extract_prefix() & *mask) == *value,
+            Self::Exact { bytes } => bytes.as_ref() == v.exact(),
         }
     }
 }
@@ -201,6 +244,17 @@ mod serde_bytes_array {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+struct SessionDataOld {
+    session_id: SessionId,
+    peer: SocketAddr,
+    session_key: Option<PubKey>,
+    keys: Vec<PubKey>,
+    supported_encryptions: Vec<String>,
+    addr_valid: bool,
+    flags: u64,
+}
+
 // WARN: Never change this struct.
 #[derive(Serialize, Deserialize)]
 struct SessionData {
@@ -265,7 +319,35 @@ type NodeSessionSet = Arc<Mutex<Vec<SessionWeakRef>>>;
 pub struct SessionManager {
     sessions: [Mutex<HashMap<SessionId, SessionRef>>; 16],
     node_sessions: DashMap<NodeId, NodeSessionSet>,
+    flagged_nodes: DashMap<NodeId, Flag>,
+    mode: AtomicI8,
     metrics: SessionManagerMetrics,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+#[repr(i8)]
+pub enum ListMode {
+    Humming = 0,
+    Split = 1,
+}
+
+impl FromStr for ListMode {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s {
+            "humming" => Self::Humming,
+            "split" => Self::Split,
+            _ => bail!("invalid list mode: '{s}'"),
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Flag {
+    Default,
+    Trust,
+    UnTrust,
 }
 
 impl SessionManager {
@@ -273,6 +355,8 @@ impl SessionManager {
         let sessions: [Mutex<HashMap<SessionId, SessionRef>>; 16] = Default::default();
         let node_sessions = Default::default();
         let metrics = Default::default();
+        let mode = AtomicI8::new(0);
+        let flagged_nodes = Default::default();
 
         assert_eq!(sessions.len(), 0x10);
 
@@ -280,7 +364,21 @@ impl SessionManager {
             sessions,
             node_sessions,
             metrics,
+            flagged_nodes,
+            mode,
         })
+    }
+
+    #[inline]
+    pub fn set_mode(&self, mode: ListMode) {
+        self.mode.store(mode as i8, Ordering::Relaxed);
+    }
+
+    pub fn mode(&self) -> ListMode {
+        match self.mode.load(Ordering::Relaxed) {
+            1 => ListMode::Split,
+            _ => ListMode::Humming,
+        }
     }
 
     pub fn num_sessions(&self) -> usize {
@@ -293,15 +391,38 @@ impl SessionManager {
 
     pub fn nodes_for(
         &self,
-        selector: Selector,
+        selector: NodeSelector,
         limit: usize,
     ) -> HashMap<NodeId, Vec<SessionWeakRef>> {
-        self.node_sessions
+        if let Selector::Exact { bytes } = &selector {
+            let node_id = NodeId::from(bytes.clone());
+            self.node_sessions
+                .get(&node_id)
+                .iter()
+                .map(|e| (*e.key(), e.value().lock().clone()))
+                .collect()
+        } else {
+            self.node_sessions
+                .iter()
+                .filter(|e| selector.match_prefix(*e.key()))
+                .map(|e| (*e.key(), e.value().lock().clone()))
+                .take(limit)
+                .collect()
+        }
+    }
+
+    pub fn flagged_nodes(&self) -> HashMap<NodeId, Flag> {
+        self.flagged_nodes
             .iter()
-            .filter(|e| selector.match_prefix(*e.key()))
-            .map(|e| (*e.key(), e.value().lock().clone()))
-            .take(limit)
+            .map(|r| (*r.key(), r.value().clone()))
             .collect()
+    }
+
+    pub fn flag_node(&self, node_id: NodeId, flag: Flag) -> bool {
+        match flag {
+            Flag::Default => self.flagged_nodes.remove(&node_id).is_some(),
+            _ => self.flagged_nodes.insert(node_id, flag).is_some(),
+        }
     }
 
     pub fn start_cleanup_processor(
@@ -385,13 +506,26 @@ impl SessionManager {
             }
         }
 
+        let select_public = if self.mode.load(Ordering::Relaxed) == 1 {
+            !self.node_session(base_node_id).map(|s| s.addr_status.lock().is_valid()).unwrap_or_default()
+        }
+        else {
+            false
+        };
+
         let mut h = self
             .node_sessions
             .iter()
-            .map(|entry| {
+            .filter_map(|entry| {
                 let id = *entry.key();
                 let distance = Reverse(hamming_distance(base_node_id, id));
-                Distance { distance, id }
+                if select_public {
+                    let is_valid = entry.value().lock().iter().filter_map(|ws| ws.upgrade()).any(|s| s.addr_status.lock().is_valid());
+                    if !is_valid {
+                        return None
+                    }
+                }
+                Some(Distance { distance, id })
             })
             .collect::<BinaryHeap<_>>();
 
@@ -586,13 +720,13 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn load(path: &Path) -> anyhow::Result<Arc<Self>> {
+    pub fn load_old(path: &Path) -> anyhow::Result<Arc<Self>> {
         let mut f = io::BufReader::new(fs::OpenOptions::new().read(true).open(path)?);
 
         let me = Self::new();
 
         while has_data(&mut f)? {
-            let node_info: SessionData =
+            let node_info: SessionDataOld =
                 rmp_serde::decode::from_read(&mut f).context("decoding state")?;
             let addr_status = if node_info.addr_valid {
                 AddrStatus::Valid(Instant::now())
@@ -619,6 +753,42 @@ impl SessionManager {
 
         Ok(me)
     }
+
+    pub fn load(path: &Path) -> anyhow::Result<Arc<Self>> {
+        let mut f = io::BufReader::new(fs::OpenOptions::new().read(true).open(path)?);
+
+        let me = Self::new();
+
+        while has_data(&mut f)? {
+            let node_info: SessionData =
+                rmp_serde::decode::from_read(&mut f).context("decoding state")?;
+            let addr_status = if node_info.addr_valid {
+                AddrStatus::Valid(Instant::now())
+            } else {
+                AddrStatus::Invalid(Instant::now())
+            };
+            let keys: Vec<_> = node_info.keys.iter().map(PubKey::decode).collect();
+
+            let session = Arc::new(Session {
+                session_id: node_info.session_id,
+                peer: node_info.peer,
+                ts: LastSeen::now(),
+                node_id: keys.first().ok_or_else(|| anyhow!("invalid data"))?.node_id,
+                keys,
+                supported_encryptions: node_info.supported_encryptions,
+                addr_status: Mutex::new(addr_status),
+                session_key: node_info
+                    .session_key
+                    .map(|(pk, nl)| (pk.decode().public_key, nl)),
+            });
+            me.session_slot(&session.session_id)
+                .lock()
+                .insert(session.session_id, session.clone());
+            me.link_sessions(&session);
+        }
+
+        Ok(me)
+    }
 }
 
 fn has_data<R: BufRead>(r: &mut R) -> io::Result<bool> {
@@ -627,10 +797,13 @@ fn has_data<R: BufRead>(r: &mut R) -> io::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use rand::{thread_rng, Rng};
     use std::io;
+
+    use rand::{thread_rng, Rng};
+
     use ya_relay_core::NodeId;
+
+    use super::*;
 
     fn gen_node_id() -> NodeId {
         thread_rng().gen::<[u8; 20]>().into()
@@ -727,5 +900,26 @@ mod tests {
             let data: SessionData = rmp_serde::decode::from_read(&mut c).unwrap();
             log::info!("decoded {}", data.session_id);
         }
+    }
+
+    #[test]
+    fn test_selector() {
+        type NodeSelector = Selector<20>;
+        let exact_str = "889ff52ece3d5368051f4f8216650a7843f8926b";
+        let bytes: [u8; 20] = hex::FromHex::from_hex(exact_str).unwrap();
+        let exact: NodeSelector = exact_str.parse().unwrap();
+        assert!(matches!(exact, Selector::Exact { bytes }));
+
+        let prefix: NodeSelector = exact_str[..5].parse().unwrap();
+        let node_id = NodeId::from(bytes);
+        assert!(matches!(
+            prefix,
+            Selector::Prefix {
+                mask: 0xfffff000,
+                value: 0x889ff000
+            }
+        ));
+        assert!(prefix.match_prefix(node_id));
+        assert!(exact.match_prefix(node_id));
     }
 }

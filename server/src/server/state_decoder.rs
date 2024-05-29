@@ -24,15 +24,18 @@ pub fn decoder<'a, 'b>(
 }
 
 impl<'a, 'b> Decoder<'a, 'b> {
-    pub fn to_node_info(&self, session: &Session, context: NodeId) -> NodeInfo {
-        let (session_pub_key, session_key_proof) =
+    pub fn to_node_info(&self, session: &Session, context: NodeId, pk: bool) -> NodeInfo {
+        let (session_pub_key, session_key_proof) = if pk {
             if let Some((session_key, proofs)) = &session.session_key {
                 let session_pub_key = session_key.bytes().to_vec();
                 let session_key_proof = proofs.get(&context).cloned().unwrap_or_default();
                 (session_pub_key, session_key_proof)
             } else {
                 Default::default()
-            };
+            }
+        } else {
+            Default::default()
+        };
 
         NodeInfo {
             identities: session.keys.iter().map(Into::into).collect::<Vec<_>>(),

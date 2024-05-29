@@ -64,6 +64,6 @@ test-log = "0.2.13"
 
 
 [build-dependencies]
-brotli2 = "0.3.2"
+flate2 = "1"
 anyhow = "1.0.80"
 tiny-keccak = { version = "2", features = ["sha3"] }

@@ -1,5 +1,6 @@
 use anyhow::Result;
-use brotli2::read::BrotliEncoder;
+use flate2::read::GzEncoder;
+use flate2::Compression;
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::fs::DirEntry;
@@ -85,7 +86,7 @@ fn main() -> Result<()> {
         let file = file?.path();
         println!("cargo:warning=found {file:?}");
         let bytes = fs::read(&file)?;
-        let mut compressor = BrotliEncoder::new(io::Cursor::new(bytes), 9);
+        let mut compressor = GzEncoder::new(io::Cursor::new(bytes), Compression::best());
         let mut buffer = Vec::new();
         compressor.read_to_end(&mut buffer)?;
         let fname = {
@@ -94,7 +95,7 @@ fn main() -> Result<()> {
             hasher.update(&buffer);
             hasher.finalize(&mut output);
             format!(
-                "blob-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}.br",
+                "blob-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}.gz",
                 output[0],
                 output[1],
                 output[2],
@@ -127,7 +128,7 @@ fn main() -> Result<()> {
             let body : &[u8]= include_bytes!("{fname}");
             future::ready(
                     HttpResponse::Ok()
-                        .append_header(http::header::ContentEncoding::Brotli)
+                        .append_header(http::header::ContentEncoding::Gzip)
                         .content_type("{content_type}")
                         .body(body),
                 )

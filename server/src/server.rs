@@ -82,8 +82,13 @@ fn slots_path<P: AsRef<Path>>(state_dir: P) -> PathBuf {
 }
 
 #[inline]
-fn sessions_path<P: AsRef<Path>>(state_dir: P) -> PathBuf {
+fn sessions_old_path<P: AsRef<Path>>(state_dir: P) -> PathBuf {
     state_dir.as_ref().join("sessions.state")
+}
+
+#[inline]
+fn sessions_path<P: AsRef<Path>>(state_dir: P) -> PathBuf {
+    state_dir.as_ref().join("sessions_v2.state")
 }
 
 impl Server {
@@ -118,46 +123,56 @@ impl Drop for Server {
 pub async fn run(config: &Config) -> anyhow::Result<Server> {
     let bind_addr: SocketAddr = config.server.address;
 
-    let slot_manager = config
-        .state_dir
-        .as_ref()
-        .map(slots_path)
-        .and_then(|p| {
-            if p.exists() {
-                SlotManager::load(&p).ok()
-            } else {
-                None
-            }
-        })
-        .unwrap_or_else(|| SlotManager::new());
-
-    let session_manager = config
-        .state_dir
-        .as_ref()
-        .map(sessions_path)
-        .and_then(|p| {
-            if p.exists() {
-                match SessionManager::load(&p) {
-                    Ok(v) => {
-                        log::info!("sessions loaded");
-                        Some(v)
-                    }
-                    Err(e) => {
-                        log::error!("failed to load: {:?}", e);
-                        None
-                    }
+    let (slot_manager, session_manager) = if let Some(state_dir) = config.state_dir.as_ref() {
+        let slots = slots_path(state_dir);
+        let slot_manager = if slots.exists() {
+            SlotManager::load(&slots).ok()
+        } else {
+            None
+        };
+        let sessions = sessions_path(state_dir);
+        let sessions_old = sessions_old_path(state_dir);
+        let session_manager = if sessions.exists() {
+            match SessionManager::load(&sessions) {
+                Ok(v) => {
+                    log::info!("Sessions loaded");
+                    Some(v)
                 }
-            } else {
-                None
+                Err(e) => {
+                    log::error!("Failed to load sessions");
+                    None
+                }
             }
-        })
-        .unwrap_or_else(|| SessionManager::new());
+        } else if sessions_old.exists() {
+            match SessionManager::load_old(&sessions) {
+                Ok(v) => {
+                    let n = v.num_sessions();
+                    log::info!("Sessions {n} loaded from old state");
+                    Some(v)
+                }
+                Err(e) => {
+                    log::error!("Failed to load sessions");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        (
+            slot_manager.unwrap_or_else(|| SlotManager::new()),
+            session_manager.unwrap_or_else(|| SessionManager::new()),
+        )
+    } else {
+        (SlotManager::new(), SessionManager::new())
+    };
 
     let server_config = &config.server;
     let session_handler_config = config.session_handler.clone();
     let ip_check_config = config.ip_check.clone();
 
     session_manager.start_cleanup_processor(&config.session_manager);
+    session_manager.set_mode(config.session_manager.list_mode.clone());
 
     let ip_test_cache: IpCache =
         Arc::new(quick_cache::sync::Cache::<SocketAddr, (Instant, bool)>::new(128));

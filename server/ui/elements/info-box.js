@@ -1,18 +1,17 @@
-import {LitElement, UpdatingElement, html} from 'lit';
+import { html, LitElement, UpdatingElement } from "lit";
 
 class InfoBoxElement extends LitElement {
+  static properties = {
+    title: { type: String },
+    value: { type: String },
+  };
 
-    static properties = {
-        title: {type: String},
-        value: {type: String}
-    };
+  createRenderRoot() {
+    return this;
+  }
 
-    createRenderRoot() {
-        return this;
-    }
-
-    render() {
-        return html`
+  render() {
+    return html`
             <div class="card">
                 <div class="card-header">${this.title}</div>
                 <div class="card-body">                    
@@ -23,9 +22,7 @@ class InfoBoxElement extends LitElement {
                 </div>
             </div>
         `;
-    }
-
-
+  }
 }
 
-window.customElements.define('info-box', InfoBoxElement);
+window.customElements.define("info-box", InfoBoxElement);

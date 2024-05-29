@@ -1,6 +1,6 @@
 use crate::server::IpChecker;
 use crate::udp_server::UdpSocket;
-use crate::SessionManager;
+use crate::{ListMode, SessionManager};
 use anyhow::{anyhow, bail, Context};
 use parking_lot::Mutex;
 use std::rc::Rc;
@@ -19,6 +19,9 @@ enum ControlCommand {
     CheckIp {
         session_id: SessionId,
         reply_tx: oneshot::Sender<bool>,
+    },
+    SetMode {
+        mode: ListMode,
     },
 }
 
@@ -98,6 +101,7 @@ impl Handle {
                                 }
                             }
                         }
+                        ControlCommand::SetMode { mode } => sm.set_mode(mode),
                         ControlCommand::CheckIp {
                             session_id,
                             reply_tx,
@@ -107,7 +111,8 @@ impl Handle {
                                 let _ = ip_checker.check_ip_status(
                                     Instant::now(),
                                     s,
-                                    |result, _session_ref| {
+                                    |result, session_ref| {
+                                        session_ref.addr_status.lock().set_valid(result);
                                         reply_tx.send(result).ok();
                                     },
                                 );

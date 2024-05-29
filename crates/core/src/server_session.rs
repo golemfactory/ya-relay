@@ -34,6 +34,12 @@ impl SessionId {
     }
 }
 
+impl AsRef<[u8]> for SessionId {
+    fn as_ref(&self) -> &[u8] {
+        self.id.as_ref()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub struct Endpoint {
     pub protocol: proto::Protocol,

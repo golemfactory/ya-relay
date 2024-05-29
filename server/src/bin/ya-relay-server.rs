@@ -19,7 +19,8 @@ mod ui {
     use ya_relay_core::server_session::SessionId;
     use ya_relay_core::NodeId;
     use ya_relay_server::{
-        AddrStatus, Selector, ServerControl, SessionManager, SessionRef, SessionWeakRef,
+        AddrStatus, NodeSelector, Selector, ServerControl, SessionManager, SessionRef,
+        SessionWeakRef,
     };
 
     #[derive(Serialize)]
@@ -97,7 +98,7 @@ mod ui {
         query: web::Path<SessionsQuery>,
         auth: Option<Authorization>,
     ) -> Result<impl Responder, actix_web::Error> {
-        let selector: Selector = query
+        let selector: NodeSelector = query
             .prefix
             .parse()
             .map_err(actix_web::error::ErrorBadRequest)?;
@@ -211,11 +212,7 @@ mod ui {
                     "/metrics",
                     web::get().to(move || future::ready(handle.render())),
                 )
-                .route(
-                    "",
-                    web::get().to(move || future::ready(handle2.render())),
-                )
-
+                .route("/", web::get().to(move || future::ready(handle2.render())))
                 .service(scope())
         })
         .workers(1)
