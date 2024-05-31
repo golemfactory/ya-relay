@@ -172,11 +172,17 @@ impl<'a> Future for Connect<'a> {
 
         let socket = match iface.get_socket_safe::<tcp::Socket>(self.connection.handle) {
             Ok(s) => s,
-            Err(_) => return Poll::Ready(Err(Error::SocketClosed)),
+            Err(e) => {
+                return Poll::Ready(Err(Error::InvalidSocket {
+                    source: e,
+                    handle: self.connection.handle,
+                }))
+            }
         };
 
         if !socket.is_open() {
-            Poll::Ready(Err(Error::SocketClosed))
+            let state = socket.state();
+            Poll::Ready(Err(Error::SocketClosed { state }))
         } else if socket.can_send() {
             Poll::Ready(Ok(self.connection))
         } else {

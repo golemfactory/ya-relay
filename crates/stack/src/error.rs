@@ -1,9 +1,12 @@
+use crate::patch_smoltcp::GetSocketError;
 use crate::socket::SocketEndpoint;
 use futures::channel::mpsc::SendError;
 use futures::channel::oneshot::Canceled;
+use smoltcp::iface::SocketHandle;
+use smoltcp::socket::tcp::State;
 use std::net::{AddrParseError, IpAddr};
 
-#[derive(thiserror::Error, Debug, PartialEq, Eq)]
+#[derive(thiserror::Error, Debug)]
 pub enum Error {
     #[error("Invalid IP address: {0}")]
     IpAddr(#[from] AddrParseError),
@@ -39,8 +42,14 @@ pub enum Error {
     EndpointTaken(SocketEndpoint),
     #[error("Invalid endpoint: {0:?}")]
     EndpointInvalid(SocketEndpoint),
-    #[error("Socket closed")]
-    SocketClosed,
+    #[error("Socket closed, {state}")]
+    SocketClosed { state: State },
+    #[error("Invalid Socket for {handle:?}")]
+    InvalidSocket {
+        handle: SocketHandle,
+        source: GetSocketError,
+    },
+
     #[error("Connection error: {0}")]
     ConnectionError(String),
     #[error("Connection timed out")]

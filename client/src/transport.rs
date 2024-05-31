@@ -2,7 +2,7 @@ pub(crate) mod tcp_registry;
 pub mod transport_sender;
 mod virtual_layer;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use futures::StreamExt;
 use parking_lot::Mutex;
 use std::collections::HashMap;
@@ -184,11 +184,13 @@ impl TransportLayer {
     pub async fn forward_reliable(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         self.forward_virtual_tcp(node_id, TransportType::Reliable)
             .await
+            .context("Fail to open reliable channel")
     }
 
     pub async fn forward_transfer(&self, node_id: NodeId) -> anyhow::Result<ForwardSender> {
         self.forward_virtual_tcp(node_id, TransportType::Transfer)
             .await
+            .context("Fail to open transport channel")
     }
 
     /// NodeId can be either default or secondary.
@@ -226,7 +228,10 @@ impl TransportLayer {
                 let sender: ForwardSender = self
                     .virtual_tcp
                     .connect(info.default_node_id(), channel_port)
-                    .await?
+                    .await
+                    .with_context(|| {
+                        format!("Failed to connect to {node_id} on channel {channel_port}")
+                    })?
                     .into();
 
                 self.set_forward_channel(node_id, channel, sender.clone());
