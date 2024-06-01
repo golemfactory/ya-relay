@@ -25,7 +25,6 @@ humantime = "2.1"
 log = "0.4"
 metrics = "0.21"
 num_cpus = "1.15"
-rand = "0.8.5"
 strum = "0.25"
 strum_macros = "0.25"
 thiserror = "1.0"
@@ -61,5 +60,5 @@ env_logger = "0.10.0"
 
 [features]
 default = []
-packet-trace-enable = ["ya-packet-trace/enable"]
 test-utils = []
+encyryption = []

@@ -52,9 +52,16 @@ pub fn new(
     }
 }
 
+#[cfg(feature = "encyryption")]
 pub fn supported_encryptions() -> Vec<String> {
     vec![EncryptionType::Aes256GcmSiv.to_string()]
 }
+
+#[cfg(not(feature = "encyryption"))]
+pub fn supported_encryptions() -> Vec<String> {
+    vec![]
+}
+
 
 struct NullEncryption;
 
