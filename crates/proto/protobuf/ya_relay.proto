@@ -80,6 +80,10 @@ message ChallengeResponse {
     bytes solution = 1;
     /* First signature by default identity */
     repeated bytes signatures = 2;
+    /* signature for session key */
+    repeated bytes session_sign = 3;
+    /* RAW public key */
+    bytes session_pub_key = 4;
 }
 
 /* Requests sent to the server by the client */
@@ -179,6 +183,8 @@ message Response {
         uint64 seen_ts = 3;
         uint32 slot = 4;
         repeated string supported_encryptions = 5;
+        bytes session_pub_key = 6;
+        bytes session_key_proof = 7;
     }
 
     /* Neighbourhood */

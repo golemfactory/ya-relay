@@ -7,10 +7,16 @@ description = "Node discovery server for forwarding data between Golem network n
 license = "LGPL-3.0"
 repository = "https://github.com/golemfactory/ya-relay"
 
+[features]
+default = []
+test-utils = ["ya-relay-core/test-utils"]
+small = ["log/max_level_info"]
+ui = ['actix-files', 'actix-web']
+metrics = ['actix-web']
+
 [dependencies]
 ya-relay-proto = { workspace = true }
 ya-relay-core = { workspace = true }
-
 actix-rt = "2.7"
 serde = { version = "1.0.192", features = ["derive"] }
 rmp-serde = "1"
@@ -28,16 +34,15 @@ rand = { version = "0.8", features = ["std"] }
 clap = { version = "4.4.6", features = ["derive", "env", "color"]}
 lazy_static = "1.4.0"
 dashmap = "4.0.2"
-
-tokio = { version = "1", features = ["net", "sync", "macros", "time", "rt", "io-util"] }
+tokio = { version = "1.33", features = ["net", "sync", "macros", "time", "rt", "io-util"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 hex = "0.4.3"
 parking_lot = "0.12.1"
 bytes = "1.5.0"
 quick_cache = "0.4.0"
-
 tiny-keccak = "2"
-actix-web = { version = "4.4.0", default-features = false, features = ["macros"] }
+actix-web = { version = "4.4.0", default-features = false, features = ["macros"], optional = true }
+actix-files = {  version = "0.6.5", optional = true }
 cfg-if = "1.0.0"
 
 [target."cfg(unix)".dependencies]
@@ -57,7 +62,8 @@ test-case = "3.1"
 ethsign = "0.8.0"
 test-log = "0.2.13"
 
-[features]
-test-utils = ["ya-relay-core/test-utils"]
-small = ["log/max_level_info"]
 
+[build-dependencies]
+flate2 = "1"
+anyhow = "1.0.80"
+tiny-keccak = { version = "2", features = ["sha3"] }

@@ -10,7 +10,9 @@ use tokio::net::UdpSocket;
 use tokio::task::JoinHandle;
 use ya_relay_core::challenge;
 use ya_relay_core::challenge::ChallengeDigest;
-use ya_relay_core::crypto::{Crypto, CryptoProvider, FallbackCryptoProvider, PublicKey};
+use ya_relay_core::crypto::{
+    Crypto, CryptoProvider, FallbackCryptoProvider, PublicKey, SessionCrypto,
+};
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::utils::ResultExt;
 use ya_relay_proto::codec::BytesMut;
@@ -90,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
                     let mut request_id = 1;
                     let mut buffer = BytesMut::new();
                     let (_keys, signers) = gen_crypto(1).await?;
+                    let session_crypto = SessionCrypto::generate()?;
                     loop {
                         if !args.delay.is_zero() {
                             tokio::time::sleep(args.delay).await;
@@ -116,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
                             log::info!("{}:{} challenge response", worker, request_id);
                             let packet_bytes = buffer.split();
                             let response_packet = Packet::decode(packet_bytes)?;
+
                             let (challenge_resp, session_id) = match response_packet {
                                 Packet {
                                     session_id,
@@ -138,6 +142,7 @@ async fn main() -> anyhow::Result<()> {
                                             challenge.challenge,
                                             challenge.difficulty,
                                             signers.clone(),
+                                            session_crypto.pub_key(),
                                         )
                                         .await?,
                                         session_id,

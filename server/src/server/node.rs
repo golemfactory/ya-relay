@@ -121,7 +121,7 @@ impl NodeHandler {
         };
 
         let node = match self.session_manager.node_session(request_node_id) {
-            Some(it) => decoder.to_node_info(&it),
+            Some(it) => decoder.to_node_info(&it, request_node_id, true),
             None => {
                 return Some((
                     self.ack.clone(),

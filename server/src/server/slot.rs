@@ -107,7 +107,7 @@ impl SlotHandler {
         let request_node_id: NodeId = self.slot_manager.node(param.slot)?;
         let decoder = decoder(&self.session_manager, &self.slot_manager);
         if let Some(session_ref) = self.session_manager.node_session(request_node_id) {
-            let node = decoder.to_node_info(&session_ref);
+            let node = decoder.to_node_info(&session_ref, request_node_id, true);
             Some((
                 self.ack.clone(),
                 Packet::response(request_id, session_id.to_vec(), StatusCode::Ok, node),

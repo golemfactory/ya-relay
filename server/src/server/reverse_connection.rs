@@ -66,7 +66,6 @@ impl RcHandler {
         param: &request::ReverseConnection,
     ) -> Option<(CompletionHandler, Packet)> {
         self.metrics.start.increment(1);
-        log::debug!("1");
         let session_ref = match self.session_manager.session(&session_id) {
             Some(session_ref) if session_ref.peer == src => session_ref,
             _ => {
@@ -82,7 +81,6 @@ impl RcHandler {
             }
         };
 
-        log::debug!("2");
         let request_node_id: NodeId = match param.node_id.as_slice().try_into() {
             Ok(node_id) => node_id,
             Err(_) => {
@@ -99,7 +97,7 @@ impl RcHandler {
         };
 
         clock.touch(&session_ref.ts);
-        log::debug!("3");
+
         let node_id = session_ref.node_id;
         let endpoints = match session_ref.endpoint() {
             Some(e) => vec![e],

@@ -90,6 +90,7 @@ impl NeighboursHandler {
         param: &request::Neighbours,
     ) -> Option<(CompletionHandler, Packet)> {
         self.metrics.start.increment(1);
+
         let decoder = super::state_decoder::decoder(&self.session_manager, &self.slot_manager);
 
         let session_ref = match self.session_manager.session(&session_id) {
@@ -114,7 +115,7 @@ impl NeighboursHandler {
 
         let nodes = neighbours
             .into_iter()
-            .map(|session_ref| decoder.to_node_info(&session_ref))
+            .map(|session_ref| decoder.to_node_info(&session_ref, session_ref.node_id, false))
             .collect();
 
         let response = Packet::response(
