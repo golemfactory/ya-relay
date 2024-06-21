@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 pub mod challenge;
 pub mod crypto;
 pub mod dispatch;

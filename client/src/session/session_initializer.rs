@@ -20,12 +20,12 @@ use ya_relay_proto::proto::RequestId;
 use super::network_view::SessionPermit;
 use crate::client::ClientConfig;
 use crate::direct_session::DirectSession;
+use crate::encryption;
 use crate::error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::raw_session::RawSession;
 use crate::session::session_state::InitState;
 use crate::session::session_traits::SessionRegistration;
 
-/// TODO: Rename to `SessionInitializer`
 #[derive(Clone)]
 pub struct SessionInitializer {
     state: Arc<Mutex<SessionInitializerState>>,
@@ -149,6 +149,7 @@ impl SessionInitializer {
                     .await
                     .map_err(|e| SessionError::Internal(e.to_string()))?,
             ),
+            supported_encryptions: encryption::supported_encryptions(),
             ..Default::default()
         };
 
@@ -174,7 +175,7 @@ impl SessionInitializer {
             .into());
         }
 
-        let (remote_id, identities) = match {
+        let (remote_id, identities, session_key) = match {
             if challenge {
                 log::trace!("Validating challenge from: [{node_id}] ({addr})");
 
@@ -211,7 +212,14 @@ impl SessionInitializer {
         // after we send ResumeForwarding. That's why we register session before.
         let session = self
             .layer
-            .register_session(addr, session_id, remote_id, identities)
+            .register_session(
+                addr,
+                session_id,
+                remote_id,
+                identities,
+                response.packet.supported_encryptions,
+                session_key,
+            )
             .await
             .map_err(|e| {
                 SessionError::Internal(format!("Failed to register session. Error: {e}"))
@@ -438,7 +446,7 @@ impl SessionInitializer {
 
             // Validate the challenge before we start solving it ourselves.
             // This way we avoid DDoS.
-            let (node_id, identities) =
+            let (node_id, identities, session_key) =
                 challenge::recover_identities_from_challenge::<ChallengeDigest>(
                     &raw_challenge,
                     config.challenge_difficulty,
@@ -459,6 +467,7 @@ impl SessionInitializer {
 
             let packet = proto::response::Session {
                 challenge_resp: Some(challenge),
+                supported_encryptions: encryption::supported_encryptions(),
                 ..Default::default()
             };
 
@@ -467,7 +476,14 @@ impl SessionInitializer {
             // to immediately send us Forward packet.
             let session = self
                 .layer
-                .register_session(with, session_id, node_id, identities)
+                .register_session(
+                    with,
+                    session_id,
+                    node_id,
+                    identities,
+                    session.supported_encryptions,
+                    session_key,
+                )
                 .await
                 .map_err(|e| {
                     SessionError::Internal(format!("Failed to register session. Error: {e}"))
@@ -553,6 +569,7 @@ impl SessionInitializer {
         };
 
         let limit = self.simultaneous_challenges.clone();
+        let session_public_key = self.config.session_crypto.pub_key();
 
         // Compute challenge in different thread to avoid blocking runtime.
         // Note: computing starts here, not after awaiting.
@@ -565,6 +582,7 @@ impl SessionInitializer {
                 request.challenge,
                 request.difficulty,
                 crypto_vec,
+                session_public_key,
             )
             .await
         }
