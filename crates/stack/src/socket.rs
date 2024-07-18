@@ -271,7 +271,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Tcp(s) => s.local_endpoint().into(),
             Self::Udp(s) => {
                 let Some(addr) = s.endpoint().addr else {
-                    return SocketEndpoint::Other
+                    return SocketEndpoint::Other;
                 };
                 let port = s.endpoint().port;
                 SocketEndpoint::Ip(IpEndpoint { addr, port })
