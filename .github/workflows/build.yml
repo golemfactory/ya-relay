@@ -7,7 +7,6 @@ env:
   # `-D warnings` means any warnings emitted will cause build to fail
   RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
-  rust_stable: 1.71.1
 
 jobs:
   checks:
@@ -16,12 +15,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v1
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.rust_stable }}
-          components: rustfmt, clippy
 
       - name: Cmake
         run: |
@@ -50,11 +43,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v1
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.rust_stable }}
 
       - name: Cmake
         if: matrix.os == 'ubuntu-22.04'
@@ -105,11 +93,6 @@ jobs:
         run: |
           sudo apt-get install -y cmake
           cmake --version
-
-      - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{ env.rust_stable }}
 
       - name: Build relay server
         uses: actions-rs/cargo@v1
