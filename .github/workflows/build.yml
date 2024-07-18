@@ -5,7 +5,7 @@ on:
 
 env:
   # `-D warnings` means any warnings emitted will cause build to fail
-  RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
+  RUSTFLAGS: "-D warnings -C opt-level=z -C debuginfo=1"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
 
 jobs:
@@ -38,7 +38,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-13, windows-latest, ubuntu-22.04]
+        os: [macos-latest, windows-latest, ubuntu-22.04]
 
     steps:
       - name: Checkout
