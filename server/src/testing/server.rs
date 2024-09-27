@@ -34,7 +34,7 @@ pub async fn init_test_server() -> anyhow::Result<ServerWrapper> {
 }
 
 pub async fn init_test_server_with_config(config: Config) -> anyhow::Result<ServerWrapper> {
-    let server = Rc::new(crate::run(&config).await?);
+    let server = Rc::new(crate::run(&config, ).await?);
 
     Ok(ServerWrapper { server })
 }

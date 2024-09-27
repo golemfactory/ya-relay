@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
+use crate::AddrStatus;
 use metrics::Counter;
 use quick_cache::sync::Cache;
 use rand::{thread_rng, Rng};
@@ -43,6 +43,7 @@ mod ip_checker;
 
 pub use ip_checker::IpCheckerConfig;
 pub use session::SessionHandlerConfig;
+use crate::sse::{SseClients, SseMessage, NodeInfo};
 
 #[derive(clap::Args)]
 /// Ip Checker configuration args
@@ -109,7 +110,7 @@ impl Drop for Server {
     }
 }
 
-pub async fn run(config: &Config) -> anyhow::Result<Server> {
+pub async fn run(config: &Config, sse_clients: Arc<SseClients>) -> anyhow::Result<Server> {
     let bind_addr: SocketAddr = config.server.address;
 
     let slot_manager = config
@@ -159,10 +160,12 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
     let server = {
         let session_manager = session_manager.clone();
         let slot_manager = slot_manager.clone();
+        let sse_clients = sse_clients.clone();
 
         UdpServerBuilder::new(move |reply: Rc<UdpSocket>| {
             let session_manager = session_manager.clone();
             let slot_manager = slot_manager.clone();
+            let sse_clients = sse_clients.clone();
             let checker_ip = reply.local_addr()?.ip();
 
             let session_handler = session::SessionHandler::new(&session_manager, &session_handler_config);
@@ -222,7 +225,37 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
 
                                 match request {
                                     request::Kind::Session(session) => {
-                                        session_handler.handle(&clock, src, request_id, session_id, &session)
+                                        let response = session_handler.handle(&clock, src, request_id, session_id, &session);
+                                        if let Some((_, Packet { session_id, .. })) = &response {
+                                            if let Ok(session_id) = SessionId::try_from(session_id.clone()) {
+                                                let sse_clients_clone = Arc::clone(&sse_clients);
+                                                let session_manager_clone = session_manager.clone();
+                                                let broadcast_future = async move {
+                                                    // Add a small delay to allow the session to be fully registered
+                                                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                                                    if let Some(session_ref) = session_manager_clone.session(&session_id) {
+                                                        let msg = SseMessage {
+                                                            status: "connected".to_string(),
+                                                            node: NodeInfo {
+                                                                id: session_ref.node_id.to_string(),
+                                                                peer: session_ref.peer.to_string(),
+                                                                seen: format!("{:?}", session_ref.ts.age()),
+                                                                addr_status: match &*session_ref.addr_status.lock() {
+                                                                    AddrStatus::Unknown => "Unknown".to_owned(),
+                                                                    AddrStatus::Pending(ts) => format!("pending({:?})", ts.elapsed()),
+                                                                    AddrStatus::Invalid(ts) => format!("invalid({:?})", ts.elapsed()),
+                                                                    AddrStatus::Valid(ts) => format!("valid({:?})", ts.elapsed()),
+                                                                },
+                                                            },
+                                                        };
+                                                        let json = serde_json::to_string(&msg).unwrap();
+                                                        sse_clients_clone.broadcast(&json).await;
+                                                    }
+                                                };
+                                                tokio::spawn(broadcast_future);
+                                            }
+                                        }
+                                        response
                                     }
                                     request::Kind::Ping(_) => {
                                         session_id.and_then(|session_id| handle_ping(&clock, src, request_id, session_id, &session_manager))
@@ -257,11 +290,33 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                                                                                                                                }))
                                                                                     }))
                                                }) => {
-                                let session_id: Option<SessionId> = session_id.try_into().ok();
-                                if let Some(session_id) = session_id {
-                                    session_manager.remove_session(&session_id);
-                                    log::debug!(target: "request:disconnect", "[{src}] session {session_id} disconnected");
-                                }
+                                                let session_id: Option<SessionId> = session_id.try_into().ok();
+                                                if let Some(session_id) = session_id {
+                                                    if let Some(session_ref) = session_manager.session(&session_id) {
+                                                        let sse_clients_clone = Arc::clone(&sse_clients);
+                                                        let broadcast_future = async move {
+                                                            let msg = SseMessage {
+                                                                status: "disconnected".to_string(),
+                                                                node: NodeInfo {
+                                                                    id: session_ref.node_id.to_string(),
+                                                                    peer: session_ref.peer.to_string(),
+                                                                    seen: format!("{:?}", session_ref.ts.age()),
+                                                                    addr_status: match &*session_ref.addr_status.lock() {
+                                                                        AddrStatus::Unknown => "Unknown".to_owned(),
+                                                                        AddrStatus::Pending(ts) => format!("pending({:?})", ts.elapsed()),
+                                                                        AddrStatus::Invalid(ts) => format!("invalid({:?})", ts.elapsed()),
+                                                                        AddrStatus::Valid(ts) => format!("valid({:?})", ts.elapsed()),
+                                                                    },
+                                                                },
+                                                            };
+                                                            let json = serde_json::to_string(&msg).unwrap();
+                                                            sse_clients_clone.broadcast(&json).await;
+                                                        };
+                                                        tokio::spawn(broadcast_future);
+                                                    }
+                                                    session_manager.remove_session(&session_id);
+                                                    log::debug!(target: "request:disconnect", "[{src}] session {session_id} disconnected");
+                                                }
                                 None
                             }
                             PacketKind::Packet(Packet { session_id: _, kind: Some(packet::Kind::Control(Control { kind: Some(control::Kind::ResumeForwarding(_)) })) }) => {
@@ -375,3 +430,4 @@ fn counter_ack(success: &Counter, error: &Counter) -> CompletionHandler {
 
     Rc::new(CounterAck(success.clone(), error.clone()))
 }
+
