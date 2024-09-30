@@ -14,6 +14,7 @@ ya-relay-core = { workspace = true }
 
 ya-packet-trace = "0.1.0"
 
+aes-gcm-siv = "0.11.1"
 anyhow = "1.0"
 async-trait = "0.1"
 chrono = "0.4"
@@ -59,5 +60,5 @@ env_logger = "0.10.0"
 
 [features]
 default = []
-packet-trace-enable = ["ya-packet-trace/enable"]
 test-utils = []
+encyryption = []

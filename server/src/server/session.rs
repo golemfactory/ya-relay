@@ -168,31 +168,32 @@ impl SessionHandler {
                         hex::encode(challenge.as_slice())
                     );
 
-                    let (node_id, keys) = match challenge::recover_identities_from_challenge::<
-                        ChallengeDigest,
-                    >(
-                        &challenge,
-                        self.difficulty,
-                        Some(challenge_resp.clone()),
-                        None,
-                    ) {
-                        Err(e) => {
-                            self.metrics.error.increment(1);
-                            log::warn!(target: "request::session", "[{src}] challenge verification failed for session_id={session_id}: {e:?}");
-                            return Some((
-                                noop_ack(),
-                                Packet {
-                                    session_id: session_id.to_vec(),
-                                    kind: Some(packet::Kind::Response(Response {
-                                        code: StatusCode::BadRequest.into(),
-                                        request_id,
-                                        kind: None,
-                                    })),
-                                },
-                            ));
-                        }
-                        Ok(v) => v,
-                    };
+                    let (node_id, keys, session_key_with_proofs) =
+                        match challenge::recover_identities_from_challenge_with_proof::<
+                            ChallengeDigest,
+                        >(
+                            &challenge,
+                            self.difficulty,
+                            Some(challenge_resp.clone()),
+                            None,
+                        ) {
+                            Err(e) => {
+                                self.metrics.error.increment(1);
+                                log::warn!(target: "request::session", "[{src}] challenge verification failed for session_id={session_id}: {e:?}");
+                                return Some((
+                                    noop_ack(),
+                                    Packet {
+                                        session_id: session_id.to_vec(),
+                                        kind: Some(packet::Kind::Response(Response {
+                                            code: StatusCode::BadRequest.into(),
+                                            request_id,
+                                            kind: None,
+                                        })),
+                                    },
+                                ));
+                            }
+                            Ok(v) => v,
+                        };
 
                     if !self.check_session_id(session_id, src) {
                         self.metrics.error.increment(1);
@@ -216,6 +217,7 @@ impl SessionHandler {
                         node_id,
                         keys,
                         supported_encryptions.clone(),
+                        session_key_with_proofs,
                     ) {
                         Ok(_) => Some((
                             self.challenge_valid_ack.clone(),

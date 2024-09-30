@@ -29,7 +29,7 @@ pub trait WorkerFactory {
 pub trait Worker {
     type Fut: Future<Output = anyhow::Result<()>>;
 
-    fn handle(&self, request: BytesMut, src: SocketAddr, pt: PacketType) -> Self::Fut;
+    fn handle(&mut self, request: BytesMut, src: SocketAddr, pt: PacketType) -> Self::Fut;
 }
 
 pub struct UdpServerBuilder<F> {
@@ -109,7 +109,7 @@ impl<F: WorkerFactory + Sync + Send + 'static> UdpServerBuilder<F> {
             let _h = arbiter.spawn(async move {
                 let h = tokio::task::spawn_local(async move {
                     let socket = Rc::new(socket);
-                    let worker = match factory.new_worker(socket.clone()) {
+                    let mut worker = match factory.new_worker(socket.clone()) {
                         Ok(worker) => worker,
                         Err(e) => {
                             log::error!("failed to start worker {worker_idx}");
@@ -201,13 +201,13 @@ impl<Out: Worker, F: Fn(Rc<UdpSocket>) -> anyhow::Result<Out>> WorkerFactory for
 
 struct FnWrap<F>(F);
 
-impl<Output, F: Fn(BytesMut, SocketAddr, PacketType) -> Output> Worker for FnWrap<F>
+impl<Output, F: FnMut(BytesMut, SocketAddr, PacketType) -> Output> Worker for FnWrap<F>
 where
     F::Output: Future<Output = anyhow::Result<()>>,
 {
     type Fut = F::Output;
 
-    fn handle(&self, request: BytesMut, src: SocketAddr, pt: PacketType) -> Self::Fut {
+    fn handle(&mut self, request: BytesMut, src: SocketAddr, pt: PacketType) -> Self::Fut {
         self.0(request, src, pt)
     }
 }
@@ -230,10 +230,10 @@ where
     }))
 }
 
-pub fn worker_err_fn<OutputFut, F>(f: F) -> anyhow::Result<impl Worker>
+pub fn worker_err_fn<OutputFut, F>(mut f: F) -> anyhow::Result<impl Worker>
 where
     OutputFut: Future<Output = anyhow::Result<()>>,
-    F: Fn(PacketType, BytesMut, SocketAddr) -> anyhow::Result<OutputFut>,
+    F: FnMut(PacketType, BytesMut, SocketAddr) -> anyhow::Result<OutputFut>,
 {
     Ok(FnWrap(move |request, src, pt| match f(pt, request, src) {
         Ok(fut) => fut.left_future(),

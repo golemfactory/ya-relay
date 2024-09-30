@@ -3,7 +3,10 @@ use ya_relay_core::NodeId;
 pub mod session_manager;
 pub mod slot_manager;
 
+mod config_manager;
+pub(crate) mod control;
 mod last_seen;
+
 pub use last_seen::*;
 
 pub fn hamming_distance(id1: NodeId, id2: NodeId) -> u32 {
