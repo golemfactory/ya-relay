@@ -944,7 +944,7 @@ mod tests {
         let exact_str = "889ff52ece3d5368051f4f8216650a7843f8926b";
         let bytes: [u8; 20] = hex::FromHex::from_hex(exact_str).unwrap();
         let exact: NodeSelector = exact_str.parse().unwrap();
-        assert!(matches!(exact, Selector::Exact { bytes }));
+        assert!(matches!(exact, Selector::Exact { bytes: _ }));
 
         let prefix: NodeSelector = exact_str[..5].parse().unwrap();
         let node_id = NodeId::from(bytes);

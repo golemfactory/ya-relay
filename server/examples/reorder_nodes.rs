@@ -1,4 +1,3 @@
-use libc::socket;
 use ya_relay_server::{Selector, SessionManager};
 
 struct Bits<'a> {

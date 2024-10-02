@@ -6,7 +6,7 @@ use smoltcp::iface::SocketHandle;
 use smoltcp::socket::tcp::State;
 use std::net::{AddrParseError, IpAddr};
 
-#[derive(thiserror::Error, Debug)]
+#[derive(thiserror::Error, Debug, PartialEq)]
 pub enum Error {
     #[error("Invalid IP address: {0}")]
     IpAddr(#[from] AddrParseError),
