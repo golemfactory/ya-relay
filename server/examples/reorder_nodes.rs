@@ -2,19 +2,14 @@ use libc::socket;
 use ya_relay_server::{Selector, SessionManager};
 
 struct Bits<'a> {
-    data : &'a [u8],
-    mask : u8
+    data: &'a [u8],
+    mask: u8,
 }
 
 impl<'a> Bits<'a> {
-
-    fn for_slice(data : &'a [u8]) -> Self {
-        Self {
-            data,
-            mask: 0x80
-        }
+    fn for_slice(data: &'a [u8]) -> Self {
+        Self { data, mask: 0x80 }
     }
-
 }
 
 impl<'a> Iterator for Bits<'a> {
@@ -27,39 +22,35 @@ impl<'a> Iterator for Bits<'a> {
             self.data = &self.data[1..];
             self.mask = 0x80;
         }
-        return Some(v)
+        return Some(v);
     }
 }
 
-
 #[derive(Default)]
 struct PrefixTree {
-    left : Option<Box<PrefixTree>>,
-    right : Option<Box<PrefixTree>>
+    left: Option<Box<PrefixTree>>,
+    right: Option<Box<PrefixTree>>,
 }
 
 impl PrefixTree {
-
-    fn insert(mut self : Box<Self>, mut bits : Bits<'_>) -> Box<Self> {
+    fn insert(mut self: Box<Self>, mut bits: Bits<'_>) -> Box<Self> {
         if let Some(bit) = bits.next() {
             if bit {
                 self.right = Some(self.right.take().unwrap_or_default().insert(bits));
-            }
-            else {
+            } else {
                 self.left = Some(self.left.take().unwrap_or_default().insert(bits));
             }
         }
         self
     }
 
-    fn dump(&self, prefix : &str) {
+    fn dump(&self, prefix: &str) {
         if self.left.is_none() && self.right.is_none() {
             println!("{prefix}");
         }
         let space = if self.left.is_some() & self.right.is_some() {
             " "
-        }
-        else {
+        } else {
             ""
         };
 
@@ -70,18 +61,16 @@ impl PrefixTree {
             r.dump(&format!("{prefix}{space}1"))
         }
     }
-
 }
 
 fn main() -> anyhow::Result<()> {
     let sm = SessionManager::load("./sessions_v2.state".as_ref())?;
-    let mut pt : Box<PrefixTree> = Box::default();
+    let mut pt: Box<PrefixTree> = Box::default();
     for (node_id, sessions) in sm.nodes_for(Selector::All, usize::MAX) {
         let n_sessions = sessions.len();
         let is_valid = if let Some(v) = sessions.into_iter().filter_map(|r| r.upgrade()).next() {
             v.addr_status.lock().is_valid()
-        }
-        else {
+        } else {
             false
         };
         println!("{node_id} {n_sessions} {is_valid:?}");

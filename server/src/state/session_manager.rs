@@ -13,10 +13,11 @@ use std::{cmp, fs, io, iter, thread};
 
 use anyhow::{anyhow, bail, Context};
 use dashmap::{DashMap, DashSet};
+use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::time;
-
+use tokio::{sync::broadcast, time};
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 use ya_relay_core::challenge::Proof;
 use ya_relay_core::crypto::PublicKey;
 use ya_relay_core::identity::Identity;
@@ -316,12 +317,20 @@ impl AddrStatus {
 
 type NodeSessionSet = Arc<Mutex<Vec<SessionWeakRef>>>;
 
+#[derive(Clone)]
+pub enum NodeEvent {
+    New(NodeId),
+    Lost(NodeId),
+    Lag(u64),
+}
+
 pub struct SessionManager {
     sessions: [Mutex<HashMap<SessionId, SessionRef>>; 16],
     node_sessions: DashMap<NodeId, NodeSessionSet>,
     flagged_nodes: DashMap<NodeId, Flag>,
     mode: AtomicI8,
     metrics: SessionManagerMetrics,
+    node_trace_tx: broadcast::Sender<NodeEvent>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -351,12 +360,13 @@ pub enum Flag {
 }
 
 impl SessionManager {
-    pub fn new() -> Arc<Self> {
+    pub(crate) fn new() -> Arc<Self> {
         let sessions: [Mutex<HashMap<SessionId, SessionRef>>; 16] = Default::default();
         let node_sessions = Default::default();
         let metrics = Default::default();
         let mode = AtomicI8::new(0);
         let flagged_nodes = Default::default();
+        let (node_trace_tx, _) = broadcast::channel(128);
 
         assert_eq!(sessions.len(), 0x10);
 
@@ -366,6 +376,7 @@ impl SessionManager {
             metrics,
             flagged_nodes,
             mode,
+            node_trace_tx,
         })
     }
 
@@ -387,6 +398,11 @@ impl SessionManager {
 
     pub fn num_nodes(&self) -> usize {
         self.node_sessions.len()
+    }
+
+    pub fn events(&self) -> impl Stream<Item = NodeEvent> {
+        BroadcastStream::new(self.node_trace_tx.subscribe())
+            .map(|it| it.unwrap_or_else(|BroadcastStreamRecvError::Lagged(n)| NodeEvent::Lag(n)))
     }
 
     pub fn nodes_for(
@@ -425,7 +441,7 @@ impl SessionManager {
         }
     }
 
-    pub fn start_cleanup_processor(
+    pub(crate) fn start_cleanup_processor(
         self: &Arc<Self>,
         &SessionManagerConfig {
             session_cleaner_interval,
@@ -507,9 +523,11 @@ impl SessionManager {
         }
 
         let select_public = if self.mode.load(Ordering::Relaxed) == 1 {
-            !self.node_session(base_node_id).map(|s| s.addr_status.lock().is_valid()).unwrap_or_default()
-        }
-        else {
+            !self
+                .node_session(base_node_id)
+                .map(|s| s.addr_status.lock().is_valid())
+                .unwrap_or_default()
+        } else {
             false
         };
 
@@ -520,9 +538,14 @@ impl SessionManager {
                 let id = *entry.key();
                 let distance = Reverse(hamming_distance(base_node_id, id));
                 if select_public {
-                    let is_valid = entry.value().lock().iter().filter_map(|ws| ws.upgrade()).any(|s| s.addr_status.lock().is_valid());
+                    let is_valid = entry
+                        .value()
+                        .lock()
+                        .iter()
+                        .filter_map(|ws| ws.upgrade())
+                        .any(|s| s.addr_status.lock().is_valid());
                     if !is_valid {
-                        return None
+                        return None;
                     }
                 }
                 Some(Distance { distance, id })
@@ -540,10 +563,13 @@ impl SessionManager {
             .collect()
     }
 
-    pub fn link_session(&self, node_id: NodeId, session: &SessionRef) {
+    pub(crate) fn link_session(&self, node_id: NodeId, session: &SessionRef) {
         let session_w = Arc::downgrade(session);
         let entry = self.node_sessions.entry(node_id).or_default();
         let mut g = entry.lock();
+        if g.len() == 0 {
+            let _ignore = self.node_trace_tx.send(NodeEvent::New(node_id));
+        }
         g.retain(|s| s.upgrade().is_some());
         g.push(session_w)
     }
@@ -553,9 +579,13 @@ impl SessionManager {
         for id in &session.keys {
             let entry = self.node_sessions.entry(id.node_id).or_default();
             let mut g = entry.lock();
+            let prev_n = g.is_empty();
             g.retain(|s| s.strong_count() > 0);
             if g.iter().all(|s| !Weak::ptr_eq(s, &session_w)) {
                 g.push(session_w.clone())
+            }
+            if !g.is_empty() && prev_n {
+                let _ignore = self.node_trace_tx.send(NodeEvent::New(id.node_id));
             }
         }
     }
@@ -574,10 +604,16 @@ impl SessionManager {
     }
 
     fn clean_node_sessions(&self) {
-        self.node_sessions.retain(|&_node_id, sessions| {
+        let tx = &self.node_trace_tx;
+        self.node_sessions.retain(|&node_id, sessions| {
             let mut g = sessions.lock();
             g.retain(|s| s.upgrade().is_some());
-            !g.is_empty()
+            if g.is_empty() {
+                tx.send(NodeEvent::Lost(node_id)).ok();
+                false
+            } else {
+                true
+            }
         })
     }
 

@@ -1353,7 +1353,10 @@ impl Handler for SessionLayer {
         if let Some(kind) = control.kind {
             let fut = match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
-                    log::info!("got reverse connection request from: {:?}", NodeId::try_from(message.node_id.as_slice()).ok());
+                    log::info!(
+                        "got reverse connection request from: {:?}",
+                        NodeId::try_from(message.node_id.as_slice()).ok()
+                    );
                     let myself = self;
                     tokio::task::spawn_local(async move {
                         myself

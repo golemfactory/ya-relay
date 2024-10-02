@@ -62,7 +62,6 @@ pub fn supported_encryptions() -> Vec<String> {
     vec![]
 }
 
-
 struct NullEncryption;
 
 impl Encryption for NullEncryption {
