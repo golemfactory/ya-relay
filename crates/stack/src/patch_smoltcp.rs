@@ -3,7 +3,7 @@ use smoltcp::socket::AnySocket;
 
 use crate::interface::CaptureInterface;
 
-#[derive(thiserror::Error, Clone, Debug)]
+#[derive(thiserror::Error, Clone, Debug, PartialEq)]
 pub enum GetSocketError {
     #[error("Socket not found")]
     NotFound,

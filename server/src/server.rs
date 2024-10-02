@@ -138,7 +138,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                     log::info!("Sessions loaded");
                     Some(v)
                 }
-                Err(e) => {
+                Err(_) => {
                     log::error!("Failed to load sessions");
                     None
                 }
@@ -150,7 +150,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                     log::info!("Sessions {n} loaded from old state");
                     Some(v)
                 }
-                Err(e) => {
+                Err(_e) => {
                     log::error!("Failed to load sessions");
                     None
                 }

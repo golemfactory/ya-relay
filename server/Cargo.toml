@@ -44,6 +44,7 @@ tiny-keccak = "2"
 actix-web = { version = "4.4.0", default-features = false, features = ["macros"], optional = true }
 actix-files = {  version = "0.6.5", optional = true }
 cfg-if = "1.0.0"
+tokio-stream = { version = "0.1.16", features = ["sync"] }
 
 [target."cfg(unix)".dependencies]
 libc = "0.2"
@@ -57,7 +58,6 @@ features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread"] }
-tokio-stream = "0.1.8"
 test-case = "3.1"
 ethsign = "0.8.0"
 test-log = "0.2.13"
