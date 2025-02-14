@@ -30,6 +30,7 @@ ya-relay-util = { path = "crates/util", version = "0.1" }
 
 [dev-dependencies]
 ya-relay-client = { workspace = true, features = ["test-utils"] }
+ya-relay-stack = { workspace = true }
 ya-relay-server = { workspace = true, features = ["test-utils"] }
 ya-relay-core = { workspace = true, features = ["test-utils"] }
 ya-relay-proto = { workspace = true }
@@ -55,6 +56,7 @@ serde = "1.0"
 serde_json = "1.0"
 serde_with = "3.2"
 simple-logging = "2.0"
+smoltcp = "0.10"
 structopt = "0.3"
 clap = "4.3.19"
 tokio = { version = "1", features = ["fs", "io-util", "signal"] }

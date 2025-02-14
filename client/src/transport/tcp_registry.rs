@@ -80,8 +80,12 @@ impl VirtChannel {
 }
 
 impl VirtNode {
+    pub fn ip_from_node_id(id: NodeId) -> IpAddress {
+        IpAddress::from(to_ipv6(id.into_array()))
+    }
+
     pub fn new(id: NodeId, layer: SessionLayer) -> VirtNode {
-        let ip = IpAddress::from(to_ipv6(id.into_array()));
+        let ip = Self::ip_from_node_id(id);
         let routing = RoutingSender::empty(id, layer);
 
         let msg_in_channel =
