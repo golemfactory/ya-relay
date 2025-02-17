@@ -23,6 +23,7 @@ jobs:
         with:
           toolchain: ${{ env.rust_stable }}
           target: ${{ env.rust_target }}
+          override: true
           components: rustfmt, clippy
 
       - name: Cmake
@@ -57,6 +58,7 @@ jobs:
         with:
           toolchain: ${{ env.rust_stable }}
           target: ${{ env.rust_target }}
+          override: true
 
       - name: Cmake
         if: matrix.os == 'ubuntu-22.04'
