@@ -7,7 +7,7 @@ env:
   # `-D warnings` means any warnings emitted will cause build to fail
   RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
-  rust_stable: 1.71.1
+  rust_stable: 1.81.0
 
 jobs:
   checks:
@@ -44,7 +44,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-22.04]
+        os: [ macos-latest, windows-latest, ubuntu-22.04 ]
 
     steps:
       - name: Checkout
@@ -77,9 +77,9 @@ jobs:
 
   integration_tests:
     name: Integration Tests
-    needs: 
-    - checks
-    - tests
+    needs:
+      - checks
+      - tests
     runs-on: ubuntu-22.04
 
     steps:
