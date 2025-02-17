@@ -6,7 +6,7 @@ on:
       - pre-rel-*
 
 env:
-  rust_stable: 1.81.0
+  rust_stable: 1.79.0
 
 jobs:
   create-release:
