@@ -7,7 +7,7 @@ env:
   # `-D warnings` means any warnings emitted will cause build to fail
   RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
-  rust_stable: 1.84.1
+  rust_stable: 1.81.0
   rust_target: x86_64-unknown-linux-musl
 
 jobs:
