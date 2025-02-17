@@ -58,7 +58,7 @@ jobs:
         with:
           toolchain: ${{ env.rust_stable }}
           target: ${{ env.rust_target }}
-          override: true
+          default: true
 
       - name: Cmake
         if: matrix.os == 'ubuntu-22.04'
@@ -114,6 +114,8 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.rust_stable }}
+          target: ${{ env.rust_target }}
+          default: true
 
       - name: Build relay server
         uses: actions-rs/cargo@v1
