@@ -1,9 +1,10 @@
 use anyhow::bail;
 use bytes::BytesMut;
+use std::mem;
+
 use smoltcp::phy::ChecksumCapabilities;
 use smoltcp::wire::{IpProtocol, IpRepr, TcpControl, TcpSeqNumber};
 use smoltcp::wire::{TcpPacket, TcpRepr, TCP_HEADER_LEN};
-use std::mem;
 
 use ya_relay_client::model::Payload;
 use ya_relay_client::testing::private::{ChannelType, VirtNode};
@@ -26,7 +27,7 @@ pub fn syn_packet(
     let local = VirtNode::ip_from_node_id(from);
     let remote = VirtNode::ip_from_node_id(to);
 
-    let ip_repr = IpRepr::new(local, remote, IpProtocol::Tcp, 0, 64);
+    let mut ip_repr = IpRepr::new(local, remote, IpProtocol::Tcp, 0, 64);
 
     // Check crates/stack/src/device.rs line 29
     let max_transmission_unit = 1280;
@@ -51,10 +52,14 @@ pub fn syn_packet(
         payload: &[],
     };
 
-    let mut buffer = BytesMut::zeroed(tcp_repr.buffer_len());
-    let mut packet = TcpPacket::new_unchecked(&mut buffer);
+    ip_repr.set_payload_len(tcp_repr.buffer_len());
+
+    let mut buffer = BytesMut::zeroed(ip_repr.header_len() + tcp_repr.buffer_len());
+    ip_repr.emit(&mut buffer, &ChecksumCapabilities::default());
+
+    let mut tcp_packet = TcpPacket::new_unchecked(&mut buffer[ip_repr.header_len()..]);
     tcp_repr.emit(
-        &mut packet,
+        &mut tcp_packet,
         &local,
         &remote,
         &ChecksumCapabilities::default(),
