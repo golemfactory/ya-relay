@@ -1,3 +1,4 @@
+use bytes::BytesMut;
 use test_log::test;
 
 mod common;
@@ -8,6 +9,8 @@ use ya_relay_server::testing::server::init_test_server;
 
 use crate::common::tcp::parse_tcp_from_ip6;
 use common::tcp::create_syn_packet;
+use ya_relay_client::model::Payload;
+use ya_relay_client::GenericSender;
 
 /// Hypothesis: Sending SYN packet without continuing the handshake could break smoltcp stack.
 /// Smoltcp listening sockets need to be re-bound each time after a new connection will be
@@ -53,5 +56,9 @@ async fn test_tcp_syn_packet_unfinished_handshake() {
         client2.node_id(),
         client1.node_id()
     );
-    client2.forward_reliable(client1.node_id()).await.unwrap();
+    let mut sender = client2.forward_reliable(client1.node_id()).await.unwrap();
+    sender
+        .send(Payload::BytesMut(BytesMut::zeroed(10)))
+        .await
+        .unwrap();
 }
