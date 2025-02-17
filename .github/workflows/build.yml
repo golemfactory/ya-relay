@@ -8,6 +8,7 @@ env:
   RUSTFLAGS: "-D warnings -C opt-level=z -C target-cpu=x86-64 -C debuginfo=1"
   X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
   rust_stable: 1.79.0
+  rust_target: x86_64-unknown-linux-musl
 
 jobs:
   checks:
@@ -17,10 +18,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v1
 
-      - name: Install Rust ${{ env.rust_stable }}
+      - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.rust_stable }}
+          target: ${{ env.rust_target }}
           components: rustfmt, clippy
 
       - name: Cmake
@@ -50,10 +52,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v1
 
-      - name: Install Rust ${{ env.rust_stable }}
+      - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.rust_stable }}
+          target: ${{ env.rust_target }}
 
       - name: Cmake
         if: matrix.os == 'ubuntu-22.04'
