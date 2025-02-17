@@ -47,7 +47,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ windows-latest, ubuntu-22.04 ]
+        os: [ macos-latest, windows-latest, ubuntu-22.04 ]
 
     steps:
       - name: Checkout
@@ -57,8 +57,6 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: ${{ env.rust_stable }}
-          target: ${{ env.rust_target }}
-          default: true
 
       - name: Cmake
         if: matrix.os == 'ubuntu-22.04'
@@ -77,7 +75,7 @@ jobs:
         with:
           toolchain: ${{ env.rust_stable }}
           command: test
-          args: --workspace
+          args: --workspace --locked
         env:
           RUST_BACKTRACE: 1
 
@@ -123,14 +121,14 @@ jobs:
         with:
           toolchain: ${{ env.rust_stable }}
           command: build
-          args: -p ya-relay-server --release
+          args: -p ya-relay-server --release --locked
 
       - name: Build http client
         uses: actions-rs/cargo@v1
         with:
           toolchain: ${{ env.rust_stable }}
           command: build
-          args: -p ya-relay-client --example http_client --release
+          args: -p ya-relay-client --example http_client --release --locked
 
       - name: Run test suite
         run: poetry run pytest
