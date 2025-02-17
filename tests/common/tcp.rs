@@ -3,7 +3,7 @@ use bytes::BytesMut;
 use std::mem;
 
 use smoltcp::phy::ChecksumCapabilities;
-use smoltcp::wire::{IpProtocol, IpRepr, TcpControl, TcpSeqNumber};
+use smoltcp::wire::{IpProtocol, IpRepr, Ipv6Packet, Ipv6Repr, TcpControl, TcpSeqNumber};
 use smoltcp::wire::{TcpPacket, TcpRepr, TCP_HEADER_LEN};
 
 use ya_relay_client::model::Payload;
@@ -12,7 +12,7 @@ use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 use ya_relay_stack::StackConfig;
 
-pub fn syn_packet(
+pub fn create_syn_packet(
     from: NodeId,
     src_port: u16,
     to: NodeId,
@@ -53,11 +53,14 @@ pub fn syn_packet(
     };
 
     ip_repr.set_payload_len(tcp_repr.buffer_len());
+    log::info!("== IP packet: {ip_repr:?}");
 
     let mut buffer = BytesMut::zeroed(ip_repr.header_len() + tcp_repr.buffer_len());
     ip_repr.emit(&mut buffer, &ChecksumCapabilities::default());
 
     let mut tcp_packet = TcpPacket::new_unchecked(&mut buffer[ip_repr.header_len()..]);
+    log::info!("== TCP packet: {tcp_repr}");
+
     tcp_repr.emit(
         &mut tcp_packet,
         &local,
@@ -66,4 +69,16 @@ pub fn syn_packet(
     );
 
     Ok(Payload::BytesMut(buffer))
+}
+
+pub fn parse_tcp_from_ip6(payload: &Payload) -> anyhow::Result<TcpRepr> {
+    let packet = Ipv6Packet::new_unchecked(&payload.as_ref()[..]);
+    let ip = IpRepr::Ipv6(Ipv6Repr::parse(&packet)?);
+
+    Ok(TcpRepr::parse(
+        &TcpPacket::new_unchecked(&payload.as_ref()[ip.header_len()..]),
+        &ip.src_addr(),
+        &ip.dst_addr(),
+        &ChecksumCapabilities::default(),
+    )?)
 }
