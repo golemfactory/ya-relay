@@ -7,7 +7,7 @@ use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_core::server_session::TransportType;
 use ya_relay_server::testing::server::init_test_server;
 
-use crate::common::tcp::parse_tcp_from_ip6;
+use crate::common::tcp::{create_ack_for_packet, parse_tcp_from_ip6};
 use common::tcp::create_syn_packet;
 use ya_relay_client::model::Payload;
 use ya_relay_client::GenericSender;
@@ -61,4 +61,123 @@ async fn test_tcp_syn_packet_unfinished_handshake() {
         .send(Payload::BytesMut(BytesMut::zeroed(10)))
         .await
         .unwrap();
+}
+
+#[test(actix_rt::test)]
+async fn test_tcp_unfinished_handshake_new_syn() {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+
+    let client1 = network.new_client().await.unwrap();
+    let layer1 = network.new_layer().await.unwrap();
+
+    // Register nodes on relay
+    layer1.layer.server_session().await.unwrap();
+
+    log::info!(
+        "== Create session between {} -> {}",
+        layer1.id,
+        client1.node_id()
+    );
+    let mut session = layer1.layer.session(client1.node_id()).await.unwrap();
+
+    log::info!("== Send destructive packet to {}", client1.node_id());
+
+    // This packet should break the client.
+    let packet =
+        create_syn_packet(layer1.id, 5555, client1.node_id(), TransportType::Reliable).unwrap();
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    let mut receiver = layer1.layer.receiver().unwrap();
+    let packet = receiver.recv().await.unwrap();
+
+    let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Syn);
+    assert_eq!(tcp.ack_number, Some(smoltcp::wire::TcpSeqNumber(1)));
+
+    log::info!("== Received SYN/ACK packet.");
+
+    session.disconnect().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(70)).await;
+
+    while let Ok(packet) = receiver.try_recv() {
+        log::info!("== Received packet: {:?}", packet);
+    }
+
+    // for i in 1.. {
+    //     let _packet = receiver.recv().await.unwrap();
+    //     if tcp.control == smoltcp::wire::TcpControl::Syn {
+    //         log::info!("== Received SYN/ACK packet {i}-th time.");
+    //     }
+    // }
+
+    log::info!(
+        "== Sending another SYN {} -> {}",
+        layer1.id,
+        client1.node_id()
+    );
+
+    let packet =
+        create_syn_packet(layer1.id, 5555, client1.node_id(), TransportType::Reliable).unwrap();
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    let packet = receiver.recv().await.unwrap();
+
+    let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Rst);
+}
+
+#[test(actix_rt::test)]
+async fn test_tcp_syn_in_established_state() {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+
+    let client1 = network.new_client().await.unwrap();
+    let layer1 = network.new_layer().await.unwrap();
+
+    // Register nodes on relay
+    layer1.layer.server_session().await.unwrap();
+
+    log::info!(
+        "== Create session between {} -> {}",
+        layer1.id,
+        client1.node_id()
+    );
+    let mut session = layer1.layer.session(client1.node_id()).await.unwrap();
+
+    log::info!("== Send SYN packet to {}", client1.node_id());
+
+    let packet =
+        create_syn_packet(layer1.id, 5555, client1.node_id(), TransportType::Reliable).unwrap();
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    log::info!("== Waiting for SYN-ACK packet");
+
+    let mut receiver = layer1.layer.receiver().unwrap();
+    let packet = receiver.recv().await.unwrap();
+
+    let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Syn);
+    assert_eq!(tcp.ack_number, Some(smoltcp::wire::TcpSeqNumber(1)));
+
+    log::info!("== Received SYN/ACK packet.");
+    log::info!("== Sending SYN/ACK packet (last handshake packet).");
+
+    let packet = create_ack_for_packet(layer1.id, client1.node_id(), &tcp).unwrap();
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+
+    log::info!(
+        "== Send another SYN packet initiating connection to {}",
+        client1.node_id()
+    );
+
+    let packet =
+        create_syn_packet(layer1.id, 5555, client1.node_id(), TransportType::Reliable).unwrap();
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    let packet = receiver.recv().await.unwrap();
+    let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Rst);
 }

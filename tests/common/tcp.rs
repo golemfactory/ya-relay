@@ -1,9 +1,11 @@
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use bytes::BytesMut;
 use std::mem;
 
 use smoltcp::phy::ChecksumCapabilities;
-use smoltcp::wire::{IpProtocol, IpRepr, Ipv6Packet, Ipv6Repr, TcpControl, TcpSeqNumber};
+use smoltcp::wire::{
+    IpAddress, IpProtocol, IpRepr, Ipv6Packet, Ipv6Repr, TcpControl, TcpSeqNumber,
+};
 use smoltcp::wire::{TcpPacket, TcpRepr, TCP_HEADER_LEN};
 
 use ya_relay_client::model::Payload;
@@ -18,12 +20,55 @@ pub fn create_syn_packet(
     to: NodeId,
     transport: TransportType,
 ) -> anyhow::Result<Payload> {
-    let channel_port = match transport {
+    let dst_port = channel_to_port(transport)?;
+    let (ip_repr, tcp_repr) = create_packet(from, src_port, to, dst_port)?;
+    let buffer = packet_to_buffer(&ip_repr, &tcp_repr);
+    Ok(Payload::BytesMut(buffer))
+}
+
+pub fn create_ack_for_packet(from: NodeId, to: NodeId, tcp: &TcpRepr) -> anyhow::Result<Payload> {
+    let (ip_repr, mut tcp_repr) = create_packet(from, tcp.dst_port, to, tcp.src_port)?;
+    tcp_repr.ack_number = Some(tcp.seq_number + 1);
+    tcp_repr.seq_number = tcp.ack_number.ok_or(anyhow!("No ack number in packet"))?;
+    tcp_repr.control = TcpControl::None;
+
+    let buffer = packet_to_buffer(&ip_repr, &tcp_repr);
+    Ok(Payload::BytesMut(buffer))
+}
+
+fn packet_to_buffer(ip: &IpRepr, tcp: &TcpRepr) -> BytesMut {
+    log::info!("== IP packet: {ip:?}");
+
+    let mut buffer = BytesMut::zeroed(ip.header_len() + tcp.buffer_len());
+    ip.emit(&mut buffer, &ChecksumCapabilities::default());
+
+    let mut tcp_packet = TcpPacket::new_unchecked(&mut buffer[ip.header_len()..]);
+    log::info!("== TCP packet: {tcp}");
+
+    tcp.emit(
+        &mut tcp_packet,
+        &ip.src_addr(),
+        &ip.dst_addr(),
+        &ChecksumCapabilities::default(),
+    );
+
+    buffer
+}
+
+fn channel_to_port(transport: TransportType) -> anyhow::Result<u16> {
+    Ok(match transport {
         TransportType::Reliable => ChannelType::Messages as u16,
         TransportType::Transfer => ChannelType::Transfer as u16,
         _ => bail!("Syn packet can be sent only for Messages and Transfer transports",),
-    };
+    })
+}
 
+pub fn create_packet<'a>(
+    from: NodeId,
+    src_port: u16,
+    to: NodeId,
+    dst_port: u16,
+) -> anyhow::Result<(IpRepr, TcpRepr<'a>)> {
     let local = VirtNode::ip_from_node_id(from);
     let remote = VirtNode::ip_from_node_id(to);
 
@@ -38,7 +83,7 @@ pub fn create_syn_packet(
 
     let tcp_repr = TcpRepr {
         src_port,
-        dst_port: channel_port,
+        dst_port,
         control: TcpControl::Syn,
         seq_number: TcpSeqNumber::default(),
         ack_number: None,
@@ -53,22 +98,7 @@ pub fn create_syn_packet(
     };
 
     ip_repr.set_payload_len(tcp_repr.buffer_len());
-    log::info!("== IP packet: {ip_repr:?}");
-
-    let mut buffer = BytesMut::zeroed(ip_repr.header_len() + tcp_repr.buffer_len());
-    ip_repr.emit(&mut buffer, &ChecksumCapabilities::default());
-
-    let mut tcp_packet = TcpPacket::new_unchecked(&mut buffer[ip_repr.header_len()..]);
-    log::info!("== TCP packet: {tcp_repr}");
-
-    tcp_repr.emit(
-        &mut tcp_packet,
-        &local,
-        &remote,
-        &ChecksumCapabilities::default(),
-    );
-
-    Ok(Payload::BytesMut(buffer))
+    Ok((ip_repr, tcp_repr))
 }
 
 pub fn parse_tcp_from_ip6(payload: &Payload) -> anyhow::Result<TcpRepr> {
