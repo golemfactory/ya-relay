@@ -249,6 +249,9 @@ impl TcpLayer {
             log::debug!(
                 "[VirtualTcp::receive] Incoming message from new Node [{node}]. Adding connection."
             );
+            if log::log_enabled!(Trace) {
+                print_sockets(&self.net);
+            }
             self.registry.add_virt_node(node).await;
         }
         self.inject(payload);
