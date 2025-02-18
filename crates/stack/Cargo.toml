@@ -10,7 +10,7 @@ description = "Embeddable networking stack"
 
 [dependencies]
 ya-relay-util = { workspace = true }
-smoltcp = { version = "0.10", features = [
+smoltcp = { git = "https://github.com/golemfactory/smoltcp", branch = "kek/logs", features = [
     "std",
     "log",
     "medium-ethernet",
@@ -30,7 +30,7 @@ smoltcp = { version = "0.10", features = [
     "socket-udp",
     "socket-tcp",
     "socket-dhcpv4",
-    "async"
+    "async",
 ] }
 
 derive_more = "0.99"
