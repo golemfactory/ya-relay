@@ -7,7 +7,9 @@ use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_core::server_session::TransportType;
 use ya_relay_server::testing::server::init_test_server;
 
-use crate::common::tcp::{create_ack_for_packet, parse_tcp_from_ip6};
+use crate::common::tcp::{
+    create_ack_for_packet, create_packet, packet_to_buffer, parse_tcp_from_ip6,
+};
 use common::tcp::create_syn_packet;
 use ya_relay_client::model::Payload;
 use ya_relay_client::GenericSender;
@@ -166,7 +168,7 @@ async fn test_tcp_syn_in_established_state() {
     let packet = create_ack_for_packet(layer1.id, client1.node_id(), &tcp).unwrap();
     session.send(packet, TransportType::Reliable).await.unwrap();
 
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
     log::info!(
         "== Send another SYN packet initiating connection to {}",
@@ -179,5 +181,45 @@ async fn test_tcp_syn_in_established_state() {
 
     let packet = receiver.recv().await.unwrap();
     let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+    log::info!("== Received packet: {tcp}");
+    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Rst);
+}
+
+#[test(actix_rt::test)]
+async fn test_tcp_rst_when_socket_doesnt_listen() {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+
+    let client1 = network.new_client().await.unwrap();
+    let layer1 = network.new_layer().await.unwrap();
+
+    // Register nodes on relay
+    layer1.layer.server_session().await.unwrap();
+
+    log::info!(
+        "== Create session between {} -> {}",
+        layer1.id,
+        client1.node_id()
+    );
+    let mut session = layer1.layer.session(client1.node_id()).await.unwrap();
+
+    log::info!(
+        "== Send SYN packet to {} with unexpected port",
+        client1.node_id()
+    );
+
+    let (ip_repr, tcp_repr) = create_packet(layer1.id, 5555, client1.node_id(), 3).unwrap();
+    let packet = Payload::BytesMut(packet_to_buffer(&ip_repr, &tcp_repr));
+
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    log::info!("== Waiting for RST packet");
+
+    let mut receiver = layer1.layer.receiver().unwrap();
+    let packet = receiver.recv().await.unwrap();
+
+    let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+
+    log::info!("== Received packet: {tcp}");
     assert_eq!(tcp.control, smoltcp::wire::TcpControl::Rst);
 }

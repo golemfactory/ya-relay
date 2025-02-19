@@ -36,7 +36,7 @@ pub fn create_ack_for_packet(from: NodeId, to: NodeId, tcp: &TcpRepr) -> anyhow:
     Ok(Payload::BytesMut(buffer))
 }
 
-fn packet_to_buffer(ip: &IpRepr, tcp: &TcpRepr) -> BytesMut {
+pub fn packet_to_buffer(ip: &IpRepr, tcp: &TcpRepr) -> BytesMut {
     log::info!("== IP packet: {ip:?}");
 
     let mut buffer = BytesMut::zeroed(ip.header_len() + tcp.buffer_len());
