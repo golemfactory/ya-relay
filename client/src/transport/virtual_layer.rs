@@ -1,5 +1,6 @@
 use anyhow::Context;
 use futures::{FutureExt, StreamExt};
+use log::Level::Trace;
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::io::Write;
@@ -116,8 +117,10 @@ impl TcpLayer {
         &self,
         node_id: NodeId,
         channel: ChannelType,
-    ) -> anyhow::Result<TcpSender> {
-        print_sockets(&self.net);
+    ) -> Result<TcpSender, TcpError> {
+        if log::log_enabled!(Trace) {
+            print_sockets(&self.net);
+        }
 
         let channel = (channel, ChannelDirection::Out).into();
         let myself = self.clone();
@@ -129,9 +132,21 @@ impl TcpLayer {
                 tokio::task::spawn_local(async move {
                     permit.finish(myself.connect_internal(channel, &permit).await)
                 })
-                .await?
+                .await
+                .map_err(|e| TcpError::Generic {
+                    msg: "connect failed".to_string(),
+                    source: Arc::new(e),
+                })?
             }
-            TcpLock::Wait(mut waiter) => waiter.await_for_finish().await,
+            TcpLock::Wait(mut waiter) => {
+                waiter
+                    .await_for_finish()
+                    .await
+                    .map_err(|e| TcpError::Generic {
+                        msg: "error when waiting".to_string(),
+                        source: Arc::new(e),
+                    })
+            }
         }?;
 
         Ok(TcpSender {
@@ -159,7 +174,10 @@ impl TcpLayer {
         self.session_layer
             .session(permit.node.id())
             .await
-            .map_err(|e| TcpError::Generic(e.to_string()))?;
+            .map_err(|e| TcpError::Generic {
+                msg: "Failed to create session".to_string(),
+                source: Arc::new(e),
+            })?;
 
         Ok(Arc::new(TcpConnection {
             id: permit.node.id(),
@@ -167,7 +185,10 @@ impl TcpLayer {
                 .net
                 .connect(endpoint, TCP_CONN_TIMEOUT)
                 .await
-                .map_err(|e| TcpError::Generic(format!("Establishing Tcp connection: {e}")))?,
+                .map_err(|e| TcpError::Generic {
+                    msg: "establishing Tcp connection".to_string(),
+                    source: Arc::new(e),
+                })?,
             channel,
         }))
     }

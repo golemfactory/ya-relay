@@ -157,7 +157,7 @@ impl<'a> Stack<'a> {
                 Protocol::Tcp | Protocol::Udp | Protocol::Icmp | Protocol::Ipv6Icmp => Some(h),
                 _ => None,
             })
-            .ok_or(Error::SocketClosed)?;
+            .ok_or(Error::Cancelled)?;
 
         let _ = endpoint.ip_endpoint().map(|e| {
             let mut ports = self.ports.borrow_mut();
@@ -184,8 +184,11 @@ impl<'a> Stack<'a> {
             let (socket, ctx) = iface.get_socket_and_context::<tcp::Socket>(handle);
             socket.connect(ctx, remote, local).map(|_| socket)
         } {
-            Ok(socket) => socket.set_defaults(),
+            Ok(socket) => {
+                socket.set_defaults();
+            }
             Err(e) => {
+                log::error!("connection error: {:?}", e);
                 iface.remove_socket(handle);
                 ports.free(Protocol::Tcp, port);
                 return Err(Error::ConnectionError(e.to_string()));

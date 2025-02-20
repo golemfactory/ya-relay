@@ -205,7 +205,7 @@ impl TcpRegistry {
     }
 
     async fn close_channel(&self, node: &VirtNode, channel: ChannelDesc) {
-        if node.channel(channel).state().await != TcpState::Closed {
+        if !matches!(node.channel(channel).state().await, TcpState::Closed) {
             node.transition(channel, TcpState::Closed)
                 .await
                 .on_err(|e| {
@@ -255,15 +255,14 @@ impl TcpRegistry {
     }
 }
 
-#[derive(Clone, Educe, Display, Debug)]
-#[educe(PartialEq)]
+#[derive(Clone, Display, Debug)]
 pub enum TcpState {
     Connecting,
     /// We store `Arc` not `Weak` here and this is the only place that keeps
     /// this reference. Changing state will drop the connection.
     /// TODO: Could we clean whole `TcpLayer` and `ya-relay-stack` state on drop??
     #[display(fmt = "Connected")]
-    Connected(#[educe(PartialEq(ignore))] Arc<TcpConnection>),
+    Connected(Arc<TcpConnection>),
     Failed(TcpError),
     Closing,
     Closed,
@@ -336,7 +335,10 @@ pub(crate) async fn async_drop(
                 .await
             {
                 Ok(_) => Ok(conn),
-                Err(e) => Err(TcpError::Generic(e.to_string())),
+                Err(e) => Err(TcpError::Generic {
+                    msg: "failed to change channel state".to_string(),
+                    source: Arc::new(e),
+                }),
             }
         }
         Some(Err(e)) => {
@@ -345,7 +347,7 @@ pub(crate) async fn async_drop(
                 .ok();
             Err(e)
         }
-        None => Err(TcpError::Generic(
+        None => Err(TcpError::Other(
             "Dropping `TcpPermit` without result.".to_string(),
         )),
     };
@@ -383,19 +385,27 @@ impl TcpAwaiting {
         match self.channel.state().await {
             TcpState::Connected(result) => return Ok(result),
             TcpState::Closed => return Err(TcpError::Closed),
-            TcpState::Failed(e) => return Err(TcpError::Generic(e.to_string())),
+            TcpState::Failed(e) => {
+                return Err(TcpError::Generic {
+                    msg: "Wait for Finish".into(),
+                    source: Arc::new(e),
+                })
+            }
             // In all other cases we will wait for notification.
             _ => (),
         };
 
         match self.notifier.recv().await {
             Ok(result) => result,
-            Err(RecvError::Closed) => Err(TcpError::Generic(
+            Err(RecvError::Closed) => Err(TcpError::Other(
                 "Waiting for tcp connection initialization: notifier dropped.".to_string(),
             )),
-            Err(RecvError::Lagged(lost)) => {
+            Err(e @ RecvError::Lagged(_)) => {
                 // TODO: Maybe we could handle lags better, by checking current state?
-                Err(TcpError::Generic(format!("Waiting for tcp connection initialization: notifier lagged. Lost {lost} state change(s).")))
+                Err(TcpError::Generic {
+                    msg: "Waiting for tcp connection initialization: notifier lagged.".to_string(),
+                    source: Arc::new(e),
+                })
             }
         }
     }
@@ -431,7 +441,10 @@ impl TcpSender {
                 .layer
                 .connect(self.target, self.channel.0)
                 .await
-                .map_err(|e| TcpError::Generic(format!("Establishing connection failed: {e}")))?
+                .map_err(|e| TcpError::Generic {
+                    msg: "Establishing connection failed".to_string(),
+                    source: Arc::new(e),
+                })?
                 .connection
                 .upgrade()
             {
@@ -439,24 +452,26 @@ impl TcpSender {
                     self.connection = Arc::downgrade(&routing);
                     routing
                 }
-                None => {
-                    return Err(TcpError::Generic(
-                        "Tcp connection closed unexpectedly.".to_string(),
-                    ))
-                }
+                None => return Err(TcpError::Closed),
             },
         };
         self.layer
             .send(packet, routing.conn)
             .await
-            .map_err(|e| TcpError::Generic(e.to_string()))
+            .map_err(|e| TcpError::Generic {
+                msg: "Failed to send".to_string(),
+                source: Box::<dyn std::error::Error + Sync + Send>::from(e).into(),
+            })
     }
 
     pub async fn connect(&mut self) -> Result<(), TcpError> {
         self.layer
             .connect(self.target, self.channel.0)
             .await
-            .map_err(|e| TcpError::Generic(format!("Establishing connection failed: {e}")))?;
+            .map_err(|e| TcpError::Generic {
+                msg: "Establishing connection failed".to_string(),
+                source: Arc::new(e),
+            })?;
         Ok(())
     }
 
