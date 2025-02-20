@@ -1,6 +1,6 @@
 pub(crate) mod tcp_registry;
 pub mod transport_sender;
-mod virtual_layer;
+pub(crate) mod virtual_layer;
 
 use anyhow::bail;
 use futures::StreamExt;
