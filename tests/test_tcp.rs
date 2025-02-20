@@ -178,25 +178,37 @@ async fn test_tcp_exploit_remove_listening_socket() {
     );
 
     // Create connections in both directions.
-    let _tcp1 = client1.forward_reliable(client2.node_id()).await.unwrap();
+    let tcp1 = client1.forward_reliable(client2.node_id()).await.unwrap();
     let mut tcp2 = client2.forward_reliable(client1.node_id()).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    tcp1.print_sockets();
+    tcp2.print_sockets();
 
     // Disconnect one-sided connection from client1. The second connection will be closed as a result,
     // but a little bit later, and it will be triggered by code on client1.
-    let layer2 = client2.get_session_layer();
-    let mut session = layer2.session(client1.node_id()).await.unwrap();
-    let tcp_sender = client2.forward_reliable(client1.node_id()).await.unwrap();
+    // let layer2 = client2.get_session_layer();
+    // let mut session2 = layer2.session(client1.node_id()).await.unwrap();
+    //
+    // let src_port = tcp2.get_local_addr().unwrap().port;
+    // let dst_port = tcp2.get_remote_addr().unwrap().port;
+    //
+    // log::info!("== Sending RST packet to {}", client1.node_id());
+    //
+    // let (ip_repr, mut tcp_repr) =
+    //     create_packet(client2.node_id(), src_port, client1.node_id(), dst_port).unwrap();
+    // tcp_repr.control = TcpControl::Rst;
+    // let packet = Payload::BytesMut(packet_to_buffer(&ip_repr, &tcp_repr));
+    // session2
+    //     .send(packet, TransportType::Reliable)
+    //     .await
+    //     .unwrap();
 
-    let src_port = tcp_sender.get_local_addr().unwrap().port;
-    let dst_port = tcp_sender.get_remote_addr().unwrap().port;
+    tcp2.abort();
 
-    let (ip_repr, mut tcp_repr) =
-        create_packet(client2.node_id(), src_port, client1.node_id(), dst_port).unwrap();
-    tcp_repr.control = TcpControl::Rst;
-    let packet = Payload::BytesMut(packet_to_buffer(&ip_repr, &tcp_repr));
-    session.send(packet, TransportType::Reliable).await.unwrap();
-
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    log::info!("== Waiting 1s.");
+    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
     // Connect new Node to client1. This should use current listening socket which needs to be replaced.
     // Since we freed outgoing socket by disconnecting, the socket handle will be reused.

@@ -455,6 +455,10 @@ impl TcpLayer {
             })
             .await
     }
+
+    pub(crate) fn print_sockets(&self) {
+        print_sockets(&self.net);
+    }
 }
 
 fn pcap_writer(path: PathBuf) -> anyhow::Result<Box<dyn Write>> {

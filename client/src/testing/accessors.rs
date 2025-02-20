@@ -28,6 +28,8 @@ pub trait TcpSenderPrivate {
     fn get_connection(&self) -> anyhow::Result<Arc<TcpConnection>>;
     fn get_local_addr(&self) -> anyhow::Result<IpEndpoint>;
     fn get_remote_addr(&self) -> anyhow::Result<IpEndpoint>;
+    fn print_sockets(&self);
+    fn abort(&self);
 }
 
 impl TcpSenderPrivate for ForwardSender {
@@ -47,5 +49,21 @@ impl TcpSenderPrivate for ForwardSender {
 
     fn get_remote_addr(&self) -> anyhow::Result<IpEndpoint> {
         Ok(self.get_connection()?.conn.meta.remote)
+    }
+
+    fn print_sockets(&self) {
+        match self {
+            ForwardSender::Reliable(sender) => sender.layer.print_sockets(),
+            _ => panic!("Expected TcpSender"),
+        }
+    }
+
+    fn abort(&self) {
+        let layer = match self {
+            ForwardSender::Reliable(sender) => sender.layer.clone(),
+            _ => panic!("Expected TcpSender"),
+        };
+        let conn = self.get_connection().unwrap();
+        layer.net.stack.abort(conn.conn.handle);
     }
 }

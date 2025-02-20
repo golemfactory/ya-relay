@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail};
 use bytes::BytesMut;
+use std::fmt::{Display, Formatter};
 use std::mem;
 
 use smoltcp::phy::ChecksumCapabilities;
@@ -37,7 +38,7 @@ pub fn create_ack_for_packet(from: NodeId, to: NodeId, tcp: &TcpRepr) -> anyhow:
 }
 
 pub fn packet_to_buffer(ip: &IpRepr, tcp: &TcpRepr) -> BytesMut {
-    log::info!("== IP packet: {ip:?}");
+    log::info!("== IP packet: {}", DisplayIp(ip));
 
     let mut buffer = BytesMut::zeroed(ip.header_len() + tcp.buffer_len());
     ip.emit(&mut buffer, &ChecksumCapabilities::default());
@@ -111,4 +112,20 @@ pub fn parse_tcp_from_ip6(payload: &Payload) -> anyhow::Result<TcpRepr> {
         &ip.dst_addr(),
         &ChecksumCapabilities::default(),
     )?)
+}
+
+pub struct DisplayIp<'a>(pub &'a IpRepr);
+impl Display for DisplayIp<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} src={} dst={} protocol={} payload_len={} hop_limit={}",
+            self.0.version(),
+            self.0.src_addr(),
+            self.0.dst_addr(),
+            self.0.next_header(),
+            self.0.payload_len(),
+            self.0.hop_limit()
+        )
+    }
 }
