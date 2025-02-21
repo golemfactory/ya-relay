@@ -1,11 +1,10 @@
 use bytes::BytesMut;
-use smoltcp::wire::TcpControl;
 use test_log::test;
 
 mod common;
 
 use ya_relay_client::model::Payload;
-use ya_relay_client::testing::accessors::{ClientPrivate, TcpSenderPrivate};
+use ya_relay_client::testing::accessors::TcpSenderPrivate;
 use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_client::GenericSender;
 use ya_relay_core::server_session::TransportType;
@@ -215,4 +214,46 @@ async fn test_tcp_exploit_remove_listening_socket() {
     client3.forward_reliable(client1.node_id()).await.unwrap();
 
     assert!(tcp2.connect().await.is_err());
+}
+
+#[test(actix_rt::test)]
+async fn test_tcp_incoming_socket_not_on_connections_list() {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+
+    let client1 = network.new_client().await.unwrap();
+    let client2 = network.new_client().await.unwrap();
+
+    // Create connections in both directions.
+    let tcp1 = client1.forward_reliable(client2.node_id()).await.unwrap();
+    let mut tcp2 = client2.forward_reliable(client1.node_id()).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    tcp1.print_sockets();
+
+    let net = tcp1.get_net_stack();
+    {
+        let handles_borrow = net.handles.borrow();
+        let info = handles_borrow
+            .iter()
+            .find(|(_handle, conn)| conn.remote == tcp2.get_local_addr().unwrap());
+        // TODO: The bug is here. Socket won't be found.
+        assert!(info.is_some());
+    };
+
+    // Send bytes to trigger adding new connection to the list.
+    tcp2.send(Payload::Vec(vec![3])).await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    tcp1.print_sockets();
+
+    {
+        let handles_borrow = net.handles.borrow();
+        let info = handles_borrow
+            .iter()
+            .find(|(_handle, conn)| conn.remote == tcp2.get_local_addr().unwrap());
+        // Connection will be found here this time.
+        assert!(info.is_some());
+    };
 }

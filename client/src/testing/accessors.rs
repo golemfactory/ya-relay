@@ -4,11 +4,13 @@ use crate::session::session_initializer::SessionInitializer;
 use crate::session::SessionLayer;
 use crate::transport::tcp_registry::{TcpConnection, TcpSender};
 use crate::transport::virtual_layer::TcpLayer;
+
 use anyhow::bail;
 use futures::future::LocalBoxFuture;
 use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
 use ya_relay_stack::smoltcp::wire::IpEndpoint;
+use ya_relay_stack::Network;
 
 /// Give access to private fields for testing purposes.
 pub trait SessionLayerPrivate {
@@ -30,6 +32,7 @@ pub trait TcpSenderPrivate {
     fn get_remote_addr(&self) -> anyhow::Result<IpEndpoint>;
     fn print_sockets(&self);
     fn abort(&self);
+    fn get_net_stack(&self) -> Network;
 }
 
 impl TcpSenderPrivate for ForwardSender {
@@ -65,5 +68,12 @@ impl TcpSenderPrivate for ForwardSender {
         };
         let conn = self.get_connection().unwrap();
         layer.net.stack.abort(conn.conn.handle);
+    }
+
+    fn get_net_stack(&self) -> Network {
+        match self {
+            ForwardSender::Reliable(sender) => sender.layer.net.clone(),
+            _ => panic!("Expected TcpSender"),
+        }
     }
 }
