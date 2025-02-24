@@ -5,10 +5,10 @@ use test_log::test;
 
 mod common;
 
-use ya_relay_client::model::Payload;
-use ya_relay_client::testing::accessors::TcpSenderPrivate;
+use ya_relay_client::testing::accessors::{SessionLayerPrivate, TcpSenderPrivate};
 use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_client::GenericSender;
+use ya_relay_client::{model::Payload, testing::accessors::ClientPrivate};
 use ya_relay_core::server_session::TransportType;
 use ya_relay_server::testing::server::init_test_server;
 
@@ -171,6 +171,7 @@ async fn test_tcp_exploit_remove_listening_socket() {
     let client1 = network.new_client().await.unwrap();
     let client2 = network.new_client().await.unwrap();
     let client3 = network.new_client().await.unwrap();
+    let client4 = network.new_client().await.unwrap();
 
     log::info!(
         "== Create TCP connection between {} -> {} and reverse",
@@ -225,26 +226,40 @@ async fn test_tcp_exploit_remove_listening_socket() {
         })
         .cloned()
         .unwrap();
-    log::debug!("== Found socket: {}, desc: {}", handle, desc);
+
+    log::info!("== Found socket: {}, desc: {}", handle, desc);
     net.stack.abort(handle);
 
+    log::info!("== Shutdown client2 to stop processing any incoming packets.");
+    client2.get_session_layer().disable();
+
     log::info!("== Waiting for a few milliseconds for propagation.");
-    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     tcp1.print_sockets();
 
-    // Aborting outgoing conneciton (from client1 perspective) should trigger removing other sockets as well.
+    // Aborting outgoing connection (from client1 perspective) should trigger removing other sockets as well.
     // When we abort one of connections earlier, socket can be later resused for listening.
     // The second connection we created should be still active.
-    tcp2.abort();
+    log::info!("== Sending RST to 1 of connections client2 -> client1");
+    net.stack.abort(connection.handle);
+
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    tcp1.print_sockets();
 
     // Connect new Node to client1. This should connect to current listening socket, which needs to be replaced.
     // Since we freed outgoing socket by disconnecting, the socket handle will be reused.
+    log::info!("== Creating a new connection from client3 -> client1");
     client3.forward_reliable(client1.node_id()).await.unwrap();
+    tcp2.abort();
 
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    assert!(tcp2.connect().await.is_err());
+    tcp1.print_sockets();
+
+    let result = client4.forward_reliable(client1.node_id()).await;
+    assert!(result.is_err());
 }
 
 #[test(actix_rt::test)]

@@ -9,6 +9,8 @@ use anyhow::bail;
 use futures::future::LocalBoxFuture;
 use std::net::SocketAddr;
 use std::sync::{Arc, Weak};
+
+use ya_relay_core::udp_stream::OutStream;
 use ya_relay_stack::smoltcp::wire::IpEndpoint;
 use ya_relay_stack::Network;
 
@@ -16,6 +18,7 @@ use ya_relay_stack::Network;
 pub trait SessionLayerPrivate {
     fn get_protocol(&self) -> anyhow::Result<SessionInitializer>;
     fn get_test_socket_addr(&self) -> anyhow::Result<SocketAddr>;
+    fn disable(&self);
 }
 
 /// Give access to private fields for testing purposes.

@@ -38,6 +38,15 @@ impl SessionLayerPrivate for SessionLayer {
             bail!("Can't get local address.")
         }
     }
+
+    fn disable(&self) {
+        let mut state = self.state.lock();
+        let handles = std::mem::take(&mut state.handles);
+
+        for abort_handle in handles {
+            abort_handle.abort();
+        }
+    }
 }
 
 impl ClientPrivate for Client {
