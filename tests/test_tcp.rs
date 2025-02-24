@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bytes::BytesMut;
 use test_log::test;
 
@@ -185,33 +187,62 @@ async fn test_tcp_exploit_remove_listening_socket() {
     tcp1.print_sockets();
     tcp2.print_sockets();
 
-    // Disconnect one-sided connection from client1. The second connection will be closed as a result,
-    // but a little bit later, and it will be triggered by code on client1.
-    // let layer2 = client2.get_session_layer();
-    // let mut session2 = layer2.session(client1.node_id()).await.unwrap();
-    //
-    // let src_port = tcp2.get_local_addr().unwrap().port;
-    // let dst_port = tcp2.get_remote_addr().unwrap().port;
-    //
-    // log::info!("== Sending RST packet to {}", client1.node_id());
-    //
-    // let (ip_repr, mut tcp_repr) =
-    //     create_packet(client2.node_id(), src_port, client1.node_id(), dst_port).unwrap();
-    // tcp_repr.control = TcpControl::Rst;
-    // let packet = Payload::BytesMut(packet_to_buffer(&ip_repr, &tcp_repr));
-    // session2
-    //     .send(packet, TransportType::Reliable)
-    //     .await
-    //     .unwrap();
+    // Create additional extra connection that shouldn't exist normally.
+    log::info!(
+        "== Creating extra tcp connection with {}",
+        client1.node_id()
+    );
 
+    let remote = tcp2.get_remote_addr().unwrap();
+    let net = tcp2.get_net_stack();
+    let connection = net.connect(remote, Duration::from_secs(3)).await.unwrap();
+
+    // Send a few bytes, so the connection will be added to connections list.
+    // See bug: https://github.com/golemfactory/ya-relay/issues/354
+    tcp2.send(Payload::Vec(vec![3])).await.unwrap();
+    net.send(Payload::Vec(vec![3]), connection).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    tcp1.print_sockets();
+    tcp2.print_sockets();
+
+    // Note that we close connection initialized by client1 not one of connections from client2.
+    log::info!(
+        "== Aborting tcp connection from client1 -> client2, local={}, remote={}",
+        tcp1.get_local_addr().unwrap(),
+        tcp1.get_remote_addr().unwrap()
+    );
+
+    let sockets = net.sockets_meta();
+    let (handle, desc, _) = sockets
+        .iter()
+        .find(|(_, desc, _)| {
+            desc.remote.ip_endpoint().unwrap().addr == tcp1.get_local_addr().unwrap().addr
+                && desc.remote.ip_endpoint().unwrap().port == tcp1.get_local_addr().unwrap().port
+                && desc.local.ip_endpoint().unwrap().addr == tcp1.get_remote_addr().unwrap().addr
+                && desc.local.ip_endpoint().unwrap().port == tcp1.get_remote_addr().unwrap().port
+        })
+        .cloned()
+        .unwrap();
+    log::debug!("== Found socket: {}, desc: {}", handle, desc);
+    net.stack.abort(handle);
+
+    log::info!("== Waiting for a few milliseconds for propagation.");
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    tcp1.print_sockets();
+
+    // Aborting outgoing conneciton (from client1 perspective) should trigger removing other sockets as well.
+    // When we abort one of connections earlier, socket can be later resused for listening.
+    // The second connection we created should be still active.
     tcp2.abort();
 
-    log::info!("== Waiting 1s.");
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-
-    // Connect new Node to client1. This should use current listening socket which needs to be replaced.
+    // Connect new Node to client1. This should connect to current listening socket, which needs to be replaced.
     // Since we freed outgoing socket by disconnecting, the socket handle will be reused.
     client3.forward_reliable(client1.node_id()).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     assert!(tcp2.connect().await.is_err());
 }
