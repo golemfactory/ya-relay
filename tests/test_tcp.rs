@@ -180,8 +180,12 @@ async fn test_tcp_exploit_remove_listening_socket() {
     );
 
     // Create connections in both directions.
-    let tcp1 = client1.forward_reliable(client2.node_id()).await.unwrap();
     let mut tcp2 = client2.forward_reliable(client1.node_id()).await.unwrap();
+    let tcp1 = client1.forward_reliable(client2.node_id()).await.unwrap();
+
+    // Prepare session without creating tcp connection.
+    let _ = client3.forward_unreliable(client1.node_id()).await;
+    let _ = client4.forward_unreliable(client1.node_id()).await;
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
@@ -234,12 +238,12 @@ async fn test_tcp_exploit_remove_listening_socket() {
     client2.get_session_layer().disable();
 
     log::info!("== Waiting for a few milliseconds for propagation.");
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
 
     tcp1.print_sockets();
 
     // Aborting outgoing connection (from client1 perspective) should trigger removing other sockets as well.
-    // When we abort one of connections earlier, socket can be later resused for listening.
+    // When we abort one of connections earlier, socket can be later reused for listening.
     // The second connection we created should be still active.
     log::info!("== Sending RST to 1 of connections client2 -> client1");
     net.stack.abort(connection.handle);
@@ -252,10 +256,9 @@ async fn test_tcp_exploit_remove_listening_socket() {
     // Since we freed outgoing socket by disconnecting, the socket handle will be reused.
     log::info!("== Creating a new connection from client3 -> client1");
     client3.forward_reliable(client1.node_id()).await.unwrap();
-    tcp2.abort();
 
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-
+    tcp1.print_sockets();
+    tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
     tcp1.print_sockets();
 
     let result = client4.forward_reliable(client1.node_id()).await;

@@ -198,10 +198,8 @@ impl TcpRegistry {
             .ok_or_else(|| anyhow!("Virtual node for ip {ip:?} not found."))
     }
 
-    pub async fn resolve_ip(&self, node: NodeId) -> Box<[u8]> {
+    pub async fn resolve_ip(&self, node: NodeId) -> IpAddress {
         IpAddress::from(to_ipv6(node.into_array()))
-            .as_bytes()
-            .into()
     }
 
     async fn close_channel(&self, node: &VirtNode, channel: ChannelDesc) {

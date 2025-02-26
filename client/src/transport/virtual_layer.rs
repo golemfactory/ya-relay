@@ -291,7 +291,7 @@ impl TcpLayer {
             .map(|conn| {
                 async move {
                     self.net
-                        .disconnect_all(conn.remote.addr.as_bytes().into(), Duration::from_secs(2))
+                        .disconnect_all(conn.remote.addr, Duration::from_secs(2))
                         .await
                 }
                 .boxed_local()

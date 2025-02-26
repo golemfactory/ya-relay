@@ -9,7 +9,7 @@ use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
 use smoltcp::iface::SocketHandle;
-use smoltcp::wire::IpEndpoint;
+use smoltcp::wire::{IpAddress, IpEndpoint};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::spawn_local;
 use tokio::time::MissedTickBehavior;
@@ -201,7 +201,7 @@ impl Network {
     /// Close all TCP connections with a remote IP address
     pub fn disconnect_all(
         &self,
-        remote_ip: Box<[u8]>,
+        remote_ip: IpAddress,
         timeout: impl Into<Duration>,
     ) -> LocalBoxFuture<()> {
         let (handles, futs): (Vec<_>, Vec<_>) = {
@@ -209,12 +209,18 @@ impl Network {
             connections
                 .values()
                 .filter(|conn| {
-                    conn.meta.remote.addr.as_bytes() == remote_ip.as_ref()
+                    conn.meta.remote.addr.as_bytes() == remote_ip.as_bytes().as_ref()
                         && conn.meta.protocol == Protocol::Tcp
                 })
                 .map(|conn| (conn.handle, self.stack.disconnect(conn.handle)))
                 .unzip()
         };
+
+        log::debug!(
+            "{}: disconnecting all connections to {}",
+            self.name,
+            remote_ip
+        );
 
         if futs.is_empty() {
             return futures::future::ready(()).boxed_local();
@@ -230,6 +236,12 @@ impl Network {
             let timeout = tokio::time::sleep(timeout).boxed_local();
 
             if let Either::Right((_, pending)) = futures::future::select(pending, timeout).await {
+                log::debug!(
+                    "{}: disconnecting all connections to {} timed out",
+                    net.name,
+                    remote_ip
+                );
+
                 handles.into_iter().for_each(|h| net.stack.abort(h));
                 net.poll();
 
