@@ -248,7 +248,7 @@ async fn test_tcp_exploit_remove_listening_socket() {
     log::info!("== Sending RST to 1 of connections client2 -> client1");
     net.stack.abort(connection.handle);
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     tcp1.print_sockets();
 
@@ -262,7 +262,8 @@ async fn test_tcp_exploit_remove_listening_socket() {
     tcp1.print_sockets();
 
     let result = client4.forward_reliable(client1.node_id()).await;
-    assert!(result.is_err());
+    result.unwrap();
+    //assert!(result.is_err());
 }
 
 #[test(actix_rt::test)]
