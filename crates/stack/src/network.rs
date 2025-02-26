@@ -204,7 +204,7 @@ impl Network {
         remote_ip: IpAddress,
         timeout: impl Into<Duration>,
     ) -> LocalBoxFuture<()> {
-        let (handles, futs): (Vec<_>, Vec<_>) = {
+        let (connections, futs): (Vec<_>, Vec<_>) = {
             let connections = self.connections.borrow();
             connections
                 .values()
@@ -212,7 +212,7 @@ impl Network {
                     conn.meta.remote.addr.as_bytes() == remote_ip.as_bytes().as_ref()
                         && conn.meta.protocol == Protocol::Tcp
                 })
-                .map(|conn| (conn.handle, self.stack.disconnect(conn.handle)))
+                .map(|conn| (conn.clone(), self.stack.disconnect(conn.handle)))
                 .unzip()
         };
 
@@ -242,7 +242,22 @@ impl Network {
                     remote_ip
                 );
 
-                handles.into_iter().for_each(|h| net.stack.abort(h));
+                {
+                    // Abort all connections that didn't disconnect.
+                    // Since smoltcp uses handle to identify sockets, we can't use `connections` collected
+                    // earlier, because we can accidentally abort socket that was already re-used
+                    // in different context.
+                    let current_connections = net.connections.borrow();
+                    for conn in connections.into_iter() {
+                        current_connections
+                            .values()
+                            .find_map(|cur_conn| match cur_conn.meta == conn.meta {
+                                true => Some(cur_conn.handle),
+                                false => None,
+                            })
+                            .map(|handle| net.stack.abort(handle));
+                    }
+                }
                 net.poll();
 
                 let timeout = tokio::time::sleep(Duration::from_millis(500));

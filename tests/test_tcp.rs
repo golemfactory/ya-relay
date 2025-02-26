@@ -263,7 +263,6 @@ async fn test_tcp_exploit_remove_listening_socket() {
 
     let result = client4.forward_reliable(client1.node_id()).await;
     result.unwrap();
-    //assert!(result.is_err());
 }
 
 #[test(actix_rt::test)]
