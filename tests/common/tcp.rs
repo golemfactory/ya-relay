@@ -23,28 +23,39 @@ pub fn create_syn_packet(
 ) -> anyhow::Result<Payload> {
     let dst_port = channel_to_port(transport)?;
     let (ip_repr, tcp_repr) = create_packet(from, src_port, to, dst_port)?;
-    let buffer = packet_to_buffer(&ip_repr, &tcp_repr);
-    Ok(Payload::BytesMut(buffer))
+    Ok(packet_to_payload(&ip_repr, &tcp_repr))
 }
 
-pub fn create_ack_for_packet(from: NodeId, to: NodeId, tcp: &TcpRepr) -> anyhow::Result<Payload> {
+pub fn create_response_packet<'a>(
+    from: NodeId,
+    to: NodeId,
+    tcp: &TcpRepr,
+) -> anyhow::Result<(IpRepr, TcpRepr<'a>)> {
     let (ip_repr, mut tcp_repr) = create_packet(from, tcp.dst_port, to, tcp.src_port)?;
     tcp_repr.ack_number = Some(tcp.seq_number + 1);
     tcp_repr.seq_number = tcp.ack_number.ok_or(anyhow!("No ack number in packet"))?;
     tcp_repr.control = TcpControl::None;
 
-    let buffer = packet_to_buffer(&ip_repr, &tcp_repr);
-    Ok(Payload::BytesMut(buffer))
+    Ok((ip_repr, tcp_repr))
+}
+
+pub fn create_ack_for_packet<'a>(
+    from: NodeId,
+    to: NodeId,
+    tcp: &TcpRepr,
+) -> anyhow::Result<Payload> {
+    let (ip_repr, mut tcp_repr) = create_response_packet(from, to, tcp)?;
+    Ok(packet_to_payload(&ip_repr, &tcp_repr))
 }
 
 pub fn packet_to_buffer(ip: &IpRepr, tcp: &TcpRepr) -> BytesMut {
-    log::info!("== IP packet: {}", DisplayIp(ip));
+    log::debug!("== IP packet: {}", DisplayIp(ip));
 
     let mut buffer = BytesMut::zeroed(ip.header_len() + tcp.buffer_len());
     ip.emit(&mut buffer, &ChecksumCapabilities::default());
 
     let mut tcp_packet = TcpPacket::new_unchecked(&mut buffer[ip.header_len()..]);
-    log::info!("== TCP packet: {tcp}");
+    log::debug!("== TCP packet: {tcp}");
 
     tcp.emit(
         &mut tcp_packet,
@@ -54,6 +65,10 @@ pub fn packet_to_buffer(ip: &IpRepr, tcp: &TcpRepr) -> BytesMut {
     );
 
     buffer
+}
+
+pub fn packet_to_payload(ip: &IpRepr, tcp: &TcpRepr) -> Payload {
+    Payload::BytesMut(packet_to_buffer(ip, tcp))
 }
 
 fn channel_to_port(transport: TransportType) -> anyhow::Result<u16> {

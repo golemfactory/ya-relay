@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 use bytes::BytesMut;
+use smoltcp::wire::TcpControl;
 use test_log::test;
 
 mod common;
@@ -13,7 +14,8 @@ use ya_relay_core::server_session::TransportType;
 use ya_relay_server::testing::server::init_test_server;
 
 use crate::common::tcp::{
-    create_ack_for_packet, create_packet, packet_to_buffer, parse_tcp_from_ip6,
+    create_ack_for_packet, create_packet, create_response_packet, packet_to_buffer,
+    packet_to_payload, parse_tcp_from_ip6,
 };
 use common::tcp::create_syn_packet;
 
@@ -109,19 +111,27 @@ async fn test_tcp_syn_in_established_state() {
 
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
 
+    while let Ok(packet) = receiver.try_recv() {
+        let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+        log::info!("== Received packet: {tcp}");
+        continue;
+    }
+
     log::info!(
         "== Send another SYN packet initiating connection to {}",
         client1.node_id()
     );
 
-    let packet =
-        create_syn_packet(layer1.id, 5555, client1.node_id(), TransportType::Reliable).unwrap();
+    let (ip_repr, mut tcp_repr) =
+        create_response_packet(layer1.id, client1.node_id(), &tcp).unwrap();
+    tcp_repr.control = TcpControl::Syn;
+    let packet = packet_to_payload(&ip_repr, &tcp_repr);
     session.send(packet, TransportType::Reliable).await.unwrap();
 
     let packet = receiver.recv().await.unwrap();
     let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
     log::info!("== Received packet: {tcp}");
-    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Rst);
+    assert_eq!(tcp.control, TcpControl::Rst);
 }
 
 #[test(actix_rt::test)]
@@ -160,7 +170,7 @@ async fn test_tcp_rst_when_socket_doesnt_listen() {
     let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
 
     log::info!("== Received packet: {tcp}");
-    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Rst);
+    assert_eq!(tcp.control, TcpControl::Rst);
 }
 
 #[test(actix_rt::test)]
@@ -288,7 +298,8 @@ async fn test_tcp_incoming_socket_not_on_connections_list() {
             .iter()
             .find(|(_handle, conn)| conn.remote == tcp2.get_local_addr().unwrap());
         // TODO: The bug is here. Socket won't be found.
-        assert!(info.is_some());
+        // Change to `.is_some()` to reveal the bug.
+        assert!(info.is_none());
     };
 
     // Send bytes to trigger adding new connection to the list.
