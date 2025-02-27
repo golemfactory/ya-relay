@@ -99,7 +99,7 @@ async fn test_tcp_syn_in_established_state() {
     let mut receiver = layer1.layer.receiver().unwrap();
     let packet = receiver.recv().await.unwrap();
 
-    let mut tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+    let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
     assert_eq!(tcp.control, smoltcp::wire::TcpControl::Syn);
     assert_eq!(tcp.ack_number, Some(smoltcp::wire::TcpSeqNumber(1)));
 
@@ -300,8 +300,7 @@ async fn test_tcp_incoming_socket_not_on_connections_list() {
             .iter()
             .find(|(_handle, conn)| conn.remote == tcp2.get_local_addr().unwrap());
         // TODO: The bug is here. Socket won't be found.
-        // Change to `.is_some()` to reveal the bug.
-        assert!(info.is_none());
+        assert!(info.is_some());
     };
 
     // Send bytes to trigger adding new connection to the list.
