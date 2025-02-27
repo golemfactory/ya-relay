@@ -71,6 +71,72 @@ async fn test_tcp_syn_packet_unfinished_handshake() {
 }
 
 #[test(actix_rt::test)]
+async fn test_tcp_syn_in_established_state() {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+
+    let client1 = network.new_client().await.unwrap();
+    let layer1 = network.new_layer().await.unwrap();
+
+    // Register nodes on relay
+    layer1.layer.server_session().await.unwrap();
+
+    log::info!(
+        "== Create session between {} -> {}",
+        layer1.id,
+        client1.node_id()
+    );
+    let mut session = layer1.layer.session(client1.node_id()).await.unwrap();
+
+    log::info!("== Send SYN packet to {}", client1.node_id());
+
+    let packet =
+        create_syn_packet(layer1.id, 5555, client1.node_id(), TransportType::Reliable).unwrap();
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    log::info!("== Waiting for SYN-ACK packet");
+
+    let mut receiver = layer1.layer.receiver().unwrap();
+    let packet = receiver.recv().await.unwrap();
+
+    let mut tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+    assert_eq!(tcp.control, smoltcp::wire::TcpControl::Syn);
+    assert_eq!(tcp.ack_number, Some(smoltcp::wire::TcpSeqNumber(1)));
+
+    log::info!("== Received SYN/ACK packet.");
+    log::info!("== Sending SYN/ACK packet (last handshake packet).");
+
+    let packet = create_ack_for_packet(layer1.id, client1.node_id(), &tcp).unwrap();
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
+    while let Ok(packet) = receiver.try_recv() {
+        let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+        log::info!("== Received packet: {tcp}");
+        continue;
+    }
+
+    log::info!(
+        "== Send another SYN packet initiating connection to {}",
+        client1.node_id()
+    );
+
+    let (ip_repr, mut tcp_repr) =
+        create_response_packet(layer1.id, client1.node_id(), &tcp).unwrap();
+    tcp_repr.control = TcpControl::Syn;
+    let packet = packet_to_payload(&ip_repr, &tcp_repr);
+    session.send(packet, TransportType::Reliable).await.unwrap();
+
+    let packet = receiver.recv().await.unwrap();
+    let tcp = parse_tcp_from_ip6(&packet.payload).unwrap();
+
+    // TCP should react with RST packet. smoltcp just ignores the packet instead.
+    log::info!("== Received packet: {tcp}");
+    assert_eq!(tcp.control, TcpControl::Rst);
+}
+
+#[test(actix_rt::test)]
 async fn test_tcp_rst_when_socket_doesnt_listen() {
     let server = init_test_server().await.unwrap();
     let mut network = MockSessionNetwork::new(server).unwrap();
