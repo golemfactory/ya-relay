@@ -13,10 +13,7 @@ use ya_relay_client::{model::Payload, testing::accessors::ClientPrivate};
 use ya_relay_core::server_session::TransportType;
 use ya_relay_server::testing::server::init_test_server;
 
-use crate::common::tcp::{
-    create_ack_for_packet, create_packet, create_response_packet, packet_to_buffer,
-    packet_to_payload, parse_tcp_from_ip6,
-};
+use crate::common::tcp::{create_packet, packet_to_buffer, parse_tcp_from_ip6};
 use common::tcp::create_syn_packet;
 
 /// Hypothesis: Sending SYN packet without continuing the handshake could break smoltcp stack.
