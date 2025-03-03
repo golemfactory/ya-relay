@@ -63,6 +63,7 @@ jobs:
           args: --workspace
         env:
           RUST_BACKTRACE: 1
+          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
   integration_tests:
     name: Integration Tests
