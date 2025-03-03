@@ -1,5 +1,6 @@
 use anyhow::Error;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use ya_relay_core::server_session::SessionId;
 use ya_relay_core::NodeId;
@@ -15,7 +16,7 @@ pub type SessionResult<T> = Result<T, SessionError>;
 ///       underlying errors.
 /// TODO: We should use channel-like error where you can recover your payload
 ///       from error message.
-#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+#[derive(thiserror::Error, Clone, Debug)]
 pub enum SenderError {
     #[error("{0}")]
     Session(#[from] SessionError),
@@ -109,19 +110,25 @@ pub enum EncryptionError {
     Generic(String),
 }
 
-#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+#[derive(thiserror::Error, Debug, Clone)]
 pub enum TcpError {
-    #[error("{0}")]
-    Generic(String),
+    #[error("{msg}")]
+    Generic {
+        msg: String,
+        #[source]
+        source: Arc<dyn std::error::Error + Send + Sync>,
+    },
     #[error("Connection closed")]
     Closed,
     #[error("Programming error: {0}")]
     ProgrammingError(String),
+    #[error("{0}")]
+    Other(String),
 }
 
-#[derive(thiserror::Error, Clone, Debug, PartialEq)]
+#[derive(thiserror::Error, Clone, Debug)]
 pub enum TcpTransitionError {
-    #[error("State transition not allowed from: {0} to {1}")]
+    #[error("Connection state transition not allowed from: {0} to {1}")]
     InvalidTransition(TcpState, TcpState),
     #[error("Channel not found")]
     ProgrammingError,

@@ -271,7 +271,7 @@ impl<'a> SocketExt for Socket<'a> {
             Self::Tcp(s) => s.local_endpoint().into(),
             Self::Udp(s) => {
                 let Some(addr) = s.endpoint().addr else {
-                    return SocketEndpoint::Other
+                    return SocketEndpoint::Other;
                 };
                 let port = s.endpoint().port;
                 SocketEndpoint::Ip(IpEndpoint { addr, port })
@@ -451,9 +451,9 @@ impl SocketMemory {
 /// Currently, only `max` is used; other values are reserved for future use
 #[derive(Clone, Copy, Debug)]
 pub struct Memory {
-    min: usize,
-    default: usize,
-    max: usize,
+    pub min: usize,
+    pub default: usize,
+    pub max: usize,
 }
 
 impl Memory {

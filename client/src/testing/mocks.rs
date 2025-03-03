@@ -42,6 +42,7 @@ pub struct MockHandler {
 pub struct Captures {
     pub session_request: CaptureChannel<SessionReqParams>,
     pub reverse_connection: CaptureChannel<ReverseConnectionParams>,
+    pub packets: CaptureChannel<Forward>,
 }
 
 pub struct CaptureChannel<T> {
@@ -187,6 +188,15 @@ impl Handler for MockHandler {
         from: SocketAddr,
         session: Option<Arc<DirectSession>>,
     ) -> Option<LocalBoxFuture<'static, ()>> {
-        self.layer.on_forward(forward, from, session)
+        if self.captures.packets.should_capture() {
+            Some(
+                async move {
+                    self.captures.packets.tx.send(forward).await.ok();
+                }
+                .boxed_local(),
+            )
+        } else {
+            self.layer.on_forward(forward, from, session)
+        }
     }
 }

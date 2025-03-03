@@ -1,3 +1,6 @@
+#[allow(unused)]
+pub mod tcp;
+
 use anyhow::{bail, Context};
 use futures::StreamExt;
 use std::rc::Rc;
@@ -134,6 +137,6 @@ pub async fn check_broadcast(
 /// TODO: Should be moved to ServerWrapper, but we don't want to import Client in Server crate.
 #[allow(dead_code)]
 pub async fn hack_make_ip_private(wrapper: &ServerWrapper, client: &Client) {
-    wrapper.remove_node_endpoints(client.node_id());
+    wrapper.remove_node_endpoints(client.node_id()).await;
     client.set_public_addr(None).await;
 }

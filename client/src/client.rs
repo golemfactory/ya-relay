@@ -2,6 +2,8 @@ use anyhow::{anyhow, bail};
 use futures::future::{join_all, AbortHandle};
 use futures::{FutureExt, TryFutureExt};
 use parking_lot::Mutex;
+use rand::prelude::SliceRandom;
+use rand::thread_rng;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::future::Future;
@@ -13,7 +15,6 @@ use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use ya_relay_core::utils::spawn_local_abortable;
-use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 
 use crate::metrics::register_metrics;
@@ -26,6 +27,7 @@ pub use crate::transport::{ForwardReceiver, TransportLayer};
 
 use crate::direct_session::DirectSession;
 use crate::metrics::ChannelMetrics;
+use crate::model::NodeId;
 pub use ya_relay_core::server_session::TransportType;
 
 /// A Hybrid NET client that handles connections, sessions and relay operations.
@@ -362,10 +364,35 @@ impl Client {
     /// * `anyhow::Result<()>`: A Result object indicating the success or failure of the broadcast operation.
     ///
     pub async fn broadcast(&self, data: Vec<u8>, count: u32) -> anyhow::Result<()> {
-        let node_ids = self
-            .neighbours(count)
-            .await
-            .map_err(|e| anyhow!("Unable to query neighbors: {e}"))?;
+        let zero: NodeId = Default::default();
+
+        let mut node_ids: HashSet<NodeId> = {
+            let mut sessions = self.transport.session_layer.sessions().await;
+            sessions.shuffle(&mut thread_rng());
+
+            sessions
+                .into_iter()
+                .filter_map(|session| session.upgrade())
+                .map(|session| session.owner.default_id)
+                .filter(|&node_id| node_id != zero)
+                .take(count as usize)
+                .collect()
+        };
+
+        if node_ids.len() < count as usize {
+            log::debug!("Querying for {} node(s)", count as usize - node_ids.len());
+            let next_node_ids = self
+                .neighbours(count)
+                .await
+                .map_err(|e| anyhow!("Unable to query neighbors: {e}"))?;
+
+            for node_id in next_node_ids {
+                node_ids.insert(node_id);
+                if node_ids.len() >= count as usize {
+                    break;
+                }
+            }
+        }
 
         log::debug!("Broadcasting message to {} node(s)", node_ids.len());
 
