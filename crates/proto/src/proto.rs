@@ -254,7 +254,7 @@ fn write_payload_fmt(f: &mut std::fmt::Formatter<'_>, buf: impl AsRef<[u8]>) -> 
         let idx = 8.min(buf.len() / 2);
         write!(f, "{:02x?}..{:02x?}", &buf[..idx], &buf[buf.len() - idx..])
     } else {
-        write!(f, "{:02x?}", &buf)
+        write!(f, "{buf:02x?}")
     }
 }
 

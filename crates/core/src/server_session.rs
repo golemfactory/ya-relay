@@ -59,12 +59,12 @@ pub struct NodeInfo {
 
 impl NodeInfo {
     pub fn default_node_id(&self) -> NodeId {
-        self.identities.get(0).map(|ident| ident.node_id).unwrap()
+        self.identities.first().map(|ident| ident.node_id).unwrap()
     }
 
     pub fn public_key(&self) -> Vec<u8> {
         self.identities
-            .get(0)
+            .first()
             .map(|ident| ident.public_key.bytes().to_vec())
             .unwrap()
     }

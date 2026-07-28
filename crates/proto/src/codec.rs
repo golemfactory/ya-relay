@@ -62,18 +62,18 @@ impl PacketKind {
 }
 
 #[inline(always)]
-pub(self) fn read_bytes(buf: &mut BytesMut, max: usize) -> Result<Option<BytesMut>, DecodeError> {
+fn read_bytes(buf: &mut BytesMut, max: usize) -> Result<Option<BytesMut>, DecodeError> {
     let (total, off) = peek_size(buf)?;
     read_bytes_inner(buf, total, off, max)
 }
 
 #[inline(always)]
-pub(self) fn read_datagram(buf: &mut BytesMut) -> Result<Option<BytesMut>, DecodeError> {
+fn read_datagram(buf: &mut BytesMut) -> Result<Option<BytesMut>, DecodeError> {
     let total = buf.len();
     read_bytes_inner(buf, total, 0, total)
 }
 
-pub(self) fn read_bytes_inner(
+fn read_bytes_inner(
     buf: &mut BytesMut,
     total: usize,
     off: usize,

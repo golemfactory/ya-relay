@@ -69,7 +69,7 @@ async fn main() -> anyhow::Result<()> {
     for worker in 0..args.concurrent {
         let socket = UdpSocket::bind("0.0.0.0:0").await?;
         let cmd = args.command.clone();
-        let _: JoinHandle<anyhow::Result<()>> = local.spawn_local(async move {
+        let _handle: JoinHandle<anyhow::Result<()>> = local.spawn_local(async move {
             match cmd {
                 GremlinCmd::FloodSessionOpen {} => {
                     let mut request_id = 1;

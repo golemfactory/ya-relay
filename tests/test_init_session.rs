@@ -147,7 +147,7 @@ async fn test_query_self_node_info() -> anyhow::Result<()> {
         .unwrap();
 
     let node_id = client.node_id();
-    let endpoints = vec![proto::Endpoint {
+    let endpoints = [proto::Endpoint {
         protocol: proto::Protocol::Udp as i32,
         address: "127.0.0.1".to_string(),
         port: client.bind_addr().await?.port() as u32,

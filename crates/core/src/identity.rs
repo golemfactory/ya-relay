@@ -103,7 +103,7 @@ impl<'a> TryFrom<&'a proto::response::Node> for Identity {
 
     fn try_from(node: &'a proto::response::Node) -> Result<Self, Self::Error> {
         node.identities
-            .get(0)
+            .first()
             .ok_or_else(|| anyhow!("Missing Node identity"))?
             .try_into()
     }

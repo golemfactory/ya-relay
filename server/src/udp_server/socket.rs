@@ -152,7 +152,7 @@ impl UdpSocketConfig {
 
         let bind_addr = match bind_addr {
             SocketAddr::V4(v) => v,
-            _ => return Err(io::Error::new(io::ErrorKind::Other, "wrong protocol")),
+            _ => return Err(io::Error::other("wrong protocol")),
         };
 
         init();
@@ -198,7 +198,7 @@ impl UdpSocketConfig {
             let addr = sockaddr_in {
                 sin_family: AF_INET,
                 sin_port: bind_addr.port().to_be(),
-                sin_addr: mem::transmute(bind_addr.ip().octets()),
+                sin_addr: mem::transmute::<[u8; 4], libc::in_addr>(bind_addr.ip().octets()),
                 sin_zero: mem::zeroed(),
             };
 
@@ -228,7 +228,7 @@ impl UdpSocketConfig {
 
         let bind_addr = match bind_addr {
             SocketAddr::V4(v) => v,
-            _ => return Err(io::Error::new(io::ErrorKind::Other, "wrong protocol")),
+            _ => return Err(io::Error::other("wrong protocol")),
         };
 
         let fd = unsafe {
@@ -260,7 +260,7 @@ impl UdpSocketConfig {
             let addr = sockaddr_in {
                 sin_family: AF_INET as sa_family_t,
                 sin_port: bind_addr.port().to_be(),
-                sin_addr: mem::transmute(bind_addr.ip().octets()),
+                sin_addr: mem::transmute::<[u8; 4], libc::in_addr>(bind_addr.ip().octets()),
                 sin_zero: mem::zeroed(),
                 #[cfg(target_os = "macos")]
                 sin_len: mem::size_of::<sockaddr_in>() as u8,

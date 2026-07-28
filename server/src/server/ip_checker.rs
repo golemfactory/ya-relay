@@ -111,7 +111,6 @@ fn checker(
 
     let retry_job = {
         let state = Rc::downgrade(&state);
-        let timeout = timeout;
 
         spawn_local(async move {
             log::warn!("[{worker_idx}] ip-check retry started");
@@ -237,18 +236,14 @@ impl IpCheckerState {
     }
 
     fn size(&self) -> usize {
-        self.requests
-            .borrow()
-            .iter()
-            .map(|(_, reqs)| reqs.len())
-            .sum()
+        self.requests.borrow().values().map(|reqs| reqs.len()).sum()
     }
 
     async fn send_pings(&self, timeout: Duration) -> io::Result<()> {
         let mut to_ping = Vec::new();
         {
             let mut g = self.requests.borrow_mut();
-            for (_addr, its) in g.iter_mut() {
+            for its in g.values_mut() {
                 let new_its = its
                     .drain(..)
                     .filter_map(|mut req| {

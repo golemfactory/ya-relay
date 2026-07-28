@@ -21,7 +21,7 @@ impl<'a> Iterator for Bits<'a> {
             self.data = &self.data[1..];
             self.mask = 0x80;
         }
-        return Some(v);
+        Some(v)
     }
 }
 

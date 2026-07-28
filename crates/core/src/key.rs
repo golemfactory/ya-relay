@@ -13,7 +13,7 @@ pub fn generate() -> SecretKey {
 }
 
 pub fn load_or_generate(path: &str, password: Option<Protected>) -> SecretKey {
-    log::debug!("load_or_generate({}, {:?})", path, &password);
+    log::debug!("load_or_generate({}, {:?})", path, password);
 
     // Default password = "", only use for testing purposes!
     let password = password.unwrap_or_else(|| Protected::from("".to_string()));

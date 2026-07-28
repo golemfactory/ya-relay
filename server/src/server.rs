@@ -160,8 +160,8 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
         };
 
         (
-            slot_manager.unwrap_or_else(|| SlotManager::new()),
-            session_manager.unwrap_or_else(|| SessionManager::new()),
+            slot_manager.unwrap_or_else(SlotManager::new),
+            session_manager.unwrap_or_else(SessionManager::new),
         )
     } else {
         (SlotManager::new(), SessionManager::new())
@@ -172,7 +172,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
     let ip_check_config = config.ip_check.clone();
 
     session_manager.start_cleanup_processor(&config.session_manager);
-    session_manager.set_mode(config.session_manager.list_mode.clone());
+    session_manager.set_mode(config.session_manager.list_mode);
 
     let ip_test_cache: IpCache =
         Arc::new(quick_cache::sync::Cache::<SocketAddr, (Instant, bool)>::new(128));
@@ -441,7 +441,7 @@ impl DisconnectCache {
                 false
             };
         }
-        let _ = self.sessions.insert(session_id, clock.last_seen());
+        self.sessions.insert(session_id, clock.last_seen());
         true
     }
 }

@@ -232,19 +232,16 @@ async fn test_rate_limiter() -> anyhow::Result<()> {
         received: Rc<AtomicUsize>,
         rx: mpsc::UnboundedReceiver<Forwarded>,
     ) {
-        tokio::task::spawn_local({
-            let received = received;
-            async move {
-                UnboundedReceiverStream::new(rx)
-                    .for_each(|item| {
-                        let received = received.clone();
-                        async move {
-                            let last_val = received.clone().fetch_add(item.payload.len(), SeqCst);
-                            println!("{} received {:?} last_val: {}", label, item, last_val + 1);
-                        }
-                    })
-                    .await;
-            }
+        tokio::task::spawn_local(async move {
+            UnboundedReceiverStream::new(rx)
+                .for_each(|item| {
+                    let received = received.clone();
+                    async move {
+                        let last_val = received.fetch_add(item.payload.len(), SeqCst);
+                        println!("{} received {:?} last_val: {}", label, item, last_val + 1);
+                    }
+                })
+                .await;
         });
     }
     spawn_receive_counted(">> 2", received2.clone(), rx2);

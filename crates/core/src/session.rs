@@ -60,6 +60,7 @@ impl<'a> From<&'a Session> for SessionDesc {
 }
 
 impl Session {
+    #[allow(clippy::arc_with_non_send_sync)]
     pub fn new(remote_addr: SocketAddr, id: SessionId, sink: OutStream) -> Arc<Self> {
         Arc::new(Self {
             remote: remote_addr,

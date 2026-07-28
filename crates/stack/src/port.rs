@@ -15,7 +15,7 @@ impl Allocator {
     pub fn next(&mut self, protocol: Protocol) -> Result<u16> {
         let mut rng = rand::thread_rng();
         let mut port = Uniform::from(Self::RANGE).sample(&mut rng);
-        let taken = self.taken.entry(protocol).or_insert_with(Default::default);
+        let taken = self.taken.entry(protocol).or_default();
 
         let range_start = *Self::RANGE.start();
         let mut num = Self::RANGE.len() as i32;
@@ -34,7 +34,7 @@ impl Allocator {
 
     #[allow(unused)]
     pub fn reserve(&mut self, protocol: Protocol, port: u16) -> Result<()> {
-        let entry = self.taken.entry(protocol).or_insert_with(Default::default);
+        let entry = self.taken.entry(protocol).or_default();
         if entry.contains(&port) {
             return Err(Error::Other(format!("port {} is unavailable", port)));
         }
@@ -43,9 +43,6 @@ impl Allocator {
     }
 
     pub fn free(&mut self, protocol: Protocol, port: u16) {
-        self.taken
-            .entry(protocol)
-            .or_insert_with(Default::default)
-            .remove(&port);
+        self.taken.entry(protocol).or_default().remove(&port);
     }
 }

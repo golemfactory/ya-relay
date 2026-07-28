@@ -206,7 +206,7 @@ impl NetworkView {
 
     // TODO: Use other error type than `TransitionError`
     async fn session_target(&self, node_id: NodeId) -> Result<NodeView, TransitionError> {
-        match { self.state.read().await.by_node_id.get(&node_id) } {
+        match self.state.read().await.by_node_id.get(&node_id) {
             None => Err(TransitionError::NodeNotFound(node_id)),
             Some(target) => Ok(target.clone()),
         }
@@ -936,7 +936,7 @@ mod tests {
         let (sink, _) = futures::channel::mpsc::channel::<(PacketKind, SocketAddr)>(1);
 
         let raw = RawSession::new(addr, SessionId::generate(), sink);
-        DirectSession::new(node_id, vec![identity].into_iter(), raw).unwrap()
+        DirectSession::new(node_id, vec![identity], raw).unwrap()
     }
 
     /// Checks if `Permits` and `NodeAwaiting` work independently.

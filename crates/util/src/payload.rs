@@ -41,7 +41,7 @@ impl Payload {
                 *self = Self::BytesMut(b);
             }
             Self::Vec(mut v) => {
-                v.extend(bytes.into_iter());
+                v.extend(bytes);
                 *self = Self::Vec(v);
             }
         }
@@ -58,7 +58,7 @@ impl Payload {
                     b.extend(with);
                 } else {
                     let len = with.len();
-                    b.extend(std::iter::repeat(0).take(len));
+                    b.extend(std::iter::repeat_n(0, len));
 
                     for i in (0..b.len()).rev() {
                         b[i] = if i >= len { b[i - len] } else { with[i] };
@@ -74,7 +74,7 @@ impl Payload {
     #[inline]
     pub fn into_vec(self) -> Vec<u8> {
         match self {
-            Self::BytesMut(b) => Vec::from_iter(b.into_iter()),
+            Self::BytesMut(b) => Vec::from_iter(b),
             Self::Vec(b) => b,
         }
     }

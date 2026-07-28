@@ -105,8 +105,8 @@ impl Client {
     /// # Arguments
     ///
     /// * `addr: Option<SocketAddr>` - The new public address to be set for the client.
-    ///     This can be either an IPv4 or an IPv6 address or None if node has no
-    ///     public address.
+    ///   This can be either an IPv4 or an IPv6 address or None if node has no
+    ///   public address.
     ///
     pub async fn set_public_addr(&self, addr: Option<SocketAddr>) {
         self.transport.session_layer.set_public_addr(None).await;
@@ -127,7 +127,7 @@ impl Client {
     /// # Returns
     ///
     /// * `Vec<SessionDesc>`: A vector of session descriptions. If there are no active sessions,
-    /// the vector will be empty.
+    ///   the vector will be empty.
     ///
     /// # Examples
     ///
@@ -168,7 +168,7 @@ impl Client {
     /// # Returns
     ///
     /// * `Option<NodeInfo>`: An option containing the `NodeInfo` if found,
-    ///     or `None` if the node was not found.
+    ///   or `None` if the node was not found.
     ///
     pub async fn find_node(&self, node_id: NodeId) -> anyhow::Result<crate::model::Node> {
         let session = self.transport.session_layer.server_session().await?;
@@ -327,7 +327,7 @@ impl Client {
         )
         .await
         .into_iter();
-        zip(ids.into_iter(), aliases).collect()
+        zip(ids, aliases).collect()
     }
 
     pub async fn reconnect_server(&self) {
@@ -464,7 +464,7 @@ impl Client {
             .into_iter()
             .filter_map(|n| {
                 n.identities
-                    .get(0)
+                    .first()
                     .and_then(|ident| NodeId::try_from(&ident.node_id).ok())
             })
             .collect::<Vec<_>>();

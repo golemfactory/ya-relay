@@ -235,7 +235,7 @@ mod tests {
         });
         tokio::task::spawn(async move {
             let _ = rx_full
-                .flat_map(|b| futures::stream::iter(b.into_vec().into_iter()).chunks(chunk_size))
+                .flat_map(|b| futures::stream::iter(b.into_vec()).chunks(chunk_size))
                 .map(|v| Ok::<_, futures::channel::mpsc::SendError>(v.into()))
                 .forward(tx_parts)
                 .await;

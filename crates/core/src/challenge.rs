@@ -52,7 +52,7 @@ pub fn solve<'a, D: Digest, C: Crypto + 'a>(
 
         Ok(proto::ChallengeResponse {
             solution,
-            signatures: signatures,
+            signatures,
             session_sign,
             session_pub_key,
         })
@@ -68,7 +68,7 @@ fn solve_challenge<D: Digest>(challenge: &[u8], difficulty: u64) -> anyhow::Resu
         if leading_zeros(&result) >= difficulty {
             let mut response = prefix.to_vec();
             response.reserve(result.len());
-            response.extend(result.into_iter());
+            response.extend(result);
             return Ok(response);
         }
 
@@ -127,6 +127,7 @@ pub fn recover_identities_from_challenge<D: Digest>(
     })
 }
 
+#[allow(clippy::type_complexity)]
 pub fn recover_identities_from_challenge_with_proof<D: Digest>(
     raw_challenge: &[u8],
     difficulty: u64,
@@ -147,7 +148,7 @@ pub fn recover_identities_from_challenge_with_proof<D: Digest>(
     let default_ident = {
         let sig = response
             .signatures
-            .get(0)
+            .first()
             .ok_or_else(|| anyhow::anyhow!("Missing signature"))?;
 
         let key = recover(sig.as_slice(), message.as_slice())?;
@@ -199,7 +200,7 @@ pub fn verify_session_key(
 }
 
 pub fn recover_default_node_id(request: &proto::request::Session) -> anyhow::Result<NodeId> {
-    match request.identities.get(0) {
+    match request.identities.first() {
         Some(identity) => Ok(NodeId::try_from(&identity.node_id)?),
         None => bail!("First session request has empty identities vector."),
     }

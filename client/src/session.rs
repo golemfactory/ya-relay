@@ -150,7 +150,7 @@ impl SessionRegistration for SessionLayer {
                 anyhow!("Registering relay session for node [{node_id}] ({addr}): {e}")
             })?
         } else {
-            DirectSession::new(node_id, identities.clone().into_iter(), session.clone())
+            DirectSession::new(node_id, identities.clone(), session.clone())
                 .map_err(|e| anyhow!("Registering session for node [{node_id}]: {e}"))?
         };
 
@@ -1071,7 +1071,7 @@ impl SessionLayer {
         Ok(())
     }
 
-    pub async fn dispatch_session<'a>(
+    pub async fn dispatch_session(
         &self,
         session_id: Vec<u8>,
         request_id: RequestId,
@@ -1325,7 +1325,6 @@ impl SessionLayer {
         };
         endpoints
             .iter()
-            .cloned()
             .map(|e| e.address)
             .filter(|a| !own_addrs.iter().any(|o| o == a))
             .collect()
@@ -1355,7 +1354,7 @@ impl Handler for SessionLayer {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
                     log::info!(
                         "got reverse connection request from: {:?}",
-                        NodeId::try_from(message.node_id.as_slice()).ok()
+                        NodeId::from(message.node_id.as_slice())
                     );
                     let myself = self;
                     tokio::task::spawn_local(async move {
@@ -1496,7 +1495,7 @@ impl Handler for SessionLayer {
                 session.owner.default_id
             } else {
                 // Messages forwarded through relay server or other relay Node.
-                match { session.get_by_slot(slot) } {
+                match session.get_by_slot(slot) {
                     Some(node) => node.default_id,
                     None => {
                         log::debug!(

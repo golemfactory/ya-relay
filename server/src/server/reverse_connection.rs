@@ -81,20 +81,7 @@ impl RcHandler {
             }
         };
 
-        let request_node_id: NodeId = match param.node_id.as_slice().try_into() {
-            Ok(node_id) => node_id,
-            Err(_) => {
-                return Some((
-                    self.ack.clone(),
-                    Packet::response(
-                        request_id,
-                        session_id.to_vec(),
-                        StatusCode::BadRequest,
-                        response::ReverseConnection::default(),
-                    ),
-                ))
-            }
-        };
+        let request_node_id: NodeId = param.node_id.as_slice().into();
 
         clock.touch(&session_ref.ts);
 

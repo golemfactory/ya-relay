@@ -209,10 +209,10 @@ impl Network {
             connections
                 .values()
                 .filter(|conn| {
-                    conn.meta.remote.addr.as_bytes() == remote_ip.as_bytes().as_ref()
+                    conn.meta.remote.addr.as_bytes() == remote_ip.as_bytes()
                         && conn.meta.protocol == Protocol::Tcp
                 })
-                .map(|conn| (conn.clone(), self.stack.disconnect(conn.handle)))
+                .map(|conn| (*conn, self.stack.disconnect(conn.handle)))
                 .unzip()
         };
 
@@ -248,14 +248,14 @@ impl Network {
                     // earlier, because we can accidentally abort socket that was already re-used
                     // in different context.
                     let current_connections = net.connections.borrow();
-                    for conn in connections.into_iter() {
-                        current_connections
+                    for conn in connections {
+                        if let Some(handle) = current_connections
                             .values()
-                            .find_map(|cur_conn| match cur_conn.meta == conn.meta {
-                                true => Some(cur_conn.handle),
-                                false => None,
-                            })
-                            .map(|handle| net.stack.abort(handle));
+                            .find(|cur_conn| cur_conn.meta == conn.meta)
+                            .map(|cur_conn| cur_conn.handle)
+                        {
+                            net.stack.abort(handle);
+                        }
                     }
                 }
                 net.poll();
@@ -536,12 +536,10 @@ impl Network {
         let is_tun = device.is_tun();
 
         while let Some(data) = device.next_phy_tx() {
-            match {
-                if is_tun {
-                    EgressEvent::from_ip_packet(data)
-                } else {
-                    EgressEvent::from_eth_frame(data)
-                }
+            match if is_tun {
+                EgressEvent::from_ip_packet(data)
+            } else {
+                EgressEvent::from_eth_frame(data)
             } {
                 Ok(event) => {
                     sent += event.payload.len();
@@ -675,14 +673,13 @@ impl StackSender {
         data: Payload,
         conn: Connection,
     ) -> impl Future<Output = Result<()>> + 'a {
-        let mut sender = {
-            match {
-                let inner = self.inner.borrow();
-                inner.map.get(&conn.handle).cloned()
-            } {
-                Some(sender) => sender,
-                None => self.spawn(conn.handle),
-            }
+        let existing = {
+            let inner = self.inner.borrow();
+            inner.map.get(&conn.handle).cloned()
+        };
+        let mut sender = match existing {
+            Some(sender) => sender,
+            None => self.spawn(conn.handle),
         };
         async move { sender.send((data, conn)).map_err(Error::from).await }
     }

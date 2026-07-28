@@ -28,19 +28,16 @@ pub fn spawn_receive<T: std::fmt::Debug + 'static>(
 ) {
     println!("Spawning {} receiver", label);
 
-    tokio::task::spawn_local({
-        let received = received;
-        async move {
-            UnboundedReceiverStream::new(rx)
-                .for_each(|item| {
-                    let received = received.clone();
-                    async move {
-                        println!("{} received {:?}", label, item);
-                        received.clone().store(true, SeqCst)
-                    }
-                })
-                .await;
-        }
+    tokio::task::spawn_local(async move {
+        UnboundedReceiverStream::new(rx)
+            .for_each(|item| {
+                let received = received.clone();
+                async move {
+                    println!("{} received {:?}", label, item);
+                    received.store(true, SeqCst)
+                }
+            })
+            .await;
     });
 }
 

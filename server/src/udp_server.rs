@@ -1,5 +1,3 @@
-//!
-//!
 use std::future::Future;
 use std::net::SocketAddr;
 use std::rc::Rc;

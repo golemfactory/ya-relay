@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![allow(clippy::arc_with_non_send_sync)]
 #![cfg_attr(not(test), deny(unused_crate_dependencies))]
 //#![deny(missing_docs)]
 

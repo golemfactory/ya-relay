@@ -94,8 +94,8 @@ impl TransportLayer {
 
             unreliable
                 .into_iter()
-                .chain(transfer.into_iter())
-                .chain(reliable.into_iter())
+                .chain(transfer)
+                .chain(reliable)
                 .collect::<Vec<_>>()
         };
         for (_, mut channel) in channels {

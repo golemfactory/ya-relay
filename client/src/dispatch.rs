@@ -285,7 +285,7 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
-        match { self.responses.lock().unwrap().remove(&request_id) } {
+        match self.responses.lock().unwrap().remove(&request_id) {
             Some(sender) => {
                 if sender
                     .send(Dispatched {

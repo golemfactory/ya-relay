@@ -42,7 +42,7 @@ impl Clock {
 
     pub fn age(&self, last_seen: &LastSeen) -> Duration {
         let ts = last_seen.ts.load(Ordering::Relaxed);
-        let diff = self.ts.checked_sub(ts).unwrap_or_default();
+        let diff = self.ts.saturating_sub(ts);
         Duration::from_secs(diff.into())
     }
 }

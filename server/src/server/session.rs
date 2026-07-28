@@ -233,7 +233,7 @@ impl SessionHandler {
                         Err(prev_session_id) => {
                             if prev_session_id.node_id != node_id {
                                 log::warn!(target: "request::session", "[{src}] conflicting session_id={session_id}, age={:?} old({}) != {node_id}", clock.age(&prev_session_id.ts), prev_session_id.node_id);
-                                return Some((
+                                Some((
                                     noop_ack(),
                                     Packet {
                                         session_id: session_id.to_vec(),
@@ -243,7 +243,7 @@ impl SessionHandler {
                                             kind: Some(response::Kind::Session(Default::default())),
                                         })),
                                     },
-                                ));
+                                ))
                             } else {
                                 Some((
                                     self.challenge_valid_ack.clone(),

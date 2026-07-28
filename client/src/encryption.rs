@@ -94,7 +94,7 @@ impl Encryption for Aes256GcmSivEncryption {
     fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
         let nonce = thread_rng().gen::<[u8; 12]>();
         self.cipher
-            .encrypt(&Nonce::from_slice(&nonce), packet.as_ref())
+            .encrypt(Nonce::from_slice(&nonce), packet.as_ref())
             .map_err(|e| EncryptionError::Generic(e.to_string()))
             .map(|mut ciphertext| {
                 ciphertext.splice(0..0, nonce.iter().cloned());
@@ -106,9 +106,9 @@ impl Encryption for Aes256GcmSivEncryption {
         let mut packet = packet.into_vec();
         let nonce = Nonce::from_slice(&packet[0..12]);
         self.cipher
-            .decrypt(&nonce, &packet[12..])
+            .decrypt(nonce, &packet[12..])
             .map_err(|e| EncryptionError::Generic(e.to_string()))
-            .map(|plaintext| Payload::from(plaintext))
+            .map(Payload::from)
     }
 
     fn encryption_flag(&self) -> bool {

@@ -100,11 +100,11 @@ impl<T: Default> Default for SocketState<T> {
     }
 }
 
-impl<T> ToString for SocketState<T> {
-    fn to_string(&self) -> String {
+impl<T> std::fmt::Display for SocketState<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Tcp { state, .. } => format!("{:?}", state),
-            _ => String::default(),
+            Self::Tcp { state, .. } => write!(f, "{state:?}"),
+            Self::Other { .. } => Ok(()),
         }
     }
 }

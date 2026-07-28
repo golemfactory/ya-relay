@@ -411,6 +411,7 @@ impl TcpAwaiting {
 
 /// Structure giving you exclusive right to initialize connection (`Permit`)
 /// or allows to wait for results (`Wait`).
+#[allow(clippy::large_enum_variant)]
 pub enum TcpLock {
     Permit(TcpPermit),
     Wait(TcpAwaiting),

@@ -44,11 +44,8 @@ fn read_dir_recursive<P: AsRef<Path>>(path: P) -> Result<impl Iterator<Item = Re
     Ok(iter::from_fn(move || loop {
         match de.next() {
             None => {
-                if let Some(nde) = stack.pop() {
-                    de = nde;
-                } else {
-                    return None;
-                }
+                let nde = stack.pop()?;
+                de = nde;
             }
             Some(Err(e)) => return Some(Err(e.into())),
             Some(Ok(e)) => {

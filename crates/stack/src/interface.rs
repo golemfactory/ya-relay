@@ -121,7 +121,7 @@ where
 /// Assigns a new interface IP address
 pub fn add_iface_address(iface: &mut CaptureInterface, node_ip: IpCidr) {
     iface.inner_mut().update_ip_addrs(|addrs| {
-        if !addrs.iter().any(|ip| *ip == node_ip) {
+        if !addrs.contains(&node_ip) {
             if let Err(err) = addrs.push(node_ip) {
                 log::error!("Failed to assign new interface IP address: {err}");
             }

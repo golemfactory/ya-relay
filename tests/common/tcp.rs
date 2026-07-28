@@ -39,11 +39,7 @@ pub fn create_response_packet<'a>(
     Ok((ip_repr, tcp_repr))
 }
 
-pub fn create_ack_for_packet<'a>(
-    from: NodeId,
-    to: NodeId,
-    tcp: &TcpRepr,
-) -> anyhow::Result<Payload> {
+pub fn create_ack_for_packet(from: NodeId, to: NodeId, tcp: &TcpRepr) -> anyhow::Result<Payload> {
     let (ip_repr, mut tcp_repr) = create_response_packet(from, to, tcp)?;
     Ok(packet_to_payload(&ip_repr, &tcp_repr))
 }
@@ -118,7 +114,7 @@ pub fn create_packet<'a>(
 }
 
 pub fn parse_tcp_from_ip6(payload: &Payload) -> anyhow::Result<TcpRepr<'_>> {
-    let packet = Ipv6Packet::new_unchecked(&payload.as_ref()[..]);
+    let packet = Ipv6Packet::new_unchecked(payload.as_ref());
     let ip = IpRepr::Ipv6(Ipv6Repr::parse(&packet)?);
 
     Ok(TcpRepr::parse(

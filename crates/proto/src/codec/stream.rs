@@ -62,7 +62,7 @@ where
             }
             PacketKind::ForwardCtd(buf) => {
                 dst.reserve(buf.len());
-                dst.extend(buf.into_iter())
+                dst.extend(buf)
             }
         }
         Pin::new(&mut self.sink)
@@ -308,7 +308,7 @@ mod tests {
         });
         tokio::task::spawn(async move {
             let _ = rx_full
-                .flat_map(|b| futures::stream::iter(b.into_iter()).chunks(chunk_size))
+                .flat_map(|b| futures::stream::iter(b).chunks(chunk_size))
                 .map(|v| Ok(Ok::<_, Error>(BytesMut::from_iter(v))))
                 .forward(tx_parts.sink_map_err(Error::from))
                 .await;

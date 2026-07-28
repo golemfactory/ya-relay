@@ -175,20 +175,19 @@ impl SessionInitializer {
             .into());
         }
 
-        let (remote_id, identities, session_key) = match {
-            if challenge {
-                log::trace!("Validating challenge from: [{node_id}] ({addr})");
+        let recovered = if challenge {
+            log::trace!("Validating challenge from: [{node_id}] ({addr})");
 
-                challenge::recover_identities_from_challenge::<ChallengeDigest>(
-                    &raw_challenge,
-                    config.challenge_difficulty,
-                    response.packet.challenge_resp,
-                    Some(node_id),
-                )
-            } else {
-                Ok(Default::default())
-            }
-        } {
+            challenge::recover_identities_from_challenge::<ChallengeDigest>(
+                &raw_challenge,
+                config.challenge_difficulty,
+                response.packet.challenge_resp,
+                Some(node_id),
+            )
+        } else {
+            Ok(Default::default())
+        };
+        let (remote_id, identities, session_key) = match recovered {
             Ok(tuple) => tuple,
             Err(e) => {
                 let _ = tmp_session.disconnect().await;
@@ -368,18 +367,16 @@ impl SessionInitializer {
         _from: SocketAddr,
         request: proto::request::Session,
     ) -> Result<(), SessionError> {
-        let mut sender = {
-            match {
-                self.state
-                    .lock()
-                    .unwrap()
-                    .incoming_sessions
-                    .get(&session_id)
-                    .cloned()
-            } {
-                Some(sender) => sender.clone(),
-                None => return Err(ProtocolError::SessionNotFound(session_id).into()),
-            }
+        let existing = self
+            .state
+            .lock()
+            .unwrap()
+            .incoming_sessions
+            .get(&session_id)
+            .cloned();
+        let mut sender = match existing {
+            Some(sender) => sender,
+            None => return Err(ProtocolError::SessionNotFound(session_id).into()),
         };
 
         sender

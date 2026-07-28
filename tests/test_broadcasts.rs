@@ -85,19 +85,16 @@ async fn test_broadcast() -> anyhow::Result<()> {
     let mut clients = start_clients(&wrapper, NEIGHBOURHOOD_SIZE + 1).await;
 
     fn spawn_receive(received: Rc<AtomicUsize>, rx: mpsc::UnboundedReceiver<Forwarded>) {
-        tokio::task::spawn_local({
-            let received = received;
-            async move {
-                UnboundedReceiverStream::new(rx)
-                    .for_each(|item| {
-                        let received = received.clone();
-                        async move {
-                            println!("received {:?}", item);
-                            received.clone().fetch_add(item.payload.len(), SeqCst);
-                        }
-                    })
-                    .await;
-            }
+        tokio::task::spawn_local(async move {
+            UnboundedReceiverStream::new(rx)
+                .for_each(|item| {
+                    let received = received.clone();
+                    async move {
+                        println!("received {:?}", item);
+                        received.fetch_add(item.payload.len(), SeqCst);
+                    }
+                })
+                .await;
         });
     }
     let mut received = vec![];

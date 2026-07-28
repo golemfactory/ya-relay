@@ -120,7 +120,7 @@ impl<const N: usize> FromStr for Selector<N> {
                     .to_digit(16)
                     .ok_or_else(|| anyhow!("invalid char"))?;
 
-                bytes.write(&[(d1 << 4 | d2) as u8])?;
+                bytes.write_all(&[(d1 << 4 | d2) as u8])?;
             }
 
             let bytes = bytes.into_inner();
@@ -192,14 +192,14 @@ struct PubKey {
 
 impl<'a> From<&'a Identity> for PubKey {
     fn from(value: &'a Identity) -> Self {
-        let inner = value.public_key.bytes().clone();
+        let inner = *value.public_key.bytes();
         Self { inner }
     }
 }
 
 impl From<PublicKey> for PubKey {
     fn from(value: PublicKey) -> Self {
-        let inner = value.bytes().clone();
+        let inner = *value.bytes();
         Self { inner }
     }
 }
@@ -395,7 +395,7 @@ impl SessionManager {
         limit: usize,
     ) -> HashMap<NodeId, Vec<SessionWeakRef>> {
         if let Selector::Exact { bytes } = &selector {
-            let node_id = NodeId::from(bytes.clone());
+            let node_id = NodeId::from(*bytes);
             self.node_sessions
                 .get(&node_id)
                 .iter()
@@ -414,7 +414,7 @@ impl SessionManager {
     pub fn flagged_nodes(&self) -> HashMap<NodeId, Flag> {
         self.flagged_nodes
             .iter()
-            .map(|r| (*r.key(), r.value().clone()))
+            .map(|r| (*r.key(), *r.value()))
             .collect()
     }
 
@@ -538,9 +538,14 @@ impl SessionManager {
 
         iter::from_fn(|| h.pop())
             .filter_map(|d| {
-                self.node_sessions
-                    .get(&d.id)
-                    .and_then(|entry| entry.value().lock().iter().filter_map(Weak::upgrade).last())
+                self.node_sessions.get(&d.id).and_then(|entry| {
+                    entry
+                        .value()
+                        .lock()
+                        .iter()
+                        .filter_map(Weak::upgrade)
+                        .next_back()
+                })
             })
             .skip(1)
             .take(count)
@@ -588,6 +593,7 @@ impl SessionManager {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_session(
         &self,
         clock: &Clock,

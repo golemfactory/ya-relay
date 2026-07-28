@@ -383,11 +383,13 @@ impl TcpLayer {
                         }
                     };
 
-                    match {
-                        // Nodes are populated via `VirtualLayer::dispatch`
-                        myself.registry.get_by_address(remote_address.as_bytes()).await
-                            .map(|node| (node.id(), myself.ingress.tx.clone()))
-                    } {
+                    // Nodes are populated via `VirtualLayer::dispatch`
+                    match myself
+                        .registry
+                        .get_by_address(remote_address.as_bytes())
+                        .await
+                        .map(|node| (node.id(), myself.ingress.tx.clone()))
+                    {
                         Some((node_id, tx)) => {
                             let payload_len = payload.len();
                             let payload = Forwarded {
@@ -549,7 +551,7 @@ impl From<u16> for ChannelType {
 pub fn print_sockets(network: &Network) {
     log::trace!("[inet] existing sockets:");
     for (handle, meta, state) in network.sockets_meta() {
-        log::trace!("[inet] socket: {handle} ({}) {meta}", state.to_string());
+        log::trace!("[inet] socket: {handle} ({state}) {meta}");
     }
     log::trace!("[inet] existing connections:");
     for (handle, meta) in network.handles.borrow_mut().iter() {

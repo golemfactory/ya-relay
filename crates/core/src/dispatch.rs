@@ -234,7 +234,7 @@ impl Dispatcher {
         code: i32,
         kind: proto::response::Kind,
     ) {
-        match { self.responses.borrow_mut().remove(&request_id) } {
+        match self.responses.borrow_mut().remove(&request_id) {
             Some(sender) => {
                 if sender
                     .send(Dispatched {

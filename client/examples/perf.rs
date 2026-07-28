@@ -138,7 +138,7 @@ mod util {
         for _target_connections in 0..num {
             clients.push(util::establish_connection(args).await?);
 
-            if clients.len() % step == 0 {
+            if clients.len().is_multiple_of(step) {
                 log::info!("Established {} connections", clients.len());
             }
         }
@@ -511,7 +511,7 @@ mod load_test {
                     random_plan.tasks.shuffle(&mut rand::thread_rng());
                     futures.push(run_plan_on_client(normalized_delay, client, random_plan));
                 }
-                let results = future::join_all(futures.into_iter()).await;
+                let results = future::join_all(futures).await;
 
                 // Process the results
                 let mut request_rates = Vec::new();
@@ -534,7 +534,7 @@ mod load_test {
 
                 clients = clients
                     .into_iter()
-                    .zip(valid_mask.into_iter())
+                    .zip(valid_mask)
                     .filter(|(_client, mask)| *mask)
                     .map(|(client, _mask)| client)
                     .collect();
@@ -848,8 +848,7 @@ mod relaying {
             .collect::<Result<Vec<Scenario>, _>>()?;
 
         log::info!("Running idle discovery calls.");
-        let idle =
-            tokio::task::spawn_local(async move { future::join_all(futures.into_iter()).await });
+        let idle = tokio::task::spawn_local(async move { future::join_all(futures).await });
 
         log::info!("Running {} scenario(s) (Requestor(s))", scenarios.len());
 
@@ -894,7 +893,7 @@ mod relaying {
             .collect::<anyhow::Result<Vec<_>>>()?
             .into_iter()
             .reduce(|mut acc, item| {
-                acc.extend(item.into_iter());
+                acc.extend(item);
                 acc
             })
             .ok_or_else(|| anyhow!("No items??"))
@@ -927,9 +926,8 @@ mod relaying {
             })
             .collect::<Vec<_>>();
 
-        let providers_handle = tokio::task::spawn_local(async move {
-            future::join_all(provider_futures.into_iter()).await
-        });
+        let providers_handle =
+            tokio::task::spawn_local(async move { future::join_all(provider_futures).await });
 
         // TODO: Should be asynchronous, we can't wait for operation finish.
         let start = tokio::time::Instant::now();
