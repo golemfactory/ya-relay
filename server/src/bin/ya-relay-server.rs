@@ -19,8 +19,7 @@ mod ui {
     use ya_relay_core::server_session::SessionId;
     use ya_relay_core::NodeId;
     use ya_relay_server::{
-        AddrStatus, NodeSelector, Selector, ServerControl, SessionManager, SessionRef,
-        SessionWeakRef,
+        AddrStatus, NodeSelector, ServerControl, SessionManager, SessionRef, SessionWeakRef,
     };
 
     #[derive(Serialize)]
@@ -176,7 +175,11 @@ mod ui {
         type Future = future::Ready<Result<Self, Self::Error>>;
 
         fn from_request(req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
-            if req.connection_info().realip_remote_addr() == Some("127.0.0.1") {
+            if req
+                .peer_addr()
+                .map(|addr| addr.ip().is_loopback())
+                .unwrap_or(false)
+            {
                 future::ready(Ok(Authorization {}))
             } else {
                 future::ready(Err(actix_web::error::ErrorForbidden("denied")))
@@ -223,6 +226,38 @@ mod ui {
 
         actix_rt::spawn(web_server);
         Ok(())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::Authorization;
+        use actix_web::{dev::Payload, http::header, test::TestRequest, FromRequest};
+
+        #[actix_rt::test]
+        async fn authorization_ignores_spoofed_forwarded_headers() {
+            let request = TestRequest::default()
+                .peer_addr("198.51.100.10:1234".parse().unwrap())
+                .insert_header((header::FORWARDED, "for=127.0.0.1"))
+                .insert_header((header::X_FORWARDED_FOR, "127.0.0.1"))
+                .to_http_request();
+            let mut payload = Payload::None;
+
+            assert!(Authorization::from_request(&request, &mut payload)
+                .await
+                .is_err());
+        }
+
+        #[actix_rt::test]
+        async fn authorization_accepts_loopback_peer() {
+            let request = TestRequest::default()
+                .peer_addr("[::1]:1234".parse().unwrap())
+                .to_http_request();
+            let mut payload = Payload::None;
+
+            assert!(Authorization::from_request(&request, &mut payload)
+                .await
+                .is_ok());
+        }
     }
 }
 

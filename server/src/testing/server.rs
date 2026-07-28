@@ -56,6 +56,7 @@ pub fn test_default_config() -> Config {
         session_handler: SessionHandlerConfig {
             difficulty: 1,
             salt: None,
+            min_client_version: "0.7.0".parse().unwrap(),
         },
         ip_check: IpCheckerConfig {
             timeout: Duration::from_millis(300),

@@ -110,6 +110,8 @@ message Request {
         /* First identity is the default one.
            For non-default encryption schemes. */
         repeated Identity identities = 4;
+        /* ya-relay-client package version (SemVer). */
+        string client_version = 5;
     }
 
     message Register {

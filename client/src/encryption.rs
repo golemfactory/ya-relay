@@ -52,12 +52,12 @@ pub fn new(
     }
 }
 
-#[cfg(feature = "encyryption")]
+#[cfg(feature = "encryption")]
 pub fn supported_encryptions() -> Vec<String> {
     vec![EncryptionType::Aes256GcmSiv.to_string()]
 }
 
-#[cfg(not(feature = "encyryption"))]
+#[cfg(not(feature = "encryption"))]
 pub fn supported_encryptions() -> Vec<String> {
     vec![]
 }
@@ -103,7 +103,17 @@ impl Encryption for Aes256GcmSivEncryption {
     }
 
     fn decrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
-        let mut packet = packet.into_vec();
+        const NONCE_SIZE: usize = 12;
+        const TAG_SIZE: usize = 16;
+
+        let packet = packet.into_vec();
+        if packet.len() < NONCE_SIZE + TAG_SIZE {
+            return Err(EncryptionError::Generic(format!(
+                "Encrypted payload is too short: expected at least {} bytes, got {}",
+                NONCE_SIZE + TAG_SIZE,
+                packet.len()
+            )));
+        }
         let nonce = Nonce::from_slice(&packet[0..12]);
         self.cipher
             .decrypt(nonce, &packet[12..])
@@ -113,5 +123,32 @@ impl Encryption for Aes256GcmSivEncryption {
 
     fn encryption_flag(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Aes256GcmSivEncryption, Encryption};
+    use ya_relay_proto::proto::Payload;
+
+    #[test]
+    fn rejects_truncated_encrypted_payloads() {
+        let encryption = Aes256GcmSivEncryption::new([42; 32]);
+
+        for len in [0, 11, 12, 27] {
+            let result = encryption.decrypt(Payload::from(vec![0; len]));
+            assert!(result.is_err(), "payload of length {} was accepted", len);
+        }
+    }
+
+    #[test]
+    fn encrypts_and_decrypts_payload() {
+        let encryption = Aes256GcmSivEncryption::new([42; 32]);
+        let plaintext = Payload::from(b"hello".to_vec());
+
+        let encrypted = encryption.encrypt(plaintext.clone()).unwrap();
+        let decrypted = encryption.decrypt(encrypted).unwrap();
+
+        assert_eq!(decrypted, plaintext);
     }
 }

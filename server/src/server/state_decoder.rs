@@ -28,7 +28,15 @@ impl<'a, 'b> Decoder<'a, 'b> {
         let (session_pub_key, session_key_proof) = if pk {
             if let Some((session_key, proofs)) = &session.session_key {
                 let session_pub_key = session_key.bytes().to_vec();
-                let session_key_proof = proofs.get(&context).cloned().unwrap_or_default();
+                // `NodeInfo` keeps the default identity first, so the client verifies
+                // the session-key proof against that identity even when `context` is
+                // one of the node's aliases.
+                let session_key_proof = session
+                    .keys
+                    .first()
+                    .and_then(|identity| proofs.get(&identity.node_id))
+                    .cloned()
+                    .unwrap_or_default();
                 (session_pub_key, session_key_proof)
             } else {
                 Default::default()
@@ -46,5 +54,55 @@ impl<'a, 'b> Decoder<'a, 'b> {
             session_pub_key,
             session_key_proof,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use parking_lot::Mutex;
+    use ya_relay_core::crypto::SecretKey;
+    use ya_relay_core::identity::Identity;
+    use ya_relay_core::server_session::SessionId;
+
+    use crate::state::session_manager::AddrStatus;
+    use crate::state::slot_manager::SlotManager;
+    use crate::state::LastSeen;
+    use crate::{Session, SessionManager};
+
+    use super::decoder;
+
+    #[test]
+    fn alias_lookup_uses_default_identity_session_key_proof() {
+        let default_identity = Identity::from(SecretKey::from_raw(&[1; 32]).unwrap().public());
+        let alias_identity = Identity::from(SecretKey::from_raw(&[2; 32]).unwrap().public());
+        let session_key = SecretKey::from_raw(&[3; 32]).unwrap().public();
+        let default_proof = vec![1, 2, 3];
+        let alias_proof = vec![4, 5, 6];
+        let proofs = HashMap::from([
+            (default_identity.node_id, default_proof.clone()),
+            (alias_identity.node_id, alias_proof),
+        ]);
+        let session = Session {
+            session_id: SessionId::generate(),
+            peer: "127.0.0.1:1234".parse().unwrap(),
+            ts: LastSeen::now(),
+            node_id: default_identity.node_id,
+            keys: vec![default_identity, alias_identity.clone()],
+            supported_encryptions: vec!["Aes256GcmSiv".to_owned()],
+            addr_status: Mutex::new(AddrStatus::Unknown),
+            session_key: Some((session_key, proofs)),
+        };
+        let session_manager = SessionManager::new();
+        let slot_manager = SlotManager::new();
+
+        let node = decoder(&session_manager, &slot_manager).to_node_info(
+            &session,
+            alias_identity.node_id,
+            true,
+        );
+
+        assert_eq!(node.session_key_proof, default_proof);
     }
 }

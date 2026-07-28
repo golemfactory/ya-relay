@@ -592,6 +592,7 @@ impl SessionInitializer {
     ) -> SessionResult<(proto::request::Session, RawChallenge)> {
         let (mut request, raw_challenge) =
             challenge::prepare_challenge_request(self.config.challenge_difficulty);
+        request.client_version = env!("CARGO_PKG_VERSION").to_owned();
 
         let crypto = self
             .list_crypto()

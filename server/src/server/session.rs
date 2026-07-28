@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time;
 
+use semver::Version;
 use tiny_keccak::Hasher;
 
 use ya_relay_core::challenge::RawChallenge;
@@ -42,6 +43,23 @@ mod metric {
     }
 }
 
+#[derive(Debug)]
+enum ClientVersionError {
+    Invalid(semver::Error),
+    TooOld(Version),
+}
+
+fn validate_client_version(
+    client_version: &str,
+    min_client_version: &Version,
+) -> Result<Version, ClientVersionError> {
+    let version = Version::parse(client_version).map_err(ClientVersionError::Invalid)?;
+    if &version < min_client_version {
+        return Err(ClientVersionError::TooOld(version));
+    }
+    Ok(version)
+}
+
 #[derive(clap::Args, Clone)]
 /// Ip Checker configuration args
 #[command(next_help_heading = "Session handler options")]
@@ -50,6 +68,8 @@ pub struct SessionHandlerConfig {
     pub difficulty: u64,
     #[arg(long, env, value_parser = u128_from_hex)]
     pub salt: Option<u128>,
+    #[arg(long, env = "RELAY_MIN_CLIENT_VERSION", default_value = "0.7.0")]
+    pub min_client_version: Version,
 }
 
 fn u128_from_hex(hex_str: &str) -> Result<u128, hex::FromHexError> {
@@ -60,6 +80,7 @@ fn u128_from_hex(hex_str: &str) -> Result<u128, hex::FromHexError> {
 pub struct SessionHandler {
     difficulty: u64,
     salt: [u8; 16],
+    min_client_version: Version,
     session_manager: Arc<SessionManager>,
     metrics: SessionMetric,
     challenge_send_ack: CompletionHandler,
@@ -77,10 +98,12 @@ impl SessionHandler {
             .unwrap_or_else(|| thread_rng().gen())
             .to_ne_bytes();
         let difficulty = config.difficulty;
+        let min_client_version = config.min_client_version.clone();
 
         Self {
             difficulty,
             salt,
+            min_client_version,
             session_manager,
             metrics,
             challenge_send_ack,
@@ -266,6 +289,51 @@ impl SessionHandler {
                 }
             }
         } else {
+            let client_version = match validate_client_version(
+                &req_session.client_version,
+                &self.min_client_version,
+            ) {
+                Ok(version) => version,
+                Err(ClientVersionError::TooOld(version)) => {
+                    self.metrics.error.increment(1);
+                    log::warn!(
+                        target: "request::session",
+                        "[{src}] rejecting client version {version}; minimum supported version is {}",
+                        self.min_client_version
+                    );
+                    return Some((
+                        noop_ack(),
+                        Packet {
+                            session_id: Vec::new(),
+                            kind: Some(packet::Kind::Response(Response {
+                                code: StatusCode::BadRequest.into(),
+                                request_id,
+                                kind: Some(response::Kind::Session(Default::default())),
+                            })),
+                        },
+                    ));
+                }
+                Err(ClientVersionError::Invalid(error)) => {
+                    self.metrics.error.increment(1);
+                    log::warn!(
+                        target: "request::session",
+                        "[{src}] rejecting invalid client version {:?}: {error}",
+                        req_session.client_version
+                    );
+                    return Some((
+                        noop_ack(),
+                        Packet {
+                            session_id: Vec::new(),
+                            kind: Some(packet::Kind::Response(Response {
+                                code: StatusCode::BadRequest.into(),
+                                request_id,
+                                kind: Some(response::Kind::Session(Default::default())),
+                            })),
+                        },
+                    ));
+                }
+            };
+
             let (mut session, _challenge) = challenge::prepare_challenge_response(self.difficulty);
             let session_id = self.gen_new_challenge(src, self.epoch());
 
@@ -280,7 +348,10 @@ impl SessionHandler {
             }
 
             self.metrics.start.increment(1);
-            log::debug!(target: "request::session", "[{src}] Starting session {}", session_id);
+            log::debug!(
+                target: "request::session",
+                "[{src}] Starting session {session_id} for client version {client_version}"
+            );
             Some((
                 self.challenge_send_ack.clone(),
                 Packet {
@@ -293,5 +364,91 @@ impl SessionHandler {
                 },
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        packet, request, validate_client_version, ClientVersionError, Clock, SessionHandler,
+        SessionHandlerConfig, SessionManager, StatusCode,
+    };
+
+    fn hello_response_code(client_version: &str) -> StatusCode {
+        let config = SessionHandlerConfig {
+            difficulty: 1,
+            salt: Some(0),
+            min_client_version: "0.7.0".parse().unwrap(),
+        };
+        let handler = SessionHandler::new(&SessionManager::new(), &config);
+        let request = request::Session {
+            client_version: client_version.to_owned(),
+            ..Default::default()
+        };
+        let (_, packet) = handler
+            .handle(
+                &Clock::now(),
+                "127.0.0.1:12345".parse().unwrap(),
+                1,
+                None,
+                &request,
+            )
+            .unwrap();
+        let Some(packet::Kind::Response(response)) = packet.kind else {
+            panic!("expected hello response")
+        };
+        StatusCode::try_from(response.code).unwrap()
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid_client_version() {
+        let minimum = "0.7.0".parse().unwrap();
+
+        assert!(matches!(
+            validate_client_version("", &minimum),
+            Err(ClientVersionError::Invalid(_))
+        ));
+        assert!(matches!(
+            validate_client_version("development", &minimum),
+            Err(ClientVersionError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_client_version_below_minimum() {
+        let minimum = "0.7.0".parse().unwrap();
+
+        assert!(matches!(
+            validate_client_version("0.6.2", &minimum),
+            Err(ClientVersionError::TooOld(version)) if version.to_string() == "0.6.2"
+        ));
+        assert!(matches!(
+            validate_client_version("0.7.0-rc.1", &minimum),
+            Err(ClientVersionError::TooOld(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_minimum_and_newer_client_versions() {
+        let minimum = "0.7.0".parse().unwrap();
+
+        assert_eq!(
+            validate_client_version("0.7.0", &minimum)
+                .unwrap()
+                .to_string(),
+            "0.7.0"
+        );
+        assert_eq!(
+            validate_client_version("0.8.0", &minimum)
+                .unwrap()
+                .to_string(),
+            "0.8.0"
+        );
+    }
+
+    #[test]
+    fn hello_packet_rejects_old_client_and_accepts_current_client() {
+        assert_eq!(hello_response_code("0.6.2"), StatusCode::BadRequest);
+        assert_eq!(hello_response_code("0.7.0"), StatusCode::Ok);
     }
 }

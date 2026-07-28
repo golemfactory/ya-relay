@@ -105,7 +105,20 @@ impl NodeHandler {
         clock.touch(&session_ref.ts);
         let decoder = decoder(&self.session_manager, &self.slot_manager);
 
-        let request_node_id: NodeId = param.node_id.as_slice().into();
+        let request_node_id = match NodeId::try_from(&param.node_id) {
+            Ok(node_id) => node_id,
+            Err(_) => {
+                return Some((
+                    self.ack.clone(),
+                    Packet::response(
+                        request_id,
+                        session_id.to_vec(),
+                        StatusCode::BadRequest,
+                        response::Node::default(),
+                    ),
+                ))
+            }
+        };
 
         let node = match self.session_manager.node_session(request_node_id) {
             Some(it) => decoder.to_node_info(&it, request_node_id, true),

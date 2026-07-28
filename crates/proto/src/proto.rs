@@ -24,6 +24,7 @@ pub const SESSION_ID_SIZE: usize = 16;
 pub const KEY_SIZE: usize = 1;
 pub const UNRELIABLE_FLAG: u16 = 0x01;
 pub const ENCRYPTED_FLAG: u16 = 0x02;
+pub const ENCRYPTION_SYNC_FLAG: u16 = 0x04;
 
 static REQUEST_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -86,6 +87,14 @@ impl Forward {
 
     pub fn set_encrypted(&mut self) {
         self.flags |= ENCRYPTED_FLAG
+    }
+
+    pub fn is_encryption_sync(&self) -> bool {
+        self.flags & ENCRYPTION_SYNC_FLAG == ENCRYPTION_SYNC_FLAG
+    }
+
+    pub fn set_encryption_sync(&mut self) {
+        self.flags |= ENCRYPTION_SYNC_FLAG
     }
 
     #[inline]
@@ -371,3 +380,26 @@ impl_convert_kind!(control, PauseForwarding);
 impl_convert_kind!(control, ResumeForwarding);
 impl_convert_kind!(control, StopForwarding);
 impl_convert_kind!(control, Disconnected);
+
+#[cfg(test)]
+mod tests {
+    use bytes::BytesMut;
+
+    use super::{Forward, Payload, ENCRYPTION_SYNC_FLAG};
+
+    #[test]
+    fn encryption_sync_flag_round_trip() {
+        let mut forward = Forward::new([1; 16], 42, Payload::default());
+        assert!(!forward.is_encryption_sync());
+
+        forward.set_encryption_sync();
+
+        let mut encoded = BytesMut::new();
+        forward.encode(&mut encoded);
+        let decoded = Forward::decode(encoded).unwrap();
+
+        assert!(decoded.is_encryption_sync());
+        assert_eq!(decoded.flags & ENCRYPTION_SYNC_FLAG, ENCRYPTION_SYNC_FLAG);
+        assert!(!decoded.is_encrypted());
+    }
+}

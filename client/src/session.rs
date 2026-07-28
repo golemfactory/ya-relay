@@ -7,6 +7,8 @@ pub mod session_traits;
 
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
+use backoff::backoff::Backoff;
+use backoff::ExponentialBackoff;
 use derive_more::Display;
 use futures::future::{AbortHandle, LocalBoxFuture};
 use futures::{FutureExt, SinkExt, TryFutureExt};
@@ -57,6 +59,70 @@ use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
 
 type ReqFingerprint = (Vec<u8>, u64);
+
+const ENCRYPTION_SYNC_INITIAL_INTERVAL: Duration = Duration::from_secs(2 * 60);
+const ENCRYPTION_SYNC_MAX_INTERVAL: Duration = Duration::from_secs(30 * 60);
+const ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD: u8 = 3;
+
+struct EncryptionSyncBackoff {
+    backoff: ExponentialBackoff,
+    next_notification: Option<Instant>,
+    consecutive_successes: u8,
+}
+
+impl EncryptionSyncBackoff {
+    fn new() -> Self {
+        Self::with_intervals(
+            ENCRYPTION_SYNC_INITIAL_INTERVAL,
+            ENCRYPTION_SYNC_MAX_INTERVAL,
+            0.1,
+        )
+    }
+
+    fn with_intervals(
+        initial_interval: Duration,
+        max_interval: Duration,
+        randomization_factor: f64,
+    ) -> Self {
+        let mut backoff = ExponentialBackoff {
+            initial_interval,
+            max_interval,
+            multiplier: 2.0,
+            randomization_factor,
+            max_elapsed_time: None,
+            ..Default::default()
+        };
+        backoff.reset();
+        Self {
+            backoff,
+            next_notification: None,
+            consecutive_successes: 0,
+        }
+    }
+
+    fn record_failure(&mut self, now: Instant) -> bool {
+        self.consecutive_successes = 0;
+        if self
+            .next_notification
+            .map(|next| now < next)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+
+        let delay = self
+            .backoff
+            .next_backoff()
+            .unwrap_or(ENCRYPTION_SYNC_MAX_INTERVAL);
+        self.next_notification = Some(now + delay);
+        true
+    }
+
+    fn record_success(&mut self) -> bool {
+        self.consecutive_successes = self.consecutive_successes.saturating_add(1);
+        self.consecutive_successes >= ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD
+    }
+}
 
 /// Describes which method was used to establish connection.
 /// Numbers mapping is used on Grafana metrics. 0 is reserved for no session.
@@ -116,6 +182,8 @@ pub struct SessionLayerState {
     pub nodes: HashMap<NodeId, Arc<NodeRouting>>,
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
     pub p2p_nodes: HashMap<NodeId, Arc<DirectSession>>,
+    encryption_sync_backoff: HashMap<NodeId, EncryptionSyncBackoff>,
+    encryption_sync_refresh_after: HashMap<NodeId, Instant>,
 
     pub(crate) init_protocol: Option<SessionInitializer>,
 
@@ -259,6 +327,8 @@ impl SessionDeregistration for SessionLayer {
                     log::debug!("Disconnecting [{node_id}] - removing entries for identity: {id}");
 
                     state.p2p_nodes.remove(&id);
+                    state.encryption_sync_backoff.remove(&id);
+                    state.encryption_sync_refresh_after.remove(&id);
                     // `NodeRouting` will be dropped here and all `RoutingSender` containing `Weak<NodeRouting>`
                     // pointing to this Node will lose connection.
                     if let Some(direct) = state
@@ -328,11 +398,15 @@ impl SessionDeregistration for SessionLayer {
             for id in &session.owner.identities {
                 state.p2p_nodes.remove(id);
                 state.nodes.remove(id);
+                state.encryption_sync_backoff.remove(id);
+                state.encryption_sync_refresh_after.remove(id);
             }
             state.p2p_sessions.remove(&session.raw.remote);
 
             for id in forwards.iter().flat_map(|entry| entry.identities.iter()) {
                 state.nodes.remove(id);
+                state.encryption_sync_backoff.remove(id);
+                state.encryption_sync_refresh_after.remove(id);
             }
         }
 
@@ -518,6 +592,139 @@ impl SessionLayer {
             .get(&node_id)
             .cloned()
             .map(|routing| RoutingSender::from_node_routing(node_id, routing, self.clone()))
+    }
+
+    fn encryption_sync_notification_due(&self, node_id: NodeId) -> bool {
+        self.state
+            .lock()
+            .encryption_sync_backoff
+            .entry(node_id)
+            .or_insert_with(EncryptionSyncBackoff::new)
+            .record_failure(Instant::now())
+    }
+
+    fn encryption_sync_refresh_due(&self, node_id: NodeId) -> bool {
+        let now = Instant::now();
+        let mut state = self.state.lock();
+        if state
+            .encryption_sync_refresh_after
+            .get(&node_id)
+            .map(|next| now < *next)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        state
+            .encryption_sync_refresh_after
+            .insert(node_id, now + ENCRYPTION_SYNC_INITIAL_INTERVAL);
+        true
+    }
+
+    fn record_successful_decryption(&self, node_id: NodeId) {
+        let mut state = self.state.lock();
+        let reset = state
+            .encryption_sync_backoff
+            .get_mut(&node_id)
+            .map(EncryptionSyncBackoff::record_success)
+            .unwrap_or(false);
+        if reset {
+            state.encryption_sync_backoff.remove(&node_id);
+            state.encryption_sync_refresh_after.remove(&node_id);
+            log::debug!("Encryption sync backoff reset for Node [{node_id}]");
+        }
+    }
+
+    async fn refresh_node_encryption(&self, node_id: NodeId) -> anyhow::Result<()> {
+        let server_session = self
+            .server_session()
+            .await
+            .map_err(|e| anyhow!("Failed to get relay session while refreshing encryption: {e}"))?;
+        let node = server_session
+            .raw
+            .find_node(node_id)
+            .await
+            .map_err(|e| anyhow!("Failed to refresh Node [{node_id}] from relay: {e}"))?;
+        let info = NodeInfo::try_from(node)
+            .map_err(|e| anyhow!("Failed to verify refreshed Node [{node_id}]: {e}"))?;
+        let session_key = info.session_key.clone().ok_or_else(|| {
+            anyhow!("Refreshed Node [{node_id}] has no verified encryption session key")
+        })?;
+        if info.identities.is_empty() {
+            bail!("Refreshed Node [{node_id}] has no identities");
+        }
+
+        let route = {
+            let state = self.state.lock();
+            state
+                .nodes
+                .get(&node_id)
+                .and_then(|routing| routing.route.upgrade())
+        }
+        .ok_or_else(|| anyhow!("Routing for Node [{node_id}] closed during encryption refresh"))?;
+
+        let identities = NodeEntry {
+            default_id: info.identities[0].clone(),
+            identities: info.identities.clone(),
+        };
+
+        if route.owner.default_id != identities.default_id.node_id {
+            route.register(identities.clone().into(), info.slot);
+        }
+
+        self.registry.update_entry(info.clone()).await?;
+        self.register_routing(NodeRouting::new(
+            identities,
+            route,
+            encryption::new(
+                info.supported_encryption,
+                Some(session_key),
+                self.config.session_crypto.clone(),
+            ),
+        ))
+        .await?;
+
+        log::info!("Refreshed encryption routing for Node [{node_id}]");
+        Ok(())
+    }
+
+    async fn handle_encryption_failure(&self, node_id: NodeId) {
+        if !self.encryption_sync_notification_due(node_id) {
+            return;
+        }
+
+        if self.encryption_sync_refresh_due(node_id) {
+            self.refresh_node_encryption(node_id)
+                .await
+                .map_err(|e| log::debug!("Encryption refresh for Node [{node_id}] failed: {e}"))
+                .ok();
+        }
+
+        match self.get_node_routing(node_id).await {
+            Some(routing) => {
+                routing
+                    .send_encryption_sync()
+                    .await
+                    .map_err(|e| {
+                        log::debug!(
+                            "Sending encryption sync notification to Node [{node_id}] failed: {e}"
+                        )
+                    })
+                    .ok();
+            }
+            None => log::debug!(
+                "Cannot notify Node [{node_id}] about encryption mismatch: routing is unavailable"
+            ),
+        }
+    }
+
+    async fn handle_encryption_sync(&self, node_id: NodeId) {
+        if !self.encryption_sync_refresh_due(node_id) {
+            return;
+        }
+        self.refresh_node_encryption(node_id)
+            .await
+            .map_err(|e| log::debug!("Encryption sync requested by Node [{node_id}] failed: {e}"))
+            .ok();
     }
 
     pub async fn sessions(&self) -> Vec<Weak<DirectSession>> {
@@ -1352,10 +1559,15 @@ impl Handler for SessionLayer {
         if let Some(kind) = control.kind {
             let fut = match kind {
                 ya_relay_proto::proto::control::Kind::ReverseConnection(message) => {
-                    log::info!(
-                        "got reverse connection request from: {:?}",
-                        NodeId::from(message.node_id.as_slice())
-                    );
+                    match NodeId::try_from(&message.node_id) {
+                        Ok(node_id) => {
+                            log::info!("got reverse connection request from: {node_id}")
+                        }
+                        Err(e) => log::warn!(
+                            "got reverse connection request with invalid NodeId: {:?}. {e}",
+                            message.node_id
+                        ),
+                    }
                     let myself = self;
                     tokio::task::spawn_local(async move {
                         myself
@@ -1467,6 +1679,7 @@ impl Handler for SessionLayer {
     ) -> Option<LocalBoxFuture<'static, ()>> {
         let reliable = forward.is_reliable();
         let encrypted = forward.is_encrypted();
+        let encryption_sync = forward.is_encryption_sync();
         let slot = forward.slot;
         let channel = self.ingress_channel.clone();
 
@@ -1519,23 +1732,43 @@ impl Handler for SessionLayer {
                 }
             };
 
-            // Decryption
-
             let size = forward.encoded_len();
             let transport = match reliable {
                 true => TransportType::Reliable,
                 false => TransportType::Unreliable,
             };
-            let payload =
-                if encrypted {
-                    if let Some(routing) = myself.get_node_routing(sender).await {
-                        routing.decrypt(forward.payload)?
-                    } else {
-                        Err(anyhow!("Received encrypted packet from unknown Node: {sender}. Dropping.."))?
+
+            if encryption_sync {
+                if encrypted || !forward.payload.is_empty() {
+                    bail!("Malformed encryption sync notification from Node [{sender}]");
+                }
+                log::info!("Encryption sync requested by Node [{sender}]");
+                myself.handle_encryption_sync(sender).await;
+                session.record_incoming(sender, transport, size);
+                return Ok(());
+            }
+
+            let payload = if encrypted {
+                if let Some(routing) = myself.get_node_routing(sender).await {
+                    match routing.decrypt(forward.payload) {
+                        Ok(payload) => {
+                            myself.record_successful_decryption(sender);
+                            payload
+                        }
+                        Err(e) => {
+                            log::debug!(
+                                "Failed to decrypt packet from Node [{sender}], scheduling encryption sync: {e}"
+                            );
+                            myself.handle_encryption_failure(sender).await;
+                            return Err(e.into());
+                        }
                     }
                 } else {
-                    forward.payload
-                };
+                    bail!("Received encrypted packet from unknown Node: {sender}. Dropping..")
+                }
+            } else {
+                forward.payload
+            };
             let packet = Forwarded {
                 transport,
                 node_id: sender,
@@ -1561,5 +1794,41 @@ impl ConnectionMethod {
 
     pub fn no_connection() -> f64 {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod encryption_sync_tests {
+    use super::{
+        Duration, EncryptionSyncBackoff, Instant, ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD,
+    };
+
+    #[test]
+    fn notifications_use_exponential_backoff() {
+        let initial = Duration::from_secs(120);
+        let mut state =
+            EncryptionSyncBackoff::with_intervals(initial, Duration::from_secs(1800), 0.0);
+        let start = Instant::now();
+
+        assert!(state.record_failure(start));
+        assert!(!state.record_failure(start + Duration::from_secs(119)));
+        assert!(state.record_failure(start + initial));
+        assert!(!state.record_failure(start + Duration::from_secs(359)));
+        assert!(state.record_failure(start + Duration::from_secs(360)));
+    }
+
+    #[test]
+    fn successful_packets_reset_backoff_after_stable_recovery() {
+        let mut state = EncryptionSyncBackoff::with_intervals(
+            Duration::from_secs(120),
+            Duration::from_secs(1800),
+            0.0,
+        );
+        assert!(state.record_failure(Instant::now()));
+
+        for _ in 1..ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD {
+            assert!(!state.record_success());
+        }
+        assert!(state.record_success());
     }
 }

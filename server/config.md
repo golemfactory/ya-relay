@@ -18,6 +18,9 @@
 - `--difficulty`, `DIFFICULTY`. default 16.
 - `--salt`, `SALT`. adding static SALT allows you to restart without breaking
   the negotiations that have already started
+- `--min-client-version`, `RELAY_MIN_CLIENT_VERSION`. minimum accepted
+  `ya-relay-client` SemVer sent in the initial session packet; default `0.7.0`.
+  Missing, malformed, prerelease, and older versions are rejected.
 
 ### Ip Check
 

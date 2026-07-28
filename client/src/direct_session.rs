@@ -165,6 +165,29 @@ impl DirectSession {
         transport: TransportType,
         encrypted: bool,
     ) -> anyhow::Result<()> {
+        self.send_with_flags(target, packet, transport, encrypted, false)
+            .await
+    }
+
+    pub async fn send_encryption_sync(&self, target: NodeId) -> anyhow::Result<()> {
+        self.send_with_flags(
+            target,
+            Payload::default(),
+            TransportType::Unreliable,
+            false,
+            true,
+        )
+        .await
+    }
+
+    async fn send_with_flags(
+        &self,
+        target: NodeId,
+        packet: Payload,
+        transport: TransportType,
+        encrypted: bool,
+        encryption_sync: bool,
+    ) -> anyhow::Result<()> {
         let router_id = self.owner.default_id;
         let slot = if router_id == target {
             FORWARD_SLOT_ID
@@ -184,6 +207,9 @@ impl DirectSession {
         let size = forward.encoded_len();
         if encrypted {
             forward.set_encrypted();
+        }
+        if encryption_sync {
+            forward.set_encryption_sync();
         }
 
         self.wait_for_resume().await;

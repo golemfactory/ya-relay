@@ -81,6 +81,18 @@ impl NodeRouting {
             "Routing session closed unexpectedly.".to_string(),
         ))
     }
+
+    pub async fn send_encryption_sync(&self) -> Result<(), SessionError> {
+        let direct = self.route.upgrade().ok_or_else(|| {
+            SessionError::Unexpected("Routing session closed unexpectedly.".to_string())
+        })?;
+        direct
+            .send_encryption_sync(self.node.default_id.node_id)
+            .await
+            .map_err(|e| {
+                SessionError::Network(format!("Sending encryption sync notification to peer: {e}"))
+            })
+    }
 }
 
 /// Interface structure for sending packets to other Nodes.
@@ -212,6 +224,16 @@ impl RoutingSender {
             node_routing.encryption.decrypt(p)
         } else {
             Err(EncryptionError::Generic(
+                "Routing session closed".to_string(),
+            ))
+        }
+    }
+
+    pub async fn send_encryption_sync(&self) -> Result<(), SessionError> {
+        if let Some(node_routing) = self.node_routing.upgrade() {
+            node_routing.send_encryption_sync().await
+        } else {
+            Err(SessionError::Unexpected(
                 "Routing session closed".to_string(),
             ))
         }
