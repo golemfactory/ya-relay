@@ -21,15 +21,17 @@ opt-level = 3
 lto = "thin"
 
 [workspace.dependencies]
-ya-relay-client = { path = "client", version = "0.6.1" }
+ya-relay-client = { path = "client", version = "0.6.2" }
 ya-relay-server = { path = "server", version = "0.3.0" }
 ya-relay-stack = { path = "crates/stack", version = "0.5.1" }
 ya-relay-proto = { path = "crates/proto", version = "0.4.3" }
 ya-relay-core = { path = "crates/core", version = "0.4.1" }
 ya-relay-util = { path = "crates/util", version = "0.1" }
 rand = "0.8.5"
+
 [dev-dependencies]
 ya-relay-client = { workspace = true, features = ["test-utils"] }
+ya-relay-stack = { workspace = true }
 ya-relay-server = { workspace = true, features = ["test-utils"] }
 ya-relay-core = { workspace = true, features = ["test-utils"] }
 ya-relay-proto = { workspace = true }
@@ -55,6 +57,7 @@ serde = "1.0"
 serde_json = "1.0"
 serde_with = "3.2"
 simple-logging = "2.0"
+smoltcp = "0.10"
 structopt = "0.3"
 clap = "4.3.19"
 tokio = { version = "1", features = ["fs", "io-util", "signal"] }
@@ -63,3 +66,8 @@ env_logger = "0.10.0"
 test-case = "3.1"
 tokio-stream = "0.1"
 test-log = "0.2.13"
+
+ring = "=0.17.6"
+
+[patch.crates-io]
+#smoltcp = { git = "https://github.com/golemfactory/smoltcp", branch = "golem-master" }

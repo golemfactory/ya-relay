@@ -1,7 +1,7 @@
 use crate::config::Config;
 
 use crate::server::{IpCheckerConfig, Server, ServerConfig, SessionHandlerConfig};
-use crate::SessionManagerConfig;
+use crate::{ListMode, SessionManagerConfig};
 use futures::future::LocalBoxFuture;
 use futures::FutureExt;
 use std::rc::Rc;
@@ -51,6 +51,7 @@ pub fn test_default_config() -> Config {
         session_manager: SessionManagerConfig {
             session_cleaner_interval: Duration::from_secs(10),
             session_purge_timeout: Duration::from_secs(20),
+            list_mode: ListMode::Humming,
         },
         session_handler: SessionHandlerConfig {
             difficulty: 1,

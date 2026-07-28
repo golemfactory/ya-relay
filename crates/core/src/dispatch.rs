@@ -77,7 +77,7 @@ where
 /// Handles incoming packets. Used exclusively by the `dispatch` function
 pub trait Handler {
     /// Returns a clone of a `Dispatcher` object
-    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<Option<Dispatcher>>;
+    fn dispatcher(&self, from: SocketAddr) -> LocalBoxFuture<'_, Option<Dispatcher>>;
 
     /// Handles `proto::Control` packets
     fn on_control(

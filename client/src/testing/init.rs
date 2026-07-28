@@ -6,14 +6,15 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use url::Url;
 
-use crate::client::Client;
+use crate::client::{Client, TransportLayer};
 use crate::config::{ClientBuilder, ClientConfig, FailFast};
 use crate::session::network_view::{NetworkView, SessionLock, SessionPermit};
 use crate::session::session_initializer::SessionInitializer;
 use crate::session::SessionLayer;
-use crate::testing::accessors::SessionLayerPrivate;
+use crate::testing::accessors::{ClientPrivate, SessionLayerPrivate};
 
 use crate::testing::mocks::MockHandler;
+use crate::transport::virtual_layer::TcpLayer;
 use ya_relay_core::testing::TestServerWrapper;
 use ya_relay_core::NodeId;
 
@@ -36,6 +37,29 @@ impl SessionLayerPrivate for SessionLayer {
         } else {
             bail!("Can't get local address.")
         }
+    }
+
+    fn disable(&self) {
+        let mut state = self.state.lock();
+        let handles = std::mem::take(&mut state.handles);
+
+        for abort_handle in handles {
+            abort_handle.abort();
+        }
+    }
+}
+
+impl ClientPrivate for Client {
+    fn get_transport_layer(&self) -> TransportLayer {
+        self.transport.clone()
+    }
+
+    fn get_session_layer(&self) -> SessionLayer {
+        self.transport.session_layer.clone()
+    }
+
+    fn get_tcp_layer(&self) -> TcpLayer {
+        self.transport.virtual_tcp.clone()
     }
 }
 

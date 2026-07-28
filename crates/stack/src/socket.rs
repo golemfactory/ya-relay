@@ -451,9 +451,9 @@ impl SocketMemory {
 /// Currently, only `max` is used; other values are reserved for future use
 #[derive(Clone, Copy, Debug)]
 pub struct Memory {
-    min: usize,
-    default: usize,
-    max: usize,
+    pub min: usize,
+    pub default: usize,
+    pub max: usize,
 }
 
 impl Memory {

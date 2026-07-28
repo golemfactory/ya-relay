@@ -22,8 +22,7 @@ impl Clock {
         let server_start = SERVER_START.deref();
         let now = Instant::now();
 
-        debug_assert!(*server_start < now);
-        let ts = (now - *server_start).as_secs() as u32;
+        let ts = now.duration_since(*server_start).as_secs() as u32;
 
         Self { now, ts }
     }

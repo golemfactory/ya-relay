@@ -1,6 +1,6 @@
 use std::cmp::Reverse;
 use std::collections::hash_map::DefaultHasher;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Cursor, Write};
 use std::net::SocketAddr;
@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 use std::{cmp, fs, io, iter, thread};
 
 use anyhow::{anyhow, bail, Context};
-use dashmap::{DashMap, DashSet};
+use dashmap::DashMap;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use tokio::time;
@@ -507,9 +507,11 @@ impl SessionManager {
         }
 
         let select_public = if self.mode.load(Ordering::Relaxed) == 1 {
-            !self.node_session(base_node_id).map(|s| s.addr_status.lock().is_valid()).unwrap_or_default()
-        }
-        else {
+            !self
+                .node_session(base_node_id)
+                .map(|s| s.addr_status.lock().is_valid())
+                .unwrap_or_default()
+        } else {
             false
         };
 
@@ -520,9 +522,14 @@ impl SessionManager {
                 let id = *entry.key();
                 let distance = Reverse(hamming_distance(base_node_id, id));
                 if select_public {
-                    let is_valid = entry.value().lock().iter().filter_map(|ws| ws.upgrade()).any(|s| s.addr_status.lock().is_valid());
+                    let is_valid = entry
+                        .value()
+                        .lock()
+                        .iter()
+                        .filter_map(|ws| ws.upgrade())
+                        .any(|s| s.addr_status.lock().is_valid());
                     if !is_valid {
-                        return None
+                        return None;
                     }
                 }
                 Some(Distance { distance, id })
@@ -908,7 +915,10 @@ mod tests {
         let exact_str = "889ff52ece3d5368051f4f8216650a7843f8926b";
         let bytes: [u8; 20] = hex::FromHex::from_hex(exact_str).unwrap();
         let exact: NodeSelector = exact_str.parse().unwrap();
-        assert!(matches!(exact, Selector::Exact { bytes }));
+        assert!(matches!(
+            exact,
+            Selector::Exact { bytes: actual } if actual == bytes
+        ));
 
         let prefix: NodeSelector = exact_str[..5].parse().unwrap();
         let node_id = NodeId::from(bytes);

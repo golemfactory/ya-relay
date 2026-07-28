@@ -215,7 +215,7 @@ impl<'a> Stack<'a> {
         Disconnect::new(handle, self.iface.clone())
     }
 
-    pub(crate) fn abort(&self, handle: SocketHandle) {
+    pub fn abort(&self, handle: SocketHandle) {
         let mut iface = self.iface.borrow_mut();
         if let Ok(sock) = iface.get_socket_safe::<tcp::Socket>(handle) {
             log::trace!("Aborting. Socket handle: {handle}.");

@@ -139,19 +139,19 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                     Some(v)
                 }
                 Err(e) => {
-                    log::error!("Failed to load sessions");
+                    log::error!("Failed to load sessions: {e}");
                     None
                 }
             }
         } else if sessions_old.exists() {
-            match SessionManager::load_old(&sessions) {
+            match SessionManager::load_old(&sessions_old) {
                 Ok(v) => {
                     let n = v.num_sessions();
                     log::info!("Sessions {n} loaded from old state");
                     Some(v)
                 }
                 Err(e) => {
-                    log::error!("Failed to load sessions");
+                    log::error!("Failed to load old sessions: {e}");
                     None
                 }
             }

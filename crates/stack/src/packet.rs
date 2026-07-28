@@ -178,7 +178,7 @@ impl<'a> IpPacket<'a> {
         }
     }
 
-    pub fn to_tcp(&self) -> Option<TcpPacket> {
+    pub fn to_tcp(&self) -> Option<TcpPacket<'_>> {
         match self.protocol() {
             6 => Some(TcpPacket::packet(self.payload())),
             _ => None,

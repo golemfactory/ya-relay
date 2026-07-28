@@ -1,3 +1,5 @@
+#![allow(non_local_definitions)]
+
 pub mod connection;
 pub mod device;
 mod error;

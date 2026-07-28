@@ -61,7 +61,7 @@ impl<'a> CaptureInterface<'a> {
         (socket, ctx)
     }
 
-    pub fn remove_socket(&mut self, handle: SocketHandle) -> smoltcp::socket::Socket {
+    pub fn remove_socket(&mut self, handle: SocketHandle) -> smoltcp::socket::Socket<'_> {
         self.sockets.remove(handle)
     }
 

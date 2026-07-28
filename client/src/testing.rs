@@ -12,5 +12,7 @@ pub mod private {
     pub use crate::session::session_initializer::SessionInitializer;
     pub use crate::session::session_state::SessionState;
     pub use crate::session::SessionLayer;
-    pub use crate::transport::tcp_registry::VirtNode;
+    pub use crate::transport::tcp_registry::{
+        ChannelDesc, ChannelDirection, ChannelType, VirtNode,
+    };
 }

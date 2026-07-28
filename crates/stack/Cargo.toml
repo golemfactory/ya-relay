@@ -30,7 +30,7 @@ smoltcp = { version = "0.10", features = [
     "socket-udp",
     "socket-tcp",
     "socket-dhcpv4",
-    "async"
+    "async",
 ] }
 
 derive_more = "0.99"

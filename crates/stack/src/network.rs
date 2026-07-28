@@ -9,7 +9,7 @@ use futures::channel::mpsc;
 use futures::future::{Either, LocalBoxFuture};
 use futures::{Future, FutureExt, SinkExt, StreamExt, TryFutureExt};
 use smoltcp::iface::SocketHandle;
-use smoltcp::wire::IpEndpoint;
+use smoltcp::wire::{IpAddress, IpEndpoint};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::spawn_local;
 use tokio::time::MissedTickBehavior;
@@ -173,7 +173,7 @@ impl Network {
         &self,
         remote: impl Into<IpEndpoint>,
         timeout: impl Into<Duration>,
-    ) -> LocalBoxFuture<Result<Connection>> {
+    ) -> LocalBoxFuture<'_, Result<Connection>> {
         let remote = remote.into();
         let timeout = timeout.into();
 
@@ -201,20 +201,26 @@ impl Network {
     /// Close all TCP connections with a remote IP address
     pub fn disconnect_all(
         &self,
-        remote_ip: Box<[u8]>,
+        remote_ip: IpAddress,
         timeout: impl Into<Duration>,
-    ) -> LocalBoxFuture<()> {
-        let (handles, futs): (Vec<_>, Vec<_>) = {
+    ) -> LocalBoxFuture<'_, ()> {
+        let (connections, futs): (Vec<_>, Vec<_>) = {
             let connections = self.connections.borrow();
             connections
                 .values()
                 .filter(|conn| {
-                    conn.meta.remote.addr.as_bytes() == remote_ip.as_ref()
+                    conn.meta.remote.addr.as_bytes() == remote_ip.as_bytes().as_ref()
                         && conn.meta.protocol == Protocol::Tcp
                 })
-                .map(|conn| (conn.handle, self.stack.disconnect(conn.handle)))
+                .map(|conn| (conn.clone(), self.stack.disconnect(conn.handle)))
                 .unzip()
         };
+
+        log::debug!(
+            "{}: disconnecting all connections to {}",
+            self.name,
+            remote_ip
+        );
 
         if futs.is_empty() {
             return futures::future::ready(()).boxed_local();
@@ -230,7 +236,28 @@ impl Network {
             let timeout = tokio::time::sleep(timeout).boxed_local();
 
             if let Either::Right((_, pending)) = futures::future::select(pending, timeout).await {
-                handles.into_iter().for_each(|h| net.stack.abort(h));
+                log::debug!(
+                    "{}: disconnecting all connections to {} timed out",
+                    net.name,
+                    remote_ip
+                );
+
+                {
+                    // Abort all connections that didn't disconnect.
+                    // Since smoltcp uses handle to identify sockets, we can't use `connections` collected
+                    // earlier, because we can accidentally abort socket that was already re-used
+                    // in different context.
+                    let current_connections = net.connections.borrow();
+                    for conn in connections.into_iter() {
+                        current_connections
+                            .values()
+                            .find_map(|cur_conn| match cur_conn.meta == conn.meta {
+                                true => Some(cur_conn.handle),
+                                false => None,
+                            })
+                            .map(|handle| net.stack.abort(handle));
+                    }
+                }
                 net.poll();
 
                 let timeout = tokio::time::sleep(Duration::from_millis(500));

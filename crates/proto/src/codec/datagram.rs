@@ -73,6 +73,7 @@ mod tests {
             challenge_resp: Some(proto::ChallengeResponse {
                 solution: vec![0u8; MAX_PACKET_SIZE as usize - 128],
                 signatures: vec![],
+                ..Default::default()
             }),
             ..Default::default()
         })
@@ -86,6 +87,7 @@ mod tests {
                 vec![0x0b, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
                 vec![0x0c, 0x0e, 0x0a, 0x0d, 0x0b, 0x0e, 0x0e, 0x0f],
             ],
+            ..Default::default()
         }
     }
 

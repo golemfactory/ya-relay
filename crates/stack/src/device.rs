@@ -100,10 +100,12 @@ impl CaptureDevice {
 }
 
 impl phy::Device for CaptureDevice {
-    type RxToken<'a> = RxToken<'a>
+    type RxToken<'a>
+        = RxToken<'a>
     where
         Self: 'a;
-    type TxToken<'a> = TxToken<'a>
+    type TxToken<'a>
+        = TxToken<'a>
     where
         Self: 'a;
 

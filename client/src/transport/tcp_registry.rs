@@ -80,8 +80,12 @@ impl VirtChannel {
 }
 
 impl VirtNode {
+    pub fn ip_from_node_id(id: NodeId) -> IpAddress {
+        IpAddress::from(to_ipv6(id.into_array()))
+    }
+
     pub fn new(id: NodeId, layer: SessionLayer) -> VirtNode {
-        let ip = IpAddress::from(to_ipv6(id.into_array()));
+        let ip = Self::ip_from_node_id(id);
         let routing = RoutingSender::empty(id, layer);
 
         let msg_in_channel =
@@ -194,10 +198,8 @@ impl TcpRegistry {
             .ok_or_else(|| anyhow!("Virtual node for ip {ip:?} not found."))
     }
 
-    pub async fn resolve_ip(&self, node: NodeId) -> Box<[u8]> {
+    pub async fn resolve_ip(&self, node: NodeId) -> IpAddress {
         IpAddress::from(to_ipv6(node.into_array()))
-            .as_bytes()
-            .into()
     }
 
     async fn close_channel(&self, node: &VirtNode, channel: ChannelDesc) {

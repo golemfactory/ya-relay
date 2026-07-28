@@ -1,7 +1,7 @@
 use std::convert::TryFrom;
 
 /// IP sub-protocol identifiers
-#[allow(unused)]
+#[allow(non_local_definitions, unused)]
 #[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Ord, PartialOrd, num_derive::FromPrimitive)]
 #[non_exhaustive]
 #[repr(u8)]

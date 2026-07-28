@@ -1,3 +1,6 @@
+#[allow(unused)]
+pub mod tcp;
+
 use anyhow::{bail, Context};
 use futures::StreamExt;
 use std::rc::Rc;
