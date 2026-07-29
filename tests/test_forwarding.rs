@@ -10,7 +10,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 
 use ya_relay_client::channels::Forwarded;
-use ya_relay_client::{ClientBuilder, FailFast, GenericSender};
+use ya_relay_client::{ClientBuilder, FailFast};
 use ya_relay_core::testing::TestServerWrapper;
 use ya_relay_server::testing::server::init_test_server;
 

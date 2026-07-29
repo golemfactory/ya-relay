@@ -8,7 +8,6 @@ mod common;
 
 use ya_relay_client::testing::accessors::{SessionLayerPrivate, TcpSenderPrivate};
 use ya_relay_client::testing::init::MockSessionNetwork;
-use ya_relay_client::GenericSender;
 use ya_relay_client::{model::Payload, testing::accessors::ClientPrivate};
 use ya_relay_core::server_session::TransportType;
 use ya_relay_server::testing::server::init_test_server;

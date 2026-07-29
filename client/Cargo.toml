@@ -2,7 +2,7 @@
 name = "ya-relay-client"
 version = "0.7.0"
 authors = ["Golem Factory <contact@golem.network>"]
-edition = "2018"
+edition = "2021"
 license = "LGPL-3.0"
 description = "Client for hybrid Net communication protocol"
 repository = "https://github.com/golemfactory/ya-relay"
@@ -17,6 +17,7 @@ ya-packet-trace = "0.1.0"
 aes-gcm-siv = "0.11.1"
 anyhow = "1.0"
 async-trait = "0.1"
+bytes = "1"
 chrono = "0.4"
 derive_more = "0.99"
 educe = "0.4"
@@ -62,3 +63,6 @@ env_logger = "0.10.0"
 default = []
 test-utils = []
 encryption = []
+
+[lints.rust]
+unsafe_code = "forbid"

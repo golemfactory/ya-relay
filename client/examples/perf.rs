@@ -938,8 +938,6 @@ mod relaying {
             log::info!("Sending {} bytes to: {}", action.size, action.remote_id);
 
             let data = (0..action.size).map(|n| n as u8).collect();
-            use ya_relay_client::GenericSender as _;
-
             let mut sender = requestor.forward_reliable(action.remote_id).await?;
             sender.send(Payload::Vec(data)).await.ok();
         }

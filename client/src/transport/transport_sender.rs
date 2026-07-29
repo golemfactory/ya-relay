@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use bytes::Bytes;
 use derive_more::From;
 
 use super::tcp_registry::TcpSender;
@@ -47,34 +48,66 @@ impl ForwardSender {
             sender => sender,
         }
     }
-}
 
-#[async_trait(?Send)]
-impl GenericSender for ForwardSender {
-    async fn send(&mut self, packet: Payload) -> Result<(), SenderError> {
+    /// Sends a payload to the target node.
+    pub async fn send(&mut self, packet: Payload) -> Result<(), SenderError> {
+        self.send_payload(packet).await
+    }
+
+    /// Sends an immutable, cheaply cloneable byte buffer to the target node.
+    pub async fn send_bytes(&mut self, packet: Bytes) -> Result<(), SenderError> {
+        self.send_payload(packet.into()).await
+    }
+
+    /// Establishes the underlying connection on demand.
+    pub async fn connect(&mut self) -> Result<(), SenderError> {
+        self.connect_inner().await
+    }
+
+    /// Closes the underlying connection.
+    pub async fn disconnect(&mut self) -> Result<(), SenderError> {
+        self.disconnect_inner().await
+    }
+
+    async fn send_payload(&mut self, packet: Payload) -> Result<(), SenderError> {
         match self {
             ForwardSender::Unreliable(sender) => {
                 Ok(sender.send(packet, TransportType::Unreliable).await?)
             }
             ForwardSender::Reliable(sender) => Ok(sender.send(packet).await?),
-            ForwardSender::Framed(sender) => sender.send(packet).await,
+            ForwardSender::Framed(sender) => GenericSender::send(sender, packet).await,
         }
     }
 
-    async fn connect(&mut self) -> Result<(), SenderError> {
+    async fn connect_inner(&mut self) -> Result<(), SenderError> {
         match self {
             ForwardSender::Unreliable(sender) => Ok(sender.connect().await?),
             ForwardSender::Reliable(sender) => Ok(sender.connect().await?),
-            ForwardSender::Framed(sender) => sender.connect().await,
+            ForwardSender::Framed(sender) => GenericSender::connect(sender).await,
         }
     }
 
-    async fn disconnect(&mut self) -> Result<(), SenderError> {
+    async fn disconnect_inner(&mut self) -> Result<(), SenderError> {
         match self {
             ForwardSender::Unreliable(sender) => Ok(sender.disconnect().await?),
             ForwardSender::Reliable(sender) => Ok(sender.disconnect().await?),
-            ForwardSender::Framed(sender) => sender.disconnect().await,
+            ForwardSender::Framed(sender) => GenericSender::disconnect(sender).await,
         }
+    }
+}
+
+#[async_trait(?Send)]
+impl GenericSender for ForwardSender {
+    async fn send(&mut self, packet: Payload) -> Result<(), SenderError> {
+        self.send_payload(packet).await
+    }
+
+    async fn connect(&mut self) -> Result<(), SenderError> {
+        self.connect_inner().await
+    }
+
+    async fn disconnect(&mut self) -> Result<(), SenderError> {
+        self.disconnect_inner().await
     }
 }
 
