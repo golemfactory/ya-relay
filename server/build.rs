@@ -6,8 +6,107 @@ use std::ffi::OsStr;
 use std::fs::DirEntry;
 use std::io::{Read, Write};
 use std::path::Path;
+use std::process::Command;
 use std::{env, fs, io, iter, mem, path};
 use tiny_keccak::Hasher;
+
+const VERSION_ENV: &str = "YA_RELAY_SERVER_VERSION";
+const BUILD_COMMIT_ENV: &str = "YA_RELAY_BUILD_COMMIT";
+const BUILD_DATE_ENV: &str = "YA_RELAY_BUILD_DATE";
+const BUILD_NUMBER_ENV: &str = "YA_RELAY_BUILD_NUMBER";
+
+fn env_value(name: &str) -> Option<String> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn git_output(manifest_dir: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(manifest_dir)
+        .args(args)
+        .output()
+        .ok()?;
+
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn short_commit(commit: String) -> String {
+    commit.chars().take(9).collect()
+}
+
+fn emit_git_rerun_directives(manifest_dir: &Path) {
+    let Some(git_dir) = git_output(manifest_dir, &["rev-parse", "--git-dir"]) else {
+        return;
+    };
+    let git_dir = {
+        let path = Path::new(&git_dir);
+        if path.is_absolute() {
+            path.to_owned()
+        } else {
+            manifest_dir.join(path)
+        }
+    };
+    let head = git_dir.join("HEAD");
+
+    println!("cargo:rerun-if-changed={}", head.display());
+    println!(
+        "cargo:rerun-if-changed={}",
+        git_dir.join("packed-refs").display()
+    );
+
+    if let Ok(head_ref) = fs::read_to_string(&head) {
+        if let Some(reference) = head_ref.trim().strip_prefix("ref: ") {
+            println!(
+                "cargo:rerun-if-changed={}",
+                git_dir.join(reference).display()
+            );
+        }
+    }
+}
+
+fn emit_version_metadata() {
+    for name in [
+        BUILD_COMMIT_ENV,
+        BUILD_DATE_ENV,
+        BUILD_NUMBER_ENV,
+        "GITHUB_SHA",
+        "GITHUB_RUN_NUMBER",
+        "BUILD_NUMBER",
+    ] {
+        println!("cargo:rerun-if-env-changed={name}");
+    }
+
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(path::PathBuf::from)
+        .unwrap_or_else(|| path::PathBuf::from("."));
+    emit_git_rerun_directives(&manifest_dir);
+
+    let commit = env_value(BUILD_COMMIT_ENV)
+        .or_else(|| env_value("GITHUB_SHA"))
+        .or_else(|| git_output(&manifest_dir, &["rev-parse", "HEAD"]))
+        .map(short_commit)
+        .unwrap_or_else(|| "unknown".to_owned());
+    let date = env_value(BUILD_DATE_ENV)
+        .or_else(|| git_output(&manifest_dir, &["show", "-s", "--format=%cs", "HEAD"]))
+        .unwrap_or_else(|| "unknown-date".to_owned());
+    let build_number = env_value(BUILD_NUMBER_ENV)
+        .or_else(|| env_value("GITHUB_RUN_NUMBER"))
+        .or_else(|| env_value("BUILD_NUMBER"))
+        .unwrap_or_else(|| "local".to_owned());
+    let version = format!(
+        "{} ({commit} {date} build #{build_number})",
+        env::var("CARGO_PKG_VERSION").unwrap()
+    );
+
+    println!("cargo:rustc-env={VERSION_ENV}={version}");
+}
 
 macro_rules! try_iter {
     ($e:expr) => {
@@ -61,6 +160,8 @@ fn read_dir_recursive<P: AsRef<Path>>(path: P) -> Result<impl Iterator<Item = Re
 }
 
 fn main() -> Result<()> {
+    emit_version_metadata();
+
     let out_dir: path::PathBuf = env::var_os("OUT_DIR").unwrap().into();
     let output = fs::OpenOptions::new()
         .write(true)
