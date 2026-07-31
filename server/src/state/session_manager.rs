@@ -13,9 +13,11 @@ use std::{cmp, fs, io, iter, thread};
 
 use anyhow::{anyhow, bail, Context};
 use dashmap::DashMap;
+use futures::{Stream, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tokio::time;
+use tokio::{sync::broadcast, time};
+use tokio_stream::wrappers::{errors::BroadcastStreamRecvError, BroadcastStream};
 
 use ya_relay_core::challenge::Proof;
 use ya_relay_core::crypto::PublicKey;
@@ -316,12 +318,20 @@ impl AddrStatus {
 
 type NodeSessionSet = Arc<Mutex<Vec<SessionWeakRef>>>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NodeEvent {
+    New(NodeId),
+    Lost(NodeId),
+    Lag(u64),
+}
+
 pub struct SessionManager {
     sessions: [Mutex<HashMap<SessionId, SessionRef>>; 16],
     node_sessions: DashMap<NodeId, NodeSessionSet>,
     flagged_nodes: DashMap<NodeId, Flag>,
     mode: AtomicI8,
     metrics: SessionManagerMetrics,
+    node_events: broadcast::Sender<NodeEvent>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Copy)]
@@ -357,6 +367,7 @@ impl SessionManager {
         let metrics = Default::default();
         let mode = AtomicI8::new(0);
         let flagged_nodes = Default::default();
+        let (node_events, _) = broadcast::channel(128);
 
         assert_eq!(sessions.len(), 0x10);
 
@@ -366,6 +377,7 @@ impl SessionManager {
             metrics,
             flagged_nodes,
             mode,
+            node_events,
         })
     }
 
@@ -387,6 +399,12 @@ impl SessionManager {
 
     pub fn num_nodes(&self) -> usize {
         self.node_sessions.len()
+    }
+
+    pub fn events(&self) -> impl Stream<Item = NodeEvent> {
+        BroadcastStream::new(self.node_events.subscribe()).map(|event| {
+            event.unwrap_or_else(|BroadcastStreamRecvError::Lagged(n)| NodeEvent::Lag(n))
+        })
     }
 
     pub fn nodes_for(
@@ -557,7 +575,11 @@ impl SessionManager {
         let entry = self.node_sessions.entry(node_id).or_default();
         let mut g = entry.lock();
         g.retain(|s| s.upgrade().is_some());
-        g.push(session_w)
+        let is_new_node = g.is_empty();
+        g.push(session_w);
+        if is_new_node {
+            let _ = self.node_events.send(NodeEvent::New(node_id));
+        }
     }
 
     pub fn link_sessions(&self, session: &SessionRef) {
@@ -566,8 +588,12 @@ impl SessionManager {
             let entry = self.node_sessions.entry(id.node_id).or_default();
             let mut g = entry.lock();
             g.retain(|s| s.strong_count() > 0);
+            let is_new_node = g.is_empty();
             if g.iter().all(|s| !Weak::ptr_eq(s, &session_w)) {
-                g.push(session_w.clone())
+                g.push(session_w.clone());
+                if is_new_node {
+                    let _ = self.node_events.send(NodeEvent::New(id.node_id));
+                }
             }
         }
     }
@@ -586,10 +612,16 @@ impl SessionManager {
     }
 
     fn clean_node_sessions(&self) {
-        self.node_sessions.retain(|&_node_id, sessions| {
+        let node_events = &self.node_events;
+        self.node_sessions.retain(|&node_id, sessions| {
             let mut g = sessions.lock();
             g.retain(|s| s.upgrade().is_some());
-            !g.is_empty()
+            if g.is_empty() {
+                let _ = node_events.send(NodeEvent::Lost(node_id));
+                false
+            } else {
+                true
+            }
         })
     }
 
@@ -820,6 +852,34 @@ mod tests {
 
     fn gen_node_id() -> NodeId {
         thread_rng().gen::<[u8; 20]>().into()
+    }
+
+    #[tokio::test]
+    async fn test_node_events() {
+        let sm = SessionManager::new();
+        let mut events = Box::pin(sm.events());
+        let node_id = gen_node_id();
+        let session1 = sm.add_dummy_session();
+
+        sm.link_session(node_id, &session1);
+        assert_eq!(events.next().await, Some(NodeEvent::New(node_id)));
+
+        let session2 = sm.add_dummy_session();
+        sm.link_session(node_id, &session2);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), events.next())
+                .await
+                .is_err()
+        );
+
+        let session1_id = session1.session_id;
+        let session2_id = session2.session_id;
+        drop(sm.remove_session(&session1_id));
+        drop(sm.remove_session(&session2_id));
+        drop((session1, session2));
+        sm.clean_node_sessions();
+
+        assert_eq!(events.next().await, Some(NodeEvent::Lost(node_id)));
     }
 
     #[test_log::test]

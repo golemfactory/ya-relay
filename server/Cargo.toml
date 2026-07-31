@@ -36,6 +36,7 @@ clap = { version = "4.4.6", features = ["derive", "env", "color"]}
 lazy_static = "1.4.0"
 dashmap = "4.0.2"
 tokio = { version = "1.33", features = ["net", "sync", "macros", "time", "rt", "io-util"] }
+tokio-stream = { version = "0.1.8", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 hex = "0.4.3"
 parking_lot = "0.12.1"
@@ -58,7 +59,6 @@ features = [
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread"] }
-tokio-stream = "0.1.8"
 test-case = "3.1"
 ethsign = "0.8.0"
 test-log = "0.2.13"

@@ -7,6 +7,7 @@ use ya_relay_server::metrics::register_metrics;
 #[cfg(feature = "ui")]
 mod ui {
     use actix_web::dev::Payload;
+    use actix_web::http::header;
     use actix_web::{
         delete, get, http, post, web, FromRequest, HttpRequest, HttpResponse, Responder, Scope,
     };
@@ -19,7 +20,8 @@ mod ui {
     use ya_relay_core::server_session::SessionId;
     use ya_relay_core::NodeId;
     use ya_relay_server::{
-        AddrStatus, NodeSelector, ServerControl, SessionManager, SessionRef, SessionWeakRef,
+        AddrStatus, NodeEvent, NodeSelector, ServerControl, SessionManager, SessionRef,
+        SessionWeakRef,
     };
 
     #[derive(Serialize)]
@@ -44,6 +46,26 @@ mod ui {
             nodes,
             auth,
         })
+    }
+
+    #[get("/events")]
+    async fn events(sm: web::Data<Arc<SessionManager>>) -> impl Responder {
+        let events = sm
+            .events()
+            .map(|event| {
+                let event = match event {
+                    NodeEvent::New(node_id) => format!("event: new-node\ndata: {node_id}\n\n"),
+                    NodeEvent::Lost(node_id) => format!("event: lost-node\ndata: {node_id}\n\n"),
+                    NodeEvent::Lag(n) => format!("event: drop\ndata: {n}\n\n"),
+                };
+                Ok::<_, actix_web::Error>(web::Bytes::from(event))
+            })
+            .boxed_local();
+
+        HttpResponse::Ok()
+            .append_header((header::CONTENT_TYPE, "text/event-stream"))
+            .append_header((header::CACHE_CONTROL, "no-cache"))
+            .streaming(events)
     }
 
     #[derive(Deserialize)]
@@ -211,6 +233,7 @@ mod ui {
                 .service(session_remove)
                 .service(session_check_ip)
                 .service(status)
+                .service(events)
                 .route(
                     "/metrics",
                     web::get().to(move || future::ready(handle.render())),
