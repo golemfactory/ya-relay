@@ -1011,7 +1011,14 @@ impl SessionLayer {
                     return Ok(session);
                 }
                 Err(e) => {
-                    log::warn!("Failed to establish direct p2p session with [{node_id}]. {e}");
+                    match &e {
+                        SessionError::NotApplicable(_) => log::debug!(
+                            "Direct p2p session with [{node_id}] is not applicable. {e}"
+                        ),
+                        _ => log::warn!(
+                            "Failed to establish direct p2p session with [{node_id}]. {e}"
+                        ),
+                    }
                     permit
                         .registry
                         .transition(SessionState::RestartConnect)
@@ -1031,9 +1038,14 @@ impl SessionLayer {
                     return Ok(session);
                 }
                 Err(e) => {
-                    log::warn!(
-                        "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
-                    );
+                    match &e {
+                        SessionError::NotApplicable(_) => log::debug!(
+                            "Reverse direct p2p session with [{node_id}] is not applicable. {e}"
+                        ),
+                        _ => log::warn!(
+                            "Failed to establish reverse direct p2p session with [{node_id}]. {e}"
+                        ),
+                    }
                     permit
                         .registry
                         .transition(SessionState::RestartConnect)
