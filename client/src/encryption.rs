@@ -30,6 +30,7 @@ pub trait Encryption {
     fn encryption_flag(&self) -> bool;
 }
 
+#[cfg(feature = "encryption")]
 pub fn new(
     supported_encryption: Vec<String>,
     remote_session_key: Option<PublicKey>,
@@ -50,6 +51,15 @@ pub fn new(
     } else {
         Box::new(NullEncryption {})
     }
+}
+
+#[cfg(not(feature = "encryption"))]
+pub fn new(
+    _supported_encryption: Vec<String>,
+    _remote_session_key: Option<PublicKey>,
+    _session_crypto: SessionCrypto,
+) -> Box<dyn Encryption> {
+    Box::new(NullEncryption {})
 }
 
 #[cfg(feature = "encryption")]
@@ -128,8 +138,39 @@ impl Encryption for Aes256GcmSivEncryption {
 
 #[cfg(test)]
 mod tests {
-    use super::{Aes256GcmSivEncryption, Encryption};
+    use super::{new, Aes256GcmSivEncryption, Encryption};
+    use ya_relay_core::crypto::SessionCrypto;
     use ya_relay_proto::proto::Payload;
+
+    #[cfg(not(feature = "encryption"))]
+    #[test]
+    fn does_not_negotiate_encryption_when_feature_is_disabled() {
+        let local = SessionCrypto::generate().unwrap();
+        let remote = SessionCrypto::generate().unwrap();
+
+        let encryption = new(
+            vec!["Aes256GcmSiv".to_string()],
+            Some(remote.pub_key()),
+            local,
+        );
+
+        assert!(!encryption.encryption_flag());
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn negotiates_supported_encryption_when_feature_is_enabled() {
+        let local = SessionCrypto::generate().unwrap();
+        let remote = SessionCrypto::generate().unwrap();
+
+        let encryption = new(
+            vec!["Aes256GcmSiv".to_string()],
+            Some(remote.pub_key()),
+            local,
+        );
+
+        assert!(encryption.encryption_flag());
+    }
 
     #[test]
     fn rejects_truncated_encrypted_payloads() {
