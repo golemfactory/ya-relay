@@ -795,7 +795,16 @@ impl SessionLayer {
         tokio::task::spawn_local(async move {
             let entry = myself.registry.guard(session.owner.default_id, &[]).await;
 
-            entry.transition(SessionState::Closing).await?;
+            let previous = entry.begin_closing().await;
+            if !matches!(previous, SessionState::Established(_)) {
+                log::warn!(
+                    "Recovering session {} with [{}] ({}) from inconsistent state: {}",
+                    session.raw.id,
+                    session.owner.default_id,
+                    session.raw.remote,
+                    previous
+                );
+            }
             myself.unregister_session(session).await;
             entry.transition(SessionState::Closed).await?;
             Ok(())
