@@ -162,7 +162,7 @@ pub fn recover_identities_from_challenge_with_proof<D: Digest>(
         }
     }
 
-    let identities = std::iter::once(Ok(default_ident))
+    let identities: Vec<Identity> = std::iter::once(Ok(default_ident))
         .chain(response.signatures.iter().skip(1).map(|sig| {
             let key = recover(sig.as_slice(), message.as_slice())?;
             Ok(Identity::from(key))
@@ -172,6 +172,14 @@ pub fn recover_identities_from_challenge_with_proof<D: Digest>(
     let mut proofs = HashMap::new();
 
     if !response.session_sign.is_empty() {
+        if response.session_sign.len() != identities.len() {
+            bail!(
+                "Invalid session key proof count: {} vs {} identities",
+                response.session_sign.len(),
+                identities.len()
+            );
+        }
+
         let session_pub_key = PublicKey::from_slice(&response.session_pub_key)
             .map_err(|_| anyhow!("Failed to decode session key"))?;
 
@@ -356,6 +364,33 @@ mod tests {
             );
         }
 
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn rejects_missing_alias_session_key_proof() -> anyhow::Result<()> {
+        const DIFFICULTY: u64 = 2;
+
+        let (_keys, crypto_vec) = gen_crypto(2).await?;
+        let session = SessionCrypto::generate()?;
+        let challenge: Vec<u8> = (0..16).collect();
+        let mut response = super::solve::<ChallengeDigest, _>(
+            challenge.clone(),
+            DIFFICULTY,
+            crypto_vec,
+            session.pub_key(),
+        )
+        .await?;
+        response.session_sign.pop();
+
+        let result = super::recover_identities_from_challenge::<ChallengeDigest>(
+            challenge.as_slice(),
+            DIFFICULTY,
+            Some(response),
+            None,
+        );
+
+        assert!(result.is_err());
         Ok(())
     }
 }

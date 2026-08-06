@@ -64,7 +64,14 @@ impl NetworkView {
             return target;
         }
 
-        let target = NodeView::new(node_id, addrs.to_vec(), vec![], None, self.config.clone());
+        let target = NodeView::new(
+            node_id,
+            addrs.to_vec(),
+            vec![],
+            None,
+            vec![],
+            self.config.clone(),
+        );
 
         state.by_node_id.insert(target.id, target.clone());
         for addr in addrs.iter() {
@@ -127,6 +134,7 @@ impl NetworkView {
                 addrs.clone(),
                 info.supported_encryption.clone(),
                 info.session_key.clone(),
+                info.authenticated_identities.clone(),
                 self.config.clone(),
             )
         };
@@ -262,6 +270,7 @@ pub struct NodeViewState {
     addresses: Vec<SocketAddr>,
     supported_encryption: Vec<String>,
     session_key: Option<PublicKey>,
+    authenticated_identities: Vec<NodeId>,
     state: SessionState,
     /// Currently we are storing slot of Node on relay server. This assumes, that there is only
     /// one relay server, what we hope that it will not be true forever.
@@ -368,6 +377,7 @@ impl NodeView {
         state.slot = info.slot;
         state.supported_encryption = info.supported_encryption;
         state.session_key = info.session_key;
+        state.authenticated_identities = info.authenticated_identities;
         // TODO: What should we do if identity lists differ? Is new list always better?
         state.node = info.identities;
         // TODO: We should distinguish between public IPs and addresses assigned temporarily
@@ -429,6 +439,7 @@ impl NodeViewState {
     pub fn info(&self) -> NodeInfo {
         NodeInfo {
             identities: self.node.clone(),
+            authenticated_identities: self.authenticated_identities.clone(),
             slot: self.slot,
             endpoints: self
                 .addresses
@@ -450,6 +461,7 @@ impl NodeView {
         addresses: Vec<SocketAddr>,
         supported_encryption: Vec<String>,
         remote_session_key: Option<PublicKey>,
+        authenticated_identities: Vec<NodeId>,
         config: Arc<NetworkViewConfig>,
     ) -> Self {
         let (notify_msg, _) = broadcast::channel(10);
@@ -462,6 +474,7 @@ impl NodeView {
                 addresses,
                 supported_encryption,
                 session_key: remote_session_key,
+                authenticated_identities,
                 state: SessionState::Closed,
                 slot: FORWARD_SLOT_ID,
                 abort_handle: vec![],

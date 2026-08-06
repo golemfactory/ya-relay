@@ -229,6 +229,7 @@ impl SessionRegistration for SessionLayer {
             .ok_or(anyhow!(
                 "DirectSession constructor expects default id on identities list."
             ));
+        let authenticated_identities = identities.iter().map(|identity| identity.node_id).collect();
 
         let routing = match default_id {
             Ok(default_id) => Some(NodeRouting::new(
@@ -241,7 +242,8 @@ impl SessionRegistration for SessionLayer {
                     supported_encryptions,
                     session_key,
                     self.config.session_crypto.clone(),
-                ),
+                )?,
+                authenticated_identities,
             )),
             Err(_) if is_relay => None,
             Err(e) => bail!(e),
@@ -666,6 +668,7 @@ impl SessionLayer {
             default_id: info.identities[0].clone(),
             identities: info.identities.clone(),
         };
+        let authenticated_identities = info.authenticated_identities.clone();
 
         if route.owner.default_id != identities.default_id.node_id {
             route.register(identities.clone().into(), info.slot);
@@ -679,7 +682,8 @@ impl SessionLayer {
                 info.supported_encryption,
                 Some(session_key),
                 self.config.session_crypto.clone(),
-            ),
+            )?,
+            authenticated_identities,
         ))
         .await?;
 
@@ -1242,6 +1246,7 @@ impl SessionLayer {
         // Information should be already cached in registry.
         let node = permit.registry.info().await.just_get();
         let slot: SlotId = node.slot;
+        let authenticated_identities = node.authenticated_identities.clone();
         let ids = permit
             .registry
             .identities()
@@ -1252,14 +1257,18 @@ impl SessionLayer {
 
         server.register(ids.clone().into(), slot);
 
+        let encryption = encryption::new(
+            node.supported_encryption,
+            node.session_key,
+            self.config.session_crypto.clone(),
+        )
+        .map_err(|e| SessionError::NotApplicable(e.to_string()))?;
+
         let routing = NodeRouting::new(
             ids.clone(),
             server.clone(),
-            encryption::new(
-                node.supported_encryption,
-                node.session_key,
-                self.config.session_crypto.clone(),
-            ),
+            encryption,
+            authenticated_identities,
         );
 
         self.register_routing(routing)
@@ -1760,12 +1769,24 @@ impl Handler for SessionLayer {
                 return Ok(());
             }
 
-            let payload = if encrypted {
-                if let Some(routing) = myself.get_node_routing(sender).await {
+            let routing = myself.get_node_routing(sender).await;
+            let (payload, authenticated_identities) = if encrypted {
+                if let Some(routing) = routing {
+                    if !routing.encryption_enabled() {
+                        bail!(
+                            "Received packet marked as encrypted from Node [{sender}] without negotiated encryption"
+                        );
+                    }
+
                     match routing.decrypt(forward.payload) {
                         Ok(payload) => {
                             myself.record_successful_decryption(sender);
-                            payload
+                            let identities = routing.authenticated_identities().ok_or_else(|| {
+                                anyhow!(
+                                    "Missing authenticated identities for encrypted Node [{sender}]"
+                                )
+                            })?;
+                            (payload, Some(identities))
                         }
                         Err(e) => {
                             log::debug!(
@@ -1779,11 +1800,19 @@ impl Handler for SessionLayer {
                     bail!("Received encrypted packet from unknown Node: {sender}. Dropping..")
                 }
             } else {
-                forward.payload
+                let route_encrypted = routing
+                    .as_ref()
+                    .map(|routing| routing.encryption_enabled())
+                    .unwrap_or(false);
+                if !unencrypted_packet_allowed(route_encrypted) {
+                    bail!("Received unencrypted packet from Node [{sender}]. Dropping..");
+                }
+                (forward.payload, None)
             };
             let packet = Forwarded {
                 transport,
                 node_id: sender,
+                authenticated_identities,
                 payload,
             };
 
@@ -1799,6 +1828,10 @@ impl Handler for SessionLayer {
     }
 }
 
+fn unencrypted_packet_allowed(route_encrypted: bool) -> bool {
+    !cfg!(feature = "encryption-strict") && !route_encrypted
+}
+
 impl ConnectionMethod {
     pub fn metric(&self) -> f64 {
         (*self as u16) as f64
@@ -1812,8 +1845,26 @@ impl ConnectionMethod {
 #[cfg(test)]
 mod encryption_sync_tests {
     use super::{
-        Duration, EncryptionSyncBackoff, Instant, ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD,
+        unencrypted_packet_allowed, Duration, EncryptionSyncBackoff, Instant,
+        ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD,
     };
+
+    #[test]
+    fn negotiated_encryption_cannot_be_downgraded() {
+        assert!(!unencrypted_packet_allowed(true));
+    }
+
+    #[cfg(not(feature = "encryption-strict"))]
+    #[test]
+    fn compatibility_mode_accepts_legacy_plaintext() {
+        assert!(unencrypted_packet_allowed(false));
+    }
+
+    #[cfg(feature = "encryption-strict")]
+    #[test]
+    fn strict_mode_rejects_legacy_plaintext() {
+        assert!(!unencrypted_packet_allowed(false));
+    }
 
     #[test]
     fn notifications_use_exponential_backoff() {

@@ -7,6 +7,11 @@ description = "Parent package"
 license = "LGPL-3.0"
 repository = "https://github.com/golemfactory/ya-relay"
 
+[features]
+default = []
+encryption = ["ya-relay-client/encryption"]
+encryption-strict = ["encryption", "ya-relay-client/encryption-strict"]
+
 [workspace]
 members = ["client", "crates/*", "server"]
 
