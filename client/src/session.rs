@@ -951,9 +951,37 @@ impl SessionLayer {
 
         log::trace!("Requested Relay server session with [{remote_id}] ({addr}).");
 
-        if let Some(session) = { self.state.lock().p2p_sessions.get(&addr).cloned() } {
-            log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
-            return Ok(session);
+        let cached_session = {
+            let state = self.state.lock();
+            state.p2p_sessions.get(&addr).cloned()
+        };
+
+        if let Some(session) = cached_session {
+            let registry_state = match self.registry.get_entry(remote_id).await {
+                Some(entry) => Some(entry.state().await),
+                None => None,
+            };
+            let stale = matches!(
+                &registry_state,
+                None | Some(SessionState::Closed) | Some(SessionState::FailedEstablish(_))
+            );
+
+            if !stale {
+                log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
+                return Ok(session);
+            }
+
+            let state = registry_state
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "missing".to_string());
+            log::warn!(
+                "Discarding cached Relay server session {} ({}) inconsistent with registry state: {}",
+                session.raw.id,
+                session.raw.remote,
+                state
+            );
+            self.close_session(session).await?;
         }
 
         log::trace!("Relay [{remote_id}] not found. Trying to establish session...");
@@ -1902,5 +1930,47 @@ mod encryption_sync_tests {
             assert!(!state.record_success());
         }
         assert!(state.record_success());
+    }
+}
+
+#[cfg(test)]
+mod server_session_tests {
+    use super::{DirectSession, NodeId, RawSession, SessionId, SessionLayer};
+    use crate::config::ClientBuilder;
+    use futures::channel::mpsc;
+    use futures::StreamExt;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use url::Url;
+
+    #[actix_rt::test]
+    async fn closed_registry_entry_invalidates_cached_server_session() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let server_addr = config.srv_addr;
+        let layer = SessionLayer::new(Arc::new(config));
+        let (sink, mut rx) = mpsc::channel(1);
+        tokio::task::spawn_local(async move { while rx.next().await.is_some() {} });
+        let raw = RawSession::new(server_addr, SessionId::generate(), sink);
+        let stale_session = DirectSession::new_relay(NodeId::default(), raw).unwrap();
+
+        layer
+            .state
+            .lock()
+            .p2p_sessions
+            .insert(server_addr, stale_session);
+        layer
+            .registry
+            .guard(NodeId::default(), &[server_addr])
+            .await;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), layer.server_session())
+            .await
+            .expect("server_session must not hang while discarding a stale cache entry");
+
+        assert!(result.is_err());
+        assert!(layer.find_session(server_addr).await.is_none());
     }
 }
