@@ -284,6 +284,20 @@ pub struct NodeViewState {
 }
 
 impl NodeView {
+    /// Starts closing a registered session even if its state got out of sync with
+    /// the session registry. A registered `DirectSession` is authoritative here:
+    /// leaving it in the registry would make subsequent connection attempts keep
+    /// returning the dead session forever.
+    pub(crate) async fn begin_closing(&self) -> SessionState {
+        let previous = {
+            let mut target = self.state.write().await;
+            std::mem::replace(&mut target.state, SessionState::Closing)
+        };
+
+        self.notify_change(SessionState::Closing);
+        previous
+    }
+
     pub async fn transition(
         &self,
         new_state: SessionState,
@@ -1044,6 +1058,27 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[actix_rt::test]
+    async fn begin_closing_recovers_inconsistent_session_state() {
+        let network_view = NetworkView::default();
+        let entry = network_view.guard(*NODE_ID1, &[*ADDR1]).await;
+
+        entry
+            .transition_outgoing(InitState::ConnectIntent)
+            .await
+            .unwrap();
+
+        let previous = entry.begin_closing().await;
+        assert!(matches!(
+            previous,
+            SessionState::Outgoing(InitState::ConnectIntent)
+        ));
+        assert!(matches!(entry.state().await, SessionState::Closing));
+
+        entry.transition(SessionState::Closed).await.unwrap();
+        assert!(matches!(entry.state().await, SessionState::Closed));
     }
 
     /// Checks if permits work correctly in case of attempts to initialize
