@@ -5,6 +5,7 @@ use ya_relay_core::server_session::{SessionId, TransportType};
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 
+use crate::client::AuthenticatedIdentities;
 use crate::direct_session::{DirectSession, NodeEntry};
 use crate::encryption::Encryption;
 use crate::error::{EncryptionError, SessionError};
@@ -27,6 +28,7 @@ pub struct NodeRouting {
     /// `DirectSession` contains all info (for example SlotID) required to send packets using this session.
     pub route: Weak<DirectSession>,
     encryption: Arc<Box<dyn Encryption>>,
+    authenticated_identities: AuthenticatedIdentities,
 }
 
 impl NodeRouting {
@@ -34,11 +36,13 @@ impl NodeRouting {
         node: NodeEntry<Identity>,
         session: Arc<DirectSession>,
         encryption: Box<dyn Encryption>,
+        authenticated_identities: Vec<NodeId>,
     ) -> Arc<NodeRouting> {
         Arc::new(NodeRouting {
             node,
             route: Arc::downgrade(&session),
             encryption: Arc::new(encryption),
+            authenticated_identities: authenticated_identities.into(),
         })
     }
 
@@ -227,6 +231,19 @@ impl RoutingSender {
                 "Routing session closed".to_string(),
             ))
         }
+    }
+
+    pub fn encryption_enabled(&self) -> bool {
+        self.node_routing
+            .upgrade()
+            .map(|routing| routing.encryption.encryption_flag())
+            .unwrap_or(false)
+    }
+
+    pub fn authenticated_identities(&self) -> Option<AuthenticatedIdentities> {
+        self.node_routing
+            .upgrade()
+            .map(|routing| routing.authenticated_identities.clone())
     }
 
     pub async fn send_encryption_sync(&self) -> Result<(), SessionError> {

@@ -49,6 +49,8 @@ pub struct Endpoint {
 #[derive(Clone)]
 pub struct NodeInfo {
     pub identities: Vec<Identity>,
+    /// Identities which independently proved ownership of `session_key`.
+    pub authenticated_identities: Vec<NodeId>,
     pub slot: SlotId,
 
     /// Endpoints registered by Node.
@@ -241,23 +243,56 @@ impl TryFrom<proto::response::Node> for NodeInfo {
             .map(Identity::try_from)
             .collect::<Result<Vec<_>, _>>()?;
 
-        let session_key = if !value.session_pub_key.is_empty()
-            && verify_session_key(
-                &value.session_pub_key,
-                &value.session_key_proof,
-                &identities[0],
+        let default_identity = identities
+            .first()
+            .ok_or_else(|| anyhow!("NodeInfo has no identities"))?;
+        let mut authenticated_identities = Vec::new();
+
+        let session_key = if !value.session_pub_key.is_empty() {
+            if !value.session_key_proofs.is_empty()
+                && value.session_key_proofs.len() != identities.len()
+            {
+                bail!(
+                    "Invalid session key proof count: {} vs {} identities",
+                    value.session_key_proofs.len(),
+                    identities.len()
+                );
+            }
+
+            if !value.session_key_proof.is_empty() {
+                verify_session_key(
+                    &value.session_pub_key,
+                    &value.session_key_proof,
+                    default_identity,
+                )?;
+                authenticated_identities.push(default_identity.node_id);
+            }
+
+            for (identity, proof) in identities.iter().zip(&value.session_key_proofs) {
+                if proof.is_empty() {
+                    continue;
+                }
+                verify_session_key(&value.session_pub_key, proof, identity)?;
+                if !authenticated_identities.contains(&identity.node_id) {
+                    authenticated_identities.push(identity.node_id);
+                }
+            }
+
+            if !authenticated_identities.contains(&default_identity.node_id) {
+                bail!("Missing default identity session key proof");
+            }
+
+            Some(
+                PublicKey::from_slice(&value.session_pub_key)
+                    .map_err(|_| anyhow!("Failed to decode session key"))?,
             )
-            .is_ok()
-        {
-            let session_key = PublicKey::from_slice(&value.session_pub_key)
-                .map_err(|_| anyhow!("Failed to decode session key"))?;
-            Some(session_key)
         } else {
             None
         };
 
         Ok(NodeInfo {
             identities,
+            authenticated_identities,
             slot: value.slot,
             endpoints: value
                 .endpoints
@@ -267,5 +302,79 @@ impl TryFrom<proto::response::Node> for NodeInfo {
             supported_encryption: value.supported_encryptions,
             session_key,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::challenge::{self, ChallengeDigest};
+    use crate::crypto::{FallbackCrypto, SessionCrypto};
+    use crate::key::generate;
+
+    async fn signed_node() -> (proto::response::Node, Vec<NodeId>) {
+        let secrets = vec![generate(), generate()];
+        let identities: Vec<Identity> = secrets
+            .iter()
+            .map(|secret| Identity::from(secret.public()))
+            .collect();
+        let node_ids = identities.iter().map(|identity| identity.node_id).collect();
+        let session = SessionCrypto::generate().unwrap();
+        let response = challenge::solve::<ChallengeDigest, _>(
+            vec![0; 16],
+            0,
+            secrets.into_iter().map(FallbackCrypto::from).collect(),
+            session.pub_key(),
+        )
+        .await
+        .unwrap();
+
+        (
+            proto::response::Node {
+                identities: identities.iter().map(Into::into).collect(),
+                session_pub_key: response.session_pub_key,
+                session_key_proof: response.session_sign[0].clone(),
+                session_key_proofs: response.session_sign,
+                ..Default::default()
+            },
+            node_ids,
+        )
+    }
+
+    #[tokio::test]
+    async fn authenticates_all_session_key_proofs() {
+        let (node, node_ids) = signed_node().await;
+
+        let info = NodeInfo::try_from(node).unwrap();
+
+        assert_eq!(info.authenticated_identities, node_ids);
+        assert!(info.session_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn accepts_legacy_default_session_key_proof() {
+        let (mut node, node_ids) = signed_node().await;
+        node.session_key_proofs.clear();
+
+        let info = NodeInfo::try_from(node).unwrap();
+
+        assert_eq!(info.authenticated_identities, vec![node_ids[0]]);
+        assert!(info.session_key.is_some());
+    }
+
+    #[tokio::test]
+    async fn rejects_partial_alias_session_key_proofs() {
+        let (mut node, _) = signed_node().await;
+        node.session_key_proofs.pop();
+
+        assert!(NodeInfo::try_from(node).is_err());
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_alias_session_key_proof() {
+        let (mut node, _) = signed_node().await;
+        node.session_key_proofs[1] = node.session_key_proofs[0].clone();
+
+        assert!(NodeInfo::try_from(node).is_err());
     }
 }

@@ -557,9 +557,14 @@ pub(crate) struct Neighbourhood {
     nodes: Vec<NodeId>,
 }
 
+pub type AuthenticatedIdentities = Arc<[NodeId]>;
+
 #[derive(Clone, Debug)]
 pub struct Forwarded {
     pub transport: TransportType,
     pub node_id: NodeId,
+    /// Identities bound to the session key which authenticated this payload.
+    /// `None` means the payload was received without authenticated encryption.
+    pub authenticated_identities: Option<AuthenticatedIdentities>,
     pub payload: Payload,
 }

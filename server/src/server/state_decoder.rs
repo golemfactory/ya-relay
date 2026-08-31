@@ -25,7 +25,7 @@ pub fn decoder<'a, 'b>(
 
 impl<'a, 'b> Decoder<'a, 'b> {
     pub fn to_node_info(&self, session: &Session, context: NodeId, pk: bool) -> NodeInfo {
-        let (session_pub_key, session_key_proof) = if pk {
+        let (session_pub_key, session_key_proof, session_key_proofs) = if pk {
             if let Some((session_key, proofs)) = &session.session_key {
                 let session_pub_key = session_key.bytes().to_vec();
                 // `NodeInfo` keeps the default identity first, so the client verifies
@@ -37,7 +37,12 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     .and_then(|identity| proofs.get(&identity.node_id))
                     .cloned()
                     .unwrap_or_default();
-                (session_pub_key, session_key_proof)
+                let session_key_proofs = session
+                    .keys
+                    .iter()
+                    .map(|identity| proofs.get(&identity.node_id).cloned().unwrap_or_default())
+                    .collect();
+                (session_pub_key, session_key_proof, session_key_proofs)
             } else {
                 Default::default()
             }
@@ -53,6 +58,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
             supported_encryptions: session.supported_encryptions.clone(),
             session_pub_key,
             session_key_proof,
+            session_key_proofs,
         }
     }
 }
@@ -82,7 +88,7 @@ mod tests {
         let alias_proof = vec![4, 5, 6];
         let proofs = HashMap::from([
             (default_identity.node_id, default_proof.clone()),
-            (alias_identity.node_id, alias_proof),
+            (alias_identity.node_id, alias_proof.clone()),
         ]);
         let session = Session {
             session_id: SessionId::generate(),
@@ -104,5 +110,6 @@ mod tests {
         );
 
         assert_eq!(node.session_key_proof, default_proof);
+        assert_eq!(node.session_key_proofs, vec![default_proof, alias_proof]);
     }
 }

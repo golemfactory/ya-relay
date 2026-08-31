@@ -15,7 +15,9 @@ mod routing_session;
 mod session;
 mod transport;
 
-pub use client::{Client, ClientBuilder, FailFast, GenericSender, SessionError};
+pub use client::{
+    AuthenticatedIdentities, Client, ClientBuilder, FailFast, GenericSender, SessionError,
+};
 
 /// This module is a public re-export cryptographic abstractions.
 pub use ya_relay_core::crypto;

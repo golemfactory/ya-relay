@@ -144,8 +144,8 @@ impl UdpSocketConfig {
         type sa_family_t = windows_sys::Win32::Networking::WinSock::ADDRESS_FAMILY;
 
         use windows_sys::Win32::Networking::WinSock::{
-            bind, WSASocketW, AF_INET, SOCKADDR_IN as sockaddr_in, SO_RCVBUF, SO_REUSEADDR,
-            SO_SNDBUF, WSA_FLAG_OVERLAPPED,
+            bind, WSASocketW, AF_INET, IN_ADDR, SOCKADDR_IN as sockaddr_in, SO_RCVBUF,
+            SO_REUSEADDR, SO_SNDBUF, WSA_FLAG_OVERLAPPED,
         };
         const IPPROTO_IP: c_int = windows_sys::Win32::Networking::WinSock::IPPROTO_IP as c_int;
         const SOL_SOCKET: c_int = windows_sys::Win32::Networking::WinSock::SOL_SOCKET as c_int;
@@ -198,7 +198,7 @@ impl UdpSocketConfig {
             let addr = sockaddr_in {
                 sin_family: AF_INET,
                 sin_port: bind_addr.port().to_be(),
-                sin_addr: mem::transmute::<[u8; 4], libc::in_addr>(bind_addr.ip().octets()),
+                sin_addr: mem::transmute::<[u8; 4], IN_ADDR>(bind_addr.ip().octets()),
                 sin_zero: mem::zeroed(),
             };
 
@@ -391,7 +391,7 @@ impl UdpSocket {
                 }
 
                 buffer.advance_mut(res as usize);
-                let ip = Ipv4Addr::from(mem::transmute::<_, [u8; 4]>(remote.sin_addr));
+                let ip = Ipv4Addr::from(mem::transmute::<libc::in_addr, [u8; 4]>(remote.sin_addr));
                 let addr = SocketAddrV4::new(ip, remote.sin_port.to_be());
 
                 if msg.msg_flags & MSG_ERRQUEUE == MSG_ERRQUEUE {

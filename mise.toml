@@ -1,2 +1,6 @@
 [tools]
-rust = "1.97"
+rust = { version = "1.97", components = ["clippy", "rustfmt"] }
+protoc = "24.4"
+
+[env]
+PROTOC = { value = "{% if tools.protoc is defined %}{{ tools.protoc.path }}/bin/protoc{% if os() == 'windows' %}.exe{% endif %}{% endif %}", tools = true }

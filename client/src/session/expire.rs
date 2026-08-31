@@ -76,6 +76,13 @@ async fn close_sessions(
             session.raw.remote
         );
 
-        layer.close_session(session.clone()).await;
+        if let Err(error) = layer.close_session(session.clone()).await {
+            log::warn!(
+                "Failed to close expired session {} ({}): {}",
+                session.raw.id,
+                session.raw.remote,
+                error
+            );
+        }
     }
 }

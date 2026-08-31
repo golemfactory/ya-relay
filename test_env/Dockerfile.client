@@ -1,3 +1,5 @@
+# check=skip=JSONArgsRecommended
+# The shell configures container networking, then `exec` hands PID 1 to the client.
 FROM tests_base:latest
 
 ARG LATENCY=0ms
@@ -5,6 +7,8 @@ ARG RUST_LOG=info
 ARG SESSION_EXPIRATION=20
 ARG BIND_IP=0.0.0.0
 ARG BIND_PROTO=tcp
+ARG BIND_IP_PATTERN
+ARG GATEWAY_HOST
 
 ENV LATENCY=$LATENCY
 ENV RUST_LOG=$RUST_LOG
@@ -40,6 +44,6 @@ CMD if [ -n "$GATEWAY_HOST" ]; then \
     else echo "No bind address"; \
     fi; \
     tc qdisc add dev eth0 root netem delay $LATENCY \
-    && /app/http_client \
+    && exec /app/http_client \
     --api-port 8081 \
     --relay-addr tcp://$SERVER_IP:7464
