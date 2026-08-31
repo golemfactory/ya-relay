@@ -15,6 +15,60 @@ use ya_relay_server::testing::server::init_test_server;
 use common::hack_make_ip_private;
 use common::spawn_receive;
 
+#[cfg(feature = "encryption")]
+#[test_log::test(actix_rt::test)]
+async fn encrypted_forwards_expose_session_identities() -> anyhow::Result<()> {
+    let wrapper = init_test_server().await?;
+
+    let mut crypto = FallbackCryptoProvider::default();
+    crypto.add(generate());
+    let alias = crypto.aliases().await.unwrap()[0];
+
+    let receiver = ClientBuilder::from_url(wrapper.url())
+        .connect(FailFast::Yes)
+        .build()
+        .await?;
+    let sender = ClientBuilder::from_url(wrapper.url())
+        .connect(FailFast::Yes)
+        .crypto(crypto)
+        .build()
+        .await?;
+
+    hack_make_ip_private(&wrapper, &receiver).await;
+    hack_make_ip_private(&wrapper, &sender).await;
+
+    let mut incoming = receiver
+        .forward_receiver()
+        .await
+        .context("no forward receiver")?;
+
+    let mut unreliable = sender.forward_unreliable(receiver.node_id()).await?;
+    unreliable.send(vec![1u8].into()).await?;
+
+    let forwarded = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await?
+        .context("unreliable forward channel closed")?;
+    let identities = forwarded
+        .authenticated_identities
+        .context("unreliable payload was not authenticated")?;
+    assert_eq!(identities.first(), Some(&sender.node_id()));
+    assert!(identities.contains(&alias));
+
+    let mut reliable = sender.forward_reliable(receiver.node_id()).await?;
+    reliable.send(vec![2u8].into()).await?;
+
+    let forwarded = tokio::time::timeout(Duration::from_secs(5), incoming.recv())
+        .await?
+        .context("reliable forward channel closed")?;
+    let identities = forwarded
+        .authenticated_identities
+        .context("reliable payload was not authenticated")?;
+    assert_eq!(identities.first(), Some(&sender.node_id()));
+    assert!(identities.contains(&alias));
+
+    Ok(())
+}
+
 #[test_log::test(actix_rt::test)]
 async fn test_find_node_by_alias() -> anyhow::Result<()> {
     let wrapper = init_test_server().await?;

@@ -64,7 +64,14 @@ impl NetworkView {
             return target;
         }
 
-        let target = NodeView::new(node_id, addrs.to_vec(), vec![], None, self.config.clone());
+        let target = NodeView::new(
+            node_id,
+            addrs.to_vec(),
+            vec![],
+            None,
+            vec![],
+            self.config.clone(),
+        );
 
         state.by_node_id.insert(target.id, target.clone());
         for addr in addrs.iter() {
@@ -127,6 +134,7 @@ impl NetworkView {
                 addrs.clone(),
                 info.supported_encryption.clone(),
                 info.session_key.clone(),
+                info.authenticated_identities.clone(),
                 self.config.clone(),
             )
         };
@@ -262,6 +270,7 @@ pub struct NodeViewState {
     addresses: Vec<SocketAddr>,
     supported_encryption: Vec<String>,
     session_key: Option<PublicKey>,
+    authenticated_identities: Vec<NodeId>,
     state: SessionState,
     /// Currently we are storing slot of Node on relay server. This assumes, that there is only
     /// one relay server, what we hope that it will not be true forever.
@@ -275,6 +284,20 @@ pub struct NodeViewState {
 }
 
 impl NodeView {
+    /// Starts closing a registered session even if its state got out of sync with
+    /// the session registry. A registered `DirectSession` is authoritative here:
+    /// leaving it in the registry would make subsequent connection attempts keep
+    /// returning the dead session forever.
+    pub(crate) async fn begin_closing(&self) -> SessionState {
+        let previous = {
+            let mut target = self.state.write().await;
+            std::mem::replace(&mut target.state, SessionState::Closing)
+        };
+
+        self.notify_change(SessionState::Closing);
+        previous
+    }
+
     pub async fn transition(
         &self,
         new_state: SessionState,
@@ -368,6 +391,7 @@ impl NodeView {
         state.slot = info.slot;
         state.supported_encryption = info.supported_encryption;
         state.session_key = info.session_key;
+        state.authenticated_identities = info.authenticated_identities;
         // TODO: What should we do if identity lists differ? Is new list always better?
         state.node = info.identities;
         // TODO: We should distinguish between public IPs and addresses assigned temporarily
@@ -429,6 +453,7 @@ impl NodeViewState {
     pub fn info(&self) -> NodeInfo {
         NodeInfo {
             identities: self.node.clone(),
+            authenticated_identities: self.authenticated_identities.clone(),
             slot: self.slot,
             endpoints: self
                 .addresses
@@ -450,6 +475,7 @@ impl NodeView {
         addresses: Vec<SocketAddr>,
         supported_encryption: Vec<String>,
         remote_session_key: Option<PublicKey>,
+        authenticated_identities: Vec<NodeId>,
         config: Arc<NetworkViewConfig>,
     ) -> Self {
         let (notify_msg, _) = broadcast::channel(10);
@@ -462,6 +488,7 @@ impl NodeView {
                 addresses,
                 supported_encryption,
                 session_key: remote_session_key,
+                authenticated_identities,
                 state: SessionState::Closed,
                 slot: FORWARD_SLOT_ID,
                 abort_handle: vec![],
@@ -1031,6 +1058,27 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[actix_rt::test]
+    async fn begin_closing_recovers_inconsistent_session_state() {
+        let network_view = NetworkView::default();
+        let entry = network_view.guard(*NODE_ID1, &[*ADDR1]).await;
+
+        entry
+            .transition_outgoing(InitState::ConnectIntent)
+            .await
+            .unwrap();
+
+        let previous = entry.begin_closing().await;
+        assert!(matches!(
+            previous,
+            SessionState::Outgoing(InitState::ConnectIntent)
+        ));
+        assert!(matches!(entry.state().await, SessionState::Closing));
+
+        entry.transition(SessionState::Closed).await.unwrap();
+        assert!(matches!(entry.state().await, SessionState::Closed));
     }
 
     /// Checks if permits work correctly in case of attempts to initialize

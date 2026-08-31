@@ -187,6 +187,9 @@ message Response {
         repeated string supported_encryptions = 5;
         bytes session_pub_key = 6;
         bytes session_key_proof = 7;
+        /* Proofs ordered identically to identities. Added for clients which
+           independently authenticate aliases bound to the session key. */
+        repeated bytes session_key_proofs = 8;
     }
 
     /* Neighbourhood */

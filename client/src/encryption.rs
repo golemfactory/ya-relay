@@ -43,9 +43,8 @@ pub fn new(
     supported_encryption: Vec<String>,
     remote_session_key: Option<PublicKey>,
     session_crypto: SessionCrypto,
-) -> Box<dyn Encryption> {
-    //
-    if let Some(key) = remote_session_key {
+) -> Result<Box<dyn Encryption>, EncryptionError> {
+    let encryption: Box<dyn Encryption> = if let Some(key) = remote_session_key {
         if supported_encryption
             .iter()
             .any(|enc| enc == EncryptionType::Aes256GcmSiv.as_str())
@@ -58,7 +57,9 @@ pub fn new(
         }
     } else {
         Box::new(NullEncryption {})
-    }
+    };
+
+    enforce_encryption_policy(encryption)
 }
 
 #[cfg(not(feature = "encryption"))]
@@ -66,8 +67,21 @@ pub fn new(
     _supported_encryption: Vec<String>,
     _remote_session_key: Option<PublicKey>,
     _session_crypto: SessionCrypto,
-) -> Box<dyn Encryption> {
-    Box::new(NullEncryption {})
+) -> Result<Box<dyn Encryption>, EncryptionError> {
+    enforce_encryption_policy(Box::new(NullEncryption {}))
+}
+
+fn enforce_encryption_policy(
+    encryption: Box<dyn Encryption>,
+) -> Result<Box<dyn Encryption>, EncryptionError> {
+    #[cfg(feature = "encryption-strict")]
+    if !encryption.encryption_flag() {
+        return Err(EncryptionError::Generic(
+            "Peer does not support required session encryption".to_string(),
+        ));
+    }
+
+    Ok(encryption)
 }
 
 #[cfg(feature = "encryption")]
@@ -158,7 +172,8 @@ mod tests {
             vec!["Aes256GcmSiv".to_string()],
             Some(remote.pub_key()),
             local,
-        );
+        )
+        .unwrap();
 
         assert!(!encryption.encryption_flag());
     }
@@ -173,9 +188,28 @@ mod tests {
             vec!["Aes256GcmSiv".to_string()],
             Some(remote.pub_key()),
             local,
-        );
+        )
+        .unwrap();
 
         assert!(encryption.encryption_flag());
+    }
+
+    #[cfg(all(feature = "encryption", not(feature = "encryption-strict")))]
+    #[test]
+    fn falls_back_to_plaintext_when_peer_does_not_support_encryption() {
+        let local = SessionCrypto::generate().unwrap();
+
+        let encryption = new(vec![], None, local).unwrap();
+
+        assert!(!encryption.encryption_flag());
+    }
+
+    #[cfg(feature = "encryption-strict")]
+    #[test]
+    fn rejects_peer_without_session_encryption() {
+        let local = SessionCrypto::generate().unwrap();
+
+        assert!(new(vec![], None, local).is_err());
     }
 
     #[test]

@@ -254,7 +254,7 @@ mod tests {
             .build_config()
             .await
             .unwrap();
-        let encryption = new(vec![], None, SessionCrypto::generate().unwrap());
+        let encryption = new(vec![], None, SessionCrypto::generate().unwrap()).unwrap();
 
         let encoded = encode_forward(
             encryption.as_ref(),

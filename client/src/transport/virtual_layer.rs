@@ -2,7 +2,7 @@ use anyhow::Context;
 use futures::{FutureExt, StreamExt};
 use log::Level::Trace;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -28,7 +28,7 @@ use super::tcp_registry::{
     channel_endpoint, to_ipv6, ChannelDesc, ChannelDirection, ChannelType, TcpConnection, TcpLock,
     TcpPermit, TcpRegistry, TcpSender, VirtNode,
 };
-use crate::client::Forwarded;
+use crate::client::{AuthenticatedIdentities, Forwarded};
 use crate::error::TcpError;
 use crate::session::SessionLayer;
 use crate::transport::ForwardReceiver;
@@ -48,7 +48,10 @@ pub struct TcpLayer {
 
     ingress: Channel<Forwarded>,
     virtual_tcp_fast_lane: Rc<RefCell<HashSet<NodeId>>>,
+    authenticated_nodes: Rc<RefCell<NodeAuthentication>>,
 }
+
+type NodeAuthentication = HashMap<NodeId, Option<AuthenticatedIdentities>>;
 
 impl TcpLayer {
     pub fn new(
@@ -68,6 +71,7 @@ impl TcpLayer {
             ingress: ingress.clone(),
             registry: TcpRegistry::new(session_layer.clone()),
             virtual_tcp_fast_lane: Rc::new(RefCell::new(Default::default())),
+            authenticated_nodes: Rc::new(RefCell::new(Default::default())),
             session_layer,
         }
     }
@@ -106,6 +110,8 @@ impl TcpLayer {
             .disconnect_all(remote_ip, TCP_DISCONN_TIMEOUT)
             .await;
         self.registry.remove_node(node_id).await;
+        self.virtual_tcp_fast_lane.borrow_mut().remove(&node_id);
+        self.authenticated_nodes.borrow_mut().remove(&node_id);
     }
 
     /// Connects to other Node and returns `TcpSender` for sending data.
@@ -221,6 +227,11 @@ impl TcpLayer {
     pub async fn dispatch(&self, packet: Forwarded) {
         log::trace!("[dispatch]: from {}", packet.node_id);
         let node_id = packet.node_id;
+        update_node_authentication(
+            &mut self.authenticated_nodes.borrow_mut(),
+            node_id,
+            packet.authenticated_identities.clone(),
+        );
         let exists = {
             // Optimisation to avoid resolving Node if possible.
             let fast_lane = self.virtual_tcp_fast_lane.borrow();
@@ -398,6 +409,12 @@ impl TcpLayer {
                                     ChannelType::Transfer => TransportType::Transfer,
                                 },
                                 node_id,
+                                authenticated_identities: myself
+                                    .authenticated_nodes
+                                    .borrow()
+                                    .get(&node_id)
+                                    .cloned()
+                                    .flatten(),
                                 payload: payload.into(),
                             };
 
@@ -484,6 +501,25 @@ impl TcpLayer {
     }
 }
 
+fn update_node_authentication(
+    authenticated_nodes: &mut NodeAuthentication,
+    node_id: NodeId,
+    incoming: Option<AuthenticatedIdentities>,
+) {
+    use std::collections::hash_map::Entry;
+
+    match authenticated_nodes.entry(node_id) {
+        Entry::Vacant(entry) => {
+            entry.insert(incoming);
+        }
+        Entry::Occupied(mut entry) => {
+            if entry.get().as_deref() != incoming.as_deref() {
+                entry.insert(None);
+            }
+        }
+    }
+}
+
 fn pcap_writer(path: PathBuf) -> anyhow::Result<Box<dyn Write>> {
     let parent = path.parent().ok_or_else(|| {
         anyhow::anyhow!(format!(
@@ -561,5 +597,56 @@ pub fn print_sockets(network: &Network) {
     log::trace!("[inet] listening sockets:");
     for handle in network.bindings.borrow_mut().iter() {
         log::trace!("[inet] listening socket: {handle}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node_id(byte: u8) -> NodeId {
+        NodeId::from([byte; 20])
+    }
+
+    #[test]
+    fn node_authentication_is_tainted_by_plaintext() {
+        let remote_id = node_id(1);
+        let identities: Arc<[NodeId]> = vec![remote_id, node_id(2)].into();
+        let mut authenticated_nodes = HashMap::new();
+
+        update_node_authentication(
+            &mut authenticated_nodes,
+            remote_id,
+            Some(identities.clone()),
+        );
+        update_node_authentication(&mut authenticated_nodes, remote_id, None);
+        update_node_authentication(&mut authenticated_nodes, remote_id, Some(identities));
+
+        assert_eq!(authenticated_nodes.get(&remote_id), Some(&None));
+    }
+
+    #[test]
+    fn node_authentication_accepts_matching_encrypted_packets() {
+        let remote_id = node_id(1);
+        let identities: Arc<[NodeId]> = vec![remote_id, node_id(2)].into();
+        let mut authenticated_nodes = HashMap::new();
+
+        update_node_authentication(
+            &mut authenticated_nodes,
+            remote_id,
+            Some(identities.clone()),
+        );
+        update_node_authentication(
+            &mut authenticated_nodes,
+            remote_id,
+            Some(identities.clone()),
+        );
+
+        assert_eq!(
+            authenticated_nodes
+                .get(&remote_id)
+                .and_then(|identities| identities.as_deref()),
+            Some(identities.as_ref())
+        );
     }
 }

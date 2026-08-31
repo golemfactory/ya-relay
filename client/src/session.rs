@@ -229,6 +229,7 @@ impl SessionRegistration for SessionLayer {
             .ok_or(anyhow!(
                 "DirectSession constructor expects default id on identities list."
             ));
+        let authenticated_identities = identities.iter().map(|identity| identity.node_id).collect();
 
         let routing = match default_id {
             Ok(default_id) => Some(NodeRouting::new(
@@ -241,7 +242,8 @@ impl SessionRegistration for SessionLayer {
                     supported_encryptions,
                     session_key,
                     self.config.session_crypto.clone(),
-                ),
+                )?,
+                authenticated_identities,
             )),
             Err(_) if is_relay => None,
             Err(e) => bail!(e),
@@ -666,6 +668,7 @@ impl SessionLayer {
             default_id: info.identities[0].clone(),
             identities: info.identities.clone(),
         };
+        let authenticated_identities = info.authenticated_identities.clone();
 
         if route.owner.default_id != identities.default_id.node_id {
             route.register(identities.clone().into(), info.slot);
@@ -679,7 +682,8 @@ impl SessionLayer {
                 info.supported_encryption,
                 Some(session_key),
                 self.config.session_crypto.clone(),
-            ),
+            )?,
+            authenticated_identities,
         ))
         .await?;
 
@@ -795,7 +799,16 @@ impl SessionLayer {
         tokio::task::spawn_local(async move {
             let entry = myself.registry.guard(session.owner.default_id, &[]).await;
 
-            entry.transition(SessionState::Closing).await?;
+            let previous = entry.begin_closing().await;
+            if !matches!(previous, SessionState::Established(_)) {
+                log::warn!(
+                    "Recovering session {} with [{}] ({}) from inconsistent state: {}",
+                    session.raw.id,
+                    session.owner.default_id,
+                    session.raw.remote,
+                    previous
+                );
+            }
             myself.unregister_session(session).await;
             entry.transition(SessionState::Closed).await?;
             Ok(())
@@ -938,9 +951,37 @@ impl SessionLayer {
 
         log::trace!("Requested Relay server session with [{remote_id}] ({addr}).");
 
-        if let Some(session) = { self.state.lock().p2p_sessions.get(&addr).cloned() } {
-            log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
-            return Ok(session);
+        let cached_session = {
+            let state = self.state.lock();
+            state.p2p_sessions.get(&addr).cloned()
+        };
+
+        if let Some(session) = cached_session {
+            let registry_state = match self.registry.get_entry(remote_id).await {
+                Some(entry) => Some(entry.state().await),
+                None => None,
+            };
+            let stale = matches!(
+                &registry_state,
+                None | Some(SessionState::Closed) | Some(SessionState::FailedEstablish(_))
+            );
+
+            if !stale {
+                log::trace!("Resolving Relay server session. Returning already existing connection ([{}] ({})).", session.owner.default_id, session.raw.remote);
+                return Ok(session);
+            }
+
+            let state = registry_state
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "missing".to_string());
+            log::warn!(
+                "Discarding cached Relay server session {} ({}) inconsistent with registry state: {}",
+                session.raw.id,
+                session.raw.remote,
+                state
+            );
+            self.close_session(session).await?;
         }
 
         log::trace!("Relay [{remote_id}] not found. Trying to establish session...");
@@ -1242,6 +1283,7 @@ impl SessionLayer {
         // Information should be already cached in registry.
         let node = permit.registry.info().await.just_get();
         let slot: SlotId = node.slot;
+        let authenticated_identities = node.authenticated_identities.clone();
         let ids = permit
             .registry
             .identities()
@@ -1252,14 +1294,18 @@ impl SessionLayer {
 
         server.register(ids.clone().into(), slot);
 
+        let encryption = encryption::new(
+            node.supported_encryption,
+            node.session_key,
+            self.config.session_crypto.clone(),
+        )
+        .map_err(|e| SessionError::NotApplicable(e.to_string()))?;
+
         let routing = NodeRouting::new(
             ids.clone(),
             server.clone(),
-            encryption::new(
-                node.supported_encryption,
-                node.session_key,
-                self.config.session_crypto.clone(),
-            ),
+            encryption,
+            authenticated_identities,
         );
 
         self.register_routing(routing)
@@ -1760,12 +1806,24 @@ impl Handler for SessionLayer {
                 return Ok(());
             }
 
-            let payload = if encrypted {
-                if let Some(routing) = myself.get_node_routing(sender).await {
+            let routing = myself.get_node_routing(sender).await;
+            let (payload, authenticated_identities) = if encrypted {
+                if let Some(routing) = routing {
+                    if !routing.encryption_enabled() {
+                        bail!(
+                            "Received packet marked as encrypted from Node [{sender}] without negotiated encryption"
+                        );
+                    }
+
                     match routing.decrypt(forward.payload) {
                         Ok(payload) => {
                             myself.record_successful_decryption(sender);
-                            payload
+                            let identities = routing.authenticated_identities().ok_or_else(|| {
+                                anyhow!(
+                                    "Missing authenticated identities for encrypted Node [{sender}]"
+                                )
+                            })?;
+                            (payload, Some(identities))
                         }
                         Err(e) => {
                             log::debug!(
@@ -1779,11 +1837,19 @@ impl Handler for SessionLayer {
                     bail!("Received encrypted packet from unknown Node: {sender}. Dropping..")
                 }
             } else {
-                forward.payload
+                let route_encrypted = routing
+                    .as_ref()
+                    .map(|routing| routing.encryption_enabled())
+                    .unwrap_or(false);
+                if !unencrypted_packet_allowed(route_encrypted) {
+                    bail!("Received unencrypted packet from Node [{sender}]. Dropping..");
+                }
+                (forward.payload, None)
             };
             let packet = Forwarded {
                 transport,
                 node_id: sender,
+                authenticated_identities,
                 payload,
             };
 
@@ -1799,6 +1865,10 @@ impl Handler for SessionLayer {
     }
 }
 
+fn unencrypted_packet_allowed(route_encrypted: bool) -> bool {
+    !cfg!(feature = "encryption-strict") && !route_encrypted
+}
+
 impl ConnectionMethod {
     pub fn metric(&self) -> f64 {
         (*self as u16) as f64
@@ -1812,8 +1882,26 @@ impl ConnectionMethod {
 #[cfg(test)]
 mod encryption_sync_tests {
     use super::{
-        Duration, EncryptionSyncBackoff, Instant, ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD,
+        unencrypted_packet_allowed, Duration, EncryptionSyncBackoff, Instant,
+        ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD,
     };
+
+    #[test]
+    fn negotiated_encryption_cannot_be_downgraded() {
+        assert!(!unencrypted_packet_allowed(true));
+    }
+
+    #[cfg(not(feature = "encryption-strict"))]
+    #[test]
+    fn compatibility_mode_accepts_legacy_plaintext() {
+        assert!(unencrypted_packet_allowed(false));
+    }
+
+    #[cfg(feature = "encryption-strict")]
+    #[test]
+    fn strict_mode_rejects_legacy_plaintext() {
+        assert!(!unencrypted_packet_allowed(false));
+    }
 
     #[test]
     fn notifications_use_exponential_backoff() {
@@ -1842,5 +1930,47 @@ mod encryption_sync_tests {
             assert!(!state.record_success());
         }
         assert!(state.record_success());
+    }
+}
+
+#[cfg(test)]
+mod server_session_tests {
+    use super::{DirectSession, NodeId, RawSession, SessionId, SessionLayer};
+    use crate::config::ClientBuilder;
+    use futures::channel::mpsc;
+    use futures::StreamExt;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use url::Url;
+
+    #[actix_rt::test]
+    async fn closed_registry_entry_invalidates_cached_server_session() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let server_addr = config.srv_addr;
+        let layer = SessionLayer::new(Arc::new(config));
+        let (sink, mut rx) = mpsc::channel(1);
+        tokio::task::spawn_local(async move { while rx.next().await.is_some() {} });
+        let raw = RawSession::new(server_addr, SessionId::generate(), sink);
+        let stale_session = DirectSession::new_relay(NodeId::default(), raw).unwrap();
+
+        layer
+            .state
+            .lock()
+            .p2p_sessions
+            .insert(server_addr, stale_session);
+        layer
+            .registry
+            .guard(NodeId::default(), &[server_addr])
+            .await;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), layer.server_session())
+            .await
+            .expect("server_session must not hang while discarding a stale cache entry");
+
+        assert!(result.is_err());
+        assert!(layer.find_session(server_addr).await.is_none());
     }
 }
