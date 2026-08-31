@@ -1,15 +1,23 @@
+use std::mem::size_of;
 use std::rc::Rc;
 
 use aes_gcm_siv::{
-    aead::{Aead, KeyInit},
-    Aes256GcmSiv, Nonce,
+    aead::{Aead, AeadCore, KeyInit},
+    Aes256GcmSiv, Nonce, Tag,
 };
-use rand::{rngs::OsRng, thread_rng, Rng};
+use rand::thread_rng;
 use strum_macros::{Display, EnumString};
 use ya_relay_core::crypto::{CryptoProvider, PublicKey, SessionCrypto};
 use ya_relay_proto::proto::Payload;
 
 use crate::error::EncryptionError;
+
+const AES_256_GCM_SIV_CIPHERTEXT_EXPANSION: usize = size_of::<Nonce>() + size_of::<Tag>();
+
+#[cfg(feature = "encryption")]
+pub(crate) const MAX_CIPHERTEXT_EXPANSION: usize = AES_256_GCM_SIV_CIPHERTEXT_EXPANSION;
+#[cfg(not(feature = "encryption"))]
+pub(crate) const MAX_CIPHERTEXT_EXPANSION: usize = 0;
 
 #[derive(Display, PartialEq)]
 enum EncryptionType {
@@ -116,9 +124,9 @@ impl Aes256GcmSivEncryption {
 
 impl Encryption for Aes256GcmSivEncryption {
     fn encrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
-        let nonce = thread_rng().gen::<[u8; 12]>();
+        let nonce = Aes256GcmSiv::generate_nonce(&mut thread_rng());
         self.cipher
-            .encrypt(Nonce::from_slice(&nonce), packet.as_ref())
+            .encrypt(&nonce, packet.as_ref())
             .map_err(|e| EncryptionError::Generic(e.to_string()))
             .map(|mut ciphertext| {
                 ciphertext.splice(0..0, nonce.iter().cloned());
@@ -127,20 +135,18 @@ impl Encryption for Aes256GcmSivEncryption {
     }
 
     fn decrypt(&self, packet: Payload) -> Result<Payload, EncryptionError> {
-        const NONCE_SIZE: usize = 12;
-        const TAG_SIZE: usize = 16;
-
         let packet = packet.into_vec();
-        if packet.len() < NONCE_SIZE + TAG_SIZE {
+        if packet.len() < AES_256_GCM_SIV_CIPHERTEXT_EXPANSION {
             return Err(EncryptionError::Generic(format!(
                 "Encrypted payload is too short: expected at least {} bytes, got {}",
-                NONCE_SIZE + TAG_SIZE,
+                AES_256_GCM_SIV_CIPHERTEXT_EXPANSION,
                 packet.len()
             )));
         }
-        let nonce = Nonce::from_slice(&packet[0..12]);
+        let (nonce, ciphertext) = packet.split_at(size_of::<Nonce>());
+        let nonce = Nonce::from_slice(nonce);
         self.cipher
-            .decrypt(nonce, &packet[12..])
+            .decrypt(nonce, ciphertext)
             .map_err(|e| EncryptionError::Generic(e.to_string()))
             .map(Payload::from)
     }
@@ -252,6 +258,10 @@ mod tests {
         let plaintext = Payload::from(b"hello".to_vec());
 
         let encrypted = encryption.encrypt(plaintext.clone()).unwrap();
+        assert_eq!(
+            encrypted.len(),
+            plaintext.len() + super::AES_256_GCM_SIV_CIPHERTEXT_EXPANSION
+        );
         let decrypted = encryption.decrypt(encrypted).unwrap();
 
         assert_eq!(decrypted, plaintext);

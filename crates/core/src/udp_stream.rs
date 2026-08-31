@@ -17,6 +17,7 @@ use crate::utils::parse_udp_url;
 
 pub const MTU_ENV_VAR: &str = "YA_NET_MTU";
 pub const DEFAULT_MTU: usize = 1500;
+const NETWORK_HEADERS_SIZE: usize = ETHERNET_HDR_SIZE + IP6_HDR_SIZE + UDP_HDR_SIZE;
 
 pub type InStream =
     Pin<Box<dyn Stream<Item = (PacketKind, SocketAddr, chrono::DateTime<chrono::Utc>)>>>;
@@ -120,22 +121,80 @@ pub async fn resolve_max_payload_size() -> anyhow::Result<usize> {
 }
 
 pub async fn resolve_max_payload_overhead_size(overhead: usize) -> anyhow::Result<usize> {
-    const OVERHEAD: usize = ETHERNET_HDR_SIZE + IP6_HDR_SIZE + UDP_HDR_SIZE;
+    max_payload_size(resolve_mtu(), overhead)
+}
 
-    let minimum = OVERHEAD + overhead + 1;
-    let mut mtu = std::env::var(MTU_ENV_VAR)
+fn resolve_mtu() -> usize {
+    let mtu = std::env::var(MTU_ENV_VAR)
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_MTU);
 
+    normalize_mtu(mtu)
+}
+
+fn normalize_mtu(mtu: usize) -> usize {
+    let minimum = NETWORK_HEADERS_SIZE + 1;
+
     if mtu < minimum {
-        let err = format!("MTU value {mtu} is below {minimum}");
-        if DEFAULT_MTU < minimum {
-            bail!(err);
-        }
-        log::warn!("{err}, reverting to {DEFAULT_MTU}");
-        mtu = DEFAULT_MTU;
+        log::warn!("MTU value {mtu} is below {minimum}, reverting to {DEFAULT_MTU}");
+        DEFAULT_MTU
+    } else {
+        mtu
+    }
+}
+
+fn max_payload_size(mtu: usize, overhead: usize) -> anyhow::Result<usize> {
+    let Some(total_overhead) = NETWORK_HEADERS_SIZE.checked_add(overhead) else {
+        bail!("MTU overhead {overhead} is too large");
+    };
+    let Some(minimum) = total_overhead.checked_add(1) else {
+        bail!("MTU overhead {overhead} is too large");
+    };
+
+    if mtu < minimum {
+        bail!("MTU value {mtu} is below {minimum}");
     }
 
-    Ok(mtu - OVERHEAD - overhead)
+    Ok(mtu - total_overhead)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{max_payload_size, normalize_mtu, DEFAULT_MTU, NETWORK_HEADERS_SIZE};
+
+    #[test]
+    fn normalizes_only_mtu_too_small_for_network_headers() {
+        assert_eq!(normalize_mtu(NETWORK_HEADERS_SIZE), DEFAULT_MTU);
+        assert_eq!(normalize_mtu(NETWORK_HEADERS_SIZE + 1), 75);
+        assert_eq!(normalize_mtu(130), 130);
+    }
+
+    #[test]
+    fn additional_overhead_must_leave_room_for_payload() {
+        const RELAY_AND_ENCRYPTION_OVERHEAD: usize = 56;
+        let minimum = NETWORK_HEADERS_SIZE + RELAY_AND_ENCRYPTION_OVERHEAD + 1;
+
+        assert_eq!(minimum, 131);
+        assert_eq!(
+            max_payload_size(minimum - 1, RELAY_AND_ENCRYPTION_OVERHEAD)
+                .unwrap_err()
+                .to_string(),
+            "MTU value 130 is below 131"
+        );
+        assert_eq!(
+            max_payload_size(minimum, RELAY_AND_ENCRYPTION_OVERHEAD).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn rejects_overhead_that_cannot_be_represented() {
+        assert_eq!(
+            max_payload_size(DEFAULT_MTU, usize::MAX)
+                .unwrap_err()
+                .to_string(),
+            format!("MTU overhead {} is too large", usize::MAX)
+        );
+    }
 }
