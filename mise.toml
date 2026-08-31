@@ -1,2 +1,6 @@
 [tools]
 rust = "1.97"
+protoc = "24.4"
+
+[env]
+PROTOC = { value = "{% if tools.protoc is defined %}{{ tools.protoc.path }}/bin/protoc{% if os() == 'windows' %}.exe{% endif %}{% endif %}", tools = true }

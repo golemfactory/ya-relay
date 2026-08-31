@@ -13,6 +13,8 @@ pub mod stream;
 pub const MAX_PACKET_SIZE: u32 = 2097151;
 pub const MAX_PARSE_MESSAGE_SIZE: usize = 600;
 
+// Protocol packets stay inline to avoid an allocation on the common codec path.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, From)]
 pub enum PacketKind {
     /// Protobuf packet

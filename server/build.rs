@@ -161,6 +161,7 @@ fn read_dir_recursive<P: AsRef<Path>>(path: P) -> Result<impl Iterator<Item = Re
 
 fn main() -> Result<()> {
     emit_version_metadata();
+    println!("cargo:rerun-if-changed=ui");
 
     let out_dir: path::PathBuf = env::var_os("OUT_DIR").unwrap().into();
     let output = fs::OpenOptions::new()
@@ -182,7 +183,6 @@ fn main() -> Result<()> {
 
     for file in read_dir_recursive("ui")? {
         let file = file?.path();
-        println!("cargo:warning=found {file:?}");
         let bytes = fs::read(&file)?;
         let mut compressor = GzEncoder::new(io::Cursor::new(bytes), Compression::best());
         let mut buffer = Vec::new();
@@ -205,7 +205,6 @@ fn main() -> Result<()> {
             )
         };
         fs::write(out_dir.join(&fname), buffer)?;
-        println!("cargo:warning=generated {:?}", out_dir.join(&fname));
         writeln!(&mut output, "// {:?}", file)?;
         let fnx: &str = file.file_name().unwrap().to_str().unwrap();
         let content_type = match file.extension().and_then(OsStr::to_str) {
