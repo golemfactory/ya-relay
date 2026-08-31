@@ -12,6 +12,7 @@ use ya_relay_proto::proto::{Forward, MAX_TAG_SIZE};
 use ya_relay_stack::StackConfig;
 
 use crate::client::Client;
+use crate::encryption::MAX_CIPHERTEXT_EXPANSION;
 use crate::session::network_view::NetworkViewConfig;
 
 #[derive(Clone, Copy)]
@@ -166,8 +167,10 @@ impl ClientBuilder {
         let default_id = crypto.default_id().await?;
         let default_pub_key = crypto.get(default_id).await?.public_key().await?;
 
-        self.stack_config.max_transmission_unit =
-            resolve_max_payload_overhead_size(MAX_TAG_SIZE + Forward::header_size()).await?;
+        self.stack_config.max_transmission_unit = resolve_max_payload_overhead_size(
+            MAX_TAG_SIZE + Forward::header_size() + MAX_CIPHERTEXT_EXPANSION,
+        )
+        .await?;
 
         Ok(ClientConfig {
             node_id: default_id,
@@ -216,5 +219,62 @@ impl ClientConfig {
             .public_key()
             .await
             .map_err(|e| InternalError::Generic(e.to_string()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientBuilder;
+    #[cfg(feature = "encryption")]
+    use crate::encryption::Aes256GcmSivEncryption;
+    use crate::encryption::{new, Encryption};
+    use bytes::BytesMut;
+    use url::Url;
+    use ya_relay_core::crypto::SessionCrypto;
+    use ya_relay_core::udp_stream::resolve_max_payload_size;
+    use ya_relay_proto::proto::{Forward, Payload, SESSION_ID_SIZE};
+
+    fn encode_forward(encryption: &dyn Encryption, payload_size: usize) -> BytesMut {
+        let payload = encryption
+            .encrypt(Payload::from(vec![0; payload_size]))
+            .unwrap();
+        let mut forward = Forward::new([0; SESSION_ID_SIZE], 0, payload);
+        if encryption.encryption_flag() {
+            forward.set_encrypted();
+        }
+
+        let mut encoded = BytesMut::new();
+        forward.encode(&mut encoded);
+        encoded
+    }
+
+    #[actix_rt::test]
+    async fn maximum_plaintext_forward_fits_udp_payload_budget() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:1").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let encryption = new(vec![], None, SessionCrypto::generate().unwrap()).unwrap();
+
+        let encoded = encode_forward(
+            encryption.as_ref(),
+            config.stack_config.max_transmission_unit,
+        );
+
+        assert!(encoded.len() <= resolve_max_payload_size().await.unwrap());
+    }
+
+    #[cfg(feature = "encryption")]
+    #[actix_rt::test]
+    async fn maximum_encrypted_forward_fits_udp_payload_budget() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:1").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let encryption = Aes256GcmSivEncryption::new([42; 32]);
+
+        let encoded = encode_forward(&encryption, config.stack_config.max_transmission_unit);
+
+        assert!(encoded.len() <= resolve_max_payload_size().await.unwrap());
     }
 }
