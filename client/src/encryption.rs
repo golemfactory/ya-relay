@@ -198,12 +198,42 @@ mod tests {
         assert!(!encryption.encryption_flag());
     }
 
+    #[cfg(all(feature = "encryption", not(feature = "encryption-strict")))]
+    #[test]
+    fn falls_back_to_plaintext_when_peer_only_supports_unknown_encryption() {
+        let local = SessionCrypto::generate().unwrap();
+        let remote = SessionCrypto::generate().unwrap();
+
+        let encryption = new(
+            vec!["unknown-encryption".to_string()],
+            Some(remote.pub_key()),
+            local,
+        )
+        .unwrap();
+
+        assert!(!encryption.encryption_flag());
+    }
+
     #[cfg(feature = "encryption-strict")]
     #[test]
     fn rejects_peer_without_session_encryption() {
         let local = SessionCrypto::generate().unwrap();
 
         assert!(new(vec![], None, local).is_err());
+    }
+
+    #[cfg(feature = "encryption-strict")]
+    #[test]
+    fn rejects_peer_that_only_supports_unknown_encryption() {
+        let local = SessionCrypto::generate().unwrap();
+        let remote = SessionCrypto::generate().unwrap();
+
+        assert!(new(
+            vec!["unknown-encryption".to_string()],
+            Some(remote.pub_key()),
+            local,
+        )
+        .is_err());
     }
 
     #[test]
@@ -225,5 +255,19 @@ mod tests {
         let decrypted = encryption.decrypt(encrypted).unwrap();
 
         assert_eq!(decrypted, plaintext);
+    }
+
+    #[test]
+    fn generates_a_fresh_nonce_for_each_encryption() {
+        const NONCE_SIZE: usize = 12;
+
+        let encryption = Aes256GcmSivEncryption::new([42; 32]);
+        let plaintext = Payload::from(b"hello".to_vec());
+
+        let first = encryption.encrypt(plaintext.clone()).unwrap().into_vec();
+        let second = encryption.encrypt(plaintext).unwrap().into_vec();
+
+        assert_ne!(&first[..NONCE_SIZE], &second[..NONCE_SIZE]);
+        assert_ne!(first, second);
     }
 }
