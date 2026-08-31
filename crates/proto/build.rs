@@ -2,6 +2,7 @@ use prost_build::Config;
 use std::env;
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=PROTOC");
     println!("cargo:rerun-if-env-changed=BUILD_SHOW_GENPATH");
     if env::var("BUILD_SHOW_GENPATH").is_ok() {
         eprintln!("Generating code into {}", env::var("OUT_DIR").unwrap());

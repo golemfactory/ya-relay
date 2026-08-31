@@ -15,7 +15,10 @@ encryption-strict = ["encryption", "ya-relay-client/encryption-strict"]
 [package.metadata.cross.target.x86_64-pc-windows-gnu]
 image = "ghcr.io/cross-rs/x86_64-pc-windows-gnu:edge"
 pre-build = [
-    "curl --proto '=https' --tlsv1.2 -fsSL https://mise.run | MISE_VERSION=v2026.8.16 MISE_INSTALL_PATH=/usr/local/bin/mise sh",
+    "curl --proto '=https' --tlsv1.2 -fsSLo /tmp/mise.tar.gz https://github.com/jdx/mise/releases/download/v2026.8.16/mise-v2026.8.16-linux-x64.tar.gz",
+    "echo '0545eca5bc01843bb3f89b58d995b81ff345d579de23f7fbe109a5e6ca653b7d  /tmp/mise.tar.gz' | sha256sum --check --strict",
+    "tar -xzf /tmp/mise.tar.gz -C /usr/local/bin --strip-components=2 mise/bin/mise",
+    "rm /tmp/mise.tar.gz",
     "mise use --global protoc@24.4",
     "ln -s \"$(mise where protoc@24.4)/bin/protoc\" /usr/local/bin/protoc",
 ]
