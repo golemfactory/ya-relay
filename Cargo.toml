@@ -12,6 +12,14 @@ default = []
 encryption = ["ya-relay-client/encryption"]
 encryption-strict = ["encryption", "ya-relay-client/encryption-strict"]
 
+[package.metadata.cross.target.x86_64-pc-windows-gnu]
+image = "ghcr.io/cross-rs/x86_64-pc-windows-gnu:edge"
+pre-build = [
+    "curl --proto '=https' --tlsv1.2 -fsSL https://mise.run | MISE_VERSION=v2026.8.16 MISE_INSTALL_PATH=/usr/local/bin/mise sh",
+    "mise use --global protoc@24.4",
+    "ln -s \"$(mise where protoc@24.4)/bin/protoc\" /usr/local/bin/protoc",
+]
+
 [workspace]
 members = ["client", "crates/*", "server"]
 

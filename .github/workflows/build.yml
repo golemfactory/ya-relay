@@ -14,7 +14,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v5
+
+      - name: Install tools
+        uses: jdx/mise-action@v4
 
       - name: Cmake
         run: |
@@ -22,15 +25,10 @@ jobs:
           cmake --version
 
       - name: Check formatting
-        uses: actions-rs/cargo@v1
-        with:
-          command: fmt
-          args: --all -- --check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
-        uses: actions-rs/cargo@v1
-        with:
-          command: clippy
+        run: cargo clippy
 
   tests:
     name: Tests
@@ -42,7 +40,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v5
+
+      - name: Install tools
+        uses: jdx/mise-action@v4
 
       - name: Cmake
         if: matrix.os == 'ubuntu-latest'
@@ -50,20 +51,10 @@ jobs:
           sudo apt-get install -y cmake
           cmake --version
 
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v2
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          version: "24.x"
-
       - name: Unit tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --workspace
+        run: cargo test --workspace
         env:
           RUST_BACKTRACE: 1
-          GITHUB_TOKEN: ${{secrets.GITHUB_TOKEN}}
 
   integration_tests:
     name: Integration Tests
@@ -74,9 +65,12 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v1
+        uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v4
+      - name: Install tools
+        uses: jdx/mise-action@v4
+
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.10'
 
@@ -90,22 +84,16 @@ jobs:
         run: poetry run poe checks
         working-directory: tests_integration
 
-      - name: Install tools
+      - name: Install system tools
         run: |
           sudo apt-get install -y cmake
           cmake --version
 
       - name: Build relay server
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: -p ya-relay-server --release
+        run: cargo build -p ya-relay-server --release
 
       - name: Build http client
-        uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: -p ya-relay-client --example http_client --release
+        run: cargo build -p ya-relay-client --example http_client --release
 
       - name: Run test suite
         run: poetry run pytest
