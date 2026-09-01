@@ -60,7 +60,7 @@ features = [
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread"] }
 test-case = "3.1"
-ethsign = "0.8.0"
+ethsign = "0.9"
 test-log = "0.2.13"
 
 

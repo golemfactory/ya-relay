@@ -1,6 +1,6 @@
 [package]
 name = "ya-relay-core"
-version = "0.4.1"
+version = "0.5.0"
 authors = ["Golem Factory <contact@golem.network>"]
 edition = "2018"
 homepage = "https://github.com/golemfactory/ya-relay/crates/core"
@@ -19,7 +19,7 @@ anyhow = "1.0.56"
 chrono = "0.4"
 derive_more = "0.99"
 digest = "0.9"
-ethsign = "0.8"
+ethsign = "0.9"
 futures = "0.3"
 #governor = "0.3.2"
 hex = "0.4"
@@ -36,7 +36,7 @@ tokio = { version = "1", features = ["net", "sync", "macros", "time"] }
 tokio-util = { version = "0.7", features = ["codec"] }
 url = "2.1"
 uuid = { version = "0.8", features = ["v4"] }
-secp256k1 = { version = "0.20.3", features = ["global-context"] }
+secp256k1 = { version = "0.27", features = ["global-context", "rand-std"] }
 
 [dev-dependencies]
 env_logger = { version = "0.10", default-features = false }

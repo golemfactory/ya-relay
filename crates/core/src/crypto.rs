@@ -20,7 +20,7 @@ pub struct SessionCrypto {
 impl SessionCrypto {
     pub fn generate() -> anyhow::Result<Self> {
         let secp = Secp256k1::new();
-        let mut rng = rand::rngs::OsRng::new()?;
+        let mut rng = rand::rngs::OsRng;
 
         let (secret, public_key) = secp.generate_keypair(&mut rng);
         Ok(SessionCrypto { secret, public_key })
@@ -36,7 +36,7 @@ impl SessionCrypto {
         pk_bytes[1..].copy_from_slice(pk.bytes());
         pk_bytes[0] = 4;
         let mut output = [0u8; 32];
-        let pk = secp256k1::key::PublicKey::from_slice(&pk_bytes).unwrap();
+        let pk = secp256k1::PublicKey::from_slice(&pk_bytes).unwrap();
         let ss = secp256k1::ecdh::SharedSecret::new(&pk, &self.secret);
         output.copy_from_slice(ss.as_ref());
         output
