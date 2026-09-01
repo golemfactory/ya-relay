@@ -443,7 +443,10 @@ impl SocketMemory {
     }
 
     pub fn default_raw() -> Self {
-        Self::default_tcp()
+        Self {
+            rx: Memory::default_raw_rx(),
+            tx: Memory::default_raw_tx(),
+        }
     }
 }
 
@@ -515,17 +518,19 @@ impl Memory {
     }
 
     pub fn default_udp_rx() -> Self {
-        // 5.15.0-39-generic #42-Ubuntu SMP
-        // net.ipv4.udp_mem = 763233	1017647	1526466
-        // net.ipv4.udp_rmem_min = 4096
-        Self::new(10 * 1024, 128 * 1024, 1490 * 1024).expect("Invalid UDP recv buffer bounds")
+        Self::new(10 * 1024, 128 * 1024, 128 * 1024).expect("Invalid UDP recv buffer bounds")
     }
 
     pub fn default_udp_tx() -> Self {
-        // 5.15.0-39-generic #42-Ubuntu SMP
-        // net.ipv4.udp_mem = 763233	1017647	1526466
-        // net.ipv4.udp_wmem_min = 4096
-        Self::new(10 * 1024, 128 * 1024, 1490 * 1024).expect("Invalid UDP send buffer bounds")
+        Self::new(10 * 1024, 128 * 1024, 128 * 1024).expect("Invalid UDP send buffer bounds")
+    }
+
+    pub fn default_raw_rx() -> Self {
+        Self::new(4 * 1024, 128 * 1024, 128 * 1024).expect("Invalid raw recv buffer bounds")
+    }
+
+    pub fn default_raw_tx() -> Self {
+        Self::new(4 * 1024, 16 * 1024, 16 * 1024).expect("Invalid raw send buffer bounds")
     }
 }
 
@@ -574,4 +579,43 @@ fn meta_storage<H: Clone>(size: usize) -> Vec<PacketMetadata<H>> {
 #[inline]
 fn payload_storage<T: Default + Clone>(size: usize) -> Vec<T> {
     vec![Default::default(); size]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packet_socket_defaults_limit_initial_allocation() {
+        for memory in [
+            SocketMemory::default_udp(),
+            SocketMemory::default_icmp(),
+            SocketMemory::default_raw(),
+        ] {
+            assert_eq!(memory.rx.max, memory.rx.default);
+            assert_eq!(memory.tx.max, memory.tx.default);
+        }
+    }
+
+    #[test]
+    fn socket_allocations_follow_configured_maximum() {
+        let rx = Memory::new(1024, 2048, 4096).unwrap();
+        let tx = Memory::new(1024, 2048, 8192).unwrap();
+
+        let tcp = tcp_socket(rx, tx);
+        assert_eq!(tcp.recv_capacity(), rx.max);
+        assert_eq!(tcp.send_capacity(), tx.max);
+
+        let udp = udp_socket(rx, tx);
+        assert_eq!(udp.payload_recv_capacity(), rx.max);
+        assert_eq!(udp.payload_send_capacity(), tx.max);
+
+        let icmp = icmp_socket(rx, tx);
+        assert_eq!(icmp.payload_recv_capacity(), rx.max);
+        assert_eq!(icmp.payload_send_capacity(), tx.max);
+
+        let raw = raw_socket(IpVersion::Ipv4, IpProtocol::Igmp, rx, tx);
+        assert_eq!(raw.payload_recv_capacity(), rx.max);
+        assert_eq!(raw.payload_send_capacity(), tx.max);
+    }
 }
