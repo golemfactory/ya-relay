@@ -797,7 +797,13 @@ impl SessionLayer {
 
         // Note: This function shouldn't return before changing state to `Closed` (abort-safety).
         let entry = self.registry.guard(node_id, &[]).await;
-        entry.transition(SessionState::Closing).await?;
+        let previous = entry.begin_closing().await;
+        if !matches!(
+            previous,
+            SessionState::Established(_) | SessionState::Closed
+        ) {
+            log::warn!("Disconnecting Node [{node_id}] from inconsistent state: {previous}");
+        }
         self.unregister(node_id).await;
         entry.transition(SessionState::Closed).await?;
         Ok(())
@@ -1961,6 +1967,21 @@ mod encryption_sync_tests {
 
         layer.record_encryption_sync_key_change(node_id);
         assert!(layer.encryption_sync_refresh_due(node_id));
+    }
+
+    #[actix_rt::test]
+    async fn disconnecting_closed_node_is_idempotent() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let layer = SessionLayer::new(Arc::new(config));
+        let node_id = NodeId::from([1; 20]);
+
+        layer.registry.guard(node_id, &[]).await;
+        layer.disconnect(node_id).await.unwrap();
+
+        assert!(layer.registry.get_entry(node_id).await.is_none());
     }
 }
 
