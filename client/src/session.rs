@@ -182,8 +182,10 @@ pub struct SessionLayerState {
     pub nodes: HashMap<NodeId, Arc<NodeRouting>>,
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
     pub p2p_nodes: HashMap<NodeId, Arc<DirectSession>>,
+    /// Limits notifications sent after local decryption failures.
     encryption_sync_backoff: HashMap<NodeId, EncryptionSyncBackoff>,
-    encryption_sync_refresh_after: HashMap<NodeId, Instant>,
+    /// Independently limits relay lookups requested by the peer.
+    encryption_sync_refresh_backoff: HashMap<NodeId, EncryptionSyncBackoff>,
 
     pub(crate) init_protocol: Option<SessionInitializer>,
 
@@ -330,7 +332,7 @@ impl SessionDeregistration for SessionLayer {
 
                     state.p2p_nodes.remove(&id);
                     state.encryption_sync_backoff.remove(&id);
-                    state.encryption_sync_refresh_after.remove(&id);
+                    state.encryption_sync_refresh_backoff.remove(&id);
                     // `NodeRouting` will be dropped here and all `RoutingSender` containing `Weak<NodeRouting>`
                     // pointing to this Node will lose connection.
                     if let Some(direct) = state
@@ -401,14 +403,14 @@ impl SessionDeregistration for SessionLayer {
                 state.p2p_nodes.remove(id);
                 state.nodes.remove(id);
                 state.encryption_sync_backoff.remove(id);
-                state.encryption_sync_refresh_after.remove(id);
+                state.encryption_sync_refresh_backoff.remove(id);
             }
             state.p2p_sessions.remove(&session.raw.remote);
 
             for id in forwards.iter().flat_map(|entry| entry.identities.iter()) {
                 state.nodes.remove(id);
                 state.encryption_sync_backoff.remove(id);
-                state.encryption_sync_refresh_after.remove(id);
+                state.encryption_sync_refresh_backoff.remove(id);
             }
         }
 
@@ -606,20 +608,19 @@ impl SessionLayer {
     }
 
     fn encryption_sync_refresh_due(&self, node_id: NodeId) -> bool {
-        let now = Instant::now();
-        let mut state = self.state.lock();
-        if state
-            .encryption_sync_refresh_after
-            .get(&node_id)
-            .map(|next| now < *next)
-            .unwrap_or(false)
-        {
-            return false;
-        }
-        state
-            .encryption_sync_refresh_after
-            .insert(node_id, now + ENCRYPTION_SYNC_INITIAL_INTERVAL);
-        true
+        self.state
+            .lock()
+            .encryption_sync_refresh_backoff
+            .entry(node_id)
+            .or_insert_with(EncryptionSyncBackoff::new)
+            .record_failure(Instant::now())
+    }
+
+    fn record_encryption_sync_key_change(&self, node_id: NodeId) {
+        self.state
+            .lock()
+            .encryption_sync_refresh_backoff
+            .remove(&node_id);
     }
 
     fn record_successful_decryption(&self, node_id: NodeId) {
@@ -631,12 +632,16 @@ impl SessionLayer {
             .unwrap_or(false);
         if reset {
             state.encryption_sync_backoff.remove(&node_id);
-            state.encryption_sync_refresh_after.remove(&node_id);
+            state.encryption_sync_refresh_backoff.remove(&node_id);
             log::debug!("Encryption sync backoff reset for Node [{node_id}]");
         }
     }
 
-    async fn refresh_node_encryption(&self, node_id: NodeId) -> anyhow::Result<()> {
+    async fn refresh_node_encryption(&self, node_id: NodeId) -> anyhow::Result<bool> {
+        let previous_session_key = match self.registry.get_entry(node_id).await {
+            Some(entry) => entry.info().await.just_get().session_key,
+            None => None,
+        };
         let server_session = self
             .server_session()
             .await
@@ -651,6 +656,8 @@ impl SessionLayer {
         let session_key = info.session_key.clone().ok_or_else(|| {
             anyhow!("Refreshed Node [{node_id}] has no verified encryption session key")
         })?;
+        let session_key_changed =
+            previous_session_key.as_ref().map(|key| key.bytes()) != Some(session_key.bytes());
         if info.identities.is_empty() {
             bail!("Refreshed Node [{node_id}] has no identities");
         }
@@ -687,8 +694,10 @@ impl SessionLayer {
         ))
         .await?;
 
-        log::info!("Refreshed encryption routing for Node [{node_id}]");
-        Ok(())
+        log::info!(
+            "Refreshed encryption routing for Node [{node_id}] (session key changed: {session_key_changed})"
+        );
+        Ok(session_key_changed)
     }
 
     async fn handle_encryption_failure(&self, node_id: NodeId) {
@@ -696,12 +705,12 @@ impl SessionLayer {
             return;
         }
 
-        if self.encryption_sync_refresh_due(node_id) {
-            self.refresh_node_encryption(node_id)
-                .await
-                .map_err(|e| log::debug!("Encryption refresh for Node [{node_id}] failed: {e}"))
-                .ok();
-        }
+        // Do not share this throttle with peer-requested refreshes. A failure in the opposite
+        // direction is independent evidence that our cached key may already be outdated.
+        self.refresh_node_encryption(node_id)
+            .await
+            .map_err(|e| log::debug!("Encryption refresh for Node [{node_id}] failed: {e}"))
+            .ok();
 
         match self.get_node_routing(node_id).await {
             Some(routing) => {
@@ -723,12 +732,14 @@ impl SessionLayer {
 
     async fn handle_encryption_sync(&self, node_id: NodeId) {
         if !self.encryption_sync_refresh_due(node_id) {
+            log::debug!("Encryption sync refresh for Node [{node_id}] suppressed by backoff");
             return;
         }
-        self.refresh_node_encryption(node_id)
-            .await
-            .map_err(|e| log::debug!("Encryption sync requested by Node [{node_id}] failed: {e}"))
-            .ok();
+        match self.refresh_node_encryption(node_id).await {
+            Ok(true) => self.record_encryption_sync_key_change(node_id),
+            Ok(false) => {}
+            Err(e) => log::debug!("Encryption sync requested by Node [{node_id}] failed: {e}"),
+        }
     }
 
     pub async fn sessions(&self) -> Vec<Weak<DirectSession>> {
@@ -786,7 +797,13 @@ impl SessionLayer {
 
         // Note: This function shouldn't return before changing state to `Closed` (abort-safety).
         let entry = self.registry.guard(node_id, &[]).await;
-        entry.transition(SessionState::Closing).await?;
+        let previous = entry.begin_closing().await;
+        if !matches!(
+            previous,
+            SessionState::Established(_) | SessionState::Closed
+        ) {
+            log::warn!("Disconnecting Node [{node_id}] from inconsistent state: {previous}");
+        }
         self.unregister(node_id).await;
         entry.transition(SessionState::Closed).await?;
         Ok(())
@@ -1882,9 +1899,12 @@ impl ConnectionMethod {
 #[cfg(test)]
 mod encryption_sync_tests {
     use super::{
-        unencrypted_packet_allowed, Duration, EncryptionSyncBackoff, Instant,
+        unencrypted_packet_allowed, Duration, EncryptionSyncBackoff, Instant, NodeId, SessionLayer,
         ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD,
     };
+    use crate::config::ClientBuilder;
+    use std::sync::Arc;
+    use url::Url;
 
     #[test]
     fn negotiated_encryption_cannot_be_downgraded() {
@@ -1930,6 +1950,38 @@ mod encryption_sync_tests {
             assert!(!state.record_success());
         }
         assert!(state.record_success());
+    }
+
+    #[actix_rt::test]
+    async fn peer_requested_refresh_has_independent_backoff() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let layer = SessionLayer::new(Arc::new(config));
+        let node_id = NodeId::default();
+
+        assert!(layer.encryption_sync_notification_due(node_id));
+        assert!(layer.encryption_sync_refresh_due(node_id));
+        assert!(!layer.encryption_sync_refresh_due(node_id));
+
+        layer.record_encryption_sync_key_change(node_id);
+        assert!(layer.encryption_sync_refresh_due(node_id));
+    }
+
+    #[actix_rt::test]
+    async fn disconnecting_closed_node_is_idempotent() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let layer = SessionLayer::new(Arc::new(config));
+        let node_id = NodeId::from([1; 20]);
+
+        layer.registry.guard(node_id, &[]).await;
+        layer.disconnect(node_id).await.unwrap();
+
+        assert!(layer.registry.get_entry(node_id).await.is_none());
     }
 }
 
