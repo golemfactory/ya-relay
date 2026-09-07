@@ -548,7 +548,7 @@ impl SessionLayer {
     pub async fn is_p2p(&self, node_id: NodeId) -> bool {
         match self.get_node_routing(node_id).await {
             None => false,
-            Some(routing) => routing.session_type() == SessionType::P2P,
+            Some(routing) => matches!(routing.session_type(), Some(SessionType::P2P)),
         }
     }
 
@@ -855,7 +855,9 @@ impl SessionLayer {
             // will come later, will get through, but the rest of threads would wait for `Established` state.
             self.await_connected(node_id).await?;
 
-            log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
+            if let (Some(route), Some(session_type)) = (routing.route(), routing.session_type()) {
+                log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {route} ({session_type})).");
+            }
             return Ok(routing);
         }
 
