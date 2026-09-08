@@ -248,6 +248,7 @@ mod tests {
         encoded
     }
 
+    #[cfg(not(feature = "encryption-strict"))]
     #[actix_rt::test]
     async fn maximum_plaintext_forward_fits_udp_payload_budget() {
         let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:1").unwrap())

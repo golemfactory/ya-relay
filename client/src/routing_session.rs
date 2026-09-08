@@ -192,35 +192,31 @@ impl RoutingSender {
         self.target
     }
 
-    pub fn route(&self) -> NodeId {
-        if let Some(routing) = self.node_routing.upgrade() {
-            if let Some(route) = routing.route.upgrade() {
-                return route.owner.default_id;
-            }
-        }
-        unimplemented!()
+    pub fn route(&self) -> Option<NodeId> {
+        self.node_routing
+            .upgrade()
+            .and_then(|routing| routing.route.upgrade())
+            .map(|route| route.owner.default_id)
     }
 
     /// Returns id of session used to forward packets.
-    pub fn session_id(&self) -> SessionId {
-        if let Some(routing) = self.node_routing.upgrade() {
-            if let Some(route) = routing.route.upgrade() {
-                return route.raw.id;
-            }
-        }
-        unimplemented!()
+    pub fn session_id(&self) -> Option<SessionId> {
+        self.node_routing
+            .upgrade()
+            .and_then(|routing| routing.route.upgrade())
+            .map(|route| route.raw.id)
     }
 
-    pub fn session_type(&self) -> SessionType {
-        if let Some(routing) = self.node_routing.upgrade() {
-            if let Some(route) = routing.route.upgrade() {
-                return match routing.node.default_id.node_id == route.owner.default_id {
-                    true => SessionType::P2P,
-                    false => SessionType::Relay,
-                };
-            }
-        }
-        unimplemented!()
+    pub fn session_type(&self) -> Option<SessionType> {
+        self.node_routing.upgrade().and_then(|routing| {
+            routing.route.upgrade().map(|route| {
+                if routing.node.default_id.node_id == route.owner.default_id {
+                    SessionType::P2P
+                } else {
+                    SessionType::Relay
+                }
+            })
+        })
     }
 
     pub fn decrypt(&self, p: Payload) -> Result<Payload, EncryptionError> {
