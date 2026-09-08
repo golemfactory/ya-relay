@@ -22,6 +22,7 @@ use crate::session::SessionLayer;
 ///       key of destination Node.
 #[derive(Clone)]
 pub struct NodeRouting {
+    pub(crate) generation: u64,
     pub node: NodeEntry<Identity>,
 
     /// If `NodeRouting` is relayed session, than we have Relay Server `DirectSession` here.
@@ -37,8 +38,10 @@ impl NodeRouting {
         session: Arc<DirectSession>,
         encryption: Box<dyn Encryption>,
         authenticated_identities: Vec<NodeId>,
+        generation: u64,
     ) -> Arc<NodeRouting> {
         Arc::new(NodeRouting {
+            generation,
             node,
             route: Arc::downgrade(&session),
             encryption: Arc::new(encryption),
@@ -178,7 +181,7 @@ impl RoutingSender {
     /// Calling this function doesn't guarantee, that `RoutingSender::send` won't require
     /// waiting for session. Connection can be lost again before we call `send.
     pub async fn connect(&mut self) -> Result<(), SessionError> {
-        self.layer.session(self.target).await?;
+        self.node_routing = self.layer.session(self.target).await?.node_routing;
         Ok(())
     }
 

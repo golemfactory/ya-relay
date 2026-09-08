@@ -18,6 +18,8 @@ use crate::direct_session::DirectSession;
 use crate::raw_session::RawSession;
 
 use crate::session::SessionLayer;
+#[cfg(test)]
+mod response_lifetime_tests;
 use ya_relay_proto::codec;
 use ya_relay_proto::proto::{self, RequestId};
 
@@ -44,7 +46,7 @@ where
 
         if session.is_some() && packet.is_protocol_packet() {
             let s = session.clone().unwrap();
-            if s.raw.id.to_vec() != packet.session_id() {
+            if s.raw.id.as_ref() != packet.session_id() {
                 log::warn!(
                     "[dispatch]: ignoring protocol packet with session id mismatch - current session doesn't match packet session: {} != {}",
                     s.raw.id,
@@ -156,6 +158,26 @@ pub struct Dispatcher {
     error_handlers: Arc<Mutex<HashMap<i32, ErrorHandler>>>,
 }
 
+struct PendingResponse {
+    responses: Arc<Mutex<HashMap<u64, ResponseSender>>>,
+    request_id: RequestId,
+    receiver: oneshot::Receiver<Dispatched<proto::response::Kind>>,
+}
+
+impl Drop for PendingResponse {
+    fn drop(&mut self) {
+        self.receiver.close();
+        let mut responses = self.responses.lock().unwrap();
+        // A duplicate request ID may already belong to a newer receiver.
+        if responses
+            .get(&self.request_id)
+            .is_some_and(|sender| sender.is_canceled())
+        {
+            responses.remove(&self.request_id);
+        }
+    }
+}
+
 impl Default for Dispatcher {
     fn default() -> Self {
         Self {
@@ -234,10 +256,8 @@ impl Dispatcher {
     where
         proto::response::Kind: TryInto<T, Error = ()>,
     {
-        let this = self.clone();
         let (tx, rx) = oneshot::channel();
 
-        let request_id_ = request_id;
         if self
             .responses
             .lock()
@@ -248,8 +268,14 @@ impl Dispatcher {
             log::warn!("Duplicate dispatch request id: {request_id}");
         }
 
+        let mut pending = PendingResponse {
+            responses: self.responses.clone(),
+            request_id,
+            receiver: rx,
+        };
+
         async move {
-            let response = tokio::time::timeout(timeout, rx)
+            let response = tokio::time::timeout(timeout, &mut pending.receiver)
                 .await
                 .map_err(|_| anyhow::anyhow!("Request timed out after {} ms", timeout.as_millis()))?
                 .map_err(|_| anyhow::anyhow!("Request cancelled"))?;
@@ -269,10 +295,6 @@ impl Dispatcher {
                 packet,
             })
         }
-        .then(move |result| async move {
-            this.responses.lock().unwrap().remove(&request_id_);
-            result
-        })
         .boxed_local()
     }
 

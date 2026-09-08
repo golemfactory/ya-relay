@@ -415,6 +415,58 @@ mod tests {
     }
 
     #[test]
+    fn hello_session_id_is_bound_to_source_endpoint() {
+        let handler = SessionHandler::new(
+            &SessionManager::new(),
+            &SessionHandlerConfig {
+                difficulty: 1,
+                salt: Some(0),
+                min_client_version: "0.7.0".parse().unwrap(),
+            },
+        );
+        let victim = "127.0.0.1:12345".parse().unwrap();
+        let attacker = "127.0.0.1:12346".parse().unwrap();
+        let epoch = handler.epoch();
+        let victim_id = handler.gen_new_challenge(victim, epoch);
+        let attacker_id = handler.gen_new_challenge(attacker, epoch);
+        assert_ne!(victim_id, attacker_id);
+        assert!(!handler.check_session_id(victim_id, attacker));
+        assert!(handler.check_session_id(victim_id, victim));
+
+        let request = request::Session {
+            client_version: "0.7.0".into(),
+            ..Default::default()
+        };
+        let (_, response) = handler
+            .handle(&Clock::now(), attacker, 1, None, &request)
+            .unwrap();
+        // A hello returns the sender's cookie, not a cookie for another endpoint.
+        assert_ne!(response.session_id.as_slice(), victim_id.as_ref());
+        assert!(handler.check_session_id(response.session_id.try_into().unwrap(), attacker));
+    }
+
+    #[test]
+    fn repeated_hello_reuses_cookie_within_epoch_and_expires_old_epochs() {
+        let handler = SessionHandler::new(
+            &SessionManager::new(),
+            &SessionHandlerConfig {
+                difficulty: 1,
+                salt: Some(0),
+                min_client_version: "0.7.0".parse().unwrap(),
+            },
+        );
+        let addr = "127.0.0.1:12345".parse().unwrap();
+        let epoch = handler.epoch();
+        let current = handler.gen_new_challenge(addr, epoch);
+        for _ in 0..10_000 {
+            assert_eq!(handler.gen_new_challenge(addr, epoch), current);
+        }
+        assert_ne!(handler.gen_new_challenge(addr, epoch - 1), current);
+        assert!(handler.check_session_id(handler.gen_new_challenge(addr, epoch - 1), addr));
+        assert!(!handler.check_session_id(handler.gen_new_challenge(addr, epoch - 3), addr));
+    }
+
+    #[test]
     fn rejects_client_version_below_minimum() {
         let minimum = "0.7.0".parse().unwrap();
 

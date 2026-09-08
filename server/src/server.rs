@@ -242,7 +242,7 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                         }
                         PacketType::Data => match p {
                             PacketKind::Packet(Packet { session_id, kind: Some(packet::Kind::Request(Request { request_id, kind: Some(request) })) }) => {
-                                let session_id: Option<SessionId> = session_id.try_into().ok();
+                                let session_id = SessionId::from_wire(&session_id)?;
 
                                 log::debug!("[{src}] got session_id={:?}: request_id={}: {:?}", session_id, request_id, request);
 
@@ -279,14 +279,15 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                                                    session_id,
                                                    kind: Some(packet::Kind::Control(Control {
                                                                                         kind: Some(control::Kind::Disconnected(control::Disconnected {
-                                                                                                                                   by: Some(control::disconnected::By::SessionId(_))
+                                                                                                                                   by: Some(control::disconnected::By::SessionId(to_close))
                                                                                                                                }))
                                                                                     }))
                                                }) => {
                                 let session_id: Option<SessionId> = session_id.try_into().ok();
                                 if let Some(session_id) = session_id {
-                                    session_manager.remove_session(&session_id);
-                                    log::debug!(target: "request:disconnect", "[{src}] session {session_id} disconnected");
+                                    if session_id.as_ref() == to_close.as_slice() && session_manager.remove_session_from(&session_id, src).is_some() {
+                                        log::debug!(target: "request:disconnect", "[{src}] session {session_id} disconnected");
+                                    }
                                 }
                                 None
                             }
