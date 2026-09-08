@@ -265,7 +265,7 @@ async fn review_real_relay_restart_recovers_without_continuous_traffic() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(packet.payload, vec![2u8].into());
+    assert_eq!(packet.payload.as_ref(), [2u8]);
 }
 
 #[actix_rt::test]
@@ -361,11 +361,13 @@ async fn review_peer_restart_rotates_key_and_next_datagram_recovers() {
             if let Ok(Some(packet)) =
                 tokio::time::timeout(Duration::from_millis(100), receiver.recv()).await
             {
-                break packet;
+                if packet.payload.as_ref() == [3u8] {
+                    break packet;
+                }
             }
         }
     })
     .await
     .expect("encryption did not recover after peer key rotation");
-    assert_eq!(recovered.payload, vec![3u8].into());
+    assert_eq!(recovered.payload.as_ref(), [3u8]);
 }
