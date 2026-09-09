@@ -4,6 +4,7 @@ use futures::future::{AbortHandle, Abortable};
 use std::collections::HashMap;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::{broadcast, RwLock};
@@ -21,6 +22,12 @@ use ya_relay_core::NodeId;
 use ya_relay_proto::proto;
 use ya_relay_proto::proto::{SlotId, FORWARD_SLOT_ID};
 
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+fn next_generation() -> u64 {
+    NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
+}
+
 #[derive(Clone)]
 pub struct NetworkViewConfig {
     pub node_info_ttl: chrono::Duration,
@@ -37,9 +44,8 @@ pub struct NetworkView {
     state: Arc<RwLock<NetworkViewState>>,
 }
 
-/// TODO: We never remove entries from State. In general we should keep entries
-///       as long as possible, because removal could break uniqueness of NodeView
-///       in case other threads will attempt to initialize session at this exact moment.
+/// Entries are unique while live. Retirement removes every alias and endpoint;
+/// generation-bound users cannot publish into a replacement entry.
 #[derive(Default)]
 struct NetworkViewState {
     by_node_id: HashMap<NodeId, NodeView>,
@@ -54,10 +60,7 @@ impl NetworkView {
         }
     }
 
-    /// Returns `SessionGuard` for other Node. Operation is atomic,
-    /// you should get the same object in all places in the code.
-    /// `SessionGuard` should be stored even if connection was closed,
-    /// to avoid having multiple objects pointing to the same Node.
+    /// Return the unique live view for this node, creating one if necessary.
     pub async fn guard(&self, node_id: NodeId, addrs: &[SocketAddr]) -> NodeView {
         let mut state = self.state.write().await;
         if let Some(target) = state.find(node_id, addrs) {
@@ -82,14 +85,31 @@ impl NetworkView {
     }
 
     pub async fn remove_node(&self, node_id: NodeId) {
-        log::trace!("[remove_node]: node_id {}", node_id);
-        let mut state = self.state.write().await;
-        if let Some(target) = state.find(node_id, &[]) {
-            if node_id != NodeId::default() {
-                state.by_node_id.remove(&node_id).is_some();
-                state.by_addr.retain(|_, node_view| node_view.id != node_id);
-            }
+        if let Some(node) = self.get_entry(node_id).await {
+            self.remove_generation(&node.snapshot()).await;
         }
+    }
+
+    /// Retire an entire identity group, but never a replacement for that group.
+    pub(crate) async fn remove_generation(&self, node: &NodeSnapshot) -> bool {
+        let mut state = self.state.write().await;
+        let mut target = node.state.write().await;
+        if !node.is_current() {
+            return false;
+        }
+        node.retired.store(true, Ordering::Release);
+        target.state = SessionState::Closed;
+        for handle in target.abort_handle.drain(..) {
+            handle.abort();
+        }
+        state
+            .by_node_id
+            .retain(|_, entry| !Arc::ptr_eq(&entry.state, &node.state));
+        state
+            .by_addr
+            .retain(|_, entry| !Arc::ptr_eq(&entry.state, &node.state));
+        node.notify_change(SessionState::Closed);
+        true
     }
 
     /// Updates information about given Node.
@@ -154,6 +174,64 @@ impl NetworkView {
     pub async fn get_entry(&self, node_id: NodeId) -> Option<NodeView> {
         let state = self.state.read().await;
         state.find(node_id, &[])
+    }
+
+    /// Commit metadata and routing for one captured generation. The callback must
+    /// validate its route before mutating it and must not await or reenter this registry.
+    /// Lock order: registry, node lifecycle, routing table.
+    pub(crate) async fn commit_refresh(
+        &self,
+        owner: &NodeSnapshot,
+        info: NodeInfo,
+        publish: impl FnOnce() -> anyhow::Result<()>,
+    ) -> anyhow::Result<()> {
+        let mut registry = self.state.write().await;
+        let mut node = owner.state.write().await;
+        if !owner.is_current()
+            || matches!(
+                node.state,
+                SessionState::Closed | SessionState::Closing | SessionState::FailedEstablish(_)
+            )
+        {
+            bail!("Encryption refresh generation was retired");
+        }
+        if !info.identities.iter().any(|id| id.node_id == owner.id) {
+            bail!("Encryption refresh changed the node identity");
+        }
+        for identity in &info.identities {
+            if registry
+                .by_node_id
+                .get(&identity.node_id)
+                .is_some_and(|entry| !Arc::ptr_eq(&entry.state, &owner.state))
+            {
+                bail!("Encryption refresh conflicts with another identity generation");
+            }
+        }
+        for endpoint in &info.endpoints {
+            if registry
+                .by_addr
+                .get(&endpoint.address)
+                .is_some_and(|entry| !Arc::ptr_eq(&entry.state, &owner.state))
+            {
+                bail!("Encryption refresh conflicts with another endpoint generation");
+            }
+        }
+
+        // No metadata or aliases are changed if the physical route has been replaced.
+        publish()?;
+        let live = NodeView {
+            expected_generation: None,
+            ..owner.0.clone()
+        };
+        for identity in &info.identities {
+            registry.by_node_id.insert(identity.node_id, live.clone());
+        }
+        for endpoint in &info.endpoints {
+            registry.by_addr.insert(endpoint.address, live.clone());
+        }
+        node.apply_info(info);
+        owner.last_info_update.update(Utc::now());
+        Ok(())
     }
 
     pub async fn get_entry_by_addr(&self, remote: &SocketAddr) -> Option<NodeView> {
@@ -244,11 +322,27 @@ pub struct NodeView {
 
     state: Arc<RwLock<NodeViewState>>,
     state_notifier: Arc<broadcast::Sender<SessionState>>,
+    epoch: Arc<AtomicU64>,
+    retired: Arc<AtomicBool>,
+    expected_generation: Option<u64>,
 
     /// Last update of information about Node.
     last_info_update: LastSeen,
 
     pub config: Arc<NetworkViewConfig>,
+}
+
+/// A view bound to one lifecycle generation. Unlike a registry view, it never
+/// follows a reconnect. All inherited state operations retain the generation check.
+#[derive(Clone)]
+pub struct NodeSnapshot(NodeView);
+
+impl std::ops::Deref for NodeSnapshot {
+    type Target = NodeView;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 pub struct NodeViewState {
@@ -284,6 +378,40 @@ pub struct NodeViewState {
 }
 
 impl NodeView {
+    pub(crate) fn generation(&self) -> u64 {
+        self.expected_generation
+            .unwrap_or_else(|| self.epoch.load(Ordering::Acquire))
+    }
+
+    pub(crate) fn snapshot(&self) -> NodeSnapshot {
+        let mut view = self.clone();
+        view.expected_generation = Some(self.generation());
+        NodeSnapshot(view)
+    }
+
+    pub(crate) fn is_current(&self) -> bool {
+        !self.retired.load(Ordering::Acquire)
+            && self.generation() == self.epoch.load(Ordering::Acquire)
+    }
+
+    pub(crate) async fn publication_guard(
+        &self,
+    ) -> anyhow::Result<tokio::sync::RwLockReadGuard<'_, NodeViewState>> {
+        let guard = self.state.read().await;
+        if !self.is_current()
+            || matches!(
+                guard.state,
+                SessionState::Closing | SessionState::Closed | SessionState::FailedEstablish(_)
+            )
+        {
+            bail!(
+                "Session generation {} is no longer initializing",
+                self.generation()
+            );
+        }
+        Ok(guard)
+    }
+
     /// Starts closing a registered session even if its state got out of sync with
     /// the session registry. A registered `DirectSession` is authoritative here:
     /// leaving it in the registry would make subsequent connection attempts keep
@@ -291,6 +419,9 @@ impl NodeView {
     pub(crate) async fn begin_closing(&self) -> SessionState {
         let previous = {
             let mut target = self.state.write().await;
+            if !self.is_current() {
+                return SessionState::Closed;
+            }
             std::mem::replace(&mut target.state, SessionState::Closing)
         };
 
@@ -304,6 +435,9 @@ impl NodeView {
     ) -> Result<SessionState, TransitionError> {
         {
             let mut target = self.state.write().await;
+            if !self.is_current() {
+                return Err(TransitionError::NodeNotFound(self.id));
+            }
             target.state.transition(new_state.clone())?;
         }
 
@@ -317,6 +451,9 @@ impl NodeView {
     ) -> Result<SessionState, TransitionError> {
         let new_state = {
             let mut target = self.state.write().await;
+            if !self.is_current() {
+                return Err(TransitionError::NodeNotFound(self.id));
+            }
             target.state.transition_incoming(new_state.clone())?
         };
 
@@ -330,6 +467,9 @@ impl NodeView {
     ) -> Result<SessionState, TransitionError> {
         let new_state = {
             let mut target = self.state.write().await;
+            if !self.is_current() {
+                return Err(TransitionError::NodeNotFound(self.id));
+            }
             target.state.transition_outgoing(new_state.clone())?
         };
 
@@ -388,16 +528,7 @@ impl NodeView {
         //       We need to consider all scenarios and find a best way to handle this.
         let mut state = self.state.write().await;
 
-        state.slot = info.slot;
-        state.supported_encryption = info.supported_encryption;
-        state.session_key = info.session_key;
-        state.authenticated_identities = info.authenticated_identities;
-        // TODO: What should we do if identity lists differ? Is new list always better?
-        state.node = info.identities;
-        // TODO: We should distinguish between public IPs and addresses assigned temporarily
-        //       by routers. `NetworkView` contains addresses from which we received packets.
-        //       Here we assign only public, but earlier (`NetworkView::guard`) we added mapped addresses
-        state.addresses = info.endpoints.into_iter().map(|e| e.address).collect();
+        state.apply_info(info);
         Ok(())
     }
 
@@ -450,6 +581,19 @@ where
 }
 
 impl NodeViewState {
+    fn apply_info(&mut self, info: NodeInfo) {
+        self.slot = info.slot;
+        self.supported_encryption = info.supported_encryption;
+        self.session_key = info.session_key;
+        self.authenticated_identities = info.authenticated_identities;
+        self.node = info.identities;
+        self.addresses = info
+            .endpoints
+            .into_iter()
+            .map(|endpoint| endpoint.address)
+            .collect();
+    }
+
     pub fn info(&self) -> NodeInfo {
         NodeInfo {
             identities: self.node.clone(),
@@ -494,6 +638,9 @@ impl NodeView {
                 abort_handle: vec![],
             })),
             state_notifier: Arc::new(notify_msg),
+            epoch: Arc::new(AtomicU64::new(next_generation())),
+            retired: Arc::new(AtomicBool::new(false)),
+            expected_generation: None,
             config,
         }
     }
@@ -503,87 +650,89 @@ impl NodeView {
     /// initialize this session or object for awaiting on session.
     /// TODO: Handle situation when we are attempting to connect and closing session at the same time.
     pub async fn lock_outgoing(&self, layer: impl SessionDeregistration) -> SessionLock {
-        // We need to subscribe to state change events, before we will start transition,
-        // otherwise a few events could be lost.
-        let notifier = self.awaiting_notifier();
-        match self.transition_outgoing(InitState::ConnectIntent).await {
-            Ok(_) => SessionLock::Permit(SessionPermit {
-                registry: self.clone(),
-                reverse: false,
-                layer: Arc::new(Box::new(layer)),
-                result: None,
-            }),
-            Err(e) => {
-                if let TransitionError::InvalidTransition(prev, _) = e {
-                    if !matches!(prev, SessionState::Established(_)) {
-                        log::debug!(
-                            "Initialization of session with: [{}] in progress, state: {}. Thread will wait for finish.",
-                            self.id, prev
-                        )
-                    }
-                };
-                SessionLock::Wait(notifier)
-            }
-        }
+        self.lock_session(layer, false).await
     }
 
-    /// See: `SessionGuard::lock_outgoing`
-    /// TODO: Unify implementation with `lock_outgoing`.
     pub async fn lock_incoming(&self, layer: impl SessionDeregistration) -> SessionLock {
-        // We need to subscribe to state change events, before we will start transition,
-        // otherwise a few events could be lost.
-        let notifier = self.awaiting_notifier();
-        match self.transition_incoming(InitState::ConnectIntent).await {
-            Ok(state) => SessionLock::Permit(SessionPermit {
-                registry: self.clone(),
-                reverse: matches!(
-                    state,
-                    SessionState::ReverseConnection(ReverseState::InProgress(
-                        InitState::ConnectIntent
-                    ))
-                ),
-                layer: Arc::new(Box::new(layer)),
-                result: None,
-            }),
-            Err(e) => {
-                if let TransitionError::InvalidTransition(prev, _) = e {
-                    if !matches!(prev, SessionState::Established(_)) {
-                        log::debug!(
-                            "Initialization of session with: [{}] in progress, state: {}. Thread will wait for finish.",
-                            self.id, prev
-                        )
-                    }
-                };
+        self.lock_session(layer, true).await
+    }
 
-                SessionLock::Wait(notifier)
+    async fn lock_session(&self, layer: impl SessionDeregistration, incoming: bool) -> SessionLock {
+        let receiver = self.state_notifier.subscribe();
+        let mut target = self.state.write().await;
+        let result = if !self.is_current() {
+            Err(TransitionError::NodeNotFound(self.id))
+        } else if incoming {
+            target.state.transition_incoming(InitState::ConnectIntent)
+        } else {
+            target.state.transition_outgoing(InitState::ConnectIntent)
+        };
+        match result {
+            Ok(state) => {
+                let reverse = matches!(state, SessionState::ReverseConnection(_));
+                if !reverse {
+                    self.epoch.store(next_generation(), Ordering::Release);
+                }
+                let registry = self.snapshot();
+                drop(target);
+                registry.notify_change(state);
+                SessionLock::Permit(SessionPermit {
+                    registry,
+                    reverse,
+                    layer: Arc::new(Box::new(layer)),
+                    result: None,
+                })
+            }
+            Err(_) => {
+                let registry = self.snapshot();
+                drop(target);
+                SessionLock::Wait(NodeAwaiting {
+                    registry,
+                    notifier: receiver,
+                })
             }
         }
     }
 
     pub fn awaiting_notifier(&self) -> NodeAwaiting {
         NodeAwaiting {
-            registry: self.clone(),
+            registry: self.snapshot(),
             notifier: self.state_notifier.subscribe(),
         }
     }
 
     pub async fn state(&self) -> SessionState {
-        self.state.read().await.state.clone()
+        let state = self.state.read().await;
+        if self.is_current() {
+            state.state.clone()
+        } else {
+            SessionState::Closed
+        }
     }
 
     pub async fn register_abortable(&self, abort: AbortHandle) {
         let mut state = self.state.write().await;
-        state.abort_handle.push(abort);
+        if self.is_current() && !matches!(state.state, SessionState::Closing | SessionState::Closed)
+        {
+            state.abort_handle.push(abort);
+        } else {
+            abort.abort();
+        }
     }
 
     pub async fn unregister_abortable(&self) {
         let mut state = self.state.write().await;
-        state.abort_handle.clear();
+        if self.is_current() {
+            state.abort_handle.clear();
+        }
     }
 
     pub async fn abort_initialization(&self) {
         let handles = {
             let mut state = self.state.write().await;
+            if !self.is_current() {
+                return;
+            }
             state.abort_handle.drain(..).collect::<Vec<_>>()
         };
 
@@ -606,7 +755,7 @@ pub enum SessionLock {
 /// Structure giving you exclusive right to initialize session.
 /// Ensures clear Session state on drop including un-registration from `SessionLayer`.
 pub struct SessionPermit {
-    pub registry: NodeView,
+    pub registry: NodeSnapshot,
     /// Flag is set to true, if the Permit was created for incoming connection in response
     /// to `ReverseConnection`. In this case we have 2 permits existing at the same time, because
     /// at the same time other part of code is waiting for incoming connection.
@@ -638,7 +787,7 @@ impl SessionPermit {
     }
 
     pub(crate) async fn async_drop(
-        node: NodeView,
+        node: NodeSnapshot,
         layer: Arc<Box<dyn SessionDeregistration>>,
         new_state: SessionState,
     ) {
@@ -646,8 +795,21 @@ impl SessionPermit {
         let node_id = node.id;
         let reverse = matches!(&new_state, SessionState::ReverseConnection(_));
 
+        if !node.is_current()
+            || matches!(
+                node.state().await,
+                SessionState::Closed | SessionState::Closing
+            )
+        {
+            return;
+        }
+        if matches!(new_state, SessionState::FailedEstablish(_)) {
+            node.transition(new_state).await.ok();
+            Self::clean_state(&node, layer).await;
+            return;
+        }
+
         match &new_state {
-            SessionState::FailedEstablish(_) => Self::clean_state(&node, layer.clone()).await,
             SessionState::ReverseConnection(ReverseState::Finished(_)) => {}
             _ => node.unregister_abortable().await,
         }
@@ -675,12 +837,13 @@ impl SessionPermit {
 
     /// Makes sure we deregister all data about this Node and abort all futures
     /// that might be during initialization.
-    pub(crate) async fn clean_state(node: &NodeView, layer: Arc<Box<dyn SessionDeregistration>>) {
+    pub(crate) async fn clean_state(
+        node: &NodeSnapshot,
+        layer: Arc<Box<dyn SessionDeregistration>>,
+    ) {
         log::trace!("[clean_state]: {}", node.id);
-        for addr in node.public_addresses().await {
-            layer.abort_initializations(addr).await.ok();
-        }
-        layer.unregister(node.id).await;
+        node.abort_initialization().await;
+        layer.unregister_generation(node.clone()).await;
     }
 
     pub fn collect_results(
@@ -733,7 +896,7 @@ impl Drop for SessionPermit {
 
 /// Structure for awaiting established connection.
 pub struct NodeAwaiting {
-    pub registry: NodeView,
+    pub registry: NodeSnapshot,
     notifier: broadcast::Receiver<SessionState>,
 }
 
@@ -813,6 +976,10 @@ impl NodeAwaiting {
                     return Ok(());
                 }
                 // Still waiting.
+                SessionState::Closed | SessionState::Closing => {
+                    return Err(SessionError::Unexpected("Connection closed.".into()));
+                }
+                SessionState::FailedEstablish(error) => return Err(error),
                 _ => (),
             };
 
@@ -823,17 +990,29 @@ impl NodeAwaiting {
     pub async fn await_reverse_finish(&mut self) -> Result<Arc<DirectSession>, SessionError> {
         let mut state = self.registry.state().await;
         loop {
-            if let SessionState::ReverseConnection(ReverseState::Finished(result)) = state {
-                return result;
-            };
+            match state {
+                SessionState::ReverseConnection(ReverseState::Finished(result)) => return result,
+                SessionState::Closed | SessionState::Closing => {
+                    return Err(SessionError::Unexpected("Connection closed.".into()));
+                }
+                SessionState::FailedEstablish(error) => return Err(error),
+                _ => (),
+            }
 
             state = self.next().await?;
         }
     }
 
     async fn next(&mut self) -> Result<SessionState, SessionError> {
+        if !self.registry.is_current() {
+            return Ok(SessionState::Closed);
+        }
         match self.notifier.recv().await {
-            Ok(state) => Ok(state),
+            Ok(state) => Ok(if self.registry.is_current() {
+                state
+            } else {
+                SessionState::Closed
+            }),
             Err(RecvError::Closed) => Err(SessionError::Internal(
                 "Waiting for session initialization: notifier dropped.".to_string(),
             )),

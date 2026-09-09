@@ -636,6 +636,11 @@ impl SessionManager {
         supported_encryptions: Vec<String>,
         session_key: Option<(PublicKey, HashMap<NodeId, Proof>)>,
     ) -> Result<SessionRef, SessionRef> {
+        let mut sessions = self.session_slot(&session_id).lock();
+        let vacant = match sessions.entry(session_id) {
+            std::collections::hash_map::Entry::Occupied(entry) => return Err(entry.get().clone()),
+            std::collections::hash_map::Entry::Vacant(entry) => entry,
+        };
         let addr_status = Mutex::new(AddrStatus::Unknown);
         let ts = clock.last_seen();
         let session_ref = Arc::new(Session {
@@ -649,17 +654,10 @@ impl SessionManager {
             session_key,
         });
 
-        let mut g = self.session_slot(&session_id).lock();
-        let prev = g.insert(session_id, session_ref.clone());
-        if let Some(prev) = prev {
-            g.insert(session_id, prev.clone());
-            drop(g);
-            Err(prev)
-        } else {
-            drop(g);
-            self.metrics.created.increment(1);
-            Ok(session_ref)
-        }
+        vacant.insert(session_ref.clone());
+        drop(sessions);
+        self.metrics.created.increment(1);
+        Ok(session_ref)
     }
 
     #[cfg(test)]
@@ -725,6 +723,20 @@ impl SessionManager {
             self.metrics.removed.increment(1);
         }
         prev
+    }
+
+    /// Remove a session only when the datagram came from its registered endpoint.
+    /// Check and removal share the shard lock so a replacement cannot be removed.
+    pub fn remove_session_from(&self, session: &SessionId, peer: SocketAddr) -> Option<SessionRef> {
+        let mut sessions = self.session_slot(session).lock();
+        if sessions.get(session)?.peer != peer {
+            return None;
+        }
+        let removed = sessions.remove(session);
+        if removed.is_some() {
+            self.metrics.removed.increment(1);
+        }
+        removed
     }
 
     fn session_slot(&self, session: &SessionId) -> &Mutex<HashMap<SessionId, SessionRef>> {
@@ -852,6 +864,35 @@ mod tests {
 
     fn gen_node_id() -> NodeId {
         thread_rng().gen::<[u8; 20]>().into()
+    }
+
+    #[test]
+    fn repeated_registration_reuses_the_existing_session_slot() {
+        let manager = SessionManager::new();
+        let original = manager.add_dummy_session();
+        for _ in 0..10_000 {
+            let existing = manager
+                .new_session(
+                    &Clock::now(),
+                    original.session_id,
+                    original.peer,
+                    original.node_id,
+                    original.keys.clone(),
+                    Vec::new(),
+                    None,
+                )
+                .err()
+                .expect("duplicate registration must reuse the existing slot");
+            assert!(Arc::ptr_eq(&original, &existing));
+        }
+        assert_eq!(
+            manager
+                .sessions
+                .iter()
+                .map(|shard| shard.lock().len())
+                .sum::<usize>(),
+            1
+        );
     }
 
     #[tokio::test]

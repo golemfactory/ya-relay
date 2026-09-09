@@ -27,14 +27,14 @@ async fn test_session_layer_happy_path() {
 
     // p2p session - target and route are the same.
     assert_eq!(session.target(), layer2.id);
-    assert_eq!(session.route(), layer2.id);
-    assert_eq!(session.session_type(), SessionType::P2P);
+    assert_eq!(session.route(), Some(layer2.id));
+    assert_eq!(session.session_type(), Some(SessionType::P2P));
 
     let session = layer2.layer.session(layer1.id).await.unwrap();
 
     assert_eq!(session.target(), layer1.id);
-    assert_eq!(session.route(), layer1.id);
-    assert_eq!(session.session_type(), SessionType::P2P);
+    assert_eq!(session.route(), Some(layer1.id));
+    assert_eq!(session.session_type(), Some(SessionType::P2P));
 }
 
 #[test(actix_rt::test)]
@@ -101,10 +101,10 @@ async fn test_session_layer_close_p2p_session() {
     let session2 = layer2.layer.session(layer1.id).await.unwrap();
 
     assert_eq!(session.target(), layer2.id);
-    assert_eq!(session.route(), layer2.id);
+    assert_eq!(session.route(), Some(layer2.id));
 
     assert_eq!(session2.target(), layer1.id);
-    assert_eq!(session2.route(), layer1.id);
+    assert_eq!(session2.route(), Some(layer1.id));
 
     session.disconnect().await.unwrap();
     // Let other side receive and handle `Disconnected` packet.
@@ -115,6 +115,24 @@ async fn test_session_layer_close_p2p_session() {
 
     // We should be able to connect again to the same Node.
     session.connect().await.unwrap();
+}
+
+#[test(actix_rt::test)]
+async fn test_session_metadata_after_disconnect() {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+    let layer1 = network.new_layer().await.unwrap();
+    let layer2 = network.new_layer().await.unwrap();
+
+    layer2.layer.server_session().await.unwrap();
+    let mut session = layer1.layer.session(layer2.id).await.unwrap();
+
+    session.disconnect().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    assert_eq!(session.route(), None);
+    assert_eq!(session.session_id(), None);
+    assert_eq!(session.session_type(), None);
 }
 
 #[test(actix_rt::test)]
@@ -136,12 +154,12 @@ async fn test_session_layer_close_relayed_routing() {
     let session2 = layer2.layer.session(layer1.id).await.unwrap();
 
     assert_eq!(session.target(), layer2.id);
-    assert_eq!(session.route(), relay_id);
-    assert_eq!(session.session_type(), SessionType::Relay);
+    assert_eq!(session.route(), Some(relay_id));
+    assert_eq!(session.session_type(), Some(SessionType::Relay));
 
     assert_eq!(session2.target(), layer1.id);
-    assert_eq!(session2.route(), relay_id);
-    assert_eq!(session2.session_type(), SessionType::Relay);
+    assert_eq!(session2.route(), Some(relay_id));
+    assert_eq!(session2.session_type(), Some(SessionType::Relay));
 
     session.disconnect().await.unwrap();
     // Let other side receive and handle `Disconnected` packet.
@@ -171,10 +189,10 @@ async fn test_session_layer_reverse_connection() {
     let session2 = layer2.layer.session(layer1.id).await.unwrap();
 
     assert_eq!(session.target(), layer2.id);
-    assert_eq!(session.route(), layer2.id);
-    assert_eq!(session.session_type(), SessionType::P2P);
+    assert_eq!(session.route(), Some(layer2.id));
+    assert_eq!(session.session_type(), Some(SessionType::P2P));
 
     assert_eq!(session2.target(), layer1.id);
-    assert_eq!(session2.route(), layer1.id);
-    assert_eq!(session2.session_type(), SessionType::P2P);
+    assert_eq!(session2.route(), Some(layer1.id));
+    assert_eq!(session2.session_type(), Some(SessionType::P2P));
 }

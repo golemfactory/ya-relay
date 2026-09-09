@@ -1,6 +1,8 @@
 mod common;
 
 use std::convert::TryInto;
+use std::time::Duration;
+use ya_relay_core::server_session::SessionId;
 
 use ya_relay_client::testing::init::MockSessionNetwork;
 use ya_relay_client::testing::private::SessionLock;
@@ -111,32 +113,191 @@ async fn test_session_protocol_happy_path() {
 // }
 
 #[actix_rt::test]
-async fn test_session_protocol_invalid_challenge() {}
+async fn test_session_protocol_invalid_challenge() {
+    scripted_failure(HandshakeFailure::InvalidChallenge).await;
+}
 
 /// Initialization should be rejected if Node responds with different id, than
 /// NodeId we intended to connect to.
 #[actix_rt::test]
-async fn test_session_protocol_node_id_mismatch() {}
+async fn test_session_protocol_node_id_mismatch() {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+    let a = network.new_layer().await.unwrap();
+    let b = network.new_layer().await.unwrap();
+    let wrong_id = ya_relay_core::NodeId::from([7; 20]);
+    let mut permit = match a
+        .guards
+        .lock_outgoing(wrong_id, &[b.addr], a.layer.clone())
+        .await
+    {
+        SessionLock::Permit(permit) => permit,
+        _ => panic!("expected permit"),
+    };
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        a.protocol.init_p2p_session(b.addr, &permit),
+    )
+    .await
+    .expect("identity validation must finish")
+    .map_err(SessionError::from);
+    let error = permit
+        .collect_results(result)
+        .err()
+        .expect("wrong identity must be rejected");
+    assert!(
+        error.to_string().contains("Invalid default NodeId"),
+        "{error}"
+    );
+    drop(permit);
+    assert!(a.protocol.get_temporary_session(&b.addr).is_none());
+    assert!(a.layer.find_session(b.addr).await.is_none());
+}
 
 /// `SessionProtocol` should correctly handle situation, when we didn't get response
 /// to initial message.
 #[actix_rt::test]
-async fn test_session_protocol_handshake_timeout() {}
+async fn test_session_protocol_handshake_timeout() {
+    scripted_failure(HandshakeFailure::HelloTimeout).await;
+}
 
 /// `SessionProtocol` should correctly handle situation, when we didn't get response
 /// with challenge solution.
 #[actix_rt::test]
-async fn test_session_protocol_challenge_handshake_timeout() {}
+async fn test_session_protocol_challenge_handshake_timeout() {
+    scripted_failure(HandshakeFailure::ChallengeTimeout).await;
+}
 
 /// `SessionLayer` should react correctly, when gets Disconnected message
 /// after sending first handshake.
 #[actix_rt::test]
-async fn test_session_protocol_disconnected_on_handshake() {}
+async fn test_session_protocol_disconnected_on_handshake() {
+    scripted_failure(HandshakeFailure::DisconnectHello).await;
+}
 
 /// `SessionLayer` should react correctly, when gets Disconnected message
 /// after sending challenge handshake.
 #[actix_rt::test]
-async fn test_session_protocol_disconnected_on_challenge_response() {}
+async fn test_session_protocol_disconnected_on_challenge_response() {
+    scripted_failure(HandshakeFailure::DisconnectChallenge).await;
+}
+
+#[derive(Clone, Copy)]
+enum HandshakeFailure {
+    HelloTimeout,
+    ChallengeTimeout,
+    InvalidChallenge,
+    DisconnectHello,
+    DisconnectChallenge,
+}
+
+async fn scripted_failure(failure: HandshakeFailure) {
+    let server = init_test_server().await.unwrap();
+    let mut network = MockSessionNetwork::new(server).unwrap();
+    let a = network.new_layer().await.unwrap();
+    let b = network.new_layer().await.unwrap();
+    let mut requests = b.capturer.captures.session_request.start_capture();
+    let initiator = a.clone();
+    let target = b.clone();
+    let attempt = tokio::task::spawn_local(async move {
+        let mut permit = initiator.start_session(&target).await.unwrap();
+        let result = permit
+            .run_abortable(async {
+                initiator
+                    .protocol
+                    .init_p2p_session(target.addr, &permit)
+                    .await
+                    .map_err(SessionError::from)
+            })
+            .await;
+        permit.collect_results(result)
+    });
+    let hello = tokio::time::timeout(Duration::from_secs(1), requests.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(hello.session_id.is_empty());
+    let peer = b.protocol.temporary_session(&a.addr);
+    let id = SessionId::generate();
+    let mut response_request_id = hello.request_id;
+    if !matches!(
+        failure,
+        HandshakeFailure::HelloTimeout | HandshakeFailure::DisconnectHello
+    ) {
+        let (challenge, _) = ya_relay_core::challenge::prepare_challenge_response(1);
+        peer.send(proto::Packet::response(
+            hello.request_id,
+            id.to_vec(),
+            proto::StatusCode::Ok,
+            challenge,
+        ))
+        .await
+        .unwrap();
+        // Ignore retransmissions of the first handshake if UDP delivery was delayed.
+        let second = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let request = requests.recv().await.unwrap();
+                if request.request.challenge_resp.is_some() {
+                    break request;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(second.session_id.as_slice(), id.as_ref());
+        response_request_id = second.request_id;
+    }
+    match failure {
+        HandshakeFailure::InvalidChallenge => {
+            peer.send(proto::Packet::response(
+                response_request_id,
+                id.to_vec(),
+                proto::StatusCode::Ok,
+                proto::response::Session {
+                    challenge_resp: Some(Default::default()),
+                    ..Default::default()
+                },
+            ))
+            .await
+            .unwrap();
+        }
+        HandshakeFailure::DisconnectHello | HandshakeFailure::DisconnectChallenge => {
+            peer.send(proto::Packet::control(
+                id.to_vec(),
+                proto::control::Disconnected {
+                    by: Some(proto::control::disconnected::By::SessionId(id.to_vec())),
+                },
+            ))
+            .await
+            .unwrap();
+        }
+        _ => (),
+    }
+    let error = tokio::time::timeout(Duration::from_secs(10), attempt)
+        .await
+        .expect("failed handshake must terminate")
+        .unwrap()
+        .err()
+        .expect("handshake must fail");
+    match failure {
+        HandshakeFailure::HelloTimeout | HandshakeFailure::ChallengeTimeout => {
+            assert!(error.to_string().contains("timed out"), "{error}");
+        }
+        HandshakeFailure::InvalidChallenge => {
+            assert!(error.to_string().contains("Invalid challenge"), "{error}")
+        }
+        _ => assert!(matches!(error, SessionError::Aborted(_)), "{error}"),
+    }
+    assert!(a.protocol.get_temporary_session(&b.addr).is_none());
+    assert!(a.layer.find_session(b.addr).await.is_none());
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while a.guards.get_entry(b.id).await.is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("failed generation must be retired");
+}
 
 #[test_log::test(actix_rt::test)]
 async fn test_query_self_node_info() -> anyhow::Result<()> {

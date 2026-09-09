@@ -29,6 +29,15 @@ pub struct SessionId {
 }
 
 impl SessionId {
+    /// Decode a wire header without conflating a missing ID with a malformed one.
+    pub fn from_wire(bytes: &[u8]) -> Result<Option<Self>> {
+        if bytes.is_empty() {
+            Ok(None)
+        } else {
+            Self::try_from(bytes).map(Some)
+        }
+    }
+
     pub fn to_array(&self) -> [u8; SESSION_ID_SIZE] {
         self.id
     }
@@ -132,17 +141,7 @@ impl TryFrom<Vec<u8>> for SessionId {
     type Error = anyhow::Error;
 
     fn try_from(session: Vec<u8>) -> Result<Self> {
-        if session.len() != SESSION_ID_SIZE {
-            bail!("Invalid SessionID: {}", String::from_utf8(session)?)
-        }
-
-        let mut id: [u8; SESSION_ID_SIZE] = [0; SESSION_ID_SIZE];
-        session[0..SESSION_ID_SIZE]
-            .iter()
-            .enumerate()
-            .for_each(|(i, s)| id[i] = *s);
-
-        Ok(SessionId { id })
+        Self::try_from(session.as_slice())
     }
 }
 
@@ -160,7 +159,9 @@ impl TryFrom<&str> for SessionId {
     type Error = anyhow::Error;
 
     fn try_from(session: &str) -> Result<Self> {
-        SessionId::try_from(hex::decode(session)?)
+        let mut id = [0; SESSION_ID_SIZE];
+        hex::decode_to_slice(session, &mut id)?;
+        Ok(Self { id })
     }
 }
 
@@ -196,13 +197,16 @@ impl<'a> PartialEq<&'a [u8]> for SessionId {
 
 impl fmt::Display for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.id))
+        for byte in self.id {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
     }
 }
 
 impl fmt::Debug for SessionId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", hex::encode(self.id))
+        fmt::Display::fmt(self, f)
     }
 }
 
@@ -311,6 +315,18 @@ mod tests {
     use crate::challenge::{self, ChallengeDigest};
     use crate::crypto::{FallbackCrypto, SessionCrypto};
     use crate::key::generate;
+
+    #[test]
+    fn wire_session_id_distinguishes_absent_valid_and_malformed() {
+        assert_eq!(SessionId::from_wire(&[]).unwrap(), None);
+        let id = SessionId::generate();
+        assert_eq!(SessionId::from_wire(id.as_ref()).unwrap(), Some(id));
+        for len in [1, 15, 17, 256] {
+            assert!(SessionId::from_wire(&vec![0; len]).is_err());
+        }
+        assert_eq!(SessionId::try_from(id.to_vec()).unwrap(), id);
+        assert_eq!(SessionId::try_from(id.to_string().as_str()).unwrap(), id);
+    }
 
     async fn signed_node() -> (proto::response::Node, Vec<NodeId>) {
         let secrets = vec![generate(), generate()];

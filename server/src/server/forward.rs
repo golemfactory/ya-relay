@@ -159,7 +159,7 @@ impl ForwardHandler {
                 Packet::control(
                     session_id.to_vec(),
                     control::Disconnected {
-                        by: control::disconnected::By::SessionId(Default::default()).into(),
+                        by: control::disconnected::By::SessionId(session_id.to_vec()).into(),
                     },
                 ),
             )),

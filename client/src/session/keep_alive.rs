@@ -40,15 +40,13 @@ impl ServerSessionAnchor {
             .await;
     }
 
-    async fn get_awaiting_notifier(&self, layer: &SessionLayer) -> NodeAwaiting {
+    async fn get_awaiting_notifier(&self, layer: &SessionLayer) -> Option<NodeAwaiting> {
         let server_node_id = NodeId::default();
-        loop {
-            if let Some(entry) = layer.registry.get_entry(server_node_id).await {
-                return entry.awaiting_notifier();
-            }
-            // Wait for server session entry to be created.
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        layer
+            .registry
+            .get_entry(server_node_id)
+            .await
+            .map(|entry| entry.awaiting_notifier())
     }
 }
 
@@ -56,9 +54,13 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
     let anchor = ServerSessionAnchor::new(layer.config.server_session_reconnect_max_interval);
 
     loop {
+        anchor.establish_server_session(&layer).await;
         // Get a fresh notifier for every established server session. Reusing a
         // receiver that observed a terminal state can turn this loop into a busy loop.
-        let mut awaiting_notifier = anchor.get_awaiting_notifier(&layer).await;
+        let Some(mut awaiting_notifier) = anchor.get_awaiting_notifier(&layer).await else {
+            // The established session was retired before we subscribed. Reconnect ourselves.
+            continue;
+        };
 
         // Once server session is established, wait until it is closed or failed.
         if let Err(error) = awaiting_notifier.await_for_closed_or_failed().await {
@@ -66,8 +68,6 @@ pub async fn keep_alive_server_session(layer: SessionLayer) {
         }
 
         log::trace!("[keep-alive]: establishing server session");
-        // Re-establish server session using retry policy with exponential backoff.
-        anchor.establish_server_session(&layer).await;
     }
 }
 
@@ -82,31 +82,35 @@ mod tests {
     use ya_relay_core::NodeId;
 
     #[actix_rt::test]
-    async fn awaiting_notifier_observes_entry_created_after_wait_started() {
+    async fn missing_or_retired_entry_returns_to_reconnect_instead_of_waiting() {
         let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
             .build_config()
             .await
             .unwrap();
         let layer = SessionLayer::new(Arc::new(config));
         let anchor = ServerSessionAnchor::new(Duration::from_secs(1));
-        let notifier = anchor.get_awaiting_notifier(&layer);
-        tokio::pin!(notifier);
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(20), &mut notifier)
-                .await
-                .is_err()
-        );
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            anchor.get_awaiting_notifier(&layer)
+        )
+        .await
+        .unwrap()
+        .is_none());
 
         layer
             .registry
             .guard(NodeId::default(), &[layer.config.srv_addr])
             .await;
 
-        assert!(
-            tokio::time::timeout(Duration::from_millis(250), &mut notifier)
-                .await
-                .is_ok()
-        );
+        let mut notifier = anchor.get_awaiting_notifier(&layer).await.unwrap();
+        layer.registry.remove_node(NodeId::default()).await;
+        assert!(notifier.await_for_closed_or_failed().await.is_err());
+        assert!(tokio::time::timeout(
+            Duration::from_millis(20),
+            anchor.get_awaiting_notifier(&layer)
+        )
+        .await
+        .unwrap()
+        .is_none());
     }
 }

@@ -1,13 +1,12 @@
 use anyhow::bail;
-use futures::channel::mpsc;
 use futures::future::{AbortHandle, Abortable, LocalBoxFuture};
-use futures::{FutureExt, SinkExt, StreamExt, TryFutureExt};
+use futures::{FutureExt, SinkExt};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::net::SocketAddr;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use tokio::sync::Semaphore;
+use tokio::sync::{mpsc, Semaphore};
 use tokio::time::timeout;
 
 use ya_relay_core::challenge::{self, ChallengeDigest, RawChallenge};
@@ -24,7 +23,23 @@ use crate::encryption;
 use crate::error::{ProtocolError, RequestError, SessionError, SessionInitError, SessionResult};
 use crate::raw_session::RawSession;
 use crate::session::session_state::InitState;
-use crate::session::session_traits::SessionRegistration;
+use crate::session::session_traits::{SessionRegistration, SessionRegistrationInfo};
+
+// Admission is checked before spawning a handshake task or consulting the node registry.
+const MAX_INCOMING_HANDSHAKES: usize = 256;
+
+#[cfg(test)]
+mod tests;
+
+struct IncomingSession {
+    remote: SocketAddr,
+    sender: mpsc::Sender<(RequestId, proto::request::Session)>,
+}
+
+struct TemporarySession {
+    raw: Arc<RawSession>,
+    users: usize,
+}
 
 #[derive(Clone)]
 pub struct SessionInitializer {
@@ -39,18 +54,87 @@ pub struct SessionInitializer {
 #[derive(Default)]
 pub struct SessionInitializerState {
     /// Initialization of session started by other peers.
-    incoming_sessions: HashMap<SessionId, mpsc::Sender<(RequestId, proto::request::Session)>>,
+    incoming_sessions: HashMap<SessionId, IncomingSession>,
+    admitted: HashMap<SocketAddr, u64>,
+    next_admission: u64,
 
     /// Temporary sessions stored during initialization period.
     /// After session is established, new struct in `SessionLayer` is created
     /// and this one is removed.
-    tmp_sessions: HashMap<SocketAddr, Arc<RawSession>>,
+    tmp_sessions: HashMap<SocketAddr, TemporarySession>,
 
     /// Collection of background tasks that must be stopped on shutdown.
-    handles: Vec<AbortHandle>,
+    handles: HashMap<SessionId, AbortHandle>,
+}
+
+pub(crate) struct IncomingAdmission {
+    state: Arc<Mutex<SessionInitializerState>>,
+    remote: SocketAddr,
+    token: u64,
+}
+
+impl Drop for IncomingAdmission {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        if state.admitted.get(&self.remote) == Some(&self.token) {
+            state.admitted.remove(&self.remote);
+        }
+    }
+}
+
+struct IncomingSessionGuard {
+    state: Arc<Mutex<SessionInitializerState>>,
+    id: SessionId,
+}
+
+impl Drop for IncomingSessionGuard {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        state.incoming_sessions.remove(&self.id);
+        state.handles.remove(&self.id);
+    }
+}
+
+/// Cancelling one attempt must not remove a temporary session created later.
+struct TemporarySessionGuard {
+    state: Arc<Mutex<SessionInitializerState>>,
+    session: Arc<RawSession>,
+}
+
+impl Drop for TemporarySessionGuard {
+    fn drop(&mut self) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(entry) = state.tmp_sessions.get_mut(&self.session.remote) {
+            if Arc::ptr_eq(&entry.raw, &self.session) {
+                entry.users -= 1;
+                if entry.users == 0 {
+                    state.tmp_sessions.remove(&self.session.remote);
+                }
+            }
+        }
+    }
 }
 
 impl SessionInitializer {
+    pub(crate) fn admit_incoming(&self, remote: SocketAddr) -> Option<IncomingAdmission> {
+        let mut state = self.state.lock().unwrap();
+        if state.admitted.contains_key(&remote) || state.admitted.len() >= MAX_INCOMING_HANDSHAKES {
+            return None;
+        }
+        let token = state.next_admission.checked_add(1)?;
+        state.next_admission = token;
+        state.admitted.insert(remote, token);
+        Some(IncomingAdmission {
+            state: self.state.clone(),
+            remote,
+            token,
+        })
+    }
+
+    pub(crate) fn incoming_timeout(&self) -> std::time::Duration {
+        self.config.incoming_session_timeout
+    }
+
     pub(crate) fn new(
         config: Arc<ClientConfig>,
         layer: impl SessionRegistration + 'static,
@@ -69,25 +153,41 @@ impl SessionInitializer {
         }
     }
 
-    /// Creates temporary session used only during initialization.
-    /// Only one session will be created for one target Node address.
+    /// Test transport helper. Production attempts must use a lifetime-bound lease.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn temporary_session(&self, addr: &SocketAddr) -> Arc<RawSession> {
-        let sink = self.sink.clone();
         let mut state = self.state.lock().unwrap();
-        match state.tmp_sessions.get(addr) {
-            None => {
-                let session = RawSession::new(*addr, SessionId::generate(), sink);
-                state.tmp_sessions.insert(*addr, session.clone());
-                session
-            }
-            Some(session) => session.clone(),
+        state
+            .tmp_sessions
+            .entry(*addr)
+            .or_insert_with(|| TemporarySession {
+                raw: RawSession::new(*addr, SessionId::generate(), self.sink.clone()),
+                users: 0,
+            })
+            .raw
+            .clone()
+    }
+
+    fn lease_temporary_session(&self, addr: SocketAddr) -> TemporarySessionGuard {
+        let mut state = self.state.lock().unwrap();
+        let entry = state
+            .tmp_sessions
+            .entry(addr)
+            .or_insert_with(|| TemporarySession {
+                raw: RawSession::new(addr, SessionId::generate(), self.sink.clone()),
+                users: 0,
+            });
+        entry.users += 1;
+        TemporarySessionGuard {
+            state: self.state.clone(),
+            session: entry.raw.clone(),
         }
     }
 
     /// Different from `temporary_session` because it doesn't create new session.
     pub fn get_temporary_session(&self, addr: &SocketAddr) -> Option<Arc<RawSession>> {
         let state = self.state.lock().unwrap();
-        state.tmp_sessions.get(addr).cloned()
+        state.tmp_sessions.get(addr).map(|entry| entry.raw.clone())
     }
 
     /// External layer is responsible for acquiring `SessionPermit` to make sure,
@@ -113,7 +213,8 @@ impl SessionInitializer {
 
         guard.transition_outgoing(InitState::Initializing).await?;
 
-        let tmp_session = self.temporary_session(&addr);
+        let _temporary = self.lease_temporary_session(addr);
+        let tmp_session = &_temporary.session;
 
         log::debug!("[{this_id}] initializing session with [{node_id}] ({addr})");
 
@@ -130,7 +231,7 @@ impl SessionInitializer {
             .transition_outgoing(InitState::ChallengeHandshake)
             .await?;
 
-        let session_id = SessionId::try_from(response.session_id.clone())
+        let session_id = SessionId::try_from(response.session_id.as_slice())
             .map_err(|e| ProtocolError::InvalidResponse(e.to_string()))?;
         let challenge_req = response.packet.challenge_req.ok_or_else(|| {
             ProtocolError::InvalidResponse(
@@ -212,12 +313,15 @@ impl SessionInitializer {
         let session = self
             .layer
             .register_session(
-                addr,
-                session_id,
-                remote_id,
-                identities,
-                response.packet.supported_encryptions,
-                session_key,
+                SessionRegistrationInfo {
+                    addr,
+                    id: session_id,
+                    node_id: remote_id,
+                    identities,
+                    supported_encryptions: response.packet.supported_encryptions,
+                    session_key,
+                },
+                &guard,
             )
             .await
             .map_err(|e| {
@@ -324,12 +428,33 @@ impl SessionInitializer {
 
         {
             let mut state = self.state.lock().unwrap();
-            state.incoming_sessions.entry(session_id).or_insert(sender);
-            state.handles.push(abort_handle);
+            if state.incoming_sessions.len() >= MAX_INCOMING_HANDSHAKES
+                || state
+                    .incoming_sessions
+                    .values()
+                    .any(|entry| entry.remote == with)
+            {
+                return Err(SessionError::Internal(
+                    "Incoming handshake slot unavailable".into(),
+                ));
+            }
+            state.incoming_sessions.insert(
+                session_id,
+                IncomingSession {
+                    remote: with,
+                    sender,
+                },
+            );
+            state.handles.insert(session_id, abort_handle);
         }
 
+        let _incoming = IncomingSessionGuard {
+            state: self.state.clone(),
+            id: session_id,
+        };
+        let _temporary = self.lease_temporary_session(with);
+
         let this = self.clone();
-        let this1 = this.clone();
         let session = Abortable::new(
             timeout(self.config.incoming_session_timeout, async move {
                 this.init_session_handler(
@@ -341,48 +466,37 @@ impl SessionInitializer {
         .map(move |result| match result {
             Ok(Ok(Ok(result))) => Ok(result),
             Ok(Ok(Err(e))) => Err(e),
-            Ok(Err(_timeout)) => Err(SessionError::Timeout("".to_string())),
+            Ok(Err(_timeout)) => Err(SessionError::Timeout("Incoming handshake deadline exceeded".into())),
             Err(_aborted) => Err(SessionError::Internal("Aborted".to_string())),
         })
-        .or_else(move |result| async move {
-            let session = this1.temporary_session(&with);
-            session.disconnect().await.ok();
-
+        .await.map_err(move |result| {
             log::warn!(
                 "Error initializing session {session_id} with node [{remote_id}] ({with}). Error: {result}"
             );
 
-            // Establishing session failed.
-            this1.cleanup_initialization(&session_id).await;
-            Err(result)
-        }).await?;
+            result
+        })?;
 
         Ok(session)
     }
 
-    pub(crate) async fn existing_session(
+    pub(crate) fn try_continue_session(
         &self,
         session_id: SessionId,
         request_id: RequestId,
-        _from: SocketAddr,
+        from: SocketAddr,
         request: proto::request::Session,
     ) -> Result<(), SessionError> {
-        let existing = self
-            .state
-            .lock()
-            .unwrap()
-            .incoming_sessions
-            .get(&session_id)
-            .cloned();
-        let mut sender = match existing {
-            Some(sender) => sender,
+        let state = self.state.lock().unwrap();
+        let sender = match state.incoming_sessions.get(&session_id) {
+            Some(entry) if entry.remote == from => &entry.sender,
+            Some(_) => return Err(SessionError::Internal("Handshake endpoint mismatch".into())),
             None => return Err(ProtocolError::SessionNotFound(session_id).into()),
         };
 
         sender
-            .send((request_id, request))
-            .await
-            .map_err(|_| SessionError::Internal("Failed to send Request to channel".to_string()))
+            .try_send((request_id, request))
+            .map_err(|_| SessionError::Internal("Handshake queue unavailable".to_string()))
     }
 
     /// External layer is responsible for acquiring `SessionPermit` to make sure,
@@ -406,7 +520,9 @@ impl SessionInitializer {
 
         guard.transition_incoming(InitState::Initializing).await?;
 
-        let tmp_session = self.temporary_session(&with);
+        let tmp_session = self.get_temporary_session(&with).ok_or_else(|| {
+            SessionError::Internal("Incoming handshake lease was released".into())
+        })?;
 
         let (packet, raw_challenge) =
             challenge::prepare_challenge_response(config.challenge_difficulty);
@@ -434,7 +550,7 @@ impl SessionInitializer {
             None => futures::future::ok(proto::ChallengeResponse::default()).boxed_local(),
         };
 
-        if let Some((request_id, session)) = rc.next().await {
+        if let Some((request_id, session)) = rc.recv().await {
             log::debug!("Got challenge response from Node [{remote_id}] at address: {with}");
 
             guard
@@ -448,7 +564,7 @@ impl SessionInitializer {
                     &raw_challenge,
                     config.challenge_difficulty,
                     session.challenge_resp,
-                    None,
+                    Some(remote_id),
                 )
                 .map_err(|e| ProtocolError::InvalidChallenge(e.to_string()))?;
 
@@ -474,12 +590,15 @@ impl SessionInitializer {
             let session = self
                 .layer
                 .register_session(
-                    with,
-                    session_id,
-                    node_id,
-                    identities,
-                    session.supported_encryptions,
-                    session_key,
+                    SessionRegistrationInfo {
+                        addr: with,
+                        id: session_id,
+                        node_id,
+                        identities,
+                        supported_encryptions: session.supported_encryptions,
+                        session_key,
+                    },
+                    &guard,
                 )
                 .await
                 .map_err(|e| {
@@ -525,22 +644,6 @@ impl SessionInitializer {
         ))
     }
 
-    pub(crate) async fn cleanup_initialization(&self, session_id: &SessionId) {
-        let mut state = self.state.lock().unwrap();
-
-        state.incoming_sessions.remove(session_id);
-
-        if let Some(session) = state
-            .tmp_sessions
-            .iter()
-            .find(|(_, session)| &session.id == session_id)
-            .map(|(addr, _)| addr)
-            .cloned()
-        {
-            state.tmp_sessions.remove(&session);
-        }
-    }
-
     pub async fn shutdown(&mut self) {
         let handles = {
             let mut state = self.state.lock().unwrap();
@@ -549,7 +652,7 @@ impl SessionInitializer {
             std::mem::take(&mut state.handles)
         };
 
-        for handle in handles {
+        for (_, handle) in handles {
             handle.abort();
         }
 

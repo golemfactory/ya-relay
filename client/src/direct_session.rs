@@ -96,6 +96,7 @@ impl AllowedForwards {
 /// than session owner.
 #[derive(Clone)]
 pub struct DirectSession {
+    pub(crate) generation: u64,
     /// It would be preferred to use `NodeEntry<Identity>` here, but current implementation of
     /// relay server doesn't provide public key.
     pub owner: NodeEntry<NodeId>,
@@ -130,6 +131,7 @@ impl DirectSession {
             ))?;
 
         Ok(Arc::new(DirectSession {
+            generation: 0,
             owner: NodeEntry {
                 default_id,
                 identities,
@@ -148,6 +150,7 @@ impl DirectSession {
         session: Arc<RawSession>,
     ) -> anyhow::Result<Arc<DirectSession>> {
         Ok(Arc::new(DirectSession {
+            generation: 0,
             owner: NodeEntry {
                 default_id: node_id,
                 identities: vec![],

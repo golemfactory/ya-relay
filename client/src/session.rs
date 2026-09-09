@@ -27,7 +27,7 @@ use ya_relay_core::crypto::PublicKey;
 
 use self::expire::track_sessions_expiration;
 use self::keep_alive::keep_alive_server_session;
-use self::network_view::{NetworkView, SessionLock, SessionPermit, Validity};
+use self::network_view::{NetworkView, NodeSnapshot, SessionLock, SessionPermit, Validity};
 use self::session_state::{RelayedState, ReverseState, SessionState};
 use crate::client::{ClientConfig, Forwarded};
 use crate::direct_session::{DirectSession, NodeEntry};
@@ -44,7 +44,9 @@ use crate::transport::ForwardReceiver;
 
 use crate::error::SenderError::Session;
 use crate::session::session_state::SessionState::{Closed, FailedEstablish};
-use crate::session::session_traits::{SessionDeregistration, SessionRegistration};
+use crate::session::session_traits::{
+    SessionDeregistration, SessionRegistration, SessionRegistrationInfo,
+};
 use crate::SessionError::Network;
 use ya_relay_core::identity::Identity;
 use ya_relay_core::server_session::{Endpoint, NodeInfo, SessionId, TransportType};
@@ -58,7 +60,7 @@ use ya_relay_proto::proto::control::ReverseConnection;
 use ya_relay_proto::proto::{is_direct_message, Forward, RequestId, SlotId};
 use ya_relay_stack::Channel;
 
-type ReqFingerprint = (Vec<u8>, u64);
+type ReqFingerprint = (SocketAddr, Option<SessionId>, u64);
 
 const ENCRYPTION_SYNC_INITIAL_INTERVAL: Duration = Duration::from_secs(2 * 60);
 const ENCRYPTION_SYNC_MAX_INTERVAL: Duration = Duration::from_secs(30 * 60);
@@ -182,8 +184,10 @@ pub struct SessionLayerState {
     pub nodes: HashMap<NodeId, Arc<NodeRouting>>,
     pub p2p_sessions: HashMap<SocketAddr, Arc<DirectSession>>,
     pub p2p_nodes: HashMap<NodeId, Arc<DirectSession>>,
+    /// Limits notifications sent after local decryption failures.
     encryption_sync_backoff: HashMap<NodeId, EncryptionSyncBackoff>,
-    encryption_sync_refresh_after: HashMap<NodeId, Instant>,
+    /// Independently limits relay lookups requested by the peer.
+    encryption_sync_refresh_backoff: HashMap<NodeId, EncryptionSyncBackoff>,
 
     pub(crate) init_protocol: Option<SessionInitializer>,
 
@@ -196,13 +200,18 @@ impl SessionRegistration for SessionLayer {
     /// Registers initialized session to be ready to use.
     async fn register_session(
         &self,
-        addr: SocketAddr,
-        id: SessionId,
-        node_id: NodeId,
-        identities: Vec<Identity>,
-        supported_encryptions: Vec<String>,
-        session_key: Option<PublicKey>,
+        info: SessionRegistrationInfo,
+        owner: &NodeSnapshot,
     ) -> anyhow::Result<Arc<DirectSession>> {
+        let SessionRegistrationInfo {
+            addr,
+            id,
+            node_id,
+            identities,
+            supported_encryptions,
+            session_key,
+        } = info;
+        let _publication = owner.publication_guard().await?;
         log::trace!("Calling register_session {id} [{node_id}] ({addr})");
 
         let session = RawSession::new(addr, id, self.out_stream()?);
@@ -213,7 +222,7 @@ impl SessionRegistration for SessionLayer {
         // It could be possible to do this in backward compatibility manner, meaning that both new and
         // old Nodes could talk with new relay, but new Nodes couldn't cooperate with old relay.
         let is_relay = identities.is_empty();
-        let direct = if is_relay {
+        let mut direct = if is_relay {
             DirectSession::new_relay(node_id, session.clone()).map_err(|e| {
                 anyhow!("Registering relay session for node [{node_id}] ({addr}): {e}")
             })?
@@ -222,6 +231,9 @@ impl SessionRegistration for SessionLayer {
                 .map_err(|e| anyhow!("Registering session for node [{node_id}]: {e}"))?
         };
 
+        Arc::get_mut(&mut direct)
+            .expect("new session has a single owner")
+            .generation = owner.generation();
         let default_id = identities
             .iter()
             .find(|ident| ident.node_id == node_id)
@@ -244,6 +256,7 @@ impl SessionRegistration for SessionLayer {
                     self.config.session_crypto.clone(),
                 )?,
                 authenticated_identities,
+                owner.generation(),
             )),
             Err(_) if is_relay => None,
             Err(e) => bail!(e),
@@ -267,6 +280,16 @@ impl SessionRegistration for SessionLayer {
     }
 
     async fn register_routing(&self, routing: Arc<NodeRouting>) -> anyhow::Result<()> {
+        let owner = self
+            .registry
+            .get_entry(routing.node.default_id.node_id)
+            .await
+            .ok_or_else(|| anyhow!("Routing generation was removed"))?
+            .snapshot();
+        let _publication = owner.publication_guard().await?;
+        if owner.generation() != routing.generation {
+            bail!("Routing generation was replaced");
+        }
         log::trace!(
             "Calling `register_routing` for Node [{}]",
             routing.node.default_id.node_id
@@ -281,6 +304,14 @@ impl SessionRegistration for SessionLayer {
         let addr = route.raw.remote;
 
         let mut state = self.state.lock();
+        if !state
+            .p2p_sessions
+            .get(&addr)
+            .map(|s| Arc::ptr_eq(s, &route))
+            .unwrap_or(false)
+        {
+            bail!("Physical route was replaced");
+        }
         for id in &routing.node.identities {
             let node_id = id.node_id;
             state.nodes.insert(node_id, routing.clone());
@@ -296,68 +327,51 @@ impl SessionRegistration for SessionLayer {
 #[async_trait(?Send)]
 impl SessionDeregistration for SessionLayer {
     async fn unregister(&self, node_id: NodeId) {
-        log::debug!("[unregister]: Unregistering Node [{node_id}]");
+        if let Some(node) = self.registry.get_entry(node_id).await {
+            self.unregister_generation(node.snapshot()).await;
+        }
+    }
 
+    async fn unregister_generation(&self, node: NodeSnapshot) {
+        let generation = node.generation();
+        if !self.registry.remove_generation(&node).await {
+            return;
+        }
         let direct = {
-            let direct = {
-                let mut state = self.state.lock();
-
-                let mut ids: HashSet<NodeId> = HashSet::from_iter(vec![node_id]);
-
-                let routing = state.nodes.get(&node_id).cloned();
-                let direct = state.p2p_nodes.get(&node_id).cloned();
-
-                if let Some(routing) = &routing {
-                    ids.extend(routing.node.identities.iter().map(|entry| entry.node_id))
-                }
-
-                if let Some(direct) = &direct {
-                    log::debug!(
-                        "Disconnecting [{node_id}] - removing session: {} ({})",
-                        direct.raw.id,
-                        direct.raw.remote
-                    );
-
-                    state.p2p_sessions.remove(&direct.raw.remote);
-
-                    // List of ids should be the same in `NodeRouting` and `DirectSession`
-                    // we are using both to make sure we removed everything.
-                    ids.extend(direct.owner.identities.iter())
-                }
-
-                for id in ids {
-                    log::debug!("Disconnecting [{node_id}] - removing entries for identity: {id}");
-
-                    state.p2p_nodes.remove(&id);
-                    state.encryption_sync_backoff.remove(&id);
-                    state.encryption_sync_refresh_after.remove(&id);
-                    // `NodeRouting` will be dropped here and all `RoutingSender` containing `Weak<NodeRouting>`
-                    // pointing to this Node will lose connection.
-                    if let Some(direct) = state
-                        .nodes
-                        .remove(&id)
-                        .and_then(|routing| routing.route.upgrade())
-                    {
-                        // In case we had relayed connection, we remove entry from session used for this.
-                        direct.remove(&id).ok();
+            let mut state = self.state.lock();
+            let direct = state
+                .p2p_sessions
+                .values()
+                .find(|s| s.generation == generation)
+                .cloned();
+            let ids = state
+                .nodes
+                .iter()
+                .filter(|(_, r)| r.generation == generation)
+                .map(|(id, _)| *id)
+                .chain(std::iter::once(node.id))
+                .collect::<Vec<_>>();
+            for id in ids {
+                if let Some(routing) = state
+                    .nodes
+                    .get(&id)
+                    .filter(|r| r.generation == generation)
+                    .cloned()
+                {
+                    state.nodes.remove(&id);
+                    if let Some(route) = routing.route.upgrade() {
+                        route.remove(&id).ok();
                     }
                 }
-                drop(state);
-                direct
-            };
-
-            if let Some(entry) = self.registry.get_entry(node_id).await {
-                log::trace!("[unregister]: found entry for {node_id}, removing...",);
-                self.registry.remove_node(node_id).await;
+                state.encryption_sync_backoff.remove(&id);
+                state.encryption_sync_refresh_backoff.remove(&id);
             }
-
+            state.p2p_nodes.retain(|_, s| s.generation != generation);
+            state.p2p_sessions.retain(|_, s| s.generation != generation);
             direct
         };
-
-        if let Some(direct) = direct {
-            self.unregister_session(direct).await;
-        } else {
-            increment_counter!("ya-relay.client.session.closed", TARGET_ID => node_id.to_string());
+        if let Some(session) = direct {
+            self.unregister_session(session).await;
         }
     }
 
@@ -368,60 +382,64 @@ impl SessionDeregistration for SessionLayer {
     /// - To use this function as part of `unregister` (which changes state itself so we can't
     ///   do this for the second time)
     async fn unregister_session(&self, session: Arc<DirectSession>) {
-        log::info!(
-            "Closing session {} with [{}] ({})",
-            session.raw.id,
-            session.owner.default_id,
-            session.raw.remote
-        );
-
-        // Notifies other Node that we are closing connection. This is only graceful optimization.
-        // Node should handle disconnected Nodes properly even if he won't be notified.
-        session.raw.disconnect().await.ok();
-
-        if session.owner.default_id == NodeId::default() {
-            let f = session.list();
-            log::trace!(
-                "[close_session]: lost session with server - remove {} forwards",
-                f.len()
-            );
-            for e in f {
-                log::trace!(
-                    "[close_session]: removing forward node_id {}.",
-                    e.default_id
-                );
-                self.registry.remove_node(e.default_id).await;
+        // Snapshot only routes owned by this physical session. Another connection may
+        // already use the same address or NodeId.
+        let mut owners = {
+            let state = self.state.lock();
+            state
+                .nodes
+                .iter()
+                .filter_map(|(id, routing)| {
+                    if routing
+                        .route
+                        .upgrade()
+                        .map(|r| Arc::ptr_eq(&r, &session))
+                        .unwrap_or(false)
+                    {
+                        Some((*id, routing.generation))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+        };
+        owners.push((session.owner.default_id, session.generation));
+        for (id, generation) in owners {
+            if let Some(node) = self.registry.get_entry(id).await {
+                let node = node.snapshot();
+                if node.generation() == generation {
+                    // Remove registry first so a late handshake cannot publish this generation.
+                    if self.registry.remove_generation(&node).await {
+                        let mut state = self.state.lock();
+                        let ids = state
+                            .nodes
+                            .iter()
+                            .filter(|(_, r)| r.generation == generation)
+                            .map(|(id, _)| *id)
+                            .collect::<Vec<_>>();
+                        state.nodes.retain(|_, r| r.generation != generation);
+                        for id in ids {
+                            state.encryption_sync_backoff.remove(&id);
+                            state.encryption_sync_refresh_backoff.remove(&id);
+                        }
+                    }
+                }
             }
         }
-
-        let forwards = session.list();
         {
             let mut state = self.state.lock();
-            for id in &session.owner.identities {
-                state.p2p_nodes.remove(id);
-                state.nodes.remove(id);
-                state.encryption_sync_backoff.remove(id);
-                state.encryption_sync_refresh_after.remove(id);
-            }
-            state.p2p_sessions.remove(&session.raw.remote);
-
-            for id in forwards.iter().flat_map(|entry| entry.identities.iter()) {
-                state.nodes.remove(id);
-                state.encryption_sync_backoff.remove(id);
-                state.encryption_sync_refresh_after.remove(id);
-            }
+            state.p2p_nodes.retain(|_, s| !Arc::ptr_eq(s, &session));
+            state.p2p_sessions.retain(|_, s| !Arc::ptr_eq(s, &session));
+            state.nodes.retain(|_, r| {
+                !r.route
+                    .upgrade()
+                    .map(|s| Arc::ptr_eq(&s, &session))
+                    .unwrap_or(false)
+            });
         }
-
-        let target_id = session.owner.default_id.to_string();
-        gauge!("ya-relay.client.session.type", ConnectionMethod::no_connection(), TARGET_ID => target_id.clone());
-        increment_counter!("ya-relay.client.session.closed", TARGET_ID => target_id);
-
-        log::info!(
-            "Session {} with [{}] ({}) closed",
-            session.raw.id,
-            session.owner.default_id,
-            session.raw.remote
-        );
+        // A best-effort notification must not prevent local retirement.
+        let _ = tokio::time::timeout(Duration::from_secs(1), session.raw.disconnect()).await;
+        increment_counter!("ya-relay.client.session.closed", TARGET_ID => session.owner.default_id.to_string());
     }
 
     /// Function doesn't wait for abort to finish.
@@ -438,12 +456,8 @@ impl SessionDeregistration for SessionLayer {
         };
 
         entry.abort_initialization().await;
-
-        let protocol = self.get_protocol()?;
-        if let Some(session) = protocol.get_temporary_session(&remote) {
-            session.disconnect().await.ok();
-            protocol.cleanup_initialization(&session.id).await;
-        }
+        // The owning future's guards release its queues and temporary-session lease.
+        // Looking up by address here could instead act on a replacement attempt.
         Ok(())
     }
 }
@@ -548,7 +562,7 @@ impl SessionLayer {
     pub async fn is_p2p(&self, node_id: NodeId) -> bool {
         match self.get_node_routing(node_id).await {
             None => false,
-            Some(routing) => routing.session_type() == SessionType::P2P,
+            Some(routing) => matches!(routing.session_type(), Some(SessionType::P2P)),
         }
     }
 
@@ -606,20 +620,19 @@ impl SessionLayer {
     }
 
     fn encryption_sync_refresh_due(&self, node_id: NodeId) -> bool {
-        let now = Instant::now();
-        let mut state = self.state.lock();
-        if state
-            .encryption_sync_refresh_after
-            .get(&node_id)
-            .map(|next| now < *next)
-            .unwrap_or(false)
-        {
-            return false;
-        }
-        state
-            .encryption_sync_refresh_after
-            .insert(node_id, now + ENCRYPTION_SYNC_INITIAL_INTERVAL);
-        true
+        self.state
+            .lock()
+            .encryption_sync_refresh_backoff
+            .entry(node_id)
+            .or_insert_with(EncryptionSyncBackoff::new)
+            .record_failure(Instant::now())
+    }
+
+    fn record_encryption_sync_key_change(&self, node_id: NodeId) {
+        self.state
+            .lock()
+            .encryption_sync_refresh_backoff
+            .remove(&node_id);
     }
 
     fn record_successful_decryption(&self, node_id: NodeId) {
@@ -631,64 +644,122 @@ impl SessionLayer {
             .unwrap_or(false);
         if reset {
             state.encryption_sync_backoff.remove(&node_id);
-            state.encryption_sync_refresh_after.remove(&node_id);
+            state.encryption_sync_refresh_backoff.remove(&node_id);
             log::debug!("Encryption sync backoff reset for Node [{node_id}]");
         }
     }
 
-    async fn refresh_node_encryption(&self, node_id: NodeId) -> anyhow::Result<()> {
-        let server_session = self
-            .server_session()
-            .await
-            .map_err(|e| anyhow!("Failed to get relay session while refreshing encryption: {e}"))?;
-        let node = server_session
-            .raw
-            .find_node(node_id)
-            .await
-            .map_err(|e| anyhow!("Failed to refresh Node [{node_id}] from relay: {e}"))?;
-        let info = NodeInfo::try_from(node)
-            .map_err(|e| anyhow!("Failed to verify refreshed Node [{node_id}]: {e}"))?;
-        let session_key = info.session_key.clone().ok_or_else(|| {
-            anyhow!("Refreshed Node [{node_id}] has no verified encryption session key")
-        })?;
-        if info.identities.is_empty() {
-            bail!("Refreshed Node [{node_id}] has no identities");
-        }
+    async fn refresh_node_encryption(&self, node_id: NodeId) -> anyhow::Result<bool> {
+        self.refresh_node_encryption_with(node_id, async {
+            let server_session = self.server_session().await.map_err(|e| {
+                anyhow!("Failed to get relay session while refreshing encryption: {e}")
+            })?;
+            let node = server_session
+                .raw
+                .find_node(node_id)
+                .await
+                .map_err(|e| anyhow!("Failed to refresh Node [{node_id}] from relay: {e}"))?;
+            NodeInfo::try_from(node)
+                .map_err(|e| anyhow!("Failed to verify refreshed Node [{node_id}]: {e}"))
+        })
+        .await
+    }
 
-        let route = {
-            let state = self.state.lock();
-            state
-                .nodes
-                .get(&node_id)
-                .and_then(|routing| routing.route.upgrade())
+    /// Capture ownership before polling the lookup; publication is conditional on
+    /// that exact generation and routing object still being current afterwards.
+    async fn refresh_node_encryption_with(
+        &self,
+        node_id: NodeId,
+        lookup: impl std::future::Future<Output = anyhow::Result<NodeInfo>>,
+    ) -> anyhow::Result<bool> {
+        let owner = self
+            .registry
+            .get_entry(node_id)
+            .await
+            .ok_or_else(|| anyhow!("Node removed before encryption refresh"))?
+            .snapshot();
+        let original = self
+            .state
+            .lock()
+            .nodes
+            .get(&node_id)
+            .cloned()
+            .ok_or_else(|| anyhow!("Routing removed before encryption refresh"))?;
+        if original.generation != owner.generation() {
+            bail!("Routing generation changed before encryption refresh");
         }
-        .ok_or_else(|| anyhow!("Routing for Node [{node_id}] closed during encryption refresh"))?;
+        let previous_session_key = owner.info().await.just_get().session_key;
+        let info = lookup.await?;
+        let changed = previous_session_key.as_ref().map(|key| key.bytes())
+            != info.session_key.as_ref().map(|key| key.bytes());
+        self.publish_encryption_refresh(node_id, &owner, &original, info)
+            .await?;
+        Ok(changed)
+    }
 
+    async fn publish_encryption_refresh(
+        &self,
+        node_id: NodeId,
+        owner: &NodeSnapshot,
+        original: &Arc<NodeRouting>,
+        info: NodeInfo,
+    ) -> anyhow::Result<()> {
+        let default = info
+            .identities
+            .first()
+            .ok_or_else(|| anyhow!("Refreshed node has no identities"))?;
+        if default.node_id != original.node.default_id.node_id {
+            bail!("Encryption refresh changed the default identity");
+        }
+        let route = original
+            .route
+            .upgrade()
+            .ok_or_else(|| anyhow!("Original route was closed"))?;
         let identities = NodeEntry {
-            default_id: info.identities[0].clone(),
+            default_id: default.clone(),
             identities: info.identities.clone(),
         };
-        let authenticated_identities = info.authenticated_identities.clone();
+        let slot = info.slot;
+        let encryption = encryption::new(
+            info.supported_encryption.clone(),
+            Some(
+                info.session_key
+                    .clone()
+                    .ok_or_else(|| anyhow!("Refreshed node has no verified session key"))?,
+            ),
+            self.config.session_crypto.clone(),
+        )?;
+        let refreshed = NodeRouting::new(
+            identities.clone(),
+            route.clone(),
+            encryption,
+            info.authenticated_identities.clone(),
+            owner.generation(),
+        );
 
-        if route.owner.default_id != identities.default_id.node_id {
-            route.register(identities.clone().into(), info.slot);
-        }
-
-        self.registry.update_entry(info.clone()).await?;
-        self.register_routing(NodeRouting::new(
-            identities,
-            route,
-            encryption::new(
-                info.supported_encryption,
-                Some(session_key),
-                self.config.session_crypto.clone(),
-            )?,
-            authenticated_identities,
-        ))
-        .await?;
-
-        log::info!("Refreshed encryption routing for Node [{node_id}]");
-        Ok(())
+        self.registry
+            .commit_refresh(owner, info, || {
+                let mut state = self.state.lock();
+                if !state
+                    .nodes
+                    .get(&node_id)
+                    .is_some_and(|current| Arc::ptr_eq(current, original))
+                    || !state
+                        .p2p_sessions
+                        .get(&route.raw.remote)
+                        .is_some_and(|current| Arc::ptr_eq(current, &route))
+                {
+                    bail!("Encryption refresh route was replaced");
+                }
+                if route.owner.default_id != identities.default_id.node_id {
+                    route.register(identities.clone().into(), slot);
+                }
+                for identity in &identities.identities {
+                    state.nodes.insert(identity.node_id, refreshed.clone());
+                }
+                Ok(())
+            })
+            .await
     }
 
     async fn handle_encryption_failure(&self, node_id: NodeId) {
@@ -696,12 +767,12 @@ impl SessionLayer {
             return;
         }
 
-        if self.encryption_sync_refresh_due(node_id) {
-            self.refresh_node_encryption(node_id)
-                .await
-                .map_err(|e| log::debug!("Encryption refresh for Node [{node_id}] failed: {e}"))
-                .ok();
-        }
+        // Do not share this throttle with peer-requested refreshes. A failure in the opposite
+        // direction is independent evidence that our cached key may already be outdated.
+        self.refresh_node_encryption(node_id)
+            .await
+            .map_err(|e| log::debug!("Encryption refresh for Node [{node_id}] failed: {e}"))
+            .ok();
 
         match self.get_node_routing(node_id).await {
             Some(routing) => {
@@ -723,12 +794,14 @@ impl SessionLayer {
 
     async fn handle_encryption_sync(&self, node_id: NodeId) {
         if !self.encryption_sync_refresh_due(node_id) {
+            log::debug!("Encryption sync refresh for Node [{node_id}] suppressed by backoff");
             return;
         }
-        self.refresh_node_encryption(node_id)
-            .await
-            .map_err(|e| log::debug!("Encryption sync requested by Node [{node_id}] failed: {e}"))
-            .ok();
+        match self.refresh_node_encryption(node_id).await {
+            Ok(true) => self.record_encryption_sync_key_change(node_id),
+            Ok(false) => {}
+            Err(e) => log::debug!("Encryption sync requested by Node [{node_id}] failed: {e}"),
+        }
     }
 
     pub async fn sessions(&self) -> Vec<Weak<DirectSession>> {
@@ -782,39 +855,46 @@ impl SessionLayer {
     /// TODO: `disconnect` shouldn't fail, because there is no reasonable reaction to this case.
     ///       This function must leave everything in clean state.
     pub async fn disconnect(&self, node_id: NodeId) -> Result<(), SessionError> {
-        log::info!("[disconnect]: Disconnecting Node [{node_id}]");
-
-        // Note: This function shouldn't return before changing state to `Closed` (abort-safety).
-        let entry = self.registry.guard(node_id, &[]).await;
-        entry.transition(SessionState::Closing).await?;
-        self.unregister(node_id).await;
-        entry.transition(SessionState::Closed).await?;
+        let myself = self.clone();
+        tokio::task::spawn_local(async move {
+            if let Some(node) = myself.registry.get_entry(node_id).await {
+                let node = node.snapshot();
+                node.begin_closing().await;
+                node.abort_initialization().await;
+                myself.unregister_generation(node).await;
+            }
+        })
+        .await
+        .map_err(|e| SessionError::Unexpected(e.to_string()))?;
         Ok(())
     }
 
     pub async fn close_session(&self, session: Arc<DirectSession>) -> Result<(), SessionError> {
         let myself = self.clone();
-        // Makes function abort-safe. Dropping this future won't stop execution
-        // of closing function.
         tokio::task::spawn_local(async move {
-            let entry = myself.registry.guard(session.owner.default_id, &[]).await;
-
-            let previous = entry.begin_closing().await;
-            if !matches!(previous, SessionState::Established(_)) {
-                log::warn!(
-                    "Recovering session {} with [{}] ({}) from inconsistent state: {}",
-                    session.raw.id,
-                    session.owner.default_id,
-                    session.raw.remote,
-                    previous
-                );
+            // Do not send a delayed disconnect for a replaced physical session.
+            // A relay replacement may intentionally have the same wire ID.
+            if myself
+                .state
+                .lock()
+                .p2p_sessions
+                .get(&session.raw.remote)
+                .is_some_and(|current| !Arc::ptr_eq(current, &session))
+            {
+                return;
+            }
+            if let Some(node) = myself.registry.get_entry(session.owner.default_id).await {
+                let node = node.snapshot();
+                if node.generation() == session.generation {
+                    node.begin_closing().await;
+                    node.abort_initialization().await;
+                }
             }
             myself.unregister_session(session).await;
-            entry.transition(SessionState::Closed).await?;
-            Ok(())
         })
         .await
-        .map_err(|e| SessionError::Unexpected(e.to_string()))?
+        .map_err(|e| SessionError::Unexpected(e.to_string()))?;
+        Ok(())
     }
 
     pub(crate) async fn close_server_session(&self) -> bool {
@@ -855,7 +935,9 @@ impl SessionLayer {
             // will come later, will get through, but the rest of threads would wait for `Established` state.
             self.await_connected(node_id).await?;
 
-            log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {} ({})).", routing.route(), routing.session_type());
+            if let (Some(route), Some(session_type)) = (routing.route(), routing.session_type()) {
+                log::trace!("Resolving Node [{node_id}]. Returning already existing connection (route = {route} ({session_type})).");
+            }
             return Ok(routing);
         }
 
@@ -1174,6 +1256,10 @@ impl SessionLayer {
                     log::debug!(
                         "Failed to establish p2p session with node [{node_id}], using address: {addr}. Error: {e}"
                     );
+                    permit
+                        .registry
+                        .transition(SessionState::RestartConnect)
+                        .await?;
                 }
             }
         }
@@ -1306,6 +1392,7 @@ impl SessionLayer {
             server.clone(),
             encryption,
             authenticated_identities,
+            permit.registry.generation(),
         );
 
         self.register_routing(routing)
@@ -1387,11 +1474,9 @@ impl SessionLayer {
             };
         }
 
-        let session_id = SessionId::try_from(session_id.clone())
+        let session_id = SessionId::try_from(session_id.as_slice())
             .map_err(|e| ProtocolError::InvalidSessionId(session_id, e.to_string()))?;
-        protocol
-            .existing_session(session_id, request_id, from, request)
-            .await
+        protocol.try_continue_session(session_id, request_id, from, request)
     }
 
     /// TODO: Don't respond to ping when we don't have session with other Node.
@@ -1439,6 +1524,21 @@ impl SessionLayer {
         // so we should be cautious, when processing it.
         let session_id = SessionId::try_from(session_id)?;
 
+        // Only our relay may report that a forwarded destination disappeared.
+        // A peer (or an unknown address) must not be able to close unrelated routes.
+        let notifying_relay = if matches!(&by, By::NodeId(_) | By::Slot(_)) {
+            let sender = self
+                .find_session(from)
+                .await
+                .ok_or_else(|| anyhow!("Disconnect notification from unknown endpoint {from}"))?;
+            if sender.raw.id != session_id || sender.owner.default_id != NodeId::default() {
+                bail!("Disconnect notification is not from the current relay session")
+            }
+            Some(sender)
+        } else {
+            None
+        };
+
         if let Ok(node) = match by {
             By::Slot(id) => match self.find_session(from).await {
                 // TODO: It's necessary to unregister routing as well.
@@ -1471,6 +1571,18 @@ impl SessionLayer {
                 };
             }
         } {
+            if let Some(relay) = notifying_relay {
+                let routed_by_sender = self
+                    .state
+                    .lock()
+                    .nodes
+                    .get(&node)
+                    .and_then(|routing| routing.route.upgrade())
+                    .is_some_and(|route| Arc::ptr_eq(&route, &relay));
+                if !routed_by_sender {
+                    bail!("Relay notification does not own the route to {node}")
+                }
+            }
             log::info!("Node [{node}] disconnected from Relay. Stopping forwarding..");
             self.disconnect(node).await.ok();
         }
@@ -1540,21 +1652,31 @@ impl SessionLayer {
         Ok(stream.send((packet.into(), addr)).await?)
     }
 
-    pub(crate) fn record_duplicate(&self, session_id: Vec<u8>, request_id: u64) {
+    pub(crate) fn record_duplicate(
+        &self,
+        from: SocketAddr,
+        session_id: Option<SessionId>,
+        request_id: u64,
+    ) {
         const REQ_DEDUPLICATE_BUF_SIZE: usize = 32;
 
         let mut processed_requests = self.processed_requests.lock();
-        processed_requests.push_back((session_id, request_id));
+        processed_requests.push_back((from, session_id, request_id));
         if processed_requests.len() > REQ_DEDUPLICATE_BUF_SIZE {
             processed_requests.pop_front();
         }
     }
 
-    pub(crate) fn is_request_duplicate(&self, session_id: &Vec<u8>, request_id: u64) -> bool {
+    pub(crate) fn is_request_duplicate(
+        &self,
+        from: SocketAddr,
+        session_id: Option<SessionId>,
+        request_id: u64,
+    ) -> bool {
         self.processed_requests
             .lock()
             .iter()
-            .any(|(sess_id, req_id)| *req_id == request_id && sess_id == session_id)
+            .any(|entry| *entry == (from, session_id, request_id))
     }
 
     pub(crate) fn get_protocol(&self) -> Result<SessionInitializer, SessionError> {
@@ -1703,11 +1825,12 @@ impl Handler for SessionLayer {
             }
         };
 
-        if self.is_request_duplicate(&session_id, request_id) {
+        let parsed_id = SessionId::from_wire(&session_id).ok()?;
+        if self.is_request_duplicate(from, parsed_id, request_id) {
             log::trace!("Dropping duplicated request packet ({request_id}) from {from}");
             return None;
         }
-        self.record_duplicate(session_id.clone(), request_id);
+        self.record_duplicate(from, parsed_id, request_id);
 
         log::trace!("Received request packet ({request_id}) from {from}: {kind}");
 
@@ -1716,13 +1839,31 @@ impl Handler for SessionLayer {
                 async move { self.on_ping(session_id, request_id, from, request).await }
                     .boxed_local()
             }
-            proto::request::Kind::Session(request) => async move {
-                self.dispatch_session(session_id, request_id, from, request)
-                    .await
-                    .map_err(|e| log::warn!("Handling `Session` request: {e}"))
-                    .ok();
+            proto::request::Kind::Session(request) => {
+                let protocol = self.get_protocol().ok()?;
+                if let Some(id) = parsed_id {
+                    // Continuations never spawn tasks, including unknown IDs and full queues.
+                    if let Err(error) = protocol.try_continue_session(id, request_id, from, request)
+                    {
+                        log::debug!("Dropping handshake continuation from {from}: {error}");
+                    }
+                    return None;
+                }
+                // Reserve before spawning: repeated Hello packets cannot create waiters.
+                let admission = protocol.admit_incoming(from)?;
+                async move {
+                    let _admission = admission;
+                    let result = tokio::time::timeout(
+                        protocol.incoming_timeout(),
+                        self.dispatch_session(session_id, request_id, from, request),
+                    )
+                    .await;
+                    if let Ok(Err(e)) = result {
+                        log::debug!("Handling `Session` request: {e}");
+                    }
+                }
+                .boxed_local()
             }
-            .boxed_local(),
             _ => return None,
         };
 
@@ -1882,9 +2023,12 @@ impl ConnectionMethod {
 #[cfg(test)]
 mod encryption_sync_tests {
     use super::{
-        unencrypted_packet_allowed, Duration, EncryptionSyncBackoff, Instant,
+        unencrypted_packet_allowed, Duration, EncryptionSyncBackoff, Instant, NodeId, SessionLayer,
         ENCRYPTION_SYNC_SUCCESS_RESET_THRESHOLD,
     };
+    use crate::config::ClientBuilder;
+    use std::sync::Arc;
+    use url::Url;
 
     #[test]
     fn negotiated_encryption_cannot_be_downgraded() {
@@ -1931,7 +2075,42 @@ mod encryption_sync_tests {
         }
         assert!(state.record_success());
     }
+
+    #[actix_rt::test]
+    async fn peer_requested_refresh_has_independent_backoff() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let layer = SessionLayer::new(Arc::new(config));
+        let node_id = NodeId::default();
+
+        assert!(layer.encryption_sync_notification_due(node_id));
+        assert!(layer.encryption_sync_refresh_due(node_id));
+        assert!(!layer.encryption_sync_refresh_due(node_id));
+
+        layer.record_encryption_sync_key_change(node_id);
+        assert!(layer.encryption_sync_refresh_due(node_id));
+    }
+
+    #[actix_rt::test]
+    async fn disconnecting_closed_node_is_idempotent() {
+        let config = ClientBuilder::from_url(Url::parse("udp://127.0.0.1:7477").unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let layer = SessionLayer::new(Arc::new(config));
+        let node_id = NodeId::from([1; 20]);
+
+        layer.registry.guard(node_id, &[]).await;
+        layer.disconnect(node_id).await.unwrap();
+
+        assert!(layer.registry.get_entry(node_id).await.is_none());
+    }
 }
+
+#[cfg(test)]
+mod refresh_generation_tests;
 
 #[cfg(test)]
 mod server_session_tests {
