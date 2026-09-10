@@ -18,6 +18,7 @@ pub struct UdpSocket {
 pub enum PacketType {
     Data,
     Unreachable(UnreachableReason),
+    PacketTooBig { mtu: u32 },
     Other,
 }
 
@@ -39,6 +40,49 @@ mod icmp {
     // from: /include/linux/icmp.h
     const DEST_UNREACH: u8 = 3;
 
+    fn classify_error(error: &sock_extended_err) -> PacketType {
+        if error.ee_errno == EMSGSIZE as u32 {
+            return PacketType::PacketTooBig { mtu: error.ee_info };
+        }
+        if error.ee_origin == SO_EE_ORIGIN_ICMP && error.ee_type == DEST_UNREACH {
+            return match error.ee_code {
+                4 => PacketType::PacketTooBig { mtu: error.ee_info },
+                code => PacketType::Unreachable(decode_reason(code)),
+            };
+        }
+        PacketType::Other
+    }
+
+    #[cfg(test)]
+    #[test]
+    fn distinguishes_unreachable_from_mtu_errors() {
+        let mut error: sock_extended_err = unsafe { std::mem::zeroed() };
+        error.ee_origin = SO_EE_ORIGIN_ICMP;
+        error.ee_type = DEST_UNREACH;
+        error.ee_code = 3;
+        error.ee_errno = ECONNREFUSED as u32;
+        assert!(matches!(
+            classify_error(&error),
+            PacketType::Unreachable(UnreachableReason::Port)
+        ));
+        error.ee_code = 4;
+        error.ee_info = 1280;
+        assert!(matches!(
+            classify_error(&error),
+            PacketType::PacketTooBig { mtu: 1280 }
+        ));
+        error.ee_origin = SO_EE_ORIGIN_LOCAL;
+        error.ee_type = 0;
+        error.ee_code = 0;
+        error.ee_errno = EMSGSIZE as u32;
+        assert!(matches!(
+            classify_error(&error),
+            PacketType::PacketTooBig { mtu: 1280 }
+        ));
+        error.ee_errno = EACCES as u32;
+        assert!(matches!(classify_error(&error), PacketType::Other));
+    }
+
     fn decode_reason(code: u8) -> UnreachableReason {
         match code {
             0 => UnreachableReason::Network,
@@ -49,22 +93,36 @@ mod icmp {
         }
     }
 
-    pub unsafe fn decode_error(msg: *const msghdr) -> Option<PacketType> {
+    pub unsafe fn decode_error(
+        msg: *const msghdr,
+        peer: std::net::SocketAddr,
+    ) -> Option<PacketType> {
         let mut hdr_it = CMSG_FIRSTHDR(msg);
         while let Some(hdr) = hdr_it.as_ref() {
-            if hdr.cmsg_level == SOL_IP && hdr.cmsg_type == IP_RECVERR {
+            if hdr.cmsg_level == SOL_IP
+                && hdr.cmsg_type == IP_RECVERR
+                && hdr.cmsg_len >= CMSG_LEN(std::mem::size_of::<sock_extended_err>() as _) as _
+            {
                 let sock_err_ptr = CMSG_DATA(hdr) as *const libc::sock_extended_err;
-                if let Some(sock_err) = sock_err_ptr.as_ref() {
-                    if sock_err.ee_origin == SO_EE_ORIGIN_ICMP && sock_err.ee_type == DEST_UNREACH {
-                        return Some(PacketType::Unreachable(decode_reason(sock_err.ee_code)));
-                    }
-                }
+                let error = sock_err_ptr.read_unaligned();
+                log::debug!(
+                    "[{peer}] UDP extended error: origin={}, errno={}, type={}, code={}, info={}",
+                    error.ee_origin,
+                    error.ee_errno,
+                    error.ee_type,
+                    error.ee_code,
+                    error.ee_info
+                );
+                return Some(classify_error(&error));
             }
             hdr_it = CMSG_NXTHDR(msg, hdr_it);
         }
         None
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;
 
 mod helpers {
     use super::*;
@@ -349,7 +407,8 @@ impl UdpSocket {
 
         self.inner
             .async_io(Interest::READABLE | Interest::ERROR, || unsafe {
-                let mut control_buffer = [mem::MaybeUninit::<u8>::uninit(); 1024];
+                // Ancillary headers require native alignment.
+                let mut control_buffer = [mem::MaybeUninit::<usize>::uninit(); 128];
                 let mut remote: sockaddr_in = mem::zeroed();
 
                 let mut msg: msghdr = mem::zeroed();
@@ -365,7 +424,6 @@ impl UdpSocket {
                 msg.msg_iov = ptr::addr_of_mut!(iov);
                 msg.msg_iovlen = 1;
 
-                msg.msg_flags = MSG_ERRQUEUE;
                 msg.msg_control = ptr::addr_of_mut!(control_buffer).cast();
                 cfg_if::cfg_if! {
                     if #[cfg(target_env = "musl")] {
@@ -377,9 +435,10 @@ impl UdpSocket {
                 let mut res = recvmsg(self.inner.as_raw_fd(), ptr::addr_of_mut!(msg), MSG_DONTWAIT);
                 if res == -1 {
                     let err = std::io::Error::last_os_error();
-                    /*if err.kind() == io::ErrorKind::WouldBlock {
-                        return Err(err);
-                    }*/
+                    // recvmsg has value-result fields; restore capacity before retrying.
+                    msg.msg_namelen = mem::size_of_val(&remote) as socklen_t;
+                    msg.msg_controllen = mem::size_of_val(&control_buffer) as _;
+                    msg.msg_flags = 0;
                     res = recvmsg(
                         self.inner.as_raw_fd(),
                         ptr::addr_of_mut!(msg),
@@ -395,7 +454,16 @@ impl UdpSocket {
                 let addr = SocketAddrV4::new(ip, remote.sin_port.to_be());
 
                 if msg.msg_flags & MSG_ERRQUEUE == MSG_ERRQUEUE {
-                    if let Some(v) = icmp::decode_error(ptr::addr_of!(msg)) {
+                    metrics::increment_counter!("ya-relay.udp.transport-errors");
+                    log::debug!(
+                        "[{addr}] UDP error quote: len={res}, truncated={}, metadata_truncated={}",
+                        msg.msg_flags & MSG_TRUNC != 0,
+                        msg.msg_flags & MSG_CTRUNC != 0
+                    );
+                    if msg.msg_flags & MSG_CTRUNC != 0 {
+                        return Ok((addr.into(), PacketType::Other));
+                    }
+                    if let Some(v) = icmp::decode_error(ptr::addr_of!(msg), addr.into()) {
                         Ok((addr.into(), v))
                     } else {
                         Ok((addr.into(), PacketType::Other))

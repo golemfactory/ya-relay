@@ -21,7 +21,7 @@ use ya_relay_proto::proto::{
 
 use crate::state::slot_manager::SlotManager;
 use crate::state::{Clock, LastSeen};
-use crate::udp_server::{worker_err_fn, PacketType, UdpServer, UdpServerBuilder, UdpSocket};
+use crate::udp_server::{worker_fn, UdpServer, UdpServerBuilder, UdpSocket};
 use crate::{Config, ServerControl, SessionManager};
 
 mod neighbours;
@@ -200,47 +200,16 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
             let rc_handler = reverse_connection::RcHandler::new(&session_manager, &reply);
             let mut disconnect_cache = DisconnectCache::new();
 
-            worker_err_fn(move |pt, mut packet: BytesMut, src| {
+            worker_fn(move |mut packet: BytesMut, src| {
                 let mut codec = Codec;
                 let reply = reply.clone();
                 let p = codec.decode(&mut packet)?.ok_or_else(|| anyhow::anyhow!("invalid packet"))?;
 
                 let clock = Clock::now();
 
-                let response =
-                    match pt {
-                        PacketType::Other => {
-                            log::error!("[{src}] recv unknown error");
-                            None
-                        }
-                        PacketType::Unreachable(reason) => {
-                            match p {
-                                PacketKind::Forward(Forward { session_id, .. }) => {
-                                    let session_id = SessionId::from(session_id);
-                                    if let Some(session_ref) = session_manager.session(&session_id) {
-                                        if session_ref.peer == src && session_ref.addr_status.lock().age() > Duration::from_secs(300) {
-                                            log::info!("[{src}] Unreachable (forward) {reason:?} removing session");
-                                            session_manager.remove_session(&session_id);
-                                        }
-                                    }
-                                    None
-                                }
-                                PacketKind::Packet(Packet { session_id, kind: Some(packet::Kind::Control(Control { kind: Some(control::Kind::ReverseConnection(_)) })) }) => {
-                                    session_id.try_into().ok().and_then(|session_id| session_manager.session(&session_id))
-                                        .and_then(|session_ref| {
-                                            if session_ref.peer == src && session_ref.addr_status.lock().age() > Duration::from_secs(300) {
-                                                log::info!("[{src}] Unreachable (reverse connection) {reason:?} removing session");
-                                                session_manager.remove_session(&session_ref.session_id);
-                                            }
-                                            None
-                                        })
-                                }
-                                _ => {
-                                    None
-                                }
-                            }
-                        }
-                        PacketType::Data => match p {
+                // Transport errors are filtered by worker_fn before protocol decoding.
+                // Session expiry is based on activity, not asynchronous ICMP reports.
+                let response = match p {
                             PacketKind::Packet(Packet { session_id, kind: Some(packet::Kind::Request(Request { request_id, kind: Some(request) })) }) => {
                                 let session_id = SessionId::from_wire(&session_id)?;
 
@@ -303,7 +272,6 @@ pub async fn run(config: &Config) -> anyhow::Result<Server> {
                                 log::error!("[{src}] unknown packet: {other:?}");
                                 None
                             }
-                        }
                     };
 
                 let io_part = response.map(|(ack, p)| (ack, p.encode_to_vec()));

@@ -141,45 +141,7 @@ fn checker(
                         continue;
                     }
                 };
-                let packet = match Packet::decode(&mut data.split()) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        log::warn!(
-                            "invalid packet ({:?}): {:?} from: {:?}",
-                            packet_type,
-                            e,
-                            peer
-                        );
-                        continue;
-                    }
-                };
-                log::debug!(target: "service::check_ip", "[{peer}] {packet_type:?} = {packet:?}");
-                match packet_type {
-                    PacketType::Data => match packet {
-                        Packet {
-                            session_id,
-                            kind:
-                                Some(packet::Kind::Response(Response {
-                                    kind: Some(response::Kind::Pong(_)),
-                                    ..
-                                })),
-                        } => {
-                            if let Err(e) = state.resolve_success(peer, &session_id) {
-                                log::error!("[{}] invalid ping response {:?}", peer, e);
-                            }
-                        }
-                        other => {
-                            log::warn!("[{}] invalid packet {:?}", peer, other);
-                        }
-                    },
-                    PacketType::Unreachable(reason) => {
-                        log::debug!("[{peer}] unreachable {reason:?}");
-                        state.resolve_unreachable(peer);
-                    }
-                    PacketType::Other => {
-                        log::error!("[{peer}] received unknown error");
-                    }
-                }
+                state.handle_received(data.split(), peer, packet_type);
             }
         })
     };
@@ -306,20 +268,34 @@ impl IpCheckerState {
         Ok(())
     }
 
-    fn resolve_unreachable(&self, peer: SocketAddr) {
-        if let Some(reqs) = {
-            let mut g = self.requests.borrow_mut();
-            g.remove(&peer)
-        } {
-            for req in reqs {
-                req.session_w
-                    .upgrade()
-                    .map(|session_ref| {
-                        log::debug!(target: "service::check_ip", "[{peer}] unreachable {} for node: {}", session_ref.session_id, session_ref.node_id);
-                        (req.resolve)(false, session_ref)
-                    })
-                    .unwrap_or_default()
+    fn handle_received(&self, mut data: BytesMut, peer: SocketAddr, packet_type: PacketType) {
+        // An error can refer to an earlier probe or session at the same endpoint.
+        // Only a matching Pong or the probe timeout resolves the current check.
+        if !matches!(packet_type, PacketType::Data) {
+            log::debug!(target: "service::check_ip", "[{peer}] transport event: {packet_type:?}");
+            return;
+        }
+        let packet = match Packet::decode(&mut data) {
+            Ok(packet) => packet,
+            Err(error) => {
+                log::warn!(target: "service::check_ip", "[{peer}] invalid packet: {error:?}");
+                return;
             }
+        };
+        match packet {
+            Packet {
+                session_id,
+                kind:
+                    Some(packet::Kind::Response(Response {
+                        kind: Some(response::Kind::Pong(_)),
+                        ..
+                    })),
+            } => {
+                if let Err(error) = self.resolve_success(peer, &session_id) {
+                    log::error!(target: "service::check_ip", "[{peer}] invalid ping response: {error:?}");
+                }
+            }
+            other => log::warn!(target: "service::check_ip", "[{peer}] invalid packet: {other:?}"),
         }
     }
 }
@@ -357,5 +333,99 @@ mod test {
 
         let len = Packet::request(session_id.to_vec(), request::Ping {}).encoded_len();
         assert!(len < MAX_PING_SIZE);
+    }
+
+    async fn pending_check() -> (
+        IpCheckerState,
+        SessionRef,
+        Rc<std::cell::Cell<Option<bool>>>,
+    ) {
+        let manager = crate::SessionManager::new();
+        let peer = "127.0.0.1:11501".parse().unwrap();
+        let session = manager
+            .new_session(
+                &crate::state::Clock::now(),
+                SessionId::generate(),
+                peer,
+                Default::default(),
+                Vec::new(),
+                Vec::new(),
+                None,
+            )
+            .ok()
+            .unwrap();
+        let outcome = Rc::new(std::cell::Cell::new(None));
+        let result = outcome.clone();
+        let request = Box::new(CheckIpRequest {
+            session_w: Arc::downgrade(&session),
+            addr: peer,
+            ts: Instant::now(),
+            retry_cnt: 0,
+            resolve: Box::new(move |success, _| result.set(Some(success))),
+        });
+        let state = IpCheckerState {
+            checker_socket: UdpSocketConfig::new()
+                .bind("127.0.0.1:0".parse().unwrap())
+                .unwrap(),
+            requests: RefCell::new(BTreeMap::from([(peer, vec![request])])),
+        };
+        (state, session, outcome)
+    }
+
+    #[tokio::test]
+    async fn delayed_transport_errors_leave_current_probe_pending() {
+        let (state, session, outcome) = pending_check().await;
+        let pong = Packet::response(
+            0,
+            session.session_id.to_vec(),
+            ya_relay_proto::proto::StatusCode::Ok,
+            response::Pong {},
+        )
+        .encode_to_vec();
+        for payload in [&[][..], &[0x0a][..], pong.as_slice()] {
+            // Even a complete quoted packet must not resolve a current probe.
+            for event in [
+                PacketType::Other,
+                PacketType::PacketTooBig { mtu: 1280 },
+                PacketType::Unreachable(crate::udp_server::UnreachableReason::Port),
+            ] {
+                state.handle_received(BytesMut::from(payload), session.peer, event);
+                assert_eq!(outcome.get(), None);
+                assert_eq!(state.size(), 1);
+            }
+        }
+        // Malformed data and a Pong from another session must not resolve it either.
+        state.handle_received(BytesMut::from(&[0xff][..]), session.peer, PacketType::Data);
+        let stale_pong = Packet::response(
+            0,
+            SessionId::generate().to_vec(),
+            ya_relay_proto::proto::StatusCode::Ok,
+            response::Pong {},
+        )
+        .encode_to_vec();
+        state.handle_received(
+            BytesMut::from(stale_pong.as_slice()),
+            session.peer,
+            PacketType::Data,
+        );
+        assert_eq!(outcome.get(), None);
+        state.handle_received(
+            BytesMut::from(pong.as_slice()),
+            session.peer,
+            PacketType::Data,
+        );
+        assert_eq!(outcome.get(), Some(true));
+        assert_eq!(state.size(), 0);
+    }
+
+    #[tokio::test]
+    async fn probe_still_times_out_after_transport_error() {
+        let (state, session, outcome) = pending_check().await;
+        state.handle_received(BytesMut::new(), session.peer, PacketType::Other);
+        state.requests.borrow_mut().get_mut(&session.peer).unwrap()[0].ts =
+            Instant::now() - Duration::from_secs(2);
+        state.send_pings(Duration::from_secs(1)).await.unwrap();
+        assert_eq!(outcome.get(), Some(false));
+        assert_eq!(state.size(), 0);
     }
 }

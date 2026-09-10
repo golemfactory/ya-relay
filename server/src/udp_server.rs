@@ -10,7 +10,7 @@ use futures::prelude::*;
 use metrics::{Key, Label, Unit};
 use tokio::time;
 
-pub use socket::{PacketType, UdpSocket, UdpSocketConfig};
+pub use socket::{PacketType, UdpSocket, UdpSocketConfig, UnreachableReason};
 
 use crate::metrics::InstanceCountGuard;
 
@@ -210,10 +210,10 @@ where
     }
 }
 
-pub fn worker_fn<OutputFut, F>(f: F) -> anyhow::Result<impl Worker>
+pub fn worker_fn<OutputFut, F>(mut f: F) -> anyhow::Result<impl Worker>
 where
     OutputFut: Future<Output = anyhow::Result<()>>,
-    F: Fn(BytesMut, SocketAddr) -> anyhow::Result<OutputFut>,
+    F: FnMut(BytesMut, SocketAddr) -> anyhow::Result<OutputFut>,
 {
     Ok(FnWrap(move |request, src, pt| {
         if matches!(pt, PacketType::Data) {
@@ -242,9 +242,59 @@ where
 pub fn register_metrics() {
     let recorder = metrics::recorder();
 
+    recorder.describe_counter(
+        "ya-relay.udp.transport-errors".into(),
+        Some(Unit::Count),
+        "UDP socket error queue events".into(),
+    );
+
     recorder.describe_gauge(
         KEY_UDP_SERVER_WORKERS.into(),
         Some(Unit::Count),
         "number of server workers".into(),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_util::codec::Decoder;
+    use ya_relay_proto::codec::datagram::Codec;
+    use ya_relay_proto::proto::{request, Message, Packet};
+
+    #[tokio::test]
+    async fn transport_errors_never_reach_the_protocol_handler() {
+        let calls = std::cell::Cell::new(0);
+        let mut worker = worker_fn(|mut bytes, _peer| {
+            calls.set(calls.get() + 1);
+            Codec.decode(&mut bytes)?;
+            Ok(async { Ok(()) })
+        })
+        .unwrap();
+        let peer = "127.0.0.1:11500".parse().unwrap();
+        for bytes in [&[][..], &[0x0a][..], &[0xff][..]] {
+            for event in [
+                PacketType::Unreachable(socket::UnreachableReason::Port),
+                PacketType::PacketTooBig { mtu: 1280 },
+                PacketType::Other,
+            ] {
+                worker
+                    .handle(BytesMut::from(bytes), peer, event)
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(calls.get(), 0);
+        // A malformed real datagram must still be rejected.
+        assert!(worker
+            .handle(BytesMut::from(&[0x0a][..]), peer, PacketType::Data)
+            .await
+            .is_err());
+        let ping = Packet::request(Vec::new(), request::Ping {}).encode_to_vec();
+        worker
+            .handle(BytesMut::from(ping.as_slice()), peer, PacketType::Data)
+            .await
+            .unwrap();
+        assert_eq!(calls.get(), 2);
+    }
 }
