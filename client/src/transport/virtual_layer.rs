@@ -16,6 +16,7 @@ use ya_relay_core::server_session::TransportType;
 use ya_relay_core::NodeId;
 use ya_relay_proto::proto::Payload;
 use ya_relay_stack::interface::{add_iface_address, add_iface_route, pcap_tun_iface, tun_iface};
+use ya_relay_stack::packet::{IpV6Field, IpV6Packet};
 use ya_relay_stack::smoltcp::iface::Route;
 use ya_relay_stack::smoltcp::wire::{IpAddress, IpCidr, IpEndpoint};
 use ya_relay_stack::socket::{SocketEndpoint, TCP_CONN_TIMEOUT, TCP_DISCONN_TIMEOUT};
@@ -227,6 +228,16 @@ impl TcpLayer {
     pub async fn dispatch(&self, packet: Forwarded) {
         log::trace!("[dispatch]: from {}", packet.node_id);
         let node_id = packet.node_id;
+
+        // The ingress router attributes packets to Nodes by the IP source address,
+        // so a packet must not be injected unless its source address belongs to
+        // the Node whose session delivered it. Otherwise any peer could spoof
+        // traffic (and authenticated identities) of other Nodes.
+        if let Err(e) = verify_packet_source(node_id, packet.payload.as_ref()) {
+            log::debug!("[dispatch]: dropping packet from [{node_id}]: {e}");
+            return;
+        }
+
         update_node_authentication(
             &mut self.authenticated_nodes.borrow_mut(),
             node_id,
@@ -247,7 +258,7 @@ impl TcpLayer {
         self.virtual_tcp_fast_lane.borrow_mut().insert(node_id);
     }
 
-    pub async fn receive(&self, node: NodeId, payload: Payload) {
+    async fn receive(&self, node: NodeId, payload: Payload) {
         log::trace!("[receive]: from {}", node);
         ya_packet_trace::packet_trace_maybe!("TcpLayer::Receive", {
             &ya_packet_trace::try_extract_from_ip_frame(payload.as_ref())
@@ -266,7 +277,7 @@ impl TcpLayer {
     }
 
     #[inline]
-    pub fn inject(&self, payload: Payload) {
+    fn inject(&self, payload: Payload) {
         log::trace!(
             "[inject]: start ({payload_len} B)",
             payload_len = payload.len()
@@ -501,6 +512,25 @@ impl TcpLayer {
     }
 }
 
+/// Checks that `payload` is an IPv6 packet whose source address is the virtual
+/// address of `node_id`. The virtual network is IPv6-only, so anything else is rejected.
+fn verify_packet_source(node_id: NodeId, payload: &[u8]) -> anyhow::Result<()> {
+    if payload.len() < IpV6Packet::MIN_HEADER_LEN {
+        anyhow::bail!("packet too short ({} B)", payload.len());
+    }
+    let version = payload[0] >> 4;
+    if version != 6 {
+        anyhow::bail!("unsupported IP version {version}");
+    }
+
+    let src = &payload[IpV6Field::SRC_ADDR];
+    let expected = to_ipv6(node_id);
+    if src != expected.octets() {
+        anyhow::bail!("source address {:02x?} does not match {expected}", src);
+    }
+    Ok(())
+}
+
 fn update_node_authentication(
     authenticated_nodes: &mut NodeAuthentication,
     node_id: NodeId,
@@ -606,6 +636,41 @@ mod tests {
 
     fn node_id(byte: u8) -> NodeId {
         NodeId::from([byte; 20])
+    }
+
+    fn ipv6_tcp_packet(src: NodeId, dst: NodeId) -> Vec<u8> {
+        const TCP_HDR_LEN: u16 = 20;
+        let mut packet = vec![0u8; IpV6Packet::MIN_HEADER_LEN + TCP_HDR_LEN as usize];
+        packet[0] = 0x60;
+        packet[IpV6Field::PAYLOAD_LEN].copy_from_slice(&TCP_HDR_LEN.to_be_bytes());
+        packet[IpV6Field::PROTOCOL][0] = 6;
+        packet[IpV6Field::SRC_ADDR].copy_from_slice(&to_ipv6(src).octets());
+        packet[IpV6Field::DST_ADDR].copy_from_slice(&to_ipv6(dst).octets());
+        packet
+    }
+
+    #[test]
+    fn packet_source_matching_sender_is_accepted() {
+        let packet = ipv6_tcp_packet(node_id(1), node_id(2));
+        assert!(verify_packet_source(node_id(1), &packet).is_ok());
+    }
+
+    #[test]
+    fn packet_source_spoofing_other_node_is_rejected() {
+        // Node 3 sends a packet pretending to come from Node 1.
+        let packet = ipv6_tcp_packet(node_id(1), node_id(2));
+        assert!(verify_packet_source(node_id(3), &packet).is_err());
+    }
+
+    #[test]
+    fn malformed_or_non_ipv6_packets_are_rejected() {
+        let sender = node_id(1);
+        assert!(verify_packet_source(sender, &[]).is_err());
+        assert!(verify_packet_source(sender, &[0x60; 39]).is_err());
+
+        let mut ipv4 = ipv6_tcp_packet(sender, node_id(2));
+        ipv4[0] = 0x45;
+        assert!(verify_packet_source(sender, &ipv4).is_err());
     }
 
     #[test]

@@ -76,7 +76,8 @@ fn iface_and_sockets<'a>(
     addr: HardwareAddress,
     device: &mut CaptureDevice,
 ) -> (Interface, SocketSet<'a>) {
-    let config = Config::new(addr);
+    let mut config = Config::new(addr);
+    config.random_seed = rand::random();
     let now = Instant::ZERO;
     let iface = Interface::new(config, device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
