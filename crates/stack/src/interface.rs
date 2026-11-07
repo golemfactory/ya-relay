@@ -1,4 +1,5 @@
 use managed::ManagedSlice;
+use rand::RngCore;
 use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet};
 use smoltcp::socket::AnySocket;
 use smoltcp::time::Instant;
@@ -76,7 +77,10 @@ fn iface_and_sockets<'a>(
     addr: HardwareAddress,
     device: &mut CaptureDevice,
 ) -> (Interface, SocketSet<'a>) {
-    let config = Config::new(addr);
+    let mut config = Config::new(addr);
+    // Left at its default of 0, smoltcp's random seed makes the TCP initial sequence numbers a
+    // fixed, public PRNG stream, so an off-path peer can predict them. Seed it from the OS RNG.
+    config.random_seed = rand::rngs::OsRng.next_u64();
     let now = Instant::ZERO;
     let iface = Interface::new(config, device, now);
     let sockets = SocketSet::new(ManagedSlice::Owned(vec![]));
