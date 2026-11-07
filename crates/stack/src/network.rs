@@ -1264,6 +1264,37 @@ mod tests {
             .await?
     }
 
+    /// The initial sequence number of the first connection a fresh stack opens.
+    fn first_syn_seq_no() -> u32 {
+        use smoltcp::wire::{Ipv6Address, Ipv6Packet, TcpPacket};
+
+        let net = new_network(
+            Medium::Ip,
+            IpAddress::v6(0xfd00, 0, 0, 0, 0, 0, 0, 1),
+            StackConfig::default(),
+        );
+        let mut egress = net.egress_receiver().unwrap();
+        let remote = (
+            IpAddress::Ipv6(Ipv6Address::new(0xfd00, 0, 0, 0, 0, 0, 0, 2)),
+            1,
+        );
+        // Building the future sends the SYN; it is never awaited.
+        let _connect = net.connect(remote, Duration::from_secs(1));
+        let syn = egress.try_recv().expect("the stack sends a SYN");
+        let ip = Ipv6Packet::new_checked(&syn.payload[..]).unwrap();
+        let tcp = TcpPacket::new_checked(ip.payload()).unwrap();
+        assert!(tcp.syn());
+        tcp.seq_number().0 as u32
+    }
+
+    /// With a fixed interface seed, every fresh stack draws the same initial sequence numbers,
+    /// so they are known in advance. Each stack must be seeded independently.
+    #[test]
+    fn fresh_stacks_draw_different_initial_sequence_numbers() {
+        let seq_nos: std::collections::HashSet<u32> = (0..4).map(|_| first_syn_seq_no()).collect();
+        assert!(seq_nos.len() > 1, "every stack started with the same ISN");
+    }
+
     // Test case where establishing a maximum number of connections (equal to 65 534 connections) does not fail.
     #[cfg(feature = "test-suite")]
     #[tokio::test]

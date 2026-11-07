@@ -633,6 +633,8 @@ pub fn print_sockets(network: &Network) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ClientBuilder;
+    use ya_relay_core::crypto::SessionCrypto;
 
     fn node_id(byte: u8) -> NodeId {
         NodeId::from([byte; 20])
@@ -713,5 +715,187 @@ mod tests {
                 .and_then(|identities| identities.as_deref()),
             Some(identities.as_ref())
         );
+    }
+
+    async fn tcp_layer(ingress: &Channel<Forwarded>) -> (TcpLayer, NodeId) {
+        let config = ClientBuilder::from_url("udp://127.0.0.1:7477".parse().unwrap())
+            .build_config()
+            .await
+            .unwrap();
+        let key = SessionCrypto::generate().unwrap().pub_key();
+        let id = NodeId::from(*key.address());
+        let layer = SessionLayer::new(Arc::new(config));
+        (
+            TcpLayer::new(&key, &StackConfig::default(), ingress, layer),
+            id,
+        )
+    }
+
+    /// A victim that listens on its channels and runs its ingress router, as a started node does.
+    /// Its egress is returned for a hand-driven pump: the real egress router needs a session layer.
+    async fn started_victim(
+        ingress: &Channel<Forwarded>,
+    ) -> (TcpLayer, NodeId, UnboundedReceiver<EgressEvent>) {
+        let (victim, id) = tcp_layer(ingress).await;
+        victim.net.spawn_local();
+        victim
+            .net
+            .bind(Protocol::Tcp, channel_endpoint(id, ChannelType::Messages))
+            .unwrap();
+        victim
+            .net
+            .bind(Protocol::Tcp, channel_endpoint(id, ChannelType::Transfer))
+            .unwrap();
+        victim.spawn_ingress_router().await.unwrap();
+        let egress = victim.net.egress_receiver().unwrap();
+        (victim, id, egress)
+    }
+
+    /// Carries the victim's egress to `peer`, and `peer`'s egress into the victim's `dispatch`
+    /// under `sender` with `proven` as the authenticated identities. This is the forwarding a
+    /// relay or a direct session would do, with the sender id under the control of the test.
+    fn pump(
+        victim: TcpLayer,
+        mut victim_egress: UnboundedReceiver<EgressEvent>,
+        peer: Network,
+        mut peer_egress: UnboundedReceiver<EgressEvent>,
+        sender: NodeId,
+        proven: Option<AuthenticatedIdentities>,
+    ) {
+        tokio::task::spawn_local(async move {
+            while let Some(e) = peer_egress.recv().await {
+                victim
+                    .dispatch(Forwarded {
+                        transport: TransportType::Reliable,
+                        node_id: sender,
+                        authenticated_identities: proven.clone(),
+                        payload: Payload::from(e.payload),
+                    })
+                    .await;
+            }
+        });
+        tokio::task::spawn_local(async move {
+            while let Some(e) = victim_egress.recv().await {
+                peer.receive(e.payload);
+                peer.poll();
+            }
+        });
+    }
+
+    #[actix_rt::test]
+    async fn spoofed_source_data_never_reaches_ingress() {
+        let ingress = Channel::default();
+        let (victim, victim_id, victim_egress) = started_victim(&ingress).await;
+
+        // T is a peer the victim already knows: it has a virtual node and proven identities, so
+        // the victim attributes anything coming from IP(T) to it.
+        let t_key = SessionCrypto::generate().unwrap().pub_key();
+        let t_id = NodeId::from(*t_key.address());
+        let t_alias = node_id(0x12);
+        victim.registry.add_virt_node(t_id).await;
+        update_node_authentication(
+            &mut victim.authenticated_nodes.borrow_mut(),
+            t_id,
+            Some(vec![t_id, t_alias].into()),
+        );
+
+        // The sending peer runs its own stack addressed as T and forwards every packet under its
+        // own, valid session. The only thing wrong is the inner source address.
+        let sender_id = node_id(0xaa);
+        let spoof = default_network(t_key, Rc::new(StackConfig::default()), None);
+        spoof.spawn_local();
+        let spoof_egress = spoof.egress_receiver().unwrap();
+        pump(
+            victim.clone(),
+            victim_egress,
+            spoof.clone(),
+            spoof_egress,
+            sender_id,
+            Some(vec![sender_id].into()),
+        );
+
+        let messages = IpEndpoint::new(
+            VirtNode::ip_from_node_id(victim_id),
+            ChannelType::Messages as u16,
+        );
+        let result = spoof.connect(messages, Duration::from_secs(1)).await;
+
+        if let Ok(conn) = &result {
+            // Without the check, the data below is delivered and attributed to T.
+            let data = Payload::from(b"spoofed".to_vec().into_boxed_slice());
+            spoof.send(data, *conn).await.ok();
+            spoof.poll();
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+        }
+
+        let mut ingress_rx = ingress.receiver().unwrap();
+        let delivered = tokio::time::timeout(Duration::from_millis(300), ingress_rx.recv()).await;
+        assert!(
+            delivered.is_err(),
+            "spoofed-source data must never reach ingress, got {delivered:?}"
+        );
+        assert!(
+            result.is_err(),
+            "the victim must drop the spoofed handshake"
+        );
+    }
+
+    #[actix_rt::test]
+    async fn legitimate_traffic_reaches_ingress_with_its_identities() {
+        let t_key = SessionCrypto::generate().unwrap().pub_key();
+        let t_id = NodeId::from(*t_key.address());
+        let proven: AuthenticatedIdentities = vec![t_id, node_id(0x12)].into();
+        legitimate_roundtrip(t_key, Some(proven)).await;
+    }
+
+    /// A peer without proven identities (unencrypted, or an older client) sends from its own
+    /// address, which is all the check requires.
+    #[actix_rt::test]
+    async fn legitimate_traffic_without_proven_identities_reaches_ingress() {
+        let t_key = SessionCrypto::generate().unwrap().pub_key();
+        legitimate_roundtrip(t_key, None).await;
+    }
+
+    /// `t_key`'s own stack connects to the victim and sends data under its own session.
+    async fn legitimate_roundtrip(t_key: PublicKey, proven: Option<AuthenticatedIdentities>) {
+        let ingress = Channel::default();
+        let (victim, victim_id, victim_egress) = started_victim(&ingress).await;
+        let t_id = NodeId::from(*t_key.address());
+
+        let peer = default_network(t_key, Rc::new(StackConfig::default()), None);
+        peer.spawn_local();
+        let peer_egress = peer.egress_receiver().unwrap();
+        pump(
+            victim.clone(),
+            victim_egress,
+            peer.clone(),
+            peer_egress,
+            t_id,
+            proven.clone(),
+        );
+
+        let messages = IpEndpoint::new(
+            VirtNode::ip_from_node_id(victim_id),
+            ChannelType::Messages as u16,
+        );
+        let conn = peer
+            .connect(messages, Duration::from_secs(2))
+            .await
+            .expect("legitimate handshake connects");
+        peer.send(Payload::from(b"hello".to_vec().into_boxed_slice()), conn)
+            .await
+            .unwrap();
+        peer.poll();
+
+        let mut ingress_rx = ingress.receiver().unwrap();
+        let delivered = tokio::time::timeout(Duration::from_secs(1), ingress_rx.recv())
+            .await
+            .expect("ingress delivers legitimate data")
+            .unwrap();
+        assert_eq!(delivered.node_id, t_id);
+        assert_eq!(delivered.authenticated_identities, proven);
+        assert_eq!(delivered.payload.as_ref(), b"hello");
     }
 }
