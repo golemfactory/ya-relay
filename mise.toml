@@ -1,5 +1,5 @@
 [tools]
-rust = { version = "1.97", components = ["clippy", "rustfmt"] }
+rust = { version = "1.97.0", components = ["clippy", "rustfmt"] }
 protoc = "24.4"
 
 [env]
