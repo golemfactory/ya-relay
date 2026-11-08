@@ -53,15 +53,22 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if [ "$EVENT_NAME" = push ]; then
             git merge-base --is-ancestor HEAD origin/main
             VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -1)
             test "$REF_NAME" = "v$VERSION"
           fi
+          source_date_epoch=$(git show -s --format=%ct HEAD)
+          source_commit=$(git rev-parse HEAD)
+          source_date=$(git show -s --format=%cs HEAD)
+          [[ "$source_date_epoch" =~ ^[0-9]+$ ]]
+          [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$source_date"
           {
-            echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)"
-            echo "YA_RELAY_BUILD_COMMIT=$(git rev-parse HEAD)"
-            echo "YA_RELAY_BUILD_DATE=$(git show -s --format=%cs HEAD)"
+            echo "SOURCE_DATE_EPOCH=$source_date_epoch"
+            echo "YA_RELAY_BUILD_COMMIT=$source_commit"
+            echo "YA_RELAY_BUILD_DATE=$source_date"
           } >> "$GITHUB_ENV"
 
       - name: Install tools in fresh directories
@@ -182,4 +189,4 @@ jobs:
           sha256sum --check SHA256SUMS
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "ya-relay-server ${RELEASE_TAG#v}" --notes-file RELEASE-NOTES.md
           gh release upload "$RELEASE_TAG" ya-relay-server ./*.deb Cargo.lock BUILD-INFO.json SHA256SUMS RELEASE-NOTES.md ELF-VERSIONS.txt LINKED-LIBRARIES.txt
-          gh release edit "$RELEASE_TAG" --draft=false --latest=false
+          gh release edit "$RELEASE_TAG" --draft=false --latest

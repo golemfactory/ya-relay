@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+: "${SOURCE_DATE_EPOCH:?source commit timestamp is required}"
 
 version=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -1)
 mkdir -p dist
@@ -14,9 +15,9 @@ if grep -F 'not found' dist/LINKED-LIBRARIES.txt; then
     exit 1
 fi
 
-package_root=$(mktemp -d)
 metadata_root=$(mktemp -d)
-trap 'rm -rf "$package_root" "$metadata_root"' EXIT
+package_root="$metadata_root/debian/ya-relay-server"
+trap 'rm -rf "$metadata_root"' EXIT
 mkdir -p "$metadata_root/debian"
 cat > "$metadata_root/debian/control" <<EOF
 Source: ya-relay-server
@@ -28,10 +29,10 @@ Package: ya-relay-server
 Architecture: any
 Description: Golem network discovery and relay server
 EOF
-binary_path="$PWD/dist/ya-relay-server"
+install -Dm0755 dist/ya-relay-server "$package_root/usr/bin/ya-relay-server"
+binary_path="$package_root/usr/bin/ya-relay-server"
 depends=$(cd "$metadata_root" && dpkg-shlibdeps -O -e"$binary_path" | sed -n 's/^shlibs:Depends=//p')
 test -n "$depends"
-install -Dm0755 dist/ya-relay-server "$package_root/usr/bin/ya-relay-server"
 mkdir -p "$package_root/DEBIAN"
 cat > "$package_root/DEBIAN/control" <<EOF
 Package: ya-relay-server
