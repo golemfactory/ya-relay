@@ -1,14 +1,17 @@
 # Release security
 
 Release binaries are built only in GitHub Actions. The release workflow uses fresh
-GitHub-hosted runners, separate Cargo/Rust/build directories, full commit SHA
+GitHub-hosted runners with Debian 13 (trixie) containers pinned by digest,
+separate Cargo/Rust/build directories, full commit SHA
 references for actions and the committed dependency lockfile. It does not restore
 or save build/tool caches. Build jobs use `cargo fetch --locked`, followed by
 `cargo build --frozen`; offline Cargo prevents additional Cargo downloads during
 compilation, but is not an operating-system network sandbox for build scripts.
 
 Two independent build jobs must produce byte-identical binaries and Debian
-packages. A separate job attests their checksums. A final job uploads every asset
+packages. CI installs and smoke-tests the generated glibc package in a separate
+Debian 13 container. Runtime dependencies are generated using `dpkg-shlibdeps`.
+A separate job attests their checksums. A final job uploads every asset
 to a draft release before publishing it. The repository enables release
 immutability, so future published releases and their assets cannot be replaced.
 These controls establish artifact provenance and detect build differences; they

@@ -17,20 +17,31 @@ jobs:
   build:
     name: Clean build (${{ matrix.replica }})
     runs-on: ubuntu-22.04
+    container:
+      image: debian:13-slim@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
         replica: [1, 2]
     env:
-      CARGO_HOME: ${{ runner.temp }}/cargo
-      RUSTUP_HOME: ${{ runner.temp }}/rustup
-      CARGO_TARGET_DIR: ${{ runner.temp }}/target
       CARGO_INCREMENTAL: '0'
       PROTOC: /usr/bin/protoc
-      OPENSSL_STATIC: '1'
       YA_RELAY_BUILD_NUMBER: release
     steps:
+      - name: Install Debian build dependencies
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install --no-install-recommends -y ca-certificates curl git build-essential cmake protobuf-compiler python3 dpkg-dev file xz-utils
+          {
+            echo "CARGO_HOME=$RUNNER_TEMP/cargo"
+            echo "RUSTUP_HOME=$RUNNER_TEMP/rustup"
+            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target"
+          } >> "$GITHUB_ENV"
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
           persist-credentials: false
@@ -47,9 +58,11 @@ jobs:
             VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -1)
             test "$REF_NAME" = "v$VERSION"
           fi
-          echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)" >> "$GITHUB_ENV"
-          echo "YA_RELAY_BUILD_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
-          echo "YA_RELAY_BUILD_DATE=$(git show -s --format=%cs HEAD)" >> "$GITHUB_ENV"
+          {
+            echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct HEAD)"
+            echo "YA_RELAY_BUILD_COMMIT=$(git rev-parse HEAD)"
+            echo "YA_RELAY_BUILD_DATE=$(git show -s --format=%cs HEAD)"
+          } >> "$GITHUB_ENV"
 
       - name: Install tools in fresh directories
         run: |
@@ -57,16 +70,18 @@ jobs:
           test ! -e "$CARGO_HOME"
           test ! -e "$RUSTUP_HOME"
           test ! -e "$CARGO_TARGET_DIR"
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y musl-tools cmake protobuf-compiler
-          rustup toolchain install 1.97.0 --profile minimal --target x86_64-unknown-linux-musl
+          curl --proto '=https' --tlsv1.2 -fsSLo "$RUNNER_TEMP/rustup-init" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
+          echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $RUNNER_TEMP/rustup-init" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/rustup-init"
+          "$RUNNER_TEMP/rustup-init" -y --no-modify-path --profile minimal --default-toolchain 1.97.0
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           echo "RUSTFLAGS=--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=$RUNNER_TEMP=/build" >> "$GITHUB_ENV"
 
       - name: Fetch locked dependencies
-        run: cargo +1.97.0 fetch --locked --target x86_64-unknown-linux-musl
+        run: cargo +1.97.0 fetch --locked --target x86_64-unknown-linux-gnu
 
       - name: Build without dependency resolution or downloads
-        run: cargo +1.97.0 build --frozen --release --target x86_64-unknown-linux-musl -p ya-relay-server
+        run: cargo +1.97.0 build --frozen --release --target x86_64-unknown-linux-gnu -p ya-relay-server
 
       - name: Package and smoke test
         run: bash scripts/ci/package-release.sh
@@ -83,8 +98,17 @@ jobs:
     if: always()
     needs: build
     runs-on: ubuntu-22.04
+    container:
+      image: debian:13-slim@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392
+    defaults:
+      run:
+        shell: bash
     timeout-minutes: 10
     steps:
+      - name: Install artifact download runtime
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y ca-certificates libstdc++6
       - name: Require both builds to succeed
         env:
           BUILD_RESULT: ${{ needs.build.result }}
@@ -102,6 +126,12 @@ jobs:
           cmp replicas/release-1/*.deb replicas/release-2/*.deb
           cmp replicas/release-1/Cargo.lock replicas/release-2/Cargo.lock
           cp -a replicas/release-1 dist
+      - name: Install and run the package on Debian 13
+        run: |
+          set -euo pipefail
+          apt-get install --no-install-recommends -y ./dist/*.deb
+          /usr/bin/ya-relay-server --version
+          /usr/bin/ya-relay-server --help > /dev/null
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verified-release
@@ -151,5 +181,5 @@ jobs:
           cd dist
           sha256sum --check SHA256SUMS
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "ya-relay-server ${RELEASE_TAG#v}" --notes-file RELEASE-NOTES.md
-          gh release upload "$RELEASE_TAG" ya-relay-server ./*.deb Cargo.lock BUILD-INFO.json SHA256SUMS RELEASE-NOTES.md
+          gh release upload "$RELEASE_TAG" ya-relay-server ./*.deb Cargo.lock BUILD-INFO.json SHA256SUMS RELEASE-NOTES.md ELF-VERSIONS.txt LINKED-LIBRARIES.txt
           gh release edit "$RELEASE_TAG" --draft=false --latest=false
