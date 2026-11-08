@@ -88,7 +88,7 @@ jobs:
         run: cargo +1.97.0 fetch --locked --target x86_64-unknown-linux-gnu
 
       - name: Build without dependency resolution or downloads
-        run: cargo +1.97.0 build --frozen --release --target x86_64-unknown-linux-gnu -p ya-relay-server
+        run: cargo +1.97.0 build --frozen --release --target x86_64-unknown-linux-gnu -p ya-relay-server --features ui,metrics
 
       - name: Package and smoke test
         run: bash scripts/ci/package-release.sh
@@ -115,11 +115,14 @@ jobs:
       - name: Install artifact download runtime
         run: |
           apt-get update
-          apt-get install --no-install-recommends -y ca-certificates libstdc++6
+          apt-get install --no-install-recommends -y ca-certificates libstdc++6 git python3
       - name: Require both builds to succeed
         env:
           BUILD_RESULT: ${{ needs.build.result }}
         run: test "$BUILD_RESULT" = success
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: release-*
@@ -139,6 +142,7 @@ jobs:
           apt-get install --no-install-recommends -y ./dist/*.deb
           /usr/bin/ya-relay-server --version
           /usr/bin/ya-relay-server --help > /dev/null
+          python3 scripts/ci/smoke-http.py /usr/bin/ya-relay-server
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verified-release

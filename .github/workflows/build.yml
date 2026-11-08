@@ -72,6 +72,9 @@ jobs:
           cargo test --locked -p ya-relay-client --features encryption-strict
           cargo test --locked -p ya-relay --features encryption-strict --test test_discovery
 
+      - name: Test production server features
+        run: cargo test --locked -p ya-relay-server --features ui,metrics
+
       - name: Compile the extended stack test suite
         run: cargo test --locked -p ya-relay-stack --features test-suite --no-run
 

@@ -10,7 +10,9 @@ compilation, but is not an operating-system network sandbox for build scripts.
 
 Two independent build jobs must produce byte-identical binaries and Debian
 packages. CI installs and smoke-tests the generated glibc package in a separate
-Debian 13 container. Runtime dependencies are generated using `dpkg-shlibdeps`.
+Debian 13 container. The production feature set is explicitly `ui,metrics`; the
+installed package must serve the UI, status, Prometheus metrics and SSE endpoints.
+Runtime dependencies are generated using `dpkg-shlibdeps`.
 A separate job attests their checksums. A final job uploads every asset
 to a draft release before publishing it. The repository enables release
 immutability, so future published releases and their assets cannot be replaced.

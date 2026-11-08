@@ -73,9 +73,9 @@ info = {
     'distribution': pathlib.Path('/etc/os-release').read_text(),
     'glibc': output('getconf', 'GNU_LIBC_VERSION'),
     'build_packages': output('dpkg-query', '-W', '-f=${Package}=${Version}\n'),
-    'build_command': 'cargo +1.97.0 build --frozen --release --target x86_64-unknown-linux-gnu -p ya-relay-server',
+    'build_command': 'cargo +1.97.0 build --frozen --release --target x86_64-unknown-linux-gnu -p ya-relay-server --features ui,metrics',
     'target': 'x86_64-unknown-linux-gnu',
-    'features': [],
+    'features': ['ui', 'metrics'],
     'cache_restored': False,
     'workflow_run': f"https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['GITHUB_RUN_ID']}",
 }
