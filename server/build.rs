@@ -181,8 +181,12 @@ fn main() -> Result<()> {
     )?;
     let base: &Path = "ui".as_ref();
 
-    for file in read_dir_recursive("ui")? {
-        let file = file?.path();
+    let mut files = read_dir_recursive("ui")?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>>>()?;
+    files.sort();
+
+    for file in files {
         let bytes = fs::read(&file)?;
         let mut compressor = GzEncoder::new(io::Cursor::new(bytes), Compression::best());
         let mut buffer = Vec::new();

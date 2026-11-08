@@ -1,182 +1,196 @@
 name: Release
+
 on:
+  pull_request:
   push:
     tags:
-      - v*
-      - pre-rel-*
+      - 'v*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  create-release:
-    name: "Create Release"
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Create Release
-        uses: actions/github-script@v4
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          script: |
-            let tag = context.payload.ref.replace(/.*\//, '');
-            let buildNo = context.runNumber;
-            let versionName = tag.replace(/^pre-rel-/,'');
-            try {
-              let release =  await github.request("GET /repos/:owner/:repo/releases/tags/:tag", {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                tag: tag
-              });
-            }
-            catch(e) {
-              let body = ["By installing & running this software you declare that you have read",
-                "understood and hereby accept the disclaimer and",
-                "privacy warning found at https://handbook.golem.network/see-also/terms"].join("\n");
-
-              let release =  await github.request("POST /repos/:owner/:repo/releases", {
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                data: {
-                  tag_name: tag,
-                  prerelease: true,
-                  body: body,
-                  name: `${versionName} #${buildNo}`
-                }
-              });
-              console.log(release.data.upload_url);
-            }
   build:
-    name: Build Release
-    needs: create-release
+    name: Clean build (${{ matrix.replica }})
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: true
-
-    env:
-      OPENSSL_STATIC: 1
-    steps:
-      - uses: actions/checkout@v1
-      - name: Musl
-        run: |
-          sudo apt-get install -y musl musl-tools cmake
-
-          musl-gcc -v
-          cmake --version
-
-      - name: Get upload url
-        id: release_upload_url
-        uses: actions/github-script@0.9.0
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          result-encoding: string
-          script: |
-            let tag = context.payload.ref.replace(/.*\//, '');
-            let release =  await github.request("GET /repos/:owner/:repo/releases/tags/:tag", {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag: tag
-            });
-            console.log(release.data.upload_url);
-            return release.data.upload_url
-
-      # - name: Build macos
-      #   if: matrix.os == 'macos'
-      #   run: |
-      #     cargo build --release --features static-openssl
-      #     cargo build --bin gftp -p gftp --release
-      #     cargo build --bin golemsp -p golemsp --release
-      #     cargo build --bin ya-provider -p ya-provider --release
-      #     cargo build --bin exe-unit -p ya-exe-unit --release --features openssl/vendored
-      # - name: Build windows
-      #   if: matrix.os == 'windows'
-      #   run: |
-      #     vcpkg install openssl:x64-windows-static
-      #     vcpkg integrate install
-      #
-      #     cargo build --release
-      #     cargo build --bin gftp -p gftp --release
-      #     cargo build --bin golemsp -p golemsp --release
-      #     cargo build --bin ya-provider -p ya-provider --release
-      #     cargo build --bin exe-unit -p ya-exe-unit --release
-
-      - name: Build linux
-        run: |
-          cargo build --release --target x86_64-unknown-linux-musl -p ya-relay-server
-      # - name: Pack
-      #   id: pack
-      #   shell: bash
-      #   env:
-      #     OS_NAME: ${{ matrix.os }}
-      #     GITHUB_REF: ${{ github.ref }}
-      #   run: |
-      #     bash .ci/pack-build.sh
-      - name: Upload Release Asset
-        id: upload-release-asset-req
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.release_upload_url.outputs.result }}
-          asset_path: ./target/x86_64-unknown-linux-musl/release/ya-relay-server
-          asset_name: ya-relay-server
-          asset_content_type: application/octet-stream
-      # - name: Upload Release Asset [Provider]
-      #   id: upload-release-asset-prov
-      #   uses: actions/upload-release-asset@v1
-      #   env:
-      #     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      #   with:
-      #     upload_url: ${{ steps.release_upload_url.outputs.result }}
-      #     asset_path: ./releases/${{ steps.pack.outputs.providerArtifact }}
-      #     asset_name: ${{ steps.pack.outputs.providerArtifact }}
-      #     asset_content_type: ${{ steps.pack.outputs.providerMedia }}
-  build-deb:
-    needs: create-release
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Get upload url
-        id: release_upload_url
-        uses: actions/github-script@0.9.0
-        with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
-          result-encoding: string
-          script: |
-            let tag = context.payload.ref.replace(/.*\//, '');
-            let release =  await github.request("GET /repos/:owner/:repo/releases/tags/:tag", {
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag: tag
-            });
-            console.log(release.data.upload_url);
-            return release.data.upload_url
-
-      - name: Check out repository
-        uses: actions/checkout@v2
-
-      - name: Extract Version
-        id: version
+    container:
+      image: debian:13-slim@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392
+    defaults:
+      run:
         shell: bash
-        env:
-          OS_NAME: ${{ matrix.os }}
-          GITHUB_REF: ${{ github.ref }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        replica: [1, 2]
+    env:
+      CARGO_INCREMENTAL: '0'
+      PROTOC: /usr/bin/protoc
+      YA_RELAY_BUILD_NUMBER: release
+    steps:
+      - name: Install Debian build dependencies
         run: |
-          TAG_NAME="${GITHUB_REF##*/}"
-          TAGV_NAME="${TAG_NAME#pre-rel-}"
-          VERSION=${TAGV_NAME#v}
-          echo "::set-output name=tagv::${TAG_NAME}"
-          echo "::set-output name=version::${VERSION}"
-
-      - uses: golemfactory/build-deb-action@v4
-        id: deb
+          set -euo pipefail
+          apt-get update
+          apt-get install --no-install-recommends -y ca-certificates curl git build-essential cmake protobuf-compiler python3 dpkg-dev file xz-utils
+          {
+            echo "CARGO_HOME=$RUNNER_TEMP/cargo"
+            echo "RUSTUP_HOME=$RUNNER_TEMP/rustup"
+            echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
         with:
-          debVersion: ${{ steps.version.outputs.version }}
-          pkgName: ya-relay-server
-          subdir: server
+          persist-credentials: false
+          fetch-depth: 0
 
-      - name: Upload Release Deb
-        id: upload-release-asset-prov
-        uses: actions/upload-release-asset@v1
+      - name: Check release source
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if [ "$EVENT_NAME" = push ]; then
+            git merge-base --is-ancestor HEAD origin/main
+            VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' server/Cargo.toml | head -1)
+            test "$REF_NAME" = "v$VERSION"
+          fi
+          source_date_epoch=$(git show -s --format=%ct HEAD)
+          source_commit=$(git rev-parse HEAD)
+          source_date=$(git show -s --format=%cs HEAD)
+          [[ "$source_date_epoch" =~ ^[0-9]+$ ]]
+          [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$source_date"
+          {
+            echo "SOURCE_DATE_EPOCH=$source_date_epoch"
+            echo "YA_RELAY_BUILD_COMMIT=$source_commit"
+            echo "YA_RELAY_BUILD_DATE=$source_date"
+          } >> "$GITHUB_ENV"
+
+      - name: Install tools in fresh directories
+        run: |
+          set -euo pipefail
+          test ! -e "$CARGO_HOME"
+          test ! -e "$RUSTUP_HOME"
+          test ! -e "$CARGO_TARGET_DIR"
+          curl --proto '=https' --tlsv1.2 -fsSLo "$RUNNER_TEMP/rustup-init" https://static.rust-lang.org/rustup/archive/1.28.2/x86_64-unknown-linux-gnu/rustup-init
+          echo "20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c  $RUNNER_TEMP/rustup-init" | sha256sum --check --strict
+          chmod 0755 "$RUNNER_TEMP/rustup-init"
+          "$RUNNER_TEMP/rustup-init" -y --no-modify-path --profile minimal --default-toolchain 1.97.0
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          echo "RUSTFLAGS=--remap-path-prefix=$GITHUB_WORKSPACE=/src --remap-path-prefix=$RUNNER_TEMP=/build" >> "$GITHUB_ENV"
+
+      - name: Fetch locked dependencies
+        run: cargo +1.97.0 fetch --locked --target x86_64-unknown-linux-gnu
+
+      - name: Build without dependency resolution or downloads
+        run: cargo +1.97.0 build --frozen --release --target x86_64-unknown-linux-gnu -p ya-relay-server --features ui,metrics
+
+      - name: Package and smoke test
+        run: bash scripts/ci/package-release.sh
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          upload_url: ${{ steps.release_upload_url.outputs.result }}
-          asset_path: ${{ steps.deb.outputs.deb }}
-          asset_name: ya_relay_server_${{ steps.version.outputs.tagv }}_amd64.deb
-          asset_content_type: application/vnd.debian.binary-package
+          name: release-${{ matrix.replica }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  verify:
+    name: Release reproducibility
+    if: always()
+    needs: build
+    runs-on: ubuntu-22.04
+    container:
+      image: debian:13-slim@sha256:7378260c0a098d27ac206225db5e7d92b8c7c84ea7afccc86eeb513756bbd392
+    defaults:
+      run:
+        shell: bash
+    timeout-minutes: 10
+    steps:
+      - name: Install artifact download runtime
+        run: |
+          apt-get update
+          apt-get install --no-install-recommends -y ca-certificates libstdc++6 git python3
+      - name: Require both builds to succeed
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: test "$BUILD_RESULT" = success
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: release-*
+          path: replicas
+      - name: Require identical independently built binaries and packages
+        run: |
+          set -euo pipefail
+          (cd replicas/release-1 && sha256sum --check SHA256SUMS)
+          (cd replicas/release-2 && sha256sum --check SHA256SUMS)
+          cmp replicas/release-1/ya-relay-server replicas/release-2/ya-relay-server
+          cmp replicas/release-1/*.deb replicas/release-2/*.deb
+          cmp replicas/release-1/Cargo.lock replicas/release-2/Cargo.lock
+          cp -a replicas/release-1 dist
+      - name: Install and run the package on Debian 13
+        run: |
+          set -euo pipefail
+          apt-get install --no-install-recommends -y ./dist/*.deb
+          /usr/bin/ya-relay-server --version
+          /usr/bin/ya-relay-server --help > /dev/null
+          python3 scripts/ci/smoke-http.py /usr/bin/ya-relay-server
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-release
+          path: dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  attest:
+    name: Attest verified release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: verify
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: verified-release
+          path: dist
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-checksums: dist/SHA256SUMS
+
+  publish:
+    name: Publish immutable release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [verify, attest]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: verified-release
+          path: dist
+      - name: Publish once, after all assets are uploaded
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check SHA256SUMS
+          gh release create "$RELEASE_TAG" --verify-tag --draft --title "ya-relay-server ${RELEASE_TAG#v}" --notes-file RELEASE-NOTES.md
+          gh release upload "$RELEASE_TAG" ya-relay-server ./*.deb Cargo.lock BUILD-INFO.json SHA256SUMS RELEASE-NOTES.md ELF-VERSIONS.txt LINKED-LIBRARIES.txt
+          gh release edit "$RELEASE_TAG" --draft=false --latest
